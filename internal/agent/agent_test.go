@@ -204,7 +204,10 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"tool_use","id":"toolu_2","name":"Grep","input":{"pattern":"exec.Command"}}]}}`,
 		`{"type":"assistant","parent_tool_use_id":"toolu_1","message":{"content":[{"type":"text","text":"achei uma brecha"}]}}`,
 		`{"type":"user","message":{"content":[{"type":"tool_result","is_error":true,"content":"No files found"}]}}`,
-		`{"type":"result","subtype":"success","result":"# Veredito\n\nNada de grave.","duration_ms":12000,"total_cost_usd":0.42}`,
+		`{"type":"result","subtype":"success","result":"# Veredito\n\nNada de grave.","duration_ms":12000,"total_cost_usd":0.42,` +
+			`"usage":{"input_tokens":1200,"output_tokens":8000,"cache_creation_input_tokens":4000,"cache_read_input_tokens":20000},` +
+			`"modelUsage":{"claude-opus-5":{"inputTokens":1200,"outputTokens":8000,"cacheCreationInputTokens":4000,` +
+			`"cacheReadInputTokens":20000,"costUSD":0.41},"claude-haiku-4-5":{"inputTokens":900,"outputTokens":100,"costUSD":0.01}}}`,
 	}
 
 	cfg := config.Default()
@@ -248,6 +251,13 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 	if strings.Contains(res.Body, "achei uma brecha") {
 		t.Error("o texto solto do sub-agente não é o relatório")
 	}
+	// O gasto sai do detalhe por modelo, não do `usage`: é o único que conta
+	// as lentes que rodaram como sub-agente e os modelos auxiliares. Aqui são
+	// os 33.200 da conversa principal mais os 1.000 do haiku.
+	if res.Usage.Total() != 34200 || res.Usage.CostUSD != 0.42 {
+		t.Errorf("o gasto devia somar todos os modelos: %+v", res.Usage)
+	}
+
 	got := strings.Join(log, "\n")
 	for _, want := range []string{
 		"· sessão iniciada · 2 ferramentas",
@@ -255,7 +265,7 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 		"→ Agent(exploit-digger): varrer o diff",
 		"achei uma brecha",
 		"✗ No files found",
-		"✓ pronto em 12s · $0.42",
+		"✓ pronto em 12s · 34,2k tokens · $0.42",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("o log não tem %q:\n%s", want, got)
@@ -446,5 +456,45 @@ func TestReviewStopsOnCancel(t *testing.T) {
 	}
 	if len(ran) != 1 || ran[0] != "demorado" {
 		t.Errorf("o segundo passo não devia começar: %v", ran)
+	}
+}
+
+// O gasto de cada passo soma no do review — uma pipeline de três lentes
+// devolve um número só no fim.
+func TestUsageSomaEFormata(t *testing.T) {
+	var u Usage
+	u.add(Usage{InputTokens: 500, OutputTokens: 250, CostUSD: 0.1})
+	u.add(Usage{CacheRead: 1_000_000, CostUSD: 0.2})
+	if u.Total() != 1_000_750 {
+		t.Errorf("Total somou errado: %d", u.Total())
+	}
+	if got := u.String(); !strings.Contains(got, "1M tokens") || !strings.Contains(got, "$0.30") {
+		t.Errorf("linha de gasto inesperada: %q", got)
+	}
+
+	// Um agente que não fala stream-json não reporta nada, e aí não há linha.
+	if got := (Usage{}).String(); got != "" {
+		t.Errorf("sem gasto não há linha: %q", got)
+	}
+
+	for _, c := range []struct {
+		n    int
+		want string
+	}{{0, "0"}, {999, "999"}, {1000, "1k"}, {45_230, "45,2k"}, {1_800_000, "1,8M"}} {
+		if got := FormatTokens(c.n); got != c.want {
+			t.Errorf("FormatTokens(%d) = %q, queria %q", c.n, got, c.want)
+		}
+	}
+}
+
+// Sem modelUsage — um agente mais simples, ou uma versão antiga do Claude Code
+// — o `usage` da conversa principal ainda vale.
+func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
+	var p streamParser
+	p.line(`{"type":"result","subtype":"success","result":"ok","duration_ms":1000,` +
+		`"total_cost_usd":0.05,"usage":{"input_tokens":10,"output_tokens":20,` +
+		`"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}`)
+	if p.usage.Total() != 100 || p.usage.CostUSD != 0.05 {
+		t.Errorf("devia cair no usage: %+v", p.usage)
 	}
 }

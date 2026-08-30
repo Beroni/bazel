@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 940 300" width="940" height="300" role="img" aria-label="How a review runs: GitHub to the local bazel server, a throwaway clone, your agent, and back to you">
+  <title>How a review runs</title>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7d8590"/>
+    </marker>
+    <marker id="ao" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#f97316"/>
+    </marker>
+    <style>
+      .b { fill: none; stroke: #7d8590; stroke-width: 1.5; rx: 10; }
+      .b-accent { fill: none; stroke: #f97316; stroke-width: 2; rx: 10; }
+      .t { font: 600 15px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #7d8590; }
+      .t-accent { font: 700 15px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #f97316; }
+      .s { font: 12px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #7d8590; opacity: .85; }
+      .l { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #7d8590; opacity: .8; }
+      .l-accent { font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; fill: #f97316; }
+      .arrow { stroke: #7d8590; stroke-width: 1.5; fill: none; marker-end: url(#a); }
+      .arrow-accent { stroke: #f97316; stroke-width: 1.5; fill: none; marker-end: url(#ao); stroke-dasharray: 5 4; }
+    </style>
+  </defs>
+
+  <rect class="b" x="10" y="40" width="150" height="76"/>
+  <text class="t" x="30" y="70">GitHub</text>
+  <text class="s" x="30" y="92">open pull requests</text>
+
+  <path class="arrow" d="M162 78 H228"/>
+  <text class="l" x="176" y="70">gh</text>
+
+  <rect class="b-accent" x="230" y="26" width="180" height="104"/>
+  <text class="t-accent" x="252" y="56">bazel</text>
+  <text class="s" x="252" y="78">local web server</text>
+  <text class="s" x="252" y="96">queue + live log</text>
+  <text class="s" x="252" y="114">127.0.0.1:7777</text>
+
+  <path class="arrow" d="M412 78 H478"/>
+  <text class="l" x="424" y="70">clone</text>
+
+  <rect class="b" x="480" y="40" width="160" height="76"/>
+  <text class="t" x="500" y="70">workspace</text>
+  <text class="s" x="500" y="92">PR checked out</text>
+
+  <path class="arrow" d="M642 78 H708"/>
+  <text class="l" x="654" y="70">stdin</text>
+
+  <rect class="b" x="710" y="26" width="215" height="104"/>
+  <text class="t" x="732" y="56">agent</text>
+  <text class="s" x="732" y="78">claude -p, running</text>
+  <text class="s" x="732" y="96">the skills you picked</text>
+  <text class="s" x="732" y="114">as review lenses</text>
+
+  <path class="arrow" d="M817 132 V170 H322 V134"/>
+  <text class="l" x="512" y="164">live log (stream-json) + the final report</text>
+
+  <path class="arrow" d="M270 132 V204"/>
+  <rect class="b" x="120" y="206" width="310" height="74"/>
+  <text class="t" x="142" y="236">your browser</text>
+  <text class="s" x="142" y="258">read it, then decide</text>
+
+  <path class="arrow" d="M380 132 V188 H567 V204"/>
+  <rect class="b" x="452" y="206" width="230" height="74"/>
+  <text class="t" x="474" y="236">~/.bazel/reviews</text>
+  <text class="s" x="474" y="258">markdown on disk</text>
+
+  <path class="arrow-accent" d="M118 243 H60 V120"/>
+  <text class="l-accent" x="70" y="188">publish</text>
+  <text class="l" x="70" y="204">only if you ask</text>
+</svg>

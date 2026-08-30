@@ -114,11 +114,16 @@ type jobView struct {
 	SavedTo    string     `json:"saved_to,omitempty"`
 	Workdir    string     `json:"workdir,omitempty"`
 	Truncated  bool       `json:"truncated,omitempty"`
-	Posted     bool       `json:"posted"`
-	PostErr    string     `json:"post_error,omitempty"`
-	HasBody    bool       `json:"has_body"`
-	Body       string     `json:"body,omitempty"`
-	HTML       string     `json:"html,omitempty"`
+	// Tokens e Cost são o gasto do review, mostrado quando ele termina. Um
+	// agente que não fala stream-json não reporta gasto: fica zerado, e a
+	// página não mostra linha nenhuma.
+	Tokens  int     `json:"tokens,omitempty"`
+	Cost    float64 `json:"cost_usd,omitempty"`
+	Posted  bool    `json:"posted"`
+	PostErr string  `json:"post_error,omitempty"`
+	HasBody bool    `json:"has_body"`
+	Body    string  `json:"body,omitempty"`
+	HTML    string  `json:"html,omitempty"`
 }
 
 // view serializa o job. Chamar com o lock do Manager seguro.
@@ -139,6 +144,8 @@ func (j *Job) view(withBody bool) jobView {
 		SavedTo:   j.SavedTo,
 		Workdir:   j.Result.Workdir,
 		Truncated: j.Result.Truncated,
+		Tokens:    j.Result.Usage.Total(),
+		Cost:      j.Result.Usage.CostUSD,
 		Posted:    j.Posted,
 		PostErr:   j.PostErr,
 		HasBody:   j.Result.Body != "",

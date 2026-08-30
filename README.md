@@ -1,154 +1,197 @@
+<div align="center">
+
+<img src="internal/server/static/bazelgeuse.webp" alt="" width="120" height="120">
+
 # bazel
 
-Interface web que junta os pull requests abertos dos repositórios que você
-escolher — os seus e os dos seus colegas — e dispara agentes de IA para
-revisá-los.
+**Your team's open pull requests, in one place — reviewed by the AI agents you choose.**
 
+[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![gh CLI](https://img.shields.io/badge/requires-gh%20CLI-181717?logo=github&logoColor=white)](https://cli.github.com)
+[![Agents](https://img.shields.io/badge/agents-your%20Claude%20Code%20skills-f97316)](https://claude.com/claude-code)
+[![Runs on](https://img.shields.io/badge/runs%20on-127.0.0.1%20only-8b9099)](#security-model)
 
-Você marca os PRs, escolhe o agente, e acompanha cada lente trabalhando no
-próprio terminal. Terminado, lê o review na tela e decide se ele vai para o PR.
+</div>
 
-Subir o `bazel` dispara a animação de um ovo-bomba do Bazelgeuse que racha,
-esquenta e detona no logo. Desliga com `--no-splash` ou `BAZEL_NO_SPLASH=1`.
+---
 
-## Requisitos
+Bazel is a small, single-user web app you run on your own machine. It collects
+the open pull requests of the repositories you watch, hands the ones you pick to
+an AI agent, and shows you the review — the agents working live, the report
+rendered, the cost in tokens. Nothing reaches GitHub unless you say so.
 
-- Go 1.25+ (para compilar)
-- [`gh`](https://cli.github.com) autenticado (`gh auth login`)
+There are no subcommands: **the binary is the server**. Repositories, agents and
+reviews are all managed from the page.
+
+## Highlights
+
+- **Agents are your own skills.** The agent list starts empty; you build it from
+  the [Claude Code skills](#agents-are-your-skills) installed on your machine.
+- **Reviews outlive the tab.** Each review is a server-side job. Close the
+  browser, come back later, it's still there.
+- **A terminal per agent.** A fleet of lenses running in parallel shows up as
+  one live pane each, not as one scrambled stream.
+- **You are the gate to the PR.** Read the review first; publishing is a
+  separate, explicit action.
+- **Token spend is reported** for every run — per agent in the log, and as a
+  total when the review lands.
+
+## How it works
+
+<div align="center">
+  <img src="docs/flow.svg" alt="GitHub to the local bazel server, to a throwaway clone, to your agent, and back to you" width="940">
+</div>
+
+1. `gh pr view` brings in the metadata (title, author, branch, base, body).
+2. The repository is cloned into a **throwaway directory** (`gh repo clone` with
+   `--filter=blob:none` — full history, no blobs) and the PR is checked out.
+3. Each agent of your choice runs **with that clone as its working directory**,
+   receiving the prompt on stdin. A pipeline runs its agents one after another
+   over the same clone — cloning once.
+4. The clone is deleted at the end. `--keep` preserves it and the path shows up
+   in the review footer.
+
+A step that fails doesn't sink the review: it becomes a section with the error
+and the rest carries on. Only when no agent returns anything does the whole
+review fail.
+
+Because the agent browses the checked-out code, the diff is **not** pasted into
+the prompt — it is only downloaded if your template uses `{{diff}}`.
+
+## Requirements
+
+- Go 1.25+ (to build)
+- [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
-- Um agente de IA no PATH que aceite um prompt no stdin — por padrão o
-  [`claude`](https://claude.com/claude-code), rodando a skill
-  [`review-fleet`](#como-o-review-roda) em modo
-  [stream](#o-log-ao-vivo), que é o que alimenta o log da página
+- An AI agent on your `PATH` that reads a prompt on stdin — by default
+  [`claude`](https://claude.com/claude-code) in [stream mode](#the-live-log),
+  which is what feeds the live log
+- The skills you want to use as review lenses, installed in `~/.claude/skills`
 
-## Instalação
+## Install
 
 ```sh
-make install            # compila e joga em ~/.local/bin
+make install                      # builds into ~/.local/bin
 make install PREFIX=/usr/local/bin
 ```
 
-Ou pelo Go:
+Or with Go:
 
 ```sh
 go install github.com/beroni/bazel@latest
 ```
 
-> O binário se chama `bazel`, igual à ferramenta de build do Google. Se você usa
-> as duas, renomeie uma delas na instalação (`-o ~/.local/bin/bz`).
+> The binary is called `bazel`, like Google's build tool. If you use both,
+> rename one of them at install time (`-o ~/.local/bin/bz`).
 
-## Uso
+## Quick start
 
 ```sh
-bazel          # sobe em 127.0.0.1:7777
-bazel --open   # e já abre o navegador
+bazel          # serves on 127.0.0.1:7777
+bazel --open   # and opens the browser
 ```
 
-Não há subcomando: **o binário é o servidor**. Repositórios, agentes e reviews
-se gerenciam na página. Na primeira execução o `~/.bazel/config.yaml` é criado
-sozinho — daí é só abrir "config" no topo e adicionar um `owner/repo`.
+On first run `~/.bazel/config.yaml` is created for you. Then, in the page:
 
-| Flag | Efeito |
+1. Open **config** and add a repository (`owner/repo`).
+2. In the same dialog, turn one of your installed skills into an **agent**.
+3. Tick a PR, pick the agent, hit **revisar**.
+
+| Flag | Effect |
 | --- | --- |
-| `--addr <host:porta>` | onde escutar (padrão `127.0.0.1:7777`) |
-| `--jobs <n>` | reviews simultâneos (padrão 2) |
-| `--open` | abre o navegador |
-| `--keep` | preserva os clones temporários dos PRs |
-| `--no-splash` | pula a animação de abertura |
-| `--version` | versão |
+| `--addr <host:port>` | where to listen (default `127.0.0.1:7777`) |
+| `--jobs <n>` | concurrent reviews (default 2) |
+| `--open` | open the browser |
+| `--keep` | keep the throwaway PR clones |
+| `--no-splash` | skip the opening animation |
+| `--version` | version |
 
-## A página
+`--jobs` is what separates "reviewing two PRs" from "melting the laptop": every
+review clones a repository and spawns an agent process.
 
-Um review leva minutos e nenhuma requisição HTTP segura isso: cada um vira um
-**job no servidor**. O navegador recebe o id na hora e o resultado chega depois
-por [SSE](https://developer.mozilla.org/docs/Web/API/Server-sent_events). Na
-prática: dá para fechar a aba no meio de um review, voltar depois e ele está
-lá, pronto.
+## The web UI
 
-Pela página você:
+A review takes minutes and no HTTP request survives that, so each one becomes a
+**server-side job**. The browser gets an id immediately and the result arrives
+over [SSE](https://developer.mozilla.org/docs/Web/API/Server-sent_events).
 
-- **marca PRs** e escolhe no seletor **qual agente** roda sobre eles;
-- acompanha a fila, cancela, e vê o **log ao vivo** — cada agente no seu
-  próprio terminal, ver [O log ao vivo](#o-log-ao-vivo);
-- **lê o review renderizado** e decide se ele vai para o PR, com comentários
-  inline ou como comentário simples — ver
-  [Publicar o review no PR](#publicar-o-review-no-pr);
-- relê os reviews antigos salvos em disco;
-- adiciona e remove repositórios monitorados, e vê em **config** os agentes
-  configurados e as [skills instaladas](#agentes-e-skills) na máquina.
+From the page you can:
 
-`--jobs` é o que separa "revisando dois PRs" de "derrubando o notebook": cada
-review clona um repositório e sobe um processo de agente.
+- **tick PRs** and choose **which agent** runs over them;
+- **filter the list**: by text (title, repo or author), by ownership
+  (`todos` / `só meus`), by repository, and by review state — `sem review`,
+  `✓ revisado`, `⟳ mudou desde o review`. With a filter on, the header counter
+  becomes `12 de 92 PRs`. Filtering never unticks anything, but **revisar** only
+  runs on what is currently visible;
+- **collapse the list** — the `☰` button sits in the list itself and stays
+  behind as a thin rail, so a review can take the full window; the choice is
+  remembered in the browser;
+- follow the queue, cancel a job, and watch the [live log](#the-live-log);
+- **read the rendered review** and decide whether it goes to the PR — inline
+  comments or a plain comment, see [Publishing](#publishing-to-the-pr);
+- re-read older reviews saved on disk;
+- add and remove watched repositories, and build your
+  [agent list](#agents-are-your-skills) from the installed skills.
 
-> **É single-user, e a porta é local de propósito.** O servidor usa o `gh` já
-> autenticado da máquina — quem chega nele manda clonar repositório e rodar
-> agente com `Bash` liberado. Por isso ele escuta em loopback, recusa `Host` que
-> não seja local (bloqueia DNS rebinding) e recusa `POST` vindo de outra origem
-> (bloqueia uma aba qualquer disparando review no seu nome). Não coloque isso
-> atrás de um IP público sem autenticação na frente.
+### What has been reviewed
 
-## Como o review roda
-
-Cada PR passa por estes passos:
-
-1. `gh pr view` traz os metadados (título, autor, branch, base, corpo).
-2. O repositório é clonado numa **pasta temporária** (`gh repo clone` com
-   `--filter=blob:none` — histórico inteiro, sem baixar os blobs) e o PR entra
-   em checkout com `gh pr checkout`.
-3. Cada agente da escolha roda **com o clone como diretório de trabalho**,
-   recebendo o prompt pelo stdin. Uma pipeline roda seus agentes um de cada vez
-   sobre esse mesmo clone — clona uma vez só. O agente padrão dispara a skill
-   [`review-fleet`](https://github.com/beroni/skills) — três lentes em paralelo
-   (`senior-code-reviewer`, `exploit-digger`, `lazy-senior-dev`) sobre o mesmo
-   escopo, deduplicadas em um veredito só.
-4. O clone é apagado no fim. `--keep` preserva, e o caminho aparece no rodapé
-   do review.
-
-Um passo que falha não derruba o review: vira uma seção com o erro e o resto
-continua. Só quando nenhum agente devolve nada é que o review falha inteiro.
-
-Como o agente navega no código clonado, o diff **não** vai colado no prompt —
-ele só é baixado se o seu template usar `{{diff}}`.
-
-Para voltar ao modo antigo (diff no prompt, sem clone), coloque
-`agent.checkout: false` e um `{{diff}}` no prompt.
-
-> O `claude -p` nega toda permissão que não estiver liberada, e em silêncio.
-> Por isso os args padrão trazem `--allowedTools Read,Grep,Glob,Bash,Agent` —
-> sem `Agent` a frota não consegue disparar as lentes, sem `Bash` nenhuma delas
-> resolve o escopo. O agente roda em um clone descartável e as instruções da
-> skill são read-only: ela reporta, não corrige.
-
-## O que já foi revisado
-
-Terminado um review, o PR fica **marcado na lista**. E quando ele recebe commit
-novo depois, o ✓ vira aviso:
+Once a review finishes, the PR is **marked in the list** — and when it gets new
+commits afterwards, the check turns into a warning:
 
 ```
 #482  ✓ revisado 2h · publicado
 #479  ⟳ mudou desde o review
 ```
 
-O `⟳` é o que importa: o que está no GitHub agora **não é mais o que o agente
-leu**, e o review que você publicou pode estar falando de código que já não
-existe. O PR aberto ganha uma tarja explicando isso.
+The index lives in `<BAZEL_HOME>/reviews/.index.json`, keyed by the head commit
+seen at review time.
 
-O Bazel guarda o commit do topo do PR (`headRefOid`) na hora do review, e é a
-comparação com o de agora que acende o aviso — não a data, que muda por
-qualquer comentário. PR consultado sem esse commit não ganha aviso: melhor não
-avisar do que avisar errado.
+## Agents are your skills
 
-O índice fica em `<reviews_dir>/revisados.json`, com o agente que rodou, o
-arquivo do review e se ele foi publicado. É gravado por escrita atômica
-(arquivo temporário e rename) e guarda os últimos 500 PRs; corrompido ou
-ausente, ele é simplesmente ignorado — isso é enfeite de lista, não pode
-derrubar a listagem.
+**An agent is one of your skills running over a PR.** That is why the list ships
+empty: a factory list would only be right by accident, pointing at skills this
+machine may never have had.
 
-## O log ao vivo
+In **config**, the page lists what is actually installed — read from
+`~/.claude/skills`, or from `skills_dir` in `config.yaml` — and every row turns
+into an agent with one click:
 
-`claude -p` não escreve nada até o relatório sair — para a interface web
-mostrar o agente trabalhando, ele precisa narrar o que faz. É o que
-`--output-format stream-json --verbose` liga, e vem nos args padrão:
+```
+skills instaladas · ~/.claude/skills
+  /review-fleet     Runs a fleet of review lenses over one diff   [usar] [⇧ publica]
+  /exploit-digger   Adversarial sweep of a diff                   [usar] [⇧ publica]
+```
+
+- **usar** creates the agent `review-fleet`, with the task
+  `/review-fleet {{number}}`: it hands the review back to you to read.
+- **⇧ publica** creates `review-fleet-post`, with `--post` and the prompt
+  template that authorizes writing to GitHub — the page warns you before firing
+  one of those.
+
+The same skill can become both. In the list above each agent shows the skill it
+calls, a **tornar padrão** button (the first one runs when you don't choose) and
+**remover**:
+
+```
+review-fleet      padrão      ✓ /review-fleet
+review-fleet-post ⇧ publica   ✓ /review-fleet
+frota-em-série    pipeline    ✓ /senior-code-reviewer  ✓ /exploit-digger
+post-report       usado ao publicar                    ✗ /post-report
+```
+
+The `✗` is the warning that matters: that agent calls a skill that is **not on
+this machine** and would only fail at run time. Skills are usually symlinks into
+the repository where you version them, and Bazel follows the links; the list is
+read from disk every time you open the dialog, so installing a skill needs no
+restart.
+
+Everything the page does is written to `config.yaml`, and you can edit it by
+hand for what the page doesn't offer — another model, another executable, your
+own prompt template. See [Configuration](#configuration).
+
+## The live log
+
+The default args run the agent in stream mode:
 
 ```yaml
 agent:
@@ -156,137 +199,160 @@ agent:
   args: [-p, --output-format, stream-json, --verbose, --allowedTools, "Read,Grep,Glob,Bash,Agent"]
 ```
 
-Nesse modo o stdout é JSONL de eventos: o Bazel traduz cada um numa linha
-legível (a ferramenta chamada e o argumento que diz o que ela faz) e tira o
-relatório final do evento de resultado.
+In that mode stdout is a stream of JSON events: Bazel turns each one into a
+readable line (the tool called, and the argument that says what it is doing) and
+takes the final report from the result event.
 
-**Cada linha é assinada por quem a escreveu.** A frota sobe as três lentes
-dentro do mesmo processo, em paralelo, e sem isso o log chega embaralhado e
-anônimo — o Bazel liga cada chamada de `Task` ao sub-agente que ela criou e
-carimba nas linhas que saem de dentro dela:
+**Every line is signed by whoever wrote it.** A fleet spawns its lenses inside
+the same process, in parallel; Bazel ties each `Task` call to the sub-agent it
+created and stamps the lines coming out of it:
 
 ```
-review-fleet          | → Agent(senior-code-reviewer): review de precisão
-review-fleet          | → Agent(exploit-digger): varredura adversarial
+review-fleet          | → Agent(senior-code-reviewer): precision review
+review-fleet          | → Agent(exploit-digger): adversarial sweep
 exploit-digger        | → Grep exec.Command
 senior-code-reviewer  | → Read internal/agent/agent.go
-lazy-senior-dev       | 40 linhas que o stdlib já faz
+lazy-senior-dev       | 40 lines the stdlib already does
 ```
 
-O que liga uma linha ao seu autor é a chamada que a criou: o Bazel guarda o id
-de cada chamada de sub-agente (a ferramenta se chama `Agent` numa versão do
-Claude Code e `Task` noutra — o que ele procura é um `subagent_type` na
-entrada) e carimba tudo que vem com aquele `parent_tool_use_id`. Duas lentes do
-mesmo tipo em paralelo viram `exploit-digger` e `exploit-digger 2`, não uma só.
+**Each agent gets its own terminal**, with its own name, line count and scroll —
+a fleet becomes four panes side by side, its own and one per lens. Two lenses of
+the same type in parallel become `exploit-digger` and `exploit-digger 2`, not
+one muddle.
 
-**Cada agente tem o próprio terminal**, com o próprio nome,
-a própria contagem de linhas e o próprio scroll — a frota vira quatro quadros
-lado a lado, o dela e o de cada lente:
+The log is a window over the last **500 lines** per review, held in memory. It
+does not travel over SSE: the page remembers where it stopped and fetches only
+what is missing, once a second. The agent's stderr is included, in another color.
+
+> If your `agent.args` is customized, Bazel leaves it alone — add
+> `--output-format stream-json --verbose` to get the translated log.
+
+## Token usage
+
+When an agent finishes, its last log line says what the run cost:
 
 ```
-┌─ review-fleet ──────────────┐  ┌─ exploit-digger ────────────┐
-│ · sessão iniciada           │  │ → Grep exec.Command         │
-│ → Agent(senior-code-...)    │  │ nenhuma brecha explorável   │
-│ → Agent(exploit-digger)     │  └─────────────────────────────┘
-└─────────────────────────────┘  ┌─ lazy-senior-dev ───────────┐
-┌─ senior-code-reviewer ──────┐  │ 40 linhas que o stdlib já   │
-│ → Read internal/agent/...   │  │ faz                         │
-└─────────────────────────────┘  └─────────────────────────────┘
+review-fleet          | ✓ pronto em 4m12s · 1,8M tokens · $2.41
 ```
 
-Clicar em "log dos agentes" abre e fecha o painel; num review já terminado ele
-começa fechado. Evento que ele não conhece é ignorado, e linha
-que não é JSON passa direto — um agente que não fala esse formato aparece no
-log com a saída crua, do jeito que a escreve.
+The total shows up **at the end**: on the queue card, under the agent name, and
+in the footer of the report, right where you finish reading.
 
-O log é uma janela das últimas **500 linhas** por review, em memória. Ele não
-vai pelo SSE: a página guarda onde parou e busca só o que falta, uma vez por
-segundo. O stderr do agente entra junto, em outra cor.
+```
+1,8M tokens · $2.41 · 252s
+```
 
-> Se o seu `agent.args` estiver customizado, o Bazel não mexe nele —
-> acrescente `--output-format stream-json --verbose` para ganhar o log
-> traduzido.
+It is what the final `stream-json` event reports — input, output and cache
+added up, **sub-agents included** (a fleet's three lenses are in there) — and in
+a pipeline it is the sum of the steps. The same number goes into the header of
+the saved markdown:
 
-## Saída do review
+```
+- Gasto: 1,8M tokens (entrada 12k · saída 84k · cache 1,7M) · $2.41
+```
 
-Todo review vai para três lugares, nessa ordem:
+An agent that doesn't speak `stream-json` reports no spend, and the line simply
+doesn't appear.
 
-1. **Terminal** — renderizado com markdown formatado.
-2. **Arquivo** — `<BAZEL_HOME>/reviews/<repo>-<numero>-<data>.md`, com o
-   cabeçalho do PR e o agente que rodou (numa pipeline, o tempo de cada passo).
-3. **PR no GitHub** — só se você pedir, e só depois de ler: "publicar review
-   inline" roda o `post_agent`, "colar como comentário" cola o markdown.
-   Sempre pede confirmação antes. Ver
-   [Publicar o review no PR](#publicar-o-review-no-pr).
+## Where reviews go
 
-## Configuração
+Every review lands in three places, in this order:
 
-`~/.bazel/config.yaml` (ou `$BAZEL_HOME/config.yaml`):
+1. **The page** — markdown rendered in the right-hand pane.
+2. **A file** — `<BAZEL_HOME>/reviews/<repo>-<number>-<date>.md`, with the PR
+   header, the agent that ran (per-step timings in a pipeline) and the
+   [token spend](#token-usage).
+3. **The PR on GitHub** — only if you ask, and only after you have read it.
+
+## Publishing to the PR
+
+Three ways in, from the most deliberate to the most direct.
+
+**1. Read, then publish** (the default). Run a review, read it on screen, then
+click **publicar review inline**. That runs the `post_agent` — the `post-report`
+skill — over a clone of the PR, with the markdown file you just read in the
+prompt and the instruction **not to redo the review**: it publishes what is in
+the file, with inline comments on the right lines, 👍 on what is already flagged
+in the PR, and an all-clear when there is nothing to say. It becomes a job like
+any other, with steps and a log.
+
+**2. Paste as a comment** ("ou colar como comentário"). This is Bazel writing,
+with no agent: the review markdown becomes a single comment, immediately. No
+inline anchors, but no agent spend either.
+
+**3. Publish directly**, skipping your reading: pick an agent marked `⇧` in the
+selector before reviewing — the one you created with **⇧ publica**. It reviews
+and publishes in the same pass.
+
+Agents in paths 1 and 3 carry their own prompt template: the default one forbids
+writing to GitHub, and theirs replaces that with explicit authorization. Any
+agent of yours can do the same with `posts: true`, which is what makes the UI
+mark it with `⇧` and ask before firing — publishing is a write on someone else's
+PR. And if you ask to comment over a review the agent already published, Bazel
+warns you first.
+
+## Configuration
+
+`~/.bazel/config.yaml` (or `$BAZEL_HOME/config.yaml`):
 
 ```yaml
 repos:
   - acme/api-core
   - acme/web-app
 
-authors:
+authors:          # filter by PR author; empty means everyone
   - beroni
 
 include_drafts: false
 
-# Vazio = <BAZEL_HOME>/reviews
-reviews_dir: ""
+reviews_dir: ""   # empty = <BAZEL_HOME>/reviews
+max_diff_bytes: 400000   # only used if the prompt has {{diff}}
+skills_dir: ""    # empty = ~/.claude/skills
 
-# Só é usado se o prompt tiver {{diff}}.
-max_diff_bytes: 400000
-
-# Vazio = ~/.claude/skills
-skills_dir: ""
-
+# The base every named agent inherits from.
 agent:
   command: claude
-  args:
-    - -p
-    - --allowedTools
-    - Read,Grep,Glob,Bash,Agent
-  # Clona o repo numa pasta temporária e faz checkout do PR antes de rodar.
-  checkout: true
+  args: [-p, --output-format, stream-json, --verbose, --allowedTools, "Read,Grep,Glob,Bash,Agent"]
+  checkout: true          # clone the repo and check the PR out first
   timeout_seconds: 1800
   prompt: |-
     {{task}}
     ...
 
-# As lentes que o seletor oferece. A primeira é a padrão.
-agents:
-  - name: review-fleet
-    description: as três lentes em paralelo, dedup e veredito único
-    task: /review-fleet {{number}}
-  # ...
+# The lenses the selector offers. Starts empty — the page fills it from your
+# installed skills. The first one is the default.
+agents: []
 
-# Sequências rodadas sobre o mesmo clone.
-pipelines:
-  - name: frota-em-série
-    steps: [senior-code-reviewer, exploit-digger, lazy-senior-dev]
+# Sequences run over the same clone.
+pipelines: []
+
+# Who takes an already-read review to the PR.
+post_agent:
+  name: post-report
+  task: /post-report {{review_file}}
+  posts: true
 ```
 
-### Agentes e pipelines
+### Agents and pipelines
 
-`agents:` é o que o seletor da página oferece, ao lado do botão **revisar**. A
-primeira entrada é a padrão — a que roda quando ninguém escolhe.
+An agent only declares **what changes**: its `task` goes into the `{{task}}` of
+`agent.prompt`, and `command`, `args`, `checkout` and `timeout_seconds` are
+inherited from the `agent` block when left out. `prompt` replaces the whole
+template.
 
 ```yaml
 agents:
   - name: review-fleet
-    description: as três lentes em paralelo, dedup e veredito único
+    description: three lenses, deduplicated into one verdict
     task: /review-fleet {{number}}
   - name: exploit-digger
-    description: "recall adversarial: caça bug e brecha classe por classe"
+    description: adversarial recall, class by class
     task: /exploit-digger {{number}}
-  # Este publica sozinho: `posts` é o que faz a interface avisar antes.
+  # This one publishes on its own: `posts` is what makes the UI warn first.
   - name: review-fleet-post
-    description: as três lentes e publica o review no PR
     task: /review-fleet {{number}} --post
     posts: true
-  # Uma lente pode rodar em outro modelo, ou em outro executável.
+  # A lens can run on another model, or another executable entirely.
   - name: rapidinha
     task: /senior-code-reviewer {{number}}
     args: ["-p", "--model", "claude-haiku-4-5-20251001", "--allowedTools", "Read,Grep,Glob,Bash"]
@@ -294,88 +360,42 @@ agents:
 
 pipelines:
   - name: frota-em-série
-    description: as três lentes uma de cada vez, cada uma no próprio processo
+    description: the three lenses one at a time, each in its own process
     steps: [senior-code-reviewer, exploit-digger, lazy-senior-dev]
 ```
 
-Um agente só declara **o que muda**: o `task` entra no `{{task}}` do molde de
-`agent.prompt`, e `command`, `args`, `checkout` e `timeout_seconds` herdam do
-bloco `agent` quando não vêm preenchidos. `prompt` substitui o molde inteiro.
+A **pipeline** chains agents by name, in order, over the same clone; the report
+comes out with one section per step. A step pointing at an agent that doesn't
+exist is skipped.
 
-### Publicar o review no PR
+With no agents at all, the **revisar** button stays disabled and the page tells
+you what is missing. If you wrote your own `agent.prompt` and have no `agents:`,
+the selector shows a single choice — the bare `agent` block, which is how Bazel
+behaved before the selector existed.
 
-Há três caminhos para o PR, do mais controlado ao mais direto.
+### Prompt placeholders
 
-**1. Ler e então publicar** (o padrão). Rode `review-fleet`, leia o resultado
-na tela e só então clique em **publicar review inline**. Isso sobe o
-`post_agent` — a skill `post-report` — sobre um
-clone do PR, com o arquivo do review que você acabou de ler no prompt e a
-instrução de **não refazer o review**: publica o que está no arquivo, com os
-comentários inline nas linhas certas, 👍 no que já está apontado e um "tudo
-certo" quando não há achado. Vira um job como qualquer outro, com passos e log.
+`{{task}}`, `{{repo}}`, `{{number}}`, `{{title}}`, `{{author}}`, `{{url}}`,
+`{{branch}}`, `{{base}}`, `{{body}}`, `{{workdir}}`, `{{diff}}`.
 
-**2. Colar como comentário** ("ou colar como comentário"). É o Bazel
-escrevendo, sem agente: o markdown do review vira um comentário só, na hora.
-Não tem inline, mas também não gasta um agente.
+`{{task}}` is the chosen agent's instruction — the only thing that changes from
+one lens to the next. A template without `{{task}}` gets the instruction
+prepended on the first line.
 
-**3. Publicar direto**, sem passar pela sua leitura: escolha
-`review-fleet-post` no seletor antes de revisar. É a frota rodando com
-`--post` — revisa e publica na mesma rodada. Rápido, e você lê o que foi
-publicado depois.
+The `post_agent` gets two more: `{{review_file}}`, the path of the markdown you
+read, and `{{review}}`, its text.
 
-Os agentes 1 e 3 têm molde de prompt próprio: o padrão proíbe escrever no
-GitHub, e o deles troca a proibição pela autorização explícita. Qualquer agente
-seu pode fazer o mesmo com `posts: true`, que é o que faz a interface marcar
-com `⇧` e perguntar antes de disparar — publicar é escrita no PR de outra
-pessoa. E se você mandar comentar por cima de um review que o agente já
-publicou, o Bazel avisa antes.
+`{{diff}}` is the only one that costs an extra call to GitHub — if it isn't in
+the template, the diff is never downloaded.
 
-Quem publica no caminho 1 é o `post_agent`, configurável como qualquer outro:
+### Using another agent CLI
+
+Anything that reads a prompt on **stdin** and writes markdown to **stdout**
+works. With `checkout: true` it runs inside the PR clone, and whatever it writes
+goes to the [live log](#the-live-log) line by line.
 
 ```yaml
-post_agent:
-  name: post-report
-  task: /post-report {{review_file}}
-  posts: true
-  # Clona por padrão: comentário inline precisa do diff para achar a linha.
-```
-
-Uma **pipeline** encadeia agentes pelo nome, na ordem dada, sobre o mesmo clone;
-o relatório sai com uma seção por passo. Passo apontando para agente que não
-existe é ignorado.
-
-### Agentes e skills
-
-Em **config**, na página, cada agente aparece com a skill que a sua `task`
-invoca e se ela está instalada:
-
-```
-review-fleet          ✓ /review-fleet          padrão
-review-fleet-post ⇧   ✓ /review-fleet
-frota-em-série        ✓ /senior-code-reviewer  ✓ /exploit-digger  ✓ /lazy-senior-dev
-post-report           ✗ /post-report           usado ao publicar
-```
-
-O `✗` é o aviso que importa: o agente chama uma skill que **não está na sua
-máquina** e só vai falhar na hora de rodar. Abaixo vem a lista do que está
-instalado de verdade, lida de `~/.claude/skills` (mude com `skills_dir` no
-`config.yaml`) — as skills costumam ser symlinks para o repositório onde você
-as versiona, e o Bazel segue os links.
-
-> Config escrito antes dos agentes nomeados continua valendo: se o
-> `agent.prompt` nunca foi tocado, o Bazel entrega as lentes padrão e a primeira
-> reproduz exatamente o que aquele config já fazia. Prompt customizado fica
-> intocado, e o seletor mostra só ele — as `task` padrão são comandos de skill do
-> Claude Code e não fazem sentido colados no molde de outro agente.
-
-### Trocando de agente
-
-Qualquer executável que leia o prompt no **stdin** e escreva markdown no
-**stdout** serve. Com `checkout: true` ele roda dentro do clone do PR, e o que
-ele escreve vai para o [log ao vivo](#o-log-ao-vivo) linha a linha.
-
-```yaml
-# Claude Code com um modelo específico
+# Claude Code on a specific model
 agent:
   command: claude
   args: ["-p", "--model", "claude-opus-5", "--allowedTools", "Read,Grep,Glob,Bash,Agent"]
@@ -386,41 +406,47 @@ agent:
   args: ["exec", "-"]
 ```
 
-### Placeholders do prompt
+> `claude -p` denies every permission that isn't granted, silently. That is why
+> the default args carry `--allowedTools Read,Grep,Glob,Bash,Agent` — without
+> `Agent` a fleet can't spawn its lenses, without `Bash` none of them can work
+> out the scope. The agent runs in a throwaway clone and review skills are
+> read-only: they report, they don't fix.
 
-`{{task}}`, `{{repo}}`, `{{number}}`, `{{title}}`, `{{author}}`, `{{url}}`,
-`{{branch}}`, `{{base}}`, `{{body}}`, `{{workdir}}`, `{{diff}}`.
+## Environment variables
 
-`{{task}}` é a instrução do agente escolhido — é só ela que muda de uma lente
-para a outra. Molde sem `{{task}}` recebe a instrução na primeira linha.
-
-O `post_agent` ganha mais dois: `{{review_file}}`, o caminho do markdown que
-você leu, e `{{review}}`, o texto dele.
-
-`{{diff}}` é o único que custa uma chamada extra ao GitHub — se ele não estiver
-no template, o diff nem é baixado.
-
-## Variáveis de ambiente
-
-| Variável | Efeito |
+| Variable | Effect |
 | --- | --- |
-| `BAZEL_HOME` | diretório de configuração (padrão `~/.bazel`) |
-| `BAZEL_NO_SPLASH` | desliga a animação de abertura |
-| `NO_COLOR` / `CI` | também desligam a animação |
+| `BAZEL_HOME` | config directory (default `~/.bazel`) |
+| `BAZEL_NO_SPLASH` | disables the opening animation |
+| `NO_COLOR` / `CI` | also disable the animation |
 
-## Desenvolvimento
+## Security model
+
+**Single-user by construction, and the port is local on purpose.** The server
+uses the machine's already-authenticated `gh` — anyone who reaches it can make
+it clone repositories and run an agent with `Bash` enabled. So it listens on
+loopback, rejects a `Host` that isn't local (blocking DNS rebinding) and rejects
+`POST` from another origin (blocking a random tab from firing reviews in your
+name). Don't put this behind a public IP without authentication in front.
+
+## Development
 
 ```sh
-make          # compila em ./bazel
-make run      # sobe a interface web e abre o navegador
-make check    # fmt + vet + test, antes de commitar
-make help     # todos os alvos
+make          # build ./bazel
+make run      # serve the web UI and open the browser
+make check    # fmt + vet + test, before committing
+make help     # every target
 ```
 
-O front (`internal/server/static/`) vai embutido no binário com `go:embed` —
-não tem build step, nem CDN: a página abre offline.
+The front end (`internal/server/static/`) is embedded in the binary with
+`go:embed` — no build step, no CDN: the page works offline.
 
-Os pacotes: `server` (HTTP, fila de jobs, SSE), `agent` (roda os agentes e
-traduz o stream), `config`, `gh` (fala com o `gh`), `workspace` (o clone
-descartável), `store` (reviews salvos e o índice de revisados), `skills`
-(descobre as skills instaladas) e `splash` (o ovo).
+Packages: `server` (HTTP, job queue, SSE), `agent` (runs the agents and
+translates the stream), `config`, `gh` (talks to the `gh` CLI), `workspace` (the
+throwaway clone), `store` (saved reviews and the reviewed index), `skills`
+(discovers installed skills) and `splash` (the egg).
+
+<div align="center">
+<sub>Starting <code>bazel</code> hatches a Bazelgeuse bomb egg that cracks, heats up and detonates into the logo.<br>
+Turn it off with <code>--no-splash</code> or <code>BAZEL_NO_SPLASH=1</code>.</sub>
+</div>

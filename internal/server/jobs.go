@@ -164,6 +164,11 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	if len(choice.Steps) == 0 {
 		choice = m.cfg.DefaultChoice()
 	}
+	// Sem agente nenhum não há review para enfileirar: a lista começa vazia e
+	// é a página que a preenche com as skills instaladas.
+	if len(choice.Steps) == 0 {
+		return jobView{}, config.ErrNoAgents
+	}
 	m.mu.Lock()
 	for _, id := range m.order {
 		j := m.jobs[id]

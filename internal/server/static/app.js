@@ -16,7 +16,10 @@ const state = {
   selected: new Set(),
   scope: 'all',
   filter: '',
+  repoFilter: '',     // '' = todos os repositórios
+  reviewFilter: 'all', // all | none | reviewed | changed
   hideDrafts: false,
+  prsHidden: false,   // lista de PRs recolhida, para ler o review em tela cheia
   tab: 'queue',
   activeJob: null,
   activeSaved: null,
@@ -54,6 +57,24 @@ async function api(path, opts = {}) {
   return body;
 }
 
+// fmtTokens abrevia a contagem do jeito que o servidor abrevia: um review da
+// frota queima milhões de tokens, e "1,8M" se lê melhor que sete dígitos.
+function fmtTokens(n) {
+  if (!n || n < 0) return '0';
+  if (n < 1000) return String(n);
+  const [v, suf] = n < 1e6 ? [n / 1000, 'k'] : [n / 1e6, 'M'];
+  return v.toFixed(1).replace('.0', '').replace('.', ',') + suf;
+}
+
+// gasto é a linha do que o review custou. Agente que não fala stream-json não
+// reporta nada, e aí não há linha nenhuma.
+function gasto(job) {
+  const partes = [];
+  if (job.tokens) partes.push(fmtTokens(job.tokens) + ' tokens');
+  if (job.cost_usd) partes.push('$' + job.cost_usd.toFixed(2));
+  return partes.join(' · ');
+}
+
 function banner(msg) {
   const b = $('#banner');
   if (!msg) { b.hidden = true; return; }
@@ -65,6 +86,11 @@ function banner(msg) {
 
 async function boot() {
   wire();
+  try {
+    togglePRs(!!localStorage.getItem('bazel.prsHidden'));
+  } catch (err) {
+    togglePRs(false);
+  }
   connect();
   try {
     const st = await api('/api/state');
@@ -72,13 +98,13 @@ async function boot() {
     state.jobs = st.jobs || [];
     $('#who').textContent = '@' + st.me;
     $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagente: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nreviews simultâneos: ${st.concurrency}`;
-    state.agents = st.agents || [];
-    const primeiro = selectableAgents()[0];
-    state.agent = primeiro ? primeiro.name : '';
-    renderAgents();
+    applyAgents(st.agents || []);
     state.repos = st.repos || [];
+    renderRepoFilter();
     if (!state.repos.length) {
       banner('Nenhum repositório monitorado — abra "config" no topo e adicione um (owner/repo).');
+    } else if (!selectableAgents().length) {
+      banner('Nenhum agente configurado — abra "config" no topo e monte a sua lista a partir das skills instaladas.');
     }
     renderJobs();
   } catch (err) {
@@ -99,8 +125,10 @@ async function loadPRs(force) {
     banner(state.repoErrors.length
       ? state.repoErrors.map((e) => `⚠ ${e.repo}: ${e.error}`).join('\n')
       : '');
+    // As contagens do filtro por repositório saem daqui, então ele é montado
+    // antes da lista.
+    renderRepoFilter();
     renderPRs();
-    renderStats();
   } catch (err) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'falhou: ' + err.message);
@@ -146,7 +174,7 @@ function upsertJob(job) {
 // --- ações ---
 
 function startReview() {
-  return reviewRefs([...state.selected]);
+  return reviewRefs(markedPRs());
 }
 
 async function reviewRefs(refs) {
@@ -358,19 +386,88 @@ function visiblePRs() {
   const q = state.filter.toLowerCase();
   return state.prs.filter((pr) => {
     if (state.scope === 'mine' && !pr.mine) return false;
+    if (state.repoFilter && pr.repo !== state.repoFilter) return false;
+    if (!matchesReview(pr)) return false;
     if (state.hideDrafts && pr.draft) return false;
     if (!q) return true;
     return `${pr.repo} #${pr.number} ${pr.title} ${pr.author}`.toLowerCase().includes(q);
   });
 }
 
-// renderAgents monta o seletor com os agents e pipelines do config.yaml — a
-// mesma lista que a TUI mostra no enter.
+// markedPRs é o que o botão "revisar" vai rodar: o que está marcado **e**
+// visível. Filtrar não desmarca nada — a marcação fica esperando o filtro
+// sair — mas revisar um PR que saiu da tela seria surpresa.
+function markedPRs() {
+  return visiblePRs().filter((pr) => state.selected.has(pr.key)).map((pr) => pr.key);
+}
+
+// matchesReview separa o que o Bazel já revisou do que ainda não viu. "mudou"
+// é o caso que importa: revisado, e com commit novo depois — o review que
+// está salvo já não é sobre este código.
+function matchesReview(pr) {
+  switch (state.reviewFilter) {
+    case 'none': return !pr.reviewed;
+    case 'reviewed': return !!pr.reviewed && !pr.changed_since_review;
+    case 'changed': return !!pr.changed_since_review;
+    default: return true;
+  }
+}
+
+// renderRepoFilter monta as opções com os repositórios monitorados e quantos
+// PRs cada um tem agora. Com um repositório só o seletor não aparece: não há
+// o que escolher.
+function renderRepoFilter() {
+  const sel = $('#repo-filter');
+  const contagem = new Map();
+  for (const pr of state.prs) contagem.set(pr.repo, (contagem.get(pr.repo) || 0) + 1);
+  // Os monitorados mandam na ordem; um PR de repositório que saiu da lista
+  // ainda aparece, senão ele viraria um filtro impossível de desfazer.
+  const repos = [...new Set([...state.repos, ...contagem.keys()])];
+
+  sel.hidden = repos.length < 2;
+  if (sel.hidden) {
+    if (state.repoFilter) { state.repoFilter = ''; }
+    return;
+  }
+  // O repositório escolhido continua escolhido mesmo que fique sem PR aberto.
+  if (state.repoFilter && !repos.includes(state.repoFilter)) state.repoFilter = '';
+
+  sel.innerHTML = '';
+  const todos = el('option', null, `qualquer repo (${state.prs.length})`);
+  todos.value = '';
+  sel.append(todos);
+  for (const repo of repos) {
+    const o = el('option', null, `${repo} (${contagem.get(repo) || 0})`);
+    o.value = repo;
+    sel.append(o);
+  }
+  sel.value = state.repoFilter;
+  sel.classList.toggle('on', !!state.repoFilter);
+}
+
+// renderAgents monta o seletor com os agents e pipelines do config.yaml.
 // selectableAgents são os que podem revisar. O agente de publicação também
 // vem do servidor — ele aparece na configuração — mas rodar ele sobre um PR
 // sem review pronto não faria nada.
 function selectableAgents() {
   return state.agents.filter((a) => !a.publisher);
+}
+
+// applyAgents guarda a lista que veio do servidor e mantém a escolha do
+// seletor válida: quem foi removido não pode continuar selecionado, e o
+// primeiro da lista é o padrão.
+//
+// adotaPadrao troca a escolha atual pelo novo primeiro. É o que faz o botão
+// "tornar padrão" valer já na próxima revisão: sem isso ele mudaria o arquivo
+// e o seletor continuaria no agente de antes.
+function applyAgents(list, adotaPadrao) {
+  state.agents = list;
+  const opcoes = selectableAgents();
+  if (adotaPadrao || !opcoes.some((a) => a.name === state.agent)) {
+    state.agent = opcoes.length ? opcoes[0].name : '';
+  }
+  renderAgents();
+  updateReviewButton();
 }
 
 function renderAgents() {
@@ -553,9 +650,11 @@ function appendLog(id, lines) {
   if (count) count.textContent = logCountLabel(id);
 }
 
-function logCountLabel(id) {
+// total é o que o servidor diz ter — o painel de um review terminado só busca
+// as linhas quando alguém o abre, e até lá "0 linhas" seria mentira.
+function logCountLabel(id, total) {
   const st = logState(id);
-  const n = st.next;
+  const n = Math.max(st.next, total || 0);
   const agentes = st.agents.length;
   return `${n} linha${n === 1 ? '' : 's'}`
     + (agentes > 1 ? ` · ${agentes} agentes` : '')
@@ -566,7 +665,7 @@ function logPanel(job, open) {
   const wrap = el('details', 'log-panel');
   wrap.open = open;
   const sum = el('summary');
-  const count = el('span', 'dim', logCountLabel(job.id));
+  const count = el('span', 'dim', logCountLabel(job.id, job.log_lines));
   count.id = 'log-count';
   sum.append(el('span', null, 'log dos agentes'), document.createTextNode(' · '), count);
 
@@ -578,8 +677,14 @@ function logPanel(job, open) {
 
 function renderStats() {
   const total = state.prs.length;
-  const marked = state.selected.size;
-  $('#stats').textContent = `${total} PR${total === 1 ? '' : 's'}` + (marked ? ` · ${marked} marcado${marked === 1 ? '' : 's'}` : '');
+  const shown = visiblePRs().length;
+  const marked = markedPRs().length;
+  // Com filtro ligado o número que interessa é o do recorte — mas o total
+  // continua à vista, senão some a pista de que há um filtro escondendo PR.
+  const conta = shown === total
+    ? `${total} PR${total === 1 ? '' : 's'}`
+    : `${shown} de ${total} PRs`;
+  $('#stats').textContent = conta + (marked ? ` · ${marked} marcado${marked === 1 ? '' : 's'}` : '');
 }
 
 function renderPRs() {
@@ -653,10 +758,30 @@ function toggle(key, on) {
 }
 
 function updateReviewButton() {
-  const n = state.selected.size;
+  const n = markedPRs().length;
   const btn = $('#review');
-  btn.disabled = n === 0;
+  const semAgente = !selectableAgents().length;
+  btn.disabled = n === 0 || semAgente;
+  btn.title = semAgente
+    ? 'nenhum agente configurado — abra "config" e monte a lista a partir das suas skills'
+    : 'roda o agente escolhido sobre os PRs marcados';
   btn.textContent = n > 1 ? `revisar ${n}` : 'revisar';
+}
+
+// togglePRs recolhe a lista da esquerda até a faixa do hambúrguer e a traz de
+// volta. É o que dá a tela inteira ao review, e a escolha fica guardada no
+// navegador — recolher de novo a cada aba aberta seria trabalho repetido.
+function togglePRs(hide) {
+  state.prsHidden = hide;
+  document.querySelector('main').classList.toggle('no-prs', hide);
+  const b = $('#toggle-prs');
+  b.title = hide ? 'mostrar a lista de PRs' : 'esconder a lista (deixa o review em tela cheia)';
+  b.setAttribute('aria-expanded', hide ? 'false' : 'true');
+  try {
+    localStorage.setItem('bazel.prsHidden', hide ? '1' : '');
+  } catch (err) {
+    // Navegador sem storage: a escolha vale só para esta sessão.
+  }
 }
 
 function renderTabs() {
@@ -664,9 +789,24 @@ function renderTabs() {
   if (state.tab === 'saved') loadSaved(); else renderJobs();
 }
 
+// renderSpend soma o que os reviews desta sessão consumiram. Fica na barra de
+// cima porque é a pergunta que se faz sem abrir nada: quanto já custou.
+function renderSpend() {
+  const tokens = state.jobs.reduce((n, j) => n + (j.tokens || 0), 0);
+  const cost = state.jobs.reduce((n, j) => n + (j.cost_usd || 0), 0);
+  const box = $('#spend');
+  if (!tokens && !cost) { box.hidden = true; return; }
+  box.hidden = false;
+  box.textContent = [tokens ? fmtTokens(tokens) + ' tokens' : '', cost ? '$' + cost.toFixed(2) : '']
+    .filter(Boolean).join(' · ');
+  const n = state.jobs.filter((j) => j.tokens || j.cost_usd).length;
+  box.title = `gasto de ${n} review${n === 1 ? '' : 's'} nesta sessão`;
+}
+
 function renderJobs() {
   const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
   $('#queue-count').textContent = String(state.jobs.length);
+  renderSpend();
   document.title = active ? `(${active}) Bazel` : 'Bazel';
   if (state.tab !== 'queue') return;
 
@@ -689,6 +829,8 @@ function renderJobs() {
       who.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
       if (job.publishing) who.append(el('span', 'tag posts', '⇧ publicando'));
       else if (job.posts) who.append(el('span', 'tag posts', '⇧ publica'));
+      const custo = gasto(job);
+      if (custo) who.append(el('span', 'tokens', custo));
       card.append(who);
     }
     if (job.cloning || (job.steps && job.steps.length > 1)) card.append(stepsBox(job));
@@ -881,6 +1023,14 @@ function renderViewer() {
   if (job.truncated) foot.textContent += ' · diff truncado';
   if (job.post_error) v.append(el('div', 'error-box', 'falha ao publicar: ' + job.post_error));
   v.append(foot);
+
+  // O que o review custou, no fim dele — é onde você chega depois de ler.
+  const custo = gasto(job);
+  if (custo) {
+    const linha = el('p', 'dim tokens-foot', custo + ' · ' + jobSeconds(job) + 's');
+    linha.title = 'tokens que os agentes deste review consumiram, sub-agentes incluídos';
+    v.append(linha);
+  }
   v.scrollTop = 0;
 }
 
@@ -905,6 +1055,17 @@ function wire() {
     if (active.state === 'running' && logState(active.id).live && $('#log-terms')) pollLog(active.id);
   }, 1000);
   $('#filter').addEventListener('input', (e) => { state.filter = e.target.value; renderPRs(); });
+  $('#repo-filter').addEventListener('change', (e) => {
+    state.repoFilter = e.target.value;
+    e.target.classList.toggle('on', !!state.repoFilter);
+    renderPRs();
+  });
+  $('#review-filter').addEventListener('change', (e) => {
+    state.reviewFilter = e.target.value;
+    e.target.classList.toggle('on', state.reviewFilter !== 'all');
+    renderPRs();
+  });
+  $('#toggle-prs').addEventListener('click', () => togglePRs(!state.prsHidden));
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
   $('#select-all').addEventListener('change', (e) => {
     state.selected.clear();
@@ -932,12 +1093,18 @@ function wire() {
   });
 }
 
-// renderAgentList mostra, na configuração, cada agente e a skill que ele
-// invoca — com o aviso quando essa skill não está instalada. Um agente que
-// chama uma skill que você não tem só falha na hora de rodar.
+// renderAgentList é a lista de agentes da configuração: o que cada um chama,
+// se a skill está instalada, quem é o padrão e o botão de tirar da lista.
+//
+// A lista começa vazia de propósito — é você que a monta, na seção de baixo, a
+// partir das skills que estão instaladas nesta máquina.
 function renderAgentList() {
   const box = $('#agent-list');
   box.innerHTML = '';
+  const meus = state.agents.filter((a) => !a.publisher);
+  if (!meus.length) {
+    box.append(el('p', 'none', 'nenhum agente ainda — escolha abaixo, nas skills instaladas, quais viram agente.'));
+  }
   for (const a of state.agents) {
     const row = el('div', 'agent-row');
 
@@ -947,6 +1114,21 @@ function renderAgentList() {
     if (a.posts) top.append(el('span', 'tag posts', '⇧ publica'));
     if (a.publisher) top.append(el('span', 'tag', 'usado ao publicar'));
     else if (state.agent === a.name) top.append(el('span', 'tag mine', 'padrão'));
+
+    // O agente de publicação não é uma escolha da lista: ele é o que roda
+    // quando você manda publicar um review já lido, e não sai daqui.
+    if (!a.publisher) {
+      top.append(el('div', 'spacer'));
+      if (state.agent !== a.name) {
+        const d = el('button', 'btn small ghost', 'tornar padrão');
+        d.title = 'passa a ser o agente que já vem escolhido no seletor';
+        d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
+        top.append(d);
+      }
+      const rm = el('button', 'btn small ghost', 'remover');
+      rm.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name), 'DELETE', rm));
+      top.append(rm);
+    }
     row.append(top);
 
     if (a.description) row.append(el('div', 'agent-desc', a.description));
@@ -968,24 +1150,64 @@ function renderAgentList() {
   }
 }
 
-// renderSkillList mostra o que está instalado de fato — a lista que manda.
+// agentAction manda a mudança e redesenha tudo que depende da lista: o
+// seletor, a configuração e o yaml em disco, que também mudou.
+async function agentAction(path, method, btn, body) {
+  btn.disabled = true;
+  try {
+    const res = await api(path, body ? { method, body: JSON.stringify(body) } : { method });
+    applyAgents(res.agents || [], path.endsWith('/default'));
+    // Esvaziar a lista de novo é voltar ao estado inicial: sem agente não há
+    // review, e quem está com a configuração aberta precisa saber.
+    banner(selectableAgents().length ? '' : 'Nenhum agente configurado — escolha abaixo quais skills viram agente.');
+    await refreshConfig();
+  } catch (err) {
+    banner(err.message);
+    btn.disabled = false;
+  }
+}
+
+// renderSkillList mostra o que está instalado de fato — a lista que manda, e
+// de onde saem os agentes. Cada skill vira um agente com um clique: "usar" é a
+// lente que você lê antes de publicar, "⇧ publica" é a que vai direto ao PR.
 function renderSkillList() {
   const box = $('#skill-list');
   box.innerHTML = '';
   $('#skills-dir').textContent = state.skillsDir ? '· ' + state.skillsDir : '';
   if (!state.skills.length) {
-    box.append(el('p', 'none', `nada em ${state.skillsDir || '~/.claude/skills'} — os agentes que chamam skill não vão rodar.`));
+    box.append(el('p', 'none', `nada em ${state.skillsDir || '~/.claude/skills'} — sem skill instalada não há agente para montar.`));
     return;
   }
-  // As que algum agente usa vêm primeiro: são as que importam aqui.
+  // As que já viraram agente vêm primeiro: são as que importam aqui.
   const usadas = new Set();
   for (const a of state.agents) for (const sk of a.skills || []) usadas.add(sk.name);
+  // Só os agentes da lista contam para "já está lá": o de publicação não é
+  // uma escolha do seletor, e é o que o servidor também ignora ao adicionar.
+  const nomes = new Set(state.agents.filter((a) => !a.publisher).map((a) => a.name));
   const ordenadas = [...state.skills].sort((x, y) => (usadas.has(y.name) ? 1 : 0) - (usadas.has(x.name) ? 1 : 0));
 
   for (const sk of ordenadas) {
     const row = el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : ''));
     row.append(el('span', 'skill-name', '/' + sk.name));
     row.append(el('span', 'skill-desc', sk.description || ''));
+
+    const acoes = el('span', 'skill-actions');
+    const add = (rotulo, posts, dica) => {
+      const nome = posts ? sk.name + '-post' : sk.name;
+      const b = el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo);
+      if (nomes.has(nome)) {
+        b.disabled = true;
+        b.title = `${nome} já está na lista de agentes`;
+      } else {
+        b.title = dica;
+        b.addEventListener('click', () => agentAction('/api/agents', 'POST', b, { skill: sk.name, posts }));
+      }
+      acoes.append(b);
+    };
+    add('usar', false, `vira o agente ${sk.name}: roda /${sk.name} no PR e devolve o review para você ler`);
+    add('⇧ publica', true, `vira o agente ${sk.name}-post: roda /${sk.name} --post e publica o review direto no PR`);
+    row.append(acoes);
+
     box.append(row);
   }
 }
@@ -1001,6 +1223,14 @@ async function loadSkills() {
 }
 
 async function showConfig() {
+  await refreshConfig();
+  $('#modal').hidden = false;
+}
+
+// refreshConfig redesenha a configuração inteira a partir do disco. É chamada
+// ao abrir e depois de cada mudança na lista de agentes — o yaml na tela é o
+// arquivo, e ele acabou de mudar.
+async function refreshConfig() {
   try {
     const cfg = await api('/api/config');
     $('#config-path').textContent = cfg.path;
@@ -1012,7 +1242,6 @@ async function showConfig() {
   await loadSkills();
   renderAgentList();
   renderSkillList();
-  $('#modal').hidden = false;
 }
 
 function renderRepos() {

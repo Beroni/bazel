@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -482,8 +483,17 @@ func TestLogWindowDropsOldest(t *testing.T) {
 // existe é recusado antes de virar job.
 func TestStateListsAgentsAndReviewRejectsUnknown(t *testing.T) {
 	cfg := cfgFor(t, "cat")
-	cfg.Agents = config.Default().Agents
-	cfg.Pipelines = config.Default().Pipelines
+	// A lista de um config novo é vazia; esta é a que o usuário montaria na
+	// página a partir das skills instaladas.
+	cfg.Agents = []config.AgentDef{
+		{Name: "review-fleet", Task: "/review-fleet {{number}}"},
+		{Name: "exploit-digger", Task: "/exploit-digger {{number}}"},
+		{Name: "lazy-senior-dev", Task: "/lazy-senior-dev {{number}}"},
+	}
+	cfg.Pipelines = []config.Pipeline{{
+		Name:  "frota-em-série",
+		Steps: []string{"review-fleet", "exploit-digger", "lazy-senior-dev"},
+	}}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -622,5 +632,189 @@ func TestRenderMarkdownSanitizes(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("faltou %q no HTML:\n%s", want, got)
 		}
+	}
+}
+
+// A lista de agentes começa vazia e é montada na página, a partir das skills
+// instaladas: adicionar, trocar o padrão e remover são três chamadas, e cada
+// uma devolve a lista inteira já redesenhada.
+func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home) // o Save não pode encostar no ~/.bazel de verdade
+
+	skillsDir := t.TempDir()
+	for _, s := range []struct{ nome, desc string }{
+		{"review-fleet", "Roda uma frota de lentes sobre o mesmo diff. Use para revisar um PR a fundo."},
+		{"lazy-senior-dev", "Caça over-engineering num diff"},
+	} {
+		dir := filepath.Join(skillsDir, s.nome)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nname: " + s.nome + "\ndescription: " + s.desc + "\n---\n"
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Default()
+	cfg.SkillsDir = skillsDir
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h := srv.Handler()
+
+	call := func(method, path, body string) (*httptest.ResponseRecorder, []agentePayload) {
+		t.Helper()
+		var r *http.Request
+		if body == "" {
+			r = httptest.NewRequest(method, "http://127.0.0.1"+path, nil)
+		} else {
+			r = httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
+		}
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, r)
+		var out struct {
+			Agents []agentePayload `json:"agents"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec, out.Agents
+	}
+
+	// Começa vazia: só o agente de publicação, que não é escolha do seletor.
+	_, lista := call(http.MethodGet, "/api/agents", "")
+	if len(lista) != 1 || !lista[0].Publisher {
+		t.Fatalf("a lista devia começar vazia: %+v", lista)
+	}
+
+	rec, lista := call(http.MethodPost, "/api/agents", `{"skill":"review-fleet"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("adicionar devia dar 201, deu %d: %s", rec.Code, rec.Body)
+	}
+	if len(lista) != 2 || lista[0].Name != "review-fleet" || lista[0].Posts {
+		t.Fatalf("o agente da skill devia entrar na lista: %+v", lista)
+	}
+	// A descrição sai do frontmatter da skill, cortada na primeira frase.
+	if lista[0].Description != "Roda uma frota de lentes sobre o mesmo diff" {
+		t.Errorf("descrição inesperada: %q", lista[0].Description)
+	}
+	if len(lista[0].Skills) != 1 || !lista[0].Skills[0].Installed {
+		t.Errorf("o agente devia declarar a skill instalada que chama: %+v", lista[0].Skills)
+	}
+
+	// A mesma skill de novo é recusada; a variante que publica sozinha entra
+	// com outro nome.
+	if rec, _ := call(http.MethodPost, "/api/agents", `{"skill":"review-fleet"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("agente repetido devia dar 400, deu %d", rec.Code)
+	}
+	_, lista = call(http.MethodPost, "/api/agents", `{"skill":"review-fleet","posts":true}`)
+	if len(lista) != 3 || lista[1].Name != "review-fleet-post" || !lista[1].Posts {
+		t.Fatalf("a variante que publica devia entrar marcada: %+v", lista)
+	}
+
+	// Skill que não está na máquina não vira agente: isso só falharia na hora
+	// de rodar, que é tarde demais.
+	rec, _ = call(http.MethodPost, "/api/agents", `{"skill":"nao-instalada"}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "não está instalada") {
+		t.Errorf("skill ausente devia dar 400 explicando: %d %s", rec.Code, rec.Body)
+	}
+
+	// Trocar o padrão é reordenar: o primeiro da lista é quem roda.
+	_, lista = call(http.MethodPost, "/api/agents/review-fleet-post/default", "")
+	if lista[0].Name != "review-fleet-post" {
+		t.Errorf("o padrão devia ir para a frente: %+v", lista)
+	}
+	_, lista = call(http.MethodDelete, "/api/agents/review-fleet-post", "")
+	if len(lista) != 2 || lista[0].Name != "review-fleet" {
+		t.Errorf("remover devia tirar da lista: %+v", lista)
+	}
+
+	// E tudo isso está no config.yaml, que é o que sobrevive ao restart.
+	yaml, err := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err != nil {
+		t.Fatalf("o config devia ter sido salvo: %v", err)
+	}
+	if !strings.Contains(string(yaml), "/review-fleet {{number}}") {
+		t.Errorf("a task do agente devia estar no arquivo:\n%s", yaml)
+	}
+}
+
+// agentePayload é o agente como a página o recebe.
+type agentePayload struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Posts       bool   `json:"posts"`
+	Publisher   bool   `json:"publisher"`
+	Skills      []struct {
+		Name      string `json:"name"`
+		Installed bool   `json:"installed"`
+	} `json:"skills"`
+}
+
+// Sem agente nenhum não há review para enfileirar — e a página recebe o
+// porquê, não um 500 seco.
+func TestReviewSemAgenteConfigurado(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := config.Default()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/reviews",
+		strings.NewReader(`{"refs":["acme/api-core#482"]}`))
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("sem agente devia dar 400, deu %d: %s", rec.Code, rec.Body)
+	}
+	if !strings.Contains(rec.Body.String(), "nenhum agente configurado") {
+		t.Errorf("o erro devia dizer o que fazer: %s", rec.Body)
+	}
+}
+
+// O gasto do agente chega à página: o que o evento final do stream-json diz
+// vira os tokens e o custo do job, que é o que aparece no fim do review.
+func TestJobViewLevaOGastoDeTokens(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "sh")
+	events := `{"type":"result","subtype":"success","result":"# Veredito\n\nOK.","duration_ms":9000,` +
+		`"total_cost_usd":0.42,"usage":{"input_tokens":1200,"output_tokens":8000,` +
+		`"cache_creation_input_tokens":4000,"cache_read_input_tokens":20000}}`
+	// As flags de formato vão depois do script: para o `sh` são posicionais,
+	// e para o Bazel são o que liga a leitura do stream.
+	cfg.Agent.Args = []string{"-c", "cat <<'FIM'\n" + events + "\nFIM\n", "sh", "--output-format", "stream-json"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Tokens != 33200 {
+		t.Errorf("o job devia somar 33200 tokens, veio %d", done.Tokens)
+	}
+	if done.Cost != 0.42 {
+		t.Errorf("o custo devia chegar junto, veio %v", done.Cost)
+	}
+	// E fica no review salvo: quem abrir o arquivo depois vê o que custou.
+	saved, err := os.ReadFile(done.SavedTo)
+	if err != nil {
+		t.Fatalf("lendo review salvo: %v", err)
+	}
+	if !strings.Contains(string(saved), "- Gasto: 33,2k tokens") {
+		t.Errorf("o review salvo devia registrar o gasto:\n%s", saved)
 	}
 }

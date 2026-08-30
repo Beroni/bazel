@@ -38,6 +38,9 @@ body {
 .logo { width: 26px; height: 26px; }
 .logo.big { width: 128px; height: 128px; margin: 0 auto 20px; }
 .stats { color: var(--dim); font-size: 12px; }
+/* O gasto da sessão fica ao lado da contagem de PRs: é o número que responde
+   "quanto isso me custou hoje" sem abrir review nenhum. */
+.spend { font-variant-numeric: tabular-nums; padding-left: 12px; border-left: 1px solid var(--line); }
 .who { color: var(--dim); font-size: 12px; }
 .spacer { flex: 1; }
 
@@ -63,13 +66,26 @@ button, input[type=search], input[type=text] { font: inherit; }
 
 /* --- layout --- */
 main { flex: 1; display: flex; min-height: 0; }
+/* Lista escondida: ela encolhe até virar uma faixa com o hambúrguer, e o
+   review ocupa o resto da tela. O botão continua onde sempre esteve — some a
+   lista, não o controle dela. */
+main.no-prs > .prs { width: 42px; }
+main.no-prs .prs > *:not(.pane-head) { display: none; }
+main.no-prs .pane-head { padding: 8px 6px; border-bottom: 0; }
+main.no-prs .pane-head > *:not(:first-child) { display: none; }
+main.no-prs .pane-head > :first-child > *:not(.burger) { display: none; }
+/* O convite a "marcar um PR à esquerda" some com a lista — apontaria para uma
+   faixa de 42px — e dá lugar ao aviso de como trazê-la de volta. */
+.only-collapsed { display: none; }
+main.no-prs .only-collapsed { display: block; }
+main.no-prs .placeholder > p:first-of-type { display: none; }
 .pane { display: flex; flex-direction: column; min-height: 0; }
 .prs { width: 400px; flex: none; border-right: 1px solid var(--line); background: var(--panel); }
 .main { flex: 1; min-width: 0; }
 
 .pane-head { padding: 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
 .pane-head input[type=search] {
-  width: 100%; padding: 6px 9px; border-radius: 6px;
+  flex: 1; min-width: 0; padding: 6px 9px; border-radius: 6px;
   background: var(--bg); border: 1px solid var(--line); color: var(--text);
 }
 .pane-head input[type=search]:focus { outline: none; border-color: var(--accent); }
@@ -79,6 +95,7 @@ main { flex: 1; display: flex; min-height: 0; }
 .segmented button.on { background: var(--panel-2); color: var(--accent); }
 .check { display: flex; align-items: center; gap: 6px; color: var(--dim); cursor: pointer; }
 .check.tiny { font-size: 12px; }
+p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .check input { accent-color: var(--accent); }
 
 .pane-foot {
@@ -210,18 +227,44 @@ main { flex: 1; display: flex; min-height: 0; }
 @media (max-width: 900px) {
   main { flex-direction: column; }
   .prs { width: auto; max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  /* Empilhada, a lista recolhida vira uma faixa horizontal — largura fixa aqui
+     seria uma coluna de 42px em cima do review. */
+  main.no-prs > .prs { width: auto; max-height: none; }
   .viewer { padding: 18px; }
 }
 
-/* --- seletor de agente --- */
-select#agent {
+/* --- hambúrguer da lista --- */
+/* Recolher a lista é uma ação da lista: o botão fica nela, não na barra de
+   cima, e continua visível na faixa que sobra. */
+.burger {
+  flex: none; width: 30px; height: 30px; padding: 0;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
+  background: transparent; border: 1px solid var(--line); border-radius: 6px; cursor: pointer;
+}
+.burger span { display: block; width: 14px; height: 1.5px; background: var(--dim); border-radius: 1px; }
+.burger:hover { border-color: var(--accent); }
+.burger:hover span { background: var(--accent); }
+.burger:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+/* Recolhida, ela é o único elemento da faixa: centralizada e um pouco maior,
+   porque vira o alvo de clique de uma coluna inteira. */
+main.no-prs .burger { width: 30px; margin: 0 auto; border-color: var(--accent); }
+main.no-prs .burger span { background: var(--accent); }
+
+/* --- seletores --- */
+/* Os dois filtros dividem a linha em partes iguais; o nome do repositório é
+   longo e o que sobra é cortado com reticências pelo próprio <select>. */
+.pane-head select { flex: 1; min-width: 0; }
+.pane-head select, select#agent {
   font: inherit; font-size: 12px;
   background: var(--panel-2); color: var(--text);
   border: 1px solid var(--line); border-radius: 6px;
   padding: 5px 8px; min-width: 0; max-width: 150px; cursor: pointer;
 }
-select#agent:hover { border-color: var(--accent); }
-select#agent:focus { outline: none; border-color: var(--accent); }
+.pane-head select:hover, select#agent:hover { border-color: var(--accent); }
+.pane-head select:focus, select#agent:focus { outline: none; border-color: var(--accent); }
+/* Filtro ligado fica visivelmente ligado: senão a lista some e não se sabe
+   por quê. */
+.pane-head select.on { border-color: var(--accent); color: var(--accent); }
 
 /* --- passos do review --- */
 /* Um passo por agente da escolha: é o que mostra qual lente está rodando
@@ -330,4 +373,13 @@ select#agent:focus { outline: none; border-color: var(--accent); }
 .skill-row.on { background: var(--panel-2); }
 .skill-row.on .skill-name { color: var(--accent); }
 .skill-name { flex: none; width: 170px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.skill-desc { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-desc { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Os botões que transformam a skill em agente. Ficam à direita da linha e só
+   aparecem inteiros no hover — a lista é longa e o que se lê nela é o nome. */
+.skill-actions { flex: none; display: flex; gap: 6px; align-items: center; opacity: .35; transition: opacity .12s; }
+.skill-row:hover .skill-actions, .skill-actions:focus-within { opacity: 1; }
+.skill-actions .btn { padding: 1px 7px; font-size: 11px; }
+
+/* O gasto do review: tokens e custo, no card e no fim do relatório. */
+.tokens { color: var(--dim); font-variant-numeric: tabular-nums; }
+.tokens-foot { margin-top: 6px; font-variant-numeric: tabular-nums; }

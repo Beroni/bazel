@@ -2,6 +2,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -177,25 +178,6 @@ PR: {{title}} — @{{author}}
 
 Devolva no stdout o que foi publicado, em markdown.`
 
-// legacyPrompt é o molde que o `bazel init` gravava antes de existirem os
-// agents nomeados, com o /review-fleet colado nele. Reconhecê-lo é o que
-// permite entregar a lista de agents padrão a quem nunca mexeu no prompt —
-// quem mexeu fica com o dele, e o seletor mostra só isso.
-const legacyPrompt = "/review-fleet {{number}}" + `
-
-O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
-#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
-É um clone temporário e descartável: leia à vontade, mas não edite arquivos,
-não commite e não publique nada no GitHub.
-
-PR: {{title}} — @{{author}}
-{{url}}
-
-Descrição do PR:
-{{body}}
-
-Devolva no stdout só o relatório final da frota, em markdown.`
-
 // defaultArgs são os args do `claude`. O --output-format stream-json é o que
 // faz o agente narrar o que está fazendo enquanto trabalha, em vez de ficar
 // mudo até o relatório sair — é dele que vem o log ao vivo da interface web.
@@ -212,40 +194,6 @@ func legacyArgs() []string {
 	return []string{"-p", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
 }
 
-// defaultAgents são as lentes que aparecem no seletor de um config novo. A
-// primeira é a padrão: é ela que roda quando ninguém escolhe nada.
-func defaultAgents() []AgentDef {
-	return []AgentDef{
-		{
-			Name:        "review-fleet",
-			Description: "as três lentes, dedup e veredito único — você lê e decide se publica",
-			Task:        "/review-fleet {{number}}",
-		},
-		{
-			Name:        "review-fleet-post",
-			Description: "as três lentes e publica direto no PR, sem passar pela sua leitura",
-			Task:        "/review-fleet {{number}} --post",
-			Prompt:      postPrompt,
-			Posts:       true,
-		},
-		{
-			Name:        "senior-code-reviewer",
-			Description: "precisão: poucos achados, só o que se defende com confiança 8+",
-			Task:        "/senior-code-reviewer {{number}}",
-		},
-		{
-			Name:        "exploit-digger",
-			Description: "recall adversarial: caça bug e brecha classe por classe",
-			Task:        "/exploit-digger {{number}}",
-		},
-		{
-			Name:        "lazy-senior-dev",
-			Description: "subtração: caça over-engineering e corta linhas",
-			Task:        "/lazy-senior-dev {{number}}",
-		},
-	}
-}
-
 // defaultPostAgent é quem publica um review já lido.
 func defaultPostAgent() AgentDef {
 	return AgentDef{
@@ -255,15 +203,6 @@ func defaultPostAgent() AgentDef {
 		Prompt:      publishPrompt,
 		Posts:       true,
 	}
-}
-
-// defaultPipelines encadeiam agents sobre o mesmo clone.
-func defaultPipelines() []Pipeline {
-	return []Pipeline{{
-		Name:        "frota-em-série",
-		Description: "as três lentes uma de cada vez, cada uma no próprio processo",
-		Steps:       []string{"senior-code-reviewer", "exploit-digger", "lazy-senior-dev"},
-	}}
 }
 
 // Default devolve a configuração inicial usada pelo "bazel init".
@@ -281,8 +220,10 @@ func Default() *Config {
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
 		},
-		Agents:    defaultAgents(),
-		Pipelines: defaultPipelines(),
+		// Agents e Pipelines nascem vazios de propósito: quem monta a lista é
+		// você, na página, a partir das skills que estão instaladas na sua
+		// máquina. Uma lista de fábrica só acertaria por coincidência — ela
+		// apontaria para skills que este computador pode nunca ter tido.
 		PostAgent: defaultPostAgent(),
 	}
 }
@@ -323,10 +264,6 @@ func Load() (*Config, error) {
 	}
 
 	cfg := Default()
-	// Agents e pipelines são backfill, não merge: o yaml só sobrescreve uma
-	// lista se ela vier no arquivo, então zerá-las aqui é o que distingue
-	// "não configurou" de "configurou assim" logo abaixo.
-	cfg.Agents, cfg.Pipelines = nil, nil
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("config inválido (%s): %w", path, err)
 	}
@@ -335,18 +272,6 @@ func Load() (*Config, error) {
 	}
 	if strings.TrimSpace(cfg.Agent.Prompt) == "" {
 		cfg.Agent.Prompt = defaultPrompt
-	}
-	// Config escrito antes dos agents nomeados: se o prompt nunca foi tocado,
-	// o seletor ganha as lentes padrão — a primeira delas reproduz exatamente
-	// o que esse config já fazia. Prompt customizado fica intocado, e o
-	// seletor mostra só ele: as tasks padrão são comandos de skill do Claude
-	// Code e não fazem sentido colados num molde de outro agente.
-	if len(cfg.Agents) == 0 && isDefaultPrompt(cfg.Agent.Prompt) {
-		cfg.Agent.Prompt = defaultPrompt
-		cfg.Agents = defaultAgents()
-		if len(cfg.Pipelines) == 0 {
-			cfg.Pipelines = defaultPipelines()
-		}
 	}
 	// Mesma ideia para os args: quem está com os de fábrica antigos ganha o
 	// --output-format stream-json, que é o que acende o log ao vivo. Args
@@ -452,6 +377,77 @@ func (c *Config) RemoveRepo(repo string) bool {
 
 // --- agents e pipelines ---
 
+// ErrNoAgents é o que sai quando ainda não há agente nenhum na configuração.
+// Um config novo começa assim: a lista é montada na página, a partir das
+// skills que o Claude Code tem instaladas nesta máquina.
+var ErrNoAgents = errors.New("nenhum agente configurado — abra a configuração e adicione um a partir das suas skills")
+
+// AddAgentFromSkill acrescenta um agente que roda uma skill do Claude Code
+// sobre o PR. É por aqui que a lista vazia de um config novo é preenchida: o
+// nome do agente é o da skill, e a task é a invocação dela com o número do PR.
+//
+// Com posts, o agente publica o review sozinho: a task ganha o --post e o
+// molde do prompt passa a ser o que autoriza escrever no GitHub.
+func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (AgentDef, error) {
+	skill = strings.TrimPrefix(strings.TrimSpace(skill), "/")
+	if skill == "" {
+		return AgentDef{}, errors.New("skill sem nome")
+	}
+	if strings.ContainsAny(skill, " \t\n/") {
+		return AgentDef{}, fmt.Errorf("%q não é nome de skill", skill)
+	}
+	def := AgentDef{
+		Name:        skill,
+		Description: strings.TrimSpace(description),
+		Task:        "/" + skill + " {{number}}",
+	}
+	if posts {
+		// O sufixo é o que deixa os dois conviverem na lista: a mesma skill
+		// pode virar um agente que você lê e outro que publica sozinho.
+		def.Name = skill + "-post"
+		def.Task += " --post"
+		def.Prompt = postPrompt
+		def.Posts = true
+	}
+	for _, a := range c.Agents {
+		if strings.EqualFold(strings.TrimSpace(a.Name), def.Name) {
+			return AgentDef{}, fmt.Errorf("o agente %q já está na lista", def.Name)
+		}
+	}
+	c.Agents = append(c.Agents, def)
+	return def, nil
+}
+
+// RemoveAgent tira um agente da lista. Pipeline que apontava para ele continua
+// valendo pelo resto dos passos — é o mesmo tratamento que ela já dá a um
+// passo desconhecido.
+func (c *Config) RemoveAgent(name string) bool {
+	name = strings.TrimSpace(name)
+	for i, a := range c.Agents {
+		if strings.EqualFold(strings.TrimSpace(a.Name), name) {
+			c.Agents = append(c.Agents[:i], c.Agents[i+1:]...)
+			return true
+		}
+	}
+	return false
+}
+
+// SetDefaultAgent move um agente para o começo da lista, que é o mesmo que
+// torná-lo o padrão: é a primeira escolha que roda quando ninguém escolhe.
+func (c *Config) SetDefaultAgent(name string) bool {
+	name = strings.TrimSpace(name)
+	for i, a := range c.Agents {
+		if !strings.EqualFold(strings.TrimSpace(a.Name), name) {
+			continue
+		}
+		def := c.Agents[i]
+		c.Agents = append(c.Agents[:i], c.Agents[i+1:]...)
+		c.Agents = append([]AgentDef{def}, c.Agents...)
+		return true
+	}
+	return false
+}
+
 // sameArgs compara duas listas de argumentos.
 func sameArgs(a, b []string) bool {
 	if len(a) != len(b) {
@@ -465,19 +461,29 @@ func sameArgs(a, b []string) bool {
 	return true
 }
 
-// isDefaultPrompt diz se o molde é um dos que o próprio Bazel escreveu.
-func isDefaultPrompt(p string) bool {
-	p = strings.TrimSpace(p)
-	return p == strings.TrimSpace(defaultPrompt) || p == strings.TrimSpace(legacyPrompt)
+// promptNeedsTask diz se o molde é o de fábrica — uma casca em volta do
+// {{task}} de um agente. Sozinho ele não pede nada: quem manda no review é o
+// agente que preenche esse buraco.
+func promptNeedsTask(p string) bool {
+	return strings.TrimSpace(p) == strings.TrimSpace(defaultPrompt)
 }
 
 // Choices é o que o seletor mostra antes do review: primeiro os agents
 // nomeados, depois as pipelines. A primeira da lista é a padrão.
 //
-// Sem `agents:` no config.yaml sobra uma escolha só — o bloco `agent` puro,
-// que é como o Bazel se comportava antes de existir seletor.
+// A lista começa vazia num config novo: é a página que a preenche, a partir
+// das skills que o Claude Code tem instaladas nesta máquina. Sem `agents:` e
+// com um `agent.prompt` seu, sobra uma escolha só — o bloco `agent` puro, que
+// é como o Bazel se comportava antes de existir seletor.
 func (c *Config) Choices() []Choice {
 	if len(c.Agents) == 0 {
+		// Lista vazia é o estado inicial: os agents são adicionados na página,
+		// a partir das skills instaladas. Quem escreveu o próprio
+		// `agent.prompt` continua tendo o que rodar sem eles — o de fábrica,
+		// não: sem {{task}} preenchido ele não pede review nenhum.
+		if promptNeedsTask(c.Agent.Prompt) {
+			return nil
+		}
 		return []Choice{c.baseChoice()}
 	}
 
@@ -529,11 +535,12 @@ func (c *Config) Choices() []Choice {
 	return out
 }
 
-// DefaultChoice é a que roda quando ninguém escolhe: a primeira da lista.
+// DefaultChoice é a que roda quando ninguém escolhe: a primeira da lista. Sem
+// nenhum agente configurado ela vem vazia, e quem for rodá-la reclama.
 func (c *Config) DefaultChoice() Choice {
 	choices := c.Choices()
 	if len(choices) == 0 {
-		return c.baseChoice()
+		return Choice{}
 	}
 	return choices[0]
 }
@@ -546,6 +553,9 @@ func (c *Config) ChoiceByName(name string) (Choice, error) {
 		if strings.EqualFold(ch.Name, name) {
 			return ch, nil
 		}
+	}
+	if len(choices) == 0 {
+		return Choice{}, ErrNoAgents
 	}
 	names := make([]string, 0, len(choices))
 	for _, ch := range choices {

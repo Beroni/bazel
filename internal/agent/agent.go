@@ -54,7 +54,9 @@ type StepResult struct {
 	Name     string
 	Body     string
 	Duration time.Duration
-	Err      error
+	// Usage é o que este passo gastou de modelo.
+	Usage Usage
+	Err   error
 }
 
 // Result é a saída de um review.
@@ -66,8 +68,10 @@ type Result struct {
 	// publicar de novo por cima precisa saber.
 	Posts bool
 	// Body é o relatório: a saída do passo único, ou os passos concatenados.
-	Body      string
-	Steps     []StepResult
+	Body  string
+	Steps []StepResult
+	// Usage é o gasto do review inteiro: a soma dos passos.
+	Usage     Usage
 	Duration  time.Duration
 	Truncated bool
 	// Workdir é o clone temporário onde os agentes rodaram. Vazio quando o
@@ -121,6 +125,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	if len(choice.Steps) == 0 {
 		choice = r.cfg.DefaultChoice()
 	}
+	if len(choice.Steps) == 0 {
+		return Result{}, config.ErrNoAgents
+	}
 	total := len(choice.Steps)
 
 	var workdir string
@@ -149,7 +156,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			dir = "" // herda o diretório atual
 		}
 		stepStart := time.Now()
-		body, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir,
+		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -157,7 +164,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name,
 					Stream: stream, Agent: who, Text: text})
 			})
-		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Err: err}
+		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("o agente `%s` não devolveu nada", step.Command)
 		}
@@ -176,12 +183,18 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		return Result{}, err
 	}
 
+	var used Usage
+	for _, s := range steps {
+		used.add(s.Usage)
+	}
+
 	return Result{
 		PR:        pr,
 		Agent:     choice.Name,
 		Posts:     choice.Posts,
 		Body:      body,
 		Steps:     steps,
+		Usage:     used,
 		Duration:  time.Since(start),
 		Truncated: truncated,
 		Workdir:   workdir,
@@ -266,7 +279,9 @@ func joinSteps(steps []StepResult) (string, error) {
 // No modo stream-json o stdout é JSONL de eventos — o log recebe a versão
 // legível e o relatório sai do evento final. Em qualquer outro agente o stdout
 // é o próprio relatório, e vai cru para os dois.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string)) (string, error) {
+// O gasto de modelo sai junto do relatório: ele só existe no evento final do
+// stream-json, então quem lê a saída é quem sabe contá-lo.
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -274,7 +289,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 
 	if _, err := exec.LookPath(step.Command); err != nil {
-		return "", fmt.Errorf("agente `%s` não encontrado no PATH", step.Command)
+		return "", Usage{}, fmt.Errorf("agente `%s` não encontrado no PATH", step.Command)
 	}
 
 	cmd := exec.CommandContext(ctx, step.Command, step.Args...)
@@ -282,14 +297,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	cmd.Stdin = strings.NewReader(prompt)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return "", err
+		return "", Usage{}, err
 	}
 	if err := cmd.Start(); err != nil {
-		return "", fmt.Errorf("agente `%s` não subiu: %w", step.Command, err)
+		return "", Usage{}, fmt.Errorf("agente `%s` não subiu: %w", step.Command, err)
 	}
 
 	log := func(stream, who, text string) {
@@ -334,22 +349,22 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	err = cmd.Wait()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", fmt.Errorf("`%s` estourou o timeout de %ds", step.Name, step.TimeoutSeconds)
+		return "", Usage{}, fmt.Errorf("`%s` estourou o timeout de %ds", step.Name, step.TimeoutSeconds)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return "", context.Canceled
+		return "", Usage{}, context.Canceled
 	}
 	if err != nil {
 		msg := errBuf.String()
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", fmt.Errorf("agente `%s` falhou: %s", step.Command, msg)
+		return "", Usage{}, fmt.Errorf("agente `%s` falhou: %s", step.Command, msg)
 	}
 	if stream {
-		return parser.report(), nil
+		return parser.report(), parser.usage, nil
 	}
-	return raw.String(), nil
+	return raw.String(), Usage{}, nil
 }
 
 // eachLine chama fn para cada linha lida, sem limite de tamanho — um evento do

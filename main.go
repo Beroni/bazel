@@ -139,6 +139,11 @@ func serve(ctx context.Context, args []string) error {
 	if len(cfg.Repos) == 0 {
 		fmt.Println(styDim.Render("  nenhum repositório monitorado — adicione um em \"config\", na página"))
 	}
+	// A lista de agentes começa vazia: é montada na página, a partir das
+	// skills que o Claude Code tem instaladas nesta máquina.
+	if len(cfg.Choices()) == 0 {
+		fmt.Println(styDim.Render("  nenhum agente configurado — monte a lista em \"config\", a partir das suas skills"))
+	}
 	if hasFlag(args, "--open") {
 		openBrowser(url)
 	}

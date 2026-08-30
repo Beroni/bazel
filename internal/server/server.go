@@ -114,6 +114,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
 	mux.HandleFunc("DELETE /api/repos/{owner}/{name}", s.handleRepoRemove)
+	mux.HandleFunc("GET /api/agents", s.handleAgentsList)
+	mux.HandleFunc("POST /api/agents", s.handleAgentAdd)
+	mux.HandleFunc("DELETE /api/agents/{name}", s.handleAgentRemove)
+	mux.HandleFunc("POST /api/agents/{name}/default", s.handleAgentDefault)
 	mux.HandleFunc("GET /api/config", s.handleConfig)
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/reviews", s.handleSavedList)
@@ -364,14 +368,17 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	choice := s.cfg.DefaultChoice()
+	s.cfgMu.Lock()
+	choice, err := s.cfg.DefaultChoice(), error(nil)
 	if strings.TrimSpace(req.Agent) != "" {
-		c, err := s.cfg.ChoiceByName(req.Agent)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		choice = c
+		choice, err = s.cfg.ChoiceByName(req.Agent)
+	} else if len(choice.Steps) == 0 {
+		err = config.ErrNoAgents
+	}
+	s.cfgMu.Unlock()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 
 	// Os PRs em cache evitam um `gh pr view` por item quando vieram da lista.
@@ -570,6 +577,113 @@ func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"repos": repos, "removed": removed})
 }
 
+// --- agentes ---
+//
+// A lista de agentes começa vazia num config novo e é montada aqui, a partir
+// das skills que o Claude Code tem instaladas nesta máquina: cada agente é uma
+// skill rodando sobre o PR. Por isso não há lista de fábrica — ela apontaria
+// para skills que este computador pode nunca ter tido.
+
+func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
+	s.writeAgents(w, http.StatusOK, nil)
+}
+
+func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Skill string `json:"skill"`
+		Posts bool   `json:"posts"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpo inválido: %w", err))
+		return
+	}
+
+	// A descrição vem da skill instalada, não do navegador: é o frontmatter
+	// dela que diz o que ela faz. Skill que não está na máquina nem entra —
+	// um agente assim só falharia na hora de rodar.
+	name := strings.TrimPrefix(strings.TrimSpace(req.Skill), "/")
+	dir, list := s.installedSkills()
+	var found *skills.Skill
+	for i := range list {
+		if strings.EqualFold(list[i].Name, name) {
+			found = &list[i]
+			break
+		}
+	}
+	if found == nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("a skill %q não está instalada em %s", name, dir))
+		return
+	}
+
+	s.cfgMu.Lock()
+	def, err := s.cfg.AddAgentFromSkill(found.Name, summarize(found.Description), req.Posts)
+	if err == nil {
+		err = s.cfg.Save()
+	}
+	s.cfgMu.Unlock()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeAgents(w, http.StatusCreated, map[string]any{"added": def.Name})
+}
+
+func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
+	s.cfgMu.Lock()
+	removed := s.cfg.RemoveAgent(r.PathValue("name"))
+	err := s.cfg.Save()
+	s.cfgMu.Unlock()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
+}
+
+// handleAgentDefault põe um agente na frente da lista — o primeiro é o que
+// roda quando ninguém escolhe.
+func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
+	s.cfgMu.Lock()
+	ok := s.cfg.SetDefaultAgent(r.PathValue("name"))
+	err := s.cfg.Save()
+	s.cfgMu.Unlock()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !ok {
+		writeErr(w, http.StatusNotFound, fmt.Errorf("o agente %q não está na lista", r.PathValue("name")))
+		return
+	}
+	s.writeAgents(w, http.StatusOK, nil)
+}
+
+// writeAgents devolve a lista inteira depois de mexer nela: é o que a página
+// redesenha, do seletor à configuração.
+func (s *Server) writeAgents(w http.ResponseWriter, status int, extra map[string]any) {
+	out := map[string]any{"agents": s.agentViews()}
+	for k, v := range extra {
+		out[k] = v
+	}
+	writeJSON(w, status, out)
+}
+
+// summarize corta a descrição de uma skill na primeira frase. O frontmatter
+// de uma skill é um parágrafo inteiro, com gatilhos e contraindicações; no
+// seletor cabe uma linha.
+func summarize(s string) string {
+	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
+	for _, end := range []string{". ", " — ", "; "} {
+		if i := strings.Index(s, end); i > 0 && i < 200 {
+			return s[:i]
+		}
+	}
+	if r := []rune(s); len(r) > 200 {
+		return strings.TrimSpace(string(r[:199])) + "…"
+	}
+	return strings.TrimSuffix(s, ".")
+}
+
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
@@ -617,15 +731,18 @@ func (s *Server) jobViews() []jobView {
 // agente que chama uma skill que você não tem falha só na hora de rodar, e
 // isso é tarde demais para descobrir.
 func (s *Server) agentViews() []map[string]any {
-	instaladas := skills.List(s.cfg.SkillsDir)
+	_, instaladas := s.installedSkills()
+	s.cfgMu.Lock()
 	choices := s.cfg.Choices()
+	post := s.cfg.PostChoice()
+	s.cfgMu.Unlock()
 	out := make([]map[string]any, 0, len(choices)+1)
 	for _, c := range choices {
 		out = append(out, s.agentView(c, instaladas, false))
 	}
 	// O agente de publicação não está no seletor, mas é um agente: quem abre
 	// a configuração quer vê-lo junto.
-	out = append(out, s.agentView(s.cfg.PostChoice(), instaladas, true))
+	out = append(out, s.agentView(post, instaladas, true))
 	return out
 }
 
@@ -654,18 +771,27 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 	}
 }
 
-// handleSkills lista as skills instaladas na máquina — os agentes que o
-// `claude` de fato consegue rodar.
+// handleSkills lista as skills instaladas na máquina — as que podem virar
+// agente. É a lista de onde a configuração monta a sua.
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
-	dir := s.cfg.SkillsDir
-	if strings.TrimSpace(dir) == "" {
+	dir, list := s.installedSkills()
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list})
+}
+
+// installedSkills lê as skills do disco a cada chamada: instalar uma skill não
+// devia exigir reiniciar o Bazel.
+func (s *Server) installedSkills() (string, []skills.Skill) {
+	s.cfgMu.Lock()
+	dir := strings.TrimSpace(s.cfg.SkillsDir)
+	s.cfgMu.Unlock()
+	if dir == "" {
 		dir = skills.DefaultDir()
 	}
 	list := skills.List(dir)
 	if list == nil {
 		list = []skills.Skill{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list})
+	return dir, list
 }
 
 // invalidatePRs força a próxima listagem a bater no gh.

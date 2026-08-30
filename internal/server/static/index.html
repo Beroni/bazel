@@ -12,6 +12,7 @@
 <header class="bar">
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> BAZEL</div>
   <div class="stats" id="stats">carregando…</div>
+  <div class="stats spend" id="spend" hidden></div>
   <div class="spacer"></div>
   <div class="who" id="who"></div>
   <button class="btn" id="refresh" title="recarrega a lista do GitHub">recarregar</button>
@@ -23,13 +24,26 @@
 <main>
   <aside class="pane prs">
     <div class="pane-head">
-      <input id="filter" type="search" placeholder="filtrar por título, repo ou autor…" autocomplete="off">
+      <div class="row">
+        <button class="burger" id="toggle-prs" aria-expanded="true" aria-controls="pr-list"
+                title="esconder a lista (deixa o review em tela cheia)"><span></span><span></span><span></span></button>
+        <input id="filter" type="search" placeholder="filtrar por título, repo ou autor…" autocomplete="off">
+      </div>
       <div class="row">
         <div class="segmented" id="scope">
           <button data-scope="all" class="on">todos</button>
           <button data-scope="mine">só meus</button>
         </div>
         <label class="check tiny"><input type="checkbox" id="hide-drafts"> esconder drafts</label>
+      </div>
+      <div class="row">
+        <select id="repo-filter" title="mostra só os PRs de um repositório"></select>
+        <select id="review-filter" title="filtra pelo que o Bazel já revisou">
+          <option value="all">qualquer review</option>
+          <option value="none">sem review</option>
+          <option value="reviewed">✓ revisado</option>
+          <option value="changed">⟳ mudou desde o review</option>
+        </select>
       </div>
     </div>
     <div id="pr-list" class="list"><p class="empty">carregando PRs…</p></div>
@@ -55,6 +69,7 @@
         <p>Marque um PR à esquerda, escolha o agente e clique em <b>revisar</b>.</p>
         <p class="dim">O agente clona o repositório, roda sobre o PR e o resultado aparece aqui.
         Pode fechar a aba: o review continua no servidor.</p>
+        <p class="dim only-collapsed">A lista está escondida — clique no <b>☰</b>, na borda esquerda, para trazê-la de volta.</p>
       </div>
     </article>
   </section>
@@ -72,9 +87,13 @@
       </form>
 
       <h3>agentes</h3>
+      <p class="dim tiny">Cada agente é uma skill sua rodando sobre o PR. A lista começa vazia:
+      monte a sua abaixo, a partir do que está instalado nesta máquina. O primeiro é o padrão.</p>
       <div id="agent-list" class="agent-list"></div>
 
       <h3>skills instaladas <span class="dim" id="skills-dir"></span></h3>
+      <p class="dim tiny"><b>usar</b> vira um agente que devolve o review para você ler;
+      <b>⇧ publica</b> vira um que publica direto no PR.</p>
       <div id="skill-list" class="skill-list"></div>
 
       <h3 id="config-path"></h3>

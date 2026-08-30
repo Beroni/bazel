@@ -35,6 +35,9 @@ func Save(dir string, res agent.Result) (string, error) {
 	if res.Agent != "" {
 		fmt.Fprintf(&b, "- Agente: %s\n", agentLine(res))
 	}
+	if u := res.Usage.String(); u != "" {
+		fmt.Fprintf(&b, "- Gasto: %s\n", u)
+	}
 	if res.Posts {
 		b.WriteString("- ⇧ Este agente publicou o review no PR por conta própria.\n")
 	}

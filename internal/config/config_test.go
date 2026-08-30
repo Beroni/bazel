@@ -1,16 +1,51 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
 
+// Um config novo nasce sem agente nenhum: a lista é montada na página, a
+// partir das skills instaladas — não há lista de fábrica que chute o que este
+// computador tem.
+func TestDefaultComecaSemAgentes(t *testing.T) {
+	cfg := Default()
+	if len(cfg.Agents) != 0 || len(cfg.Pipelines) != 0 {
+		t.Fatalf("config novo devia vir sem agents e sem pipelines: %+v / %+v", cfg.Agents, cfg.Pipelines)
+	}
+	if len(cfg.Choices()) != 0 {
+		t.Errorf("sem agents e com o molde de fábrica não há o que rodar: %+v", cfg.Choices())
+	}
+	if len(cfg.DefaultChoice().Steps) != 0 {
+		t.Error("o padrão de um config vazio não pode ter passo nenhum")
+	}
+	if _, err := cfg.ChoiceByName("review-fleet"); !errors.Is(err, ErrNoAgents) {
+		t.Errorf("escolher um agente numa lista vazia devia dar ErrNoAgents, deu %v", err)
+	}
+	// E o agente de publicação continua de pé: ele não é uma escolha da
+	// lista, é o que roda quando você manda publicar um review já lido.
+	if cfg.PostChoice().Name != "post-report" {
+		t.Errorf("o post_agent devia continuar no padrão, veio %q", cfg.PostChoice().Name)
+	}
+}
+
 // O seletor mostra os agents na ordem do arquivo e depois as pipelines, com a
 // primeira escolha valendo como padrão.
 func TestChoicesOrderAndDefault(t *testing.T) {
 	cfg := Default()
+	cfg.Agents = []AgentDef{
+		{Name: "review-fleet", Task: "/review-fleet {{number}}"},
+		{Name: "exploit-digger", Task: "/exploit-digger {{number}}"},
+		{Name: "lazy-senior-dev", Task: "/lazy-senior-dev {{number}}"},
+	}
+	cfg.Pipelines = []Pipeline{{
+		Name:  "frota-em-série",
+		Steps: []string{"review-fleet", "exploit-digger", "lazy-senior-dev"},
+	}}
+
 	choices := cfg.Choices()
 	if len(choices) != len(cfg.Agents)+len(cfg.Pipelines) {
 		t.Fatalf("esperava %d escolhas, vieram %d", len(cfg.Agents)+len(cfg.Pipelines), len(choices))
@@ -24,6 +59,76 @@ func TestChoicesOrderAndDefault(t *testing.T) {
 	last := choices[len(choices)-1]
 	if !last.Pipeline || len(last.Steps) != 3 {
 		t.Errorf("a última escolha devia ser a pipeline de 3 passos, é %+v", last)
+	}
+}
+
+// Adicionar uma skill é o caminho normal de montar a lista: o agente sai com o
+// nome da skill e a task que a invoca sobre o PR.
+func TestAddAgentFromSkill(t *testing.T) {
+	cfg := Default()
+	def, err := cfg.AddAgentFromSkill("/review-fleet", "as três lentes", false)
+	if err != nil {
+		t.Fatalf("AddAgentFromSkill: %v", err)
+	}
+	if def.Name != "review-fleet" || def.Task != "/review-fleet {{number}}" {
+		t.Errorf("agente montado errado: %+v", def)
+	}
+	if def.Posts || def.Prompt != "" {
+		t.Errorf("agente de leitura não publica nem troca o molde: %+v", def)
+	}
+	if len(cfg.Choices()) != 1 || cfg.DefaultChoice().Name != "review-fleet" {
+		t.Error("o primeiro agente adicionado devia virar o padrão")
+	}
+
+	// A mesma skill pode virar também um agente que publica sozinho: o nome
+	// muda, e é o sufixo que deixa os dois conviverem.
+	post, err := cfg.AddAgentFromSkill("review-fleet", "as três lentes", true)
+	if err != nil {
+		t.Fatalf("AddAgentFromSkill com posts: %v", err)
+	}
+	if post.Name != "review-fleet-post" || !post.Posts {
+		t.Errorf("o agente que publica devia se chamar review-fleet-post: %+v", post)
+	}
+	if !strings.Contains(post.Task, "--post") {
+		t.Errorf("a task devia levar o --post: %q", post.Task)
+	}
+	if strings.Contains(post.Prompt, "não publique nada no GitHub") {
+		t.Error("o molde de quem publica não pode proibir publicar")
+	}
+
+	if _, err := cfg.AddAgentFromSkill("review-fleet", "", false); err == nil {
+		t.Error("adicionar a mesma skill duas vezes devia dar erro")
+	}
+	if _, err := cfg.AddAgentFromSkill("  ", "", false); err == nil {
+		t.Error("skill sem nome devia dar erro")
+	}
+	if _, err := cfg.AddAgentFromSkill("../../etc/passwd", "", false); err == nil {
+		t.Error("nome de skill com barra devia dar erro")
+	}
+}
+
+// Tirar da lista e trocar o padrão são as outras duas mexidas que a página faz.
+func TestRemoveAgentAndSetDefault(t *testing.T) {
+	cfg := Default()
+	for _, name := range []string{"a", "b", "c"} {
+		if _, err := cfg.AddAgentFromSkill(name, "", false); err != nil {
+			t.Fatalf("montando a lista: %v", err)
+		}
+	}
+	if !cfg.SetDefaultAgent("C") {
+		t.Fatal("tornar padrão não devia diferenciar caixa")
+	}
+	if got := cfg.DefaultChoice().Name; got != "c" {
+		t.Errorf("o padrão devia ser c, é %q", got)
+	}
+	if names := len(cfg.Agents); names != 3 {
+		t.Errorf("tornar padrão só reordena — a lista ficou com %d", names)
+	}
+	if !cfg.RemoveAgent("c") || cfg.RemoveAgent("c") {
+		t.Error("remover devia valer uma vez só")
+	}
+	if got := cfg.DefaultChoice().Name; got != "a" {
+		t.Errorf("removido o padrão, o próximo assume: veio %q", got)
 	}
 }
 
@@ -86,6 +191,10 @@ func TestPipelineSkipsUnknownSteps(t *testing.T) {
 
 func TestChoiceByName(t *testing.T) {
 	cfg := Default()
+	cfg.Agents = []AgentDef{
+		{Name: "review-fleet", Task: "/review-fleet {{number}}"},
+		{Name: "exploit-digger", Task: "/exploit-digger {{number}}"},
+	}
 	if _, err := cfg.ChoiceByName("EXPLOIT-digger"); err != nil {
 		t.Errorf("o nome não devia diferenciar caixa: %v", err)
 	}
@@ -98,12 +207,17 @@ func TestChoiceByName(t *testing.T) {
 	}
 }
 
-// Sem `agents:` no arquivo sobra a escolha única do bloco `agent` — que é como
-// o Bazel se comportava antes do seletor.
+// Sem `agents:` mas com um prompt seu, sobra a escolha única do bloco `agent`
+// — que é como o Bazel se comportava antes do seletor. Com o molde de fábrica
+// não sobra nada: ele é uma casca em volta do {{task}} de um agente.
 func TestChoicesFallsBackToBaseAgent(t *testing.T) {
 	cfg := Default()
 	cfg.Agents = nil
 	cfg.Pipelines = nil
+	if len(cfg.Choices()) != 0 {
+		t.Fatal("o molde de fábrica sem agente não é escolha nenhuma")
+	}
+	cfg.Agent.Prompt = "revise o PR {{number}} de {{repo}}"
 	choices := cfg.Choices()
 	if len(choices) != 1 || len(choices[0].Steps) != 1 {
 		t.Fatalf("esperava uma escolha de um passo, vieram %+v", choices)
@@ -113,26 +227,29 @@ func TestChoicesFallsBackToBaseAgent(t *testing.T) {
 	}
 }
 
-// Config antigo, escrito quando o /review-fleet vivia colado no prompt, ganha
-// as lentes padrão. Prompt customizado fica como está.
-func TestLoadBackfillsAgents(t *testing.T) {
-	t.Run("prompt padrão antigo", func(t *testing.T) {
-		cfg := loadFrom(t, "repos: [acme/api-core]\nagent:\n  command: claude\n  prompt: |-\n"+indent(legacyPrompt))
-		if len(cfg.Agents) != len(defaultAgents()) {
-			t.Fatalf("esperava as lentes padrão, vieram %d", len(cfg.Agents))
-		}
-		if cfg.Agent.Prompt != defaultPrompt {
-			t.Error("o molde antigo devia virar o novo, com {{task}}")
+// O que está no arquivo é o que vale: o Load não inventa agente para ninguém.
+func TestLoadNaoInventaAgentes(t *testing.T) {
+	t.Run("arquivo sem agents", func(t *testing.T) {
+		cfg := loadFrom(t, "repos: [acme/api-core]\nagent:\n  command: claude\n")
+		if len(cfg.Agents) != 0 {
+			t.Errorf("config sem agents devia continuar sem: %+v", cfg.Agents)
 		}
 	})
 
 	t.Run("prompt customizado", func(t *testing.T) {
 		cfg := loadFrom(t, "repos: [acme/api-core]\nagent:\n  command: claude\n  prompt: revise o PR {{number}}\n")
-		if len(cfg.Agents) != 0 {
-			t.Errorf("prompt customizado não devia ganhar agents padrão: %+v", cfg.Agents)
+		if cfg.Agent.Prompt != "revise o PR {{number}}" {
+			t.Errorf("o prompt do arquivo não podia ser tocado: %q", cfg.Agent.Prompt)
 		}
 		if len(cfg.Choices()) != 1 {
-			t.Error("e o seletor devia mostrar só a escolha única")
+			t.Error("com prompt seu e sem agents, o seletor mostra a escolha única")
+		}
+	})
+
+	t.Run("agents do arquivo", func(t *testing.T) {
+		cfg := loadFrom(t, "repos: [acme/api-core]\nagents:\n  - name: meu\n    task: /meu {{number}}\n")
+		if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "meu" {
+			t.Errorf("os agents do arquivo é que valem: %+v", cfg.Agents)
 		}
 	})
 }
@@ -141,6 +258,12 @@ func TestLoadBackfillsAgents(t *testing.T) {
 // disso para avisar antes de escrever no PR de outra pessoa.
 func TestPostingAgentIsMarked(t *testing.T) {
 	cfg := Default()
+	if _, err := cfg.AddAgentFromSkill("review-fleet", "", false); err != nil {
+		t.Fatalf("montando a lista: %v", err)
+	}
+	if _, err := cfg.AddAgentFromSkill("review-fleet", "", true); err != nil {
+		t.Fatalf("montando a lista: %v", err)
+	}
 	post, err := cfg.ChoiceByName("review-fleet-post")
 	if err != nil {
 		t.Fatalf("ChoiceByName: %v", err)
@@ -239,8 +362,4 @@ func loadFrom(t *testing.T, yaml string) *Config {
 		t.Fatalf("Load: %v", err)
 	}
 	return cfg
-}
-
-func indent(s string) string {
-	return "    " + strings.ReplaceAll(s, "\n", "\n    ")
 }

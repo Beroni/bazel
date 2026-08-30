@@ -35,6 +35,25 @@ type streamEvent struct {
 	IsError    bool    `json:"is_error"`
 	DurationMS int     `json:"duration_ms"`
 	CostUSD    float64 `json:"total_cost_usd"`
+	// Usage é o gasto da conversa principal — só dela. Um agente que dispara
+	// sub-agentes gasta muito mais do que isto diz.
+	Usage struct {
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		CacheWrite   int `json:"cache_creation_input_tokens"`
+		CacheRead    int `json:"cache_read_input_tokens"`
+	} `json:"usage"`
+	// ModelUsage é o gasto por modelo, e é ele que fecha a conta: entram as
+	// lentes que rodaram como sub-agente e os modelos auxiliares que o próprio
+	// Claude Code usa. Numa rodada com uma lente só, o `usage` acima contou
+	// 52k tokens enquanto este somou 68k.
+	ModelUsage map[string]struct {
+		InputTokens  int     `json:"inputTokens"`
+		OutputTokens int     `json:"outputTokens"`
+		CacheRead    int     `json:"cacheReadInputTokens"`
+		CacheWrite   int     `json:"cacheCreationInputTokens"`
+		CostUSD      float64 `json:"costUSD"`
+	} `json:"modelUsage"`
 	// ParentToolUseID marca o que rodou dentro de um sub-agente.
 	ParentToolUseID *string `json:"parent_tool_use_id"`
 	Tools           []any   `json:"tools"`
@@ -42,6 +61,41 @@ type streamEvent struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 	} `json:"message"`
+}
+
+// spent é o gasto do evento final. O detalhe por modelo manda quando existe —
+// é o único que enxerga os sub-agentes; sem ele sobra o `usage`, que é o que um
+// agente mais simples reporta.
+func (ev streamEvent) spent() Usage {
+	u := Usage{CostUSD: ev.CostUSD}
+	if len(ev.ModelUsage) == 0 {
+		u.InputTokens = ev.Usage.InputTokens
+		u.OutputTokens = ev.Usage.OutputTokens
+		u.CacheWrite = ev.Usage.CacheWrite
+		u.CacheRead = ev.Usage.CacheRead
+		return u
+	}
+	var custo float64
+	for _, m := range ev.ModelUsage {
+		u.InputTokens += m.InputTokens
+		u.OutputTokens += m.OutputTokens
+		u.CacheWrite += m.CacheWrite
+		u.CacheRead += m.CacheRead
+		custo += m.CostUSD
+	}
+	// Detalhe por modelo presente mas sem token nenhum: o que vale é o usage.
+	if u.Total() == 0 {
+		u.InputTokens = ev.Usage.InputTokens
+		u.OutputTokens = ev.Usage.OutputTokens
+		u.CacheWrite = ev.Usage.CacheWrite
+		u.CacheRead = ev.Usage.CacheRead
+	}
+	// O total_cost_usd é a palavra final sobre o custo; a soma por modelo só
+	// entra quando ele não veio.
+	if u.CostUSD == 0 {
+		u.CostUSD = custo
+	}
+	return u
 }
 
 // contentBlock é um bloco de conteúdo de mensagem: texto, chamada de
@@ -68,6 +122,9 @@ type logEntry struct {
 // streamParser vai lendo o JSONL e guardando o texto final do agente.
 type streamParser struct {
 	result string
+	// usage é o que o agente gastou, somado do evento final. Um agente que
+	// não fala stream-json deixa isto zerado — não há de onde tirar.
+	usage Usage
 	// texts é o texto que o assistente escreveu, usado como relatório se o
 	// evento final não vier (agente morto no meio, formato diferente).
 	texts []string
@@ -109,10 +166,16 @@ func (p *streamParser) line(raw string) []logEntry {
 	case "result":
 		p.result = ev.Result
 		took := time.Duration(ev.DurationMS) * time.Millisecond
+		// O gasto conta mesmo quando o agente termina mal: os tokens foram
+		// queimados do mesmo jeito.
+		p.usage.add(ev.spent())
 		if ev.IsError || ev.Subtype != "success" {
 			return one(fmt.Sprintf("✗ o agente terminou com erro (%s)", ev.Subtype))
 		}
 		line := fmt.Sprintf("✓ pronto em %s", took.Round(time.Second))
+		if t := p.usage.Total(); t > 0 {
+			line += " · " + FormatTokens(t) + " tokens"
+		}
 		if ev.CostUSD > 0 {
 			line += fmt.Sprintf(" · $%.2f", ev.CostUSD)
 		}
