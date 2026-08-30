@@ -1,0 +1,11 @@
+# binário compilado (make build)
+/bazel
+
+# artefatos de teste
+coverage.out
+
+# config local do Claude Code (caminhos desta máquina)
+.claude/settings.local.json
+
+# macOS
+.DS_Store

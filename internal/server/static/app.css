@@ -1,0 +1,333 @@
+:root {
+  --bg: #0b0d10;
+  --panel: #12151a;
+  --panel-2: #171b21;
+  --line: #232833;
+  --line-soft: #1b202800;
+  --text: #dfe3ea;
+  --dim: #8b9099;
+  --accent: #f97316;
+  --ok: #22c55e;
+  --err: #ef4444;
+  --warn: #eab308;
+  --blue: #60a5fa;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 14px/1.5 var(--mono);
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- barra --- */
+.bar {
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  flex: none;
+}
+.brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .18em; color: var(--accent); }
+/* width/height no <img> seguram o espaço antes de a arte carregar; o CSS manda
+   no tamanho de verdade. */
+.logo { width: 26px; height: 26px; }
+.logo.big { width: 128px; height: 128px; margin: 0 auto 20px; }
+.stats { color: var(--dim); font-size: 12px; }
+.who { color: var(--dim); font-size: 12px; }
+.spacer { flex: 1; }
+
+button, input[type=search], input[type=text] { font: inherit; }
+.btn {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 11px; cursor: pointer;
+}
+.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.btn:disabled { opacity: .4; cursor: not-allowed; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #100d08; font-weight: 700; }
+.btn.primary:hover:not(:disabled) { filter: brightness(1.12); color: #100d08; }
+.btn.ghost { background: transparent; color: var(--dim); }
+.btn.small { padding: 3px 8px; font-size: 12px; }
+
+.banner {
+  padding: 8px 16px; font-size: 12px;
+  background: #2a1b12; color: var(--warn);
+  border-bottom: 1px solid var(--line);
+  white-space: pre-wrap;
+}
+
+/* --- layout --- */
+main { flex: 1; display: flex; min-height: 0; }
+.pane { display: flex; flex-direction: column; min-height: 0; }
+.prs { width: 400px; flex: none; border-right: 1px solid var(--line); background: var(--panel); }
+.main { flex: 1; min-width: 0; }
+
+.pane-head { padding: 10px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.pane-head input[type=search] {
+  width: 100%; padding: 6px 9px; border-radius: 6px;
+  background: var(--bg); border: 1px solid var(--line); color: var(--text);
+}
+.pane-head input[type=search]:focus { outline: none; border-color: var(--accent); }
+.row { display: flex; align-items: center; gap: 10px; }
+.segmented { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.segmented button { background: transparent; border: 0; color: var(--dim); padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.segmented button.on { background: var(--panel-2); color: var(--accent); }
+.check { display: flex; align-items: center; gap: 6px; color: var(--dim); cursor: pointer; }
+.check.tiny { font-size: 12px; }
+.check input { accent-color: var(--accent); }
+
+.pane-foot {
+  padding: 10px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  /* Com o seletor de agente no meio, o pé pode não caber nos 400px do painel:
+     melhor quebrar linha do que estourar para fora. */
+  flex-wrap: wrap;
+}
+
+.list { flex: 1; overflow-y: auto; }
+.empty { color: var(--dim); padding: 24px 16px; text-align: center; font-size: 13px; }
+
+/* --- item de PR --- */
+.pr {
+  display: flex; gap: 9px; padding: 9px 11px;
+  border-bottom: 1px solid var(--line);
+  cursor: pointer;
+}
+.pr:hover { background: var(--panel-2); }
+.pr.sel { background: #1a1610; box-shadow: inset 3px 0 0 var(--accent); }
+/* aberto na direita ≠ marcado para revisar */
+.pr.active { background: var(--panel-2); }
+.pr.active.sel { background: #211a11; }
+.pr.active .title { color: var(--accent); }
+.pr input { margin-top: 3px; accent-color: var(--accent); }
+.pr-main { min-width: 0; flex: 1; }
+.pr-top { display: flex; gap: 7px; align-items: baseline; }
+.num { color: var(--accent); font-weight: 700; }
+.repo { color: var(--blue); font-size: 12px; }
+.title { display: block; margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.meta { color: var(--dim); font-size: 12px; display: flex; gap: 8px; flex-wrap: wrap; }
+.add { color: var(--ok); }
+.del { color: var(--err); }
+.tag { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--dim); }
+.tag.draft { border-color: #3f3f46; }
+.tag.mine { border-color: var(--accent); color: var(--accent); }
+.tag.approved { border-color: var(--ok); color: var(--ok); }
+.tag.changes { border-color: var(--err); color: var(--err); }
+
+/* --- fila --- */
+.tabs { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
+.tab { background: transparent; border: 0; color: var(--dim); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
+.tab.on { color: var(--accent); background: var(--panel-2); }
+.pill { background: var(--line); color: var(--text); border-radius: 999px; padding: 0 6px; font-size: 11px; }
+.conn { color: var(--err); font-size: 10px; }
+.conn.on { color: var(--ok); }
+
+.rail { display: flex; gap: 8px; padding: 10px 12px; overflow-x: auto; border-bottom: 1px solid var(--line); flex: none; }
+.rail:empty { display: none; }
+.card {
+  min-width: 250px; max-width: 320px; flex: none;
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 9px 11px; cursor: pointer;
+}
+.card:hover { border-color: #3a4150; }
+.card.on { border-color: var(--accent); }
+.card .card-top { display: flex; align-items: center; gap: 7px; }
+.card .title { font-size: 12px; color: var(--dim); }
+.card-actions { display: flex; gap: 6px; margin-top: 7px; }
+
+.state { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+.state.queued { color: var(--dim); }
+.state.running { color: var(--accent); }
+.state.done { color: var(--ok); }
+.state.failed { color: var(--err); }
+.state.canceled { color: var(--dim); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; display: inline-block; }
+.state.running .dot { animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+
+/* --- visualizador --- */
+.viewer { flex: 1; overflow-y: auto; padding: 26px 34px 80px; }
+.placeholder { color: var(--dim); text-align: center; margin: 12vh auto 0; max-width: 460px; }
+.placeholder .dim { font-size: 12px; opacity: .75; }
+.viewer-head { border-bottom: 1px solid var(--line); padding-bottom: 12px; margin-bottom: 20px; display: flex; gap: 12px; align-items: flex-start; }
+.viewer-head .grow { flex: 1; min-width: 0; }
+.viewer-head h2 { margin: 0 0 5px; font-size: 16px; }
+.viewer-head a { color: var(--blue); }
+
+.md { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; line-height: 1.65; max-width: 78ch; }
+.md h1 { font-size: 22px; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+.md h2 { font-size: 18px; margin-top: 28px; color: var(--accent); }
+.md h3 { font-size: 15px; margin-top: 22px; }
+.md code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.md pre code { background: none; padding: 0; }
+.md a { color: var(--blue); }
+.md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 14px; color: var(--dim); }
+.md table { border-collapse: collapse; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; }
+.md th { background: var(--panel-2); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 26px 0; }
+.md img { max-width: 100%; }
+
+.error-box { background: #1e1113; border: 1px solid #45222a; color: #fca5a5; border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; }
+.dim { color: var(--dim); }
+
+/* --- salvos --- */
+.saved { border-bottom: 1px solid var(--line); padding: 10px 13px; cursor: pointer; }
+.saved:hover { background: var(--panel-2); }
+.saved .name { font-size: 12px; color: var(--dim); }
+
+/* --- modal --- */
+.modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; padding: 40px; z-index: 10; }
+/* O atributo hidden só apaga o elemento se nenhuma regra de autor mandar
+   display: — e .modal manda. Sem isto o modal abre junto com a página e o
+   botão "fechar" não fecha nada. */
+.modal[hidden] { display: none; }
+.modal-box { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; width: min(820px, 100%); max-height: 100%; display: flex; flex-direction: column; }
+.modal-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.modal-body { padding: 16px; overflow: auto; }
+.modal-body h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 0 0 10px; }
+.modal-body h3:not(:first-child) { margin-top: 26px; }
+/* O caminho do config é um caminho, não um rótulo: nada de caixa alta. */
+.modal-body #config-path { text-transform: none; letter-spacing: 0; word-break: break-all; }
+.modal-body pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow: auto; font-size: 12.5px; }
+.modal-body #repo-input { flex: 1; padding: 6px 9px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--text); }
+.modal-body #repo-input:focus { outline: none; border-color: var(--accent); }
+.repo-list { margin-bottom: 10px; }
+.repo-list .repo-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; background: var(--bg); }
+.repo-list .none { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+
+::-webkit-scrollbar { width: 11px; height: 11px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: #2a303b; border-radius: 6px; border: 3px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: #39414f; }
+
+@media (max-width: 900px) {
+  main { flex-direction: column; }
+  .prs { width: auto; max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); }
+  .viewer { padding: 18px; }
+}
+
+/* --- seletor de agente --- */
+select#agent {
+  font: inherit; font-size: 12px;
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 8px; min-width: 0; max-width: 150px; cursor: pointer;
+}
+select#agent:hover { border-color: var(--accent); }
+select#agent:focus { outline: none; border-color: var(--accent); }
+
+/* --- passos do review --- */
+/* Um passo por agente da escolha: é o que mostra qual lente está rodando
+   agora em vez de um "rodando" cego. */
+.steps { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
+.card .steps { margin-top: 6px; }
+.step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
+.step .dot { flex: none; }
+.step .step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .step-time { margin-left: auto; padding-left: 8px; font-size: 10px; opacity: .8; }
+.step.running { color: var(--accent); }
+.step.running .dot { animation: pulse 1.1s ease-in-out infinite; }
+.step.done { color: var(--ok); }
+.step.failed { color: var(--err); }
+.step.queued .dot { opacity: .35; }
+
+.viewer .steps { max-width: 520px; gap: 7px; margin-top: 14px; }
+.viewer .step { font-size: 13px; }
+
+/* --- log dos agentes --- */
+/* O painel é o que responde "o que ele está fazendo agora": as linhas que o
+   agente escreve chegam aqui enquanto o review roda. */
+.log-panel { margin-top: 18px; border: 1px solid var(--line); border-radius: 8px; background: #0d1014; }
+.log-panel > summary {
+  cursor: pointer; padding: 8px 12px; font-size: 12px; color: var(--dim);
+  list-style: none; display: flex; gap: 4px; align-items: baseline;
+}
+.log-panel > summary::-webkit-details-marker { display: none; }
+.log-panel > summary::before { content: "▸"; color: var(--accent); margin-right: 4px; }
+.log-panel[open] > summary::before { content: "▾"; }
+.log-panel > summary:hover { color: var(--text); }
+/* Um terminal por agente: a frota roda três lentes em paralelo dentro do
+   mesmo processo, e num fluxo só as linhas chegam intercaladas. Cada uma
+   escreve no próprio quadro, com o próprio scroll. */
+.terms {
+  display: grid; gap: 10px; padding: 10px 12px 12px;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  border-top: 1px solid var(--line);
+}
+.term {
+  display: flex; flex-direction: column; min-width: 0;
+  border: 1px solid var(--line); border-radius: 6px; background: #090b0e;
+}
+.term-head {
+  display: flex; align-items: center; gap: 7px;
+  padding: 5px 9px; border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+.term-head .dot { flex: none; }
+.term-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-count { margin-left: auto; color: var(--dim); font-size: 10px; }
+.term-body {
+  height: 190px; overflow-y: auto; overflow-x: hidden;
+  padding: 6px 9px; font-size: 11.5px; line-height: 1.55;
+}
+.log-empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 4px 12px 12px; margin: 0; }
+
+.log-line {
+  /* pre-wrap preserva o alinhamento com que o agente escreve, sem deixar a
+     linha comprida escapar do quadro. */
+  white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
+}
+.log-line.stderr { color: var(--warn); }
+
+.c0 { color: var(--accent); }
+.c1 { color: var(--blue); }
+.c2 { color: var(--ok); }
+.c3 { color: #a78bfa; }
+.c4 { color: var(--warn); }
+.c5 { color: #f472b6; }
+
+.tag.posts { border-color: var(--warn); color: var(--warn); }
+.tag.reviewed { border-color: var(--ok); color: var(--ok); }
+/* Revisado e mexido depois: o aviso vale mais que o ✓, porque o que está no
+   GitHub não é mais o que o agente leu. */
+.tag.stale { border-color: var(--warn); color: var(--warn); }
+.stale-box {
+  margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
+  background: #2a1b12; color: var(--warn);
+  border: 1px solid #4a3218; border-radius: 6px;
+}
+
+/* As ações ficam no fim do review, que é onde você está quando terminou de
+   ler — e ler antes de publicar é o ponto. */
+.viewer-actions {
+  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line);
+}
+
+/* --- agentes e skills na configuração --- */
+.agent-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.agent-row { border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; background: var(--panel-2); }
+.agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.agent-name { color: var(--accent); font-weight: 700; }
+.agent-desc { color: var(--dim); font-size: 12px; margin-top: 4px; }
+.agent-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11px; }
+.skill-ref { padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
+.skill-ref.ok { color: var(--ok); }
+/* Skill que o agente chama e não existe na máquina: só se descobre na hora de
+   rodar, e aí é tarde. */
+.skill-ref.missing { color: var(--err); }
+
+.skill-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
+.skill-row { display: flex; gap: 10px; padding: 5px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.skill-row:last-child { border-bottom: 0; }
+.skill-row.on { background: var(--panel-2); }
+.skill-row.on .skill-name { color: var(--accent); }
+.skill-name { flex: none; width: 170px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.skill-desc { color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
