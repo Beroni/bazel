@@ -818,3 +818,110 @@ func TestJobViewLevaOGastoDeTokens(t *testing.T) {
 		t.Errorf("o review salvo devia registrar o gasto:\n%s", saved)
 	}
 }
+
+// O ✕ do card tira o job da fila desta sessão — e avisa as outras abas.
+func TestRemoveTiraJobDaFila(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, ch, view.ID, StateDone)
+
+	if err := m.Remove(view.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if len(m.Snapshot()) != 0 {
+		t.Errorf("o job devia ter saído da fila: %+v", m.Snapshot())
+	}
+	if _, ok := m.View(view.ID, false); ok {
+		t.Error("o job removido não devia mais ser encontrado")
+	}
+	if err := m.Remove(view.ID); err == nil {
+		t.Error("remover duas vezes devia dar erro")
+	}
+
+	// O aviso de saída chega às outras abas pelo mesmo canal dos jobs.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("não veio o aviso de job removido")
+		case msg := <-ch:
+			var ev struct {
+				Type string            `json:"type"`
+				Data map[string]string `json:"data"`
+			}
+			if err := json.Unmarshal(msg, &ev); err != nil || ev.Type != "job_gone" {
+				continue
+			}
+			if ev.Data["id"] != view.ID {
+				t.Errorf("aviso de outro job: %+v", ev.Data)
+			}
+			return
+		}
+	}
+}
+
+// Um review ainda vivo morre junto: card fora da tela e agente fora do ar.
+func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "sleep", "30")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	// Espera o worker pegar o job antes de tirá-lo da fila.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v, ok := m.View(view.ID, false)
+		if ok && v.State == StateRunning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("o job não começou a rodar")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	if err := m.Remove(view.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if _, ok := m.View(view.ID, false); ok {
+		t.Error("o job devia ter saído da fila")
+	}
+	// O `sleep 30` foi morto junto: se não tivesse sido, o Manager ainda
+	// estaria ocupado e o próximo review ficaria esperando.
+	segundo, err := m.Enqueue(testPR(999), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue do segundo: %v", err)
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		v, _ := m.View(segundo.ID, false)
+		if v.State == StateRunning {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("o worker não ficou livre depois da remoção")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

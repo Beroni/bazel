@@ -60,6 +60,15 @@ type streamEvent struct {
 	Message         struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
+		// Usage é o gasto da chamada que gerou esta mensagem. É o que
+		// permite contar enquanto o agente ainda trabalha: somadas, elas
+		// reproduzem o `usage` do evento final.
+		Usage struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+			CacheWrite   int `json:"cache_creation_input_tokens"`
+			CacheRead    int `json:"cache_read_input_tokens"`
+		} `json:"usage"`
 	} `json:"message"`
 }
 
@@ -122,9 +131,13 @@ type logEntry struct {
 // streamParser vai lendo o JSONL e guardando o texto final do agente.
 type streamParser struct {
 	result string
-	// usage é o que o agente gastou, somado do evento final. Um agente que
-	// não fala stream-json deixa isto zerado — não há de onde tirar.
+	// usage é o gasto fechado, do evento final. Um agente que não fala
+	// stream-json deixa isto zerado — não há de onde tirar.
 	usage Usage
+	// live é a conta parcial, somada mensagem a mensagem enquanto o agente
+	// trabalha. Fica abaixo do total: só enxerga a conversa principal, e as
+	// lentes que rodam como sub-agente só entram no fechamento.
+	live Usage
 	// texts é o texto que o assistente escreveu, usado como relatório se o
 	// evento final não vier (agente morto no meio, formato diferente).
 	texts []string
@@ -182,6 +195,14 @@ func (p *streamParser) line(raw string) []logEntry {
 		return one(line)
 
 	case "assistant", "user":
+		if u := ev.Message.Usage; ev.Type == "assistant" {
+			p.live.add(Usage{
+				InputTokens:  u.InputTokens,
+				OutputTokens: u.OutputTokens,
+				CacheWrite:   u.CacheWrite,
+				CacheRead:    u.CacheRead,
+			})
+		}
 		var blocks []contentBlock
 		if err := json.Unmarshal(ev.Message.Content, &blocks); err != nil {
 			return nil // conteúdo em texto puro: nada de útil para mostrar
@@ -362,6 +383,16 @@ func rawText(raw json.RawMessage) string {
 		return strings.Join(parts, " ")
 	}
 	return string(raw)
+}
+
+// spend é o gasto do agente: o fechado, quando o evento final chegou, ou a
+// conta parcial das mensagens até aqui — que é o que a página mostra enquanto
+// o review roda.
+func (p *streamParser) spend() Usage {
+	if !p.usage.Empty() {
+		return p.usage
+	}
+	return p.live
 }
 
 // report é o relatório do agente: o texto do evento final ou, se ele não

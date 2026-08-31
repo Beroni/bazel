@@ -88,7 +88,10 @@ type Job struct {
 	StartedAt  time.Time
 	FinishedAt time.Time
 
-	Result  agent.Result
+	Result agent.Result
+	// Live é o gasto parcial de um review em curso: o fechado dos passos que
+	// já terminaram mais o que o passo atual já consumiu.
+	Live    agent.Usage
 	Err     string
 	SavedTo string
 	Posted  bool
@@ -314,6 +317,16 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		return
 	}
 
+	// O gasto parcial anda sozinho: não mexe em passo nenhum, só no número
+	// que a página mostra enquanto o agente trabalha.
+	if e.Kind == agent.EventUsage {
+		m.mu.Lock()
+		job.Live = e.Usage
+		m.mu.Unlock()
+		m.publish(job)
+		return
+	}
+
 	m.mu.Lock()
 	switch {
 	case e.Kind == agent.EventClone:
@@ -393,6 +406,43 @@ func (m *Manager) Log(id string, from int) (logView, bool) {
 		}
 	}
 	return out, true
+}
+
+// Remove tira um job da fila. Um review ainda vivo é cancelado antes: o card
+// some da tela, e deixar o processo rodando sem nada que o mostre seria um
+// agente fantasma queimando token.
+//
+// Só sai da memória desta sessão — o markdown salvo e o índice de revisados
+// continuam onde estão.
+func (m *Manager) Remove(id string) error {
+	m.mu.Lock()
+	job, ok := m.jobs[id]
+	if !ok {
+		m.mu.Unlock()
+		return fmt.Errorf("job %q não existe", id)
+	}
+	cancel := job.cancel
+	vivo := job.State == StateQueued || job.State == StateRunning
+	if vivo {
+		// O worker só descobre o cancelamento depois; marcar aqui impede que
+		// ele republique um job que a página já esqueceu.
+		job.State = StateCanceled
+		job.FinishedAt = time.Now()
+	}
+	delete(m.jobs, id)
+	for i, other := range m.order {
+		if other == id {
+			m.order = append(m.order[:i], m.order[i+1:]...)
+			break
+		}
+	}
+	m.mu.Unlock()
+
+	if vivo && cancel != nil {
+		cancel()
+	}
+	m.hub.Broadcast("job_gone", map[string]string{"id": id})
+	return nil
 }
 
 // Cancel interrompe um review — na fila ou já rodando.

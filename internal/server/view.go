@@ -114,11 +114,13 @@ type jobView struct {
 	SavedTo    string     `json:"saved_to,omitempty"`
 	Workdir    string     `json:"workdir,omitempty"`
 	Truncated  bool       `json:"truncated,omitempty"`
-	// Tokens e Cost são o gasto do review, mostrado quando ele termina. Um
-	// agente que não fala stream-json não reporta gasto: fica zerado, e a
-	// página não mostra linha nenhuma.
+	// Tokens e Cost são o gasto do review. Enquanto ele roda são a conta
+	// parcial, e Partial diz isso à página: falta o que as lentes gastaram
+	// como sub-agente, que só entra no fechamento. Um agente que não fala
+	// stream-json não reporta gasto nenhum e fica zerado.
 	Tokens  int     `json:"tokens,omitempty"`
 	Cost    float64 `json:"cost_usd,omitempty"`
+	Partial bool    `json:"tokens_partial,omitempty"`
 	Posted  bool    `json:"posted"`
 	PostErr string  `json:"post_error,omitempty"`
 	HasBody bool    `json:"has_body"`
@@ -144,11 +146,16 @@ func (j *Job) view(withBody bool) jobView {
 		SavedTo:   j.SavedTo,
 		Workdir:   j.Result.Workdir,
 		Truncated: j.Result.Truncated,
-		Tokens:    j.Result.Usage.Total(),
-		Cost:      j.Result.Usage.CostUSD,
 		Posted:    j.Posted,
 		PostErr:   j.PostErr,
 		HasBody:   j.Result.Body != "",
+	}
+	// Terminado, quem manda é o gasto fechado do resultado; antes disso, o
+	// parcial que o agente vai reportando.
+	if used := j.Result.Usage; !used.Empty() {
+		v.Tokens, v.Cost = used.Total(), used.CostUSD
+	} else if !j.Live.Empty() {
+		v.Tokens, v.Cost, v.Partial = j.Live.Total(), j.Live.CostUSD, true
 	}
 	if j.publish != nil {
 		v.Publishing = true

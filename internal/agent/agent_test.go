@@ -498,3 +498,57 @@ func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
 		t.Errorf("devia cair no usage: %+v", p.usage)
 	}
 }
+
+// A conta anda enquanto o agente trabalha: cada mensagem do stream traz o que
+// aquela chamada gastou, e o parcial vai para a tela antes do fechamento.
+func TestUsageParcialChegaDuranteOReview(t *testing.T) {
+	events := []string{
+		`{"type":"system","subtype":"init","tools":[]}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":10,"output_tokens":5,` +
+			`"cache_creation_input_tokens":100,"cache_read_input_tokens":0},` +
+			`"content":[{"type":"text","text":"lendo o diff"}]}}`,
+		`{"type":"assistant","message":{"usage":{"input_tokens":2,"output_tokens":3,` +
+			`"cache_creation_input_tokens":0,"cache_read_input_tokens":80},` +
+			`"content":[{"type":"text","text":"pensando"}]}}`,
+		`{"type":"result","subtype":"success","result":"# Veredito","duration_ms":900,` +
+			`"total_cost_usd":0.5,"modelUsage":{"claude-opus-5":{"inputTokens":12,"outputTokens":8,` +
+			`"cacheCreationInputTokens":100,"cacheReadInputTokens":80,"costUSD":0.5},` +
+			`"sub":{"inputTokens":1000,"outputTokens":0,"costUSD":0}}}`,
+	}
+
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{
+		Name:    "stream",
+		Command: "sh",
+		Args:    []string{"-c", "cat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\n", "sh", "--output-format", "stream-json"},
+	}}
+	choice, _ := cfg.ChoiceByName("stream")
+
+	var parciais []int
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, func(e Event) {
+		if e.Kind == EventUsage {
+			parciais = append(parciais, e.Usage.Total())
+		}
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+
+	// Uma atualização por mensagem que gastou, mais o fechamento.
+	if len(parciais) < 3 {
+		t.Fatalf("esperava a conta andando, vieram %v", parciais)
+	}
+	if parciais[0] != 115 || parciais[1] != 200 {
+		t.Errorf("o parcial devia somar mensagem a mensagem: %v", parciais)
+	}
+	// O fechamento é maior que o parcial: é ele que enxerga o sub-agente.
+	if fim := parciais[len(parciais)-1]; fim != 1200 {
+		t.Errorf("o último aviso devia trazer o total fechado, veio %d", fim)
+	}
+	if res.Usage.Total() != 1200 {
+		t.Errorf("o resultado devia ficar com o total fechado: %+v", res.Usage)
+	}
+}

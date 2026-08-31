@@ -158,6 +158,8 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .card-actions { display: flex; gap: 6px; margin-top: 7px; }
 
 .state { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
+/* A unidade de tempo fica fora da caixa alta: "8S" não é oito segundos. */
+.state .dur { text-transform: none; }
 .state.queued { color: var(--dim); }
 .state.running { color: var(--accent); }
 .state.done { color: var(--ok); }
@@ -232,6 +234,17 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
   main.no-prs > .prs { width: auto; max-height: none; }
   .viewer { padding: 18px; }
 }
+
+/* O ✕ do card: discreto até o mouse chegar nele — tirar da fila é uma saída,
+   não a ação principal do card. */
+.card-x {
+  background: transparent; border: 0; color: var(--dim);
+  font-size: 12px; line-height: 1; padding: 2px 4px; margin: -2px -4px 0 4px;
+  border-radius: 4px; cursor: pointer; opacity: .45; transition: opacity .12s;
+}
+.card:hover .card-x, .card-x:focus-visible { opacity: 1; }
+.card-x:hover { color: var(--err); background: var(--panel-2); }
+.card-x:disabled { opacity: .4; cursor: not-allowed; }
 
 /* --- hambúrguer da lista --- */
 /* Recolher a lista é uma ação da lista: o botão fica nela, não na barra de

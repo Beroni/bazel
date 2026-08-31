@@ -30,6 +30,9 @@ const (
 	EventStepDone EventKind = "step_done"
 	// EventLog é uma linha que o agente escreveu enquanto rodava.
 	EventLog EventKind = "log"
+	// EventUsage é o gasto parcial do review, atualizado enquanto o agente
+	// trabalha. Só quem fala stream-json emite isto.
+	EventUsage EventKind = "usage"
 )
 
 // Event é o andamento de um review. É o que permite a TUI e a interface web
@@ -47,6 +50,9 @@ type Event struct {
 	Text   string
 	Stream string
 	Agent  string
+	// Usage só vem no EventUsage: o gasto do review inteiro até agora,
+	// passos anteriores incluídos.
+	Usage Usage
 }
 
 // StepResult é a saída de um passo do review.
@@ -148,6 +154,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}
 
 	steps := make([]StepResult, 0, total)
+	// fechado é o gasto dos passos que já terminaram: o parcial de um passo
+	// em curso é somado a ele, para o número na tela ser o do review todo.
+	var fechado Usage
 	for i, step := range choice.Steps {
 		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
 
@@ -163,11 +172,17 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				}
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name,
 					Stream: stream, Agent: who, Text: text})
+			},
+			func(parcial Usage) {
+				total := fechado
+				total.add(parcial)
+				emit(Event{Kind: EventUsage, Index: i, Total: total.Total(), Name: step.Name, Usage: total})
 			})
 		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("o agente `%s` não devolveu nada", step.Command)
 		}
+		fechado.add(used)
 		steps = append(steps, res)
 		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: res.Duration, Err: res.Err})
 
@@ -279,9 +294,10 @@ func joinSteps(steps []StepResult) (string, error) {
 // No modo stream-json o stdout é JSONL de eventos — o log recebe a versão
 // legível e o relatório sai do evento final. Em qualquer outro agente o stdout
 // é o próprio relatório, e vai cru para os dois.
-// O gasto de modelo sai junto do relatório: ele só existe no evento final do
-// stream-json, então quem lê a saída é quem sabe contá-lo.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string)) (string, Usage, error) {
+// O gasto de modelo sai junto do relatório — quem lê a saída é quem sabe
+// contá-lo — e vai saindo pelo caminho por onUsage, que é o que faz a conta
+// andar na tela em vez de aparecer só no fim.
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -324,6 +340,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
+		visto := 0
 		eachLine(stdout, func(line string) {
 			if !stream {
 				raw.WriteString(line)
@@ -333,6 +350,12 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			}
 			for _, out := range parser.line(line) {
 				log("stdout", out.Agent, out.Text)
+			}
+			// A conta só sobe quando muda: uma chamada de ferramenta não
+			// gasta token nenhum e não precisa acordar o navegador.
+			if gasto := parser.spend(); onUsage != nil && gasto.Total() != visto {
+				visto = gasto.Total()
+				onUsage(gasto)
 			}
 		})
 	}()
@@ -362,7 +385,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		return "", Usage{}, fmt.Errorf("agente `%s` falhou: %s", step.Command, msg)
 	}
 	if stream {
-		return parser.report(), parser.usage, nil
+		return parser.report(), parser.spend(), nil
 	}
 	return raw.String(), Usage{}, nil
 }

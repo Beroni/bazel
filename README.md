@@ -127,6 +127,9 @@ From the page you can:
   behind as a thin rail, so a review can take the full window; the choice is
   remembered in the browser;
 - follow the queue, cancel a job, and watch the [live log](#the-live-log);
+- **drop a job from the queue** with the `✕` on its card; if the review is
+  still running it is cancelled along the way, and the saved markdown stays on
+  disk either way;
 - **read the rendered review** and decide whether it goes to the PR — inline
   comments or a plain comment, see [Publishing](#publishing-to-the-pr);
 - re-read older reviews saved on disk;
@@ -235,17 +238,30 @@ When an agent finishes, its last log line says what the run cost:
 review-fleet          | ✓ pronto em 4m12s · 1,8M tokens · $2.41
 ```
 
-The total shows up **at the end**: on the queue card, under the agent name, and
-in the footer of the report, right where you finish reading.
+**The count climbs while the agent works.** Every streamed message carries the
+usage of the call behind it, so the queue card — and the review pane — show a
+running total as it goes, marked with a `~`:
+
+```
+~412k tokens
+```
+
+The tilde is a promise that the number will grow: a partial count only sees the
+agent's own conversation, and the lenses it spawned as sub-agents land at the
+close. When the run finishes the closed tally replaces it — on the card, in the
+footer of the report, and in the session total the top bar carries next to the
+PR count:
 
 ```
 1,8M tokens · $2.41 · 252s
 ```
 
-It is what the final `stream-json` event reports — input, output and cache
-added up, **sub-agents included** (a fleet's three lenses are in there) — and in
-a pipeline it is the sum of the steps. The same number goes into the header of
-the saved markdown:
+That final number is the per-model tally of the last `stream-json` event —
+input, output and cache added up, **sub-agents included**. The distinction
+matters: the event's plain `usage` field covers only the main conversation, so a
+fleet of three lenses would report a fraction of what it actually burned. In a
+pipeline it is the sum of the steps. The same number goes into the header of the
+saved markdown:
 
 ```
 - Gasto: 1,8M tokens (entrada 12k · saída 84k · cache 1,7M) · $2.41

@@ -107,6 +107,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	mux.HandleFunc("GET /api/jobs/{id}/log", s.handleJobLog)
+	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleJobRemove)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
@@ -455,6 +456,16 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// handleJobRemove tira o job da fila da sessão. Cancela antes, se ainda
+// estiver vivo.
+func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
+	if err := s.jobs.Remove(r.PathValue("id")); err != nil {
+		writeErr(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"removed": r.PathValue("id")})
 }
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {

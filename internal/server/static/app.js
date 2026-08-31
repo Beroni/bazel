@@ -66,13 +66,22 @@ function fmtTokens(n) {
   return v.toFixed(1).replace('.0', '').replace('.', ',') + suf;
 }
 
-// gasto é a linha do que o review custou. Agente que não fala stream-json não
-// reporta nada, e aí não há linha nenhuma.
+// gasto é a linha do que o review custou. O ~ marca a conta parcial de um
+// review em curso: ela só enxerga a conversa principal do agente, e as lentes
+// que ele rodou como sub-agente entram no fechamento. Agente que não fala
+// stream-json não reporta nada, e aí não há linha nenhuma.
 function gasto(job) {
   const partes = [];
-  if (job.tokens) partes.push(fmtTokens(job.tokens) + ' tokens');
+  if (job.tokens) partes.push((job.tokens_partial ? '~' : '') + fmtTokens(job.tokens) + ' tokens');
   if (job.cost_usd) partes.push('$' + job.cost_usd.toFixed(2));
   return partes.join(' · ');
+}
+
+// gastoTitle explica o número onde ele aparece.
+function gastoTitle(job) {
+  return job.tokens_partial
+    ? 'conta parcial — o total fecha quando o agente termina, com o que as lentes gastaram'
+    : 'tokens que os agentes deste review consumiram, sub-agentes incluídos';
 }
 
 function banner(msg) {
@@ -148,6 +157,8 @@ function connect() {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
     if (ev.type === 'job') upsertJob(ev.data);
+    // Outra aba tirou este job da fila: some daqui também.
+    if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
 }
 
@@ -168,6 +179,39 @@ function upsertJob(job) {
   if ((job.state === 'done' || job.posted) && !state.reloadingPRs) {
     state.reloadingPRs = true;
     loadPRs(false).finally(() => { state.reloadingPRs = false; });
+  }
+}
+
+// dropJob esquece um job: some da fila e, se era ele que estava aberto, o
+// painel da direita volta ao começo.
+function dropJob(id) {
+  const antes = state.jobs.length;
+  state.jobs = state.jobs.filter((j) => j.id !== id);
+  if (state.jobs.length === antes) return;
+  delete state.bodies[id];
+  delete state.logs[id];
+  if (state.activeJob === id) {
+    state.activeJob = null;
+    clearViewer();
+  }
+  renderJobs();
+  if (state.tab === 'queue') renderViewer();
+}
+
+// removeJob tira o job da fila no servidor. Um review ainda vivo morre junto,
+// e isso vale uma pergunta: é trabalho em andamento indo embora.
+async function removeJob(id, btn) {
+  const job = state.jobs.find((j) => j.id === id);
+  if (job && (job.state === 'queued' || job.state === 'running')) {
+    if (!confirm(`Este review ainda está rodando. Tirar da fila cancela ele.\n\nTirar mesmo assim?`)) return;
+  }
+  btn.disabled = true;
+  try {
+    await api('/api/jobs/' + encodeURIComponent(id), { method: 'DELETE' });
+    dropJob(id);
+  } catch (err) {
+    banner(err.message);
+    btn.disabled = false;
   }
 }
 
@@ -797,8 +841,9 @@ function renderSpend() {
   const box = $('#spend');
   if (!tokens && !cost) { box.hidden = true; return; }
   box.hidden = false;
-  box.textContent = [tokens ? fmtTokens(tokens) + ' tokens' : '', cost ? '$' + cost.toFixed(2) : '']
-    .filter(Boolean).join(' · ');
+  const parcial = state.jobs.some((j) => j.tokens_partial);
+  box.textContent = [tokens ? (parcial ? '~' : '') + fmtTokens(tokens) + ' tokens' : '',
+    cost ? '$' + cost.toFixed(2) : ''].filter(Boolean).join(' · ');
   const n = state.jobs.filter((j) => j.tokens || j.cost_usd).length;
   box.title = `gasto de ${n} review${n === 1 ? '' : 's'} nesta sessão`;
 }
@@ -819,10 +864,14 @@ function renderJobs() {
 
     const top = el('div', 'card-top');
     const st = el('span', 'state ' + job.state);
-    st.append(el('span', 'dot'), document.createTextNode(' ' + label(job)));
+    st.append(el('span', 'dot'), document.createTextNode(' '));
+    fillState(st, job);
     top.append(el('span', 'num', '#' + job.pr.number), el('span', 'repo', job.pr.slug));
     const sp = el('div', 'spacer'); sp.style.flex = '1';
-    top.append(sp, st);
+    const x = el('button', 'card-x', '✕');
+    x.title = 'tirar da fila';
+    x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
+    top.append(sp, st, x);
     card.append(top, el('div', 'title', job.pr.title));
     if (job.agent) {
       const who = el('div', 'meta');
@@ -830,7 +879,11 @@ function renderJobs() {
       if (job.publishing) who.append(el('span', 'tag posts', '⇧ publicando'));
       else if (job.posts) who.append(el('span', 'tag posts', '⇧ publica'));
       const custo = gasto(job);
-      if (custo) who.append(el('span', 'tokens', custo));
+      if (custo) {
+        const g = el('span', 'tokens', custo);
+        g.title = gastoTitle(job);
+        who.append(g);
+      }
       card.append(who);
     }
     if (job.cloning || (job.steps && job.steps.length > 1)) card.append(stepsBox(job));
@@ -872,15 +925,30 @@ function jobSeconds(job) {
   return job.seconds || 0;
 }
 
-function label(job) {
+// labelParts separa o estado do tempo que vem junto. O estado vai em caixa
+// alta pelo CSS; o tempo, não — "8S" não é oito segundos, é oito siemens.
+function labelParts(job) {
   switch (job.state) {
-    case 'queued': return 'na fila';
-    case 'running': return `rodando ${jobSeconds(job)}s`;
-    case 'done': return `pronto em ${job.seconds}s`;
-    case 'failed': return 'falhou';
-    case 'canceled': return 'cancelado';
-    default: return job.state;
+    case 'queued': return ['na fila', ''];
+    case 'running': return ['rodando', jobSeconds(job) + 's'];
+    case 'done': return ['pronto em', job.seconds + 's'];
+    case 'failed': return ['falhou', ''];
+    case 'canceled': return ['cancelado', ''];
+    default: return [job.state, ''];
   }
+}
+
+function label(job) {
+  return labelParts(job).filter(Boolean).join(' ');
+}
+
+// fillState escreve o estado dentro de um .state, com a unidade de tempo fora
+// da caixa alta. Não limpa o elemento: o ponto colorido do card já está lá.
+function fillState(span, job) {
+  const [texto, tempo] = labelParts(job);
+  span.append(document.createTextNode(texto));
+  if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
+  return span;
 }
 
 function renderSaved() {
@@ -929,7 +997,10 @@ function tickViewer(job) {
     else if (secs) row.append(el('span', 'step-time', secs + 's'));
   });
   const label_ = document.querySelector('#viewer .viewer-head .state');
-  if (label_) label_.textContent = label(job);
+  if (label_) {
+    label_.textContent = '';
+    fillState(label_, job);
+  }
 }
 
 function renderViewer() {
@@ -954,7 +1025,7 @@ function renderViewer() {
   link.href = job.pr.url;
   link.target = '_blank';
   link.rel = 'noreferrer';
-  sub.append(link, el('span', null, '@' + job.pr.author), el('span', null, `${job.pr.branch} → ${job.pr.base}`), el('span', 'state ' + job.state, label(job)));
+  sub.append(link, el('span', null, '@' + job.pr.author), el('span', null, `${job.pr.branch} → ${job.pr.base}`), fillState(el('span', 'state ' + job.state), job));
   if (job.agent) sub.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
   if (job.posts) sub.append(el('span', 'tag posts', '⇧ publica no PR'));
   grow.append(h, sub);
@@ -971,6 +1042,12 @@ function renderViewer() {
       ? 'publicando no PR o review que você leu — clonando e comentando linha a linha.'
       : 'rodando no clone do PR. Pode fechar a aba, o review continua.'));
     v.append(stepsBox(job));
+    const custo = gasto(job);
+    if (custo) {
+      const g = el('p', 'dim tokens-foot', custo);
+      g.title = gastoTitle(job);
+      v.append(g);
+    }
     v.append(logPanel(job, true));
     pollLog(job.id);
     return;
@@ -1028,7 +1105,7 @@ function renderViewer() {
   const custo = gasto(job);
   if (custo) {
     const linha = el('p', 'dim tokens-foot', custo + ' · ' + jobSeconds(job) + 's');
-    linha.title = 'tokens que os agentes deste review consumiram, sub-agentes incluídos';
+    linha.title = gastoTitle(job);
     v.append(linha);
   }
   v.scrollTop = 0;
