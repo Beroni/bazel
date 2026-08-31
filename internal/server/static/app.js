@@ -10,6 +10,7 @@ const state = {
   saved: [],
   repos: [],
   agents: [],         // escolhas do seletor: agents e pipelines
+  limits: null,       // cota do Claude: sessão (5h) e semana (7d)
   skills: [],         // skills instaladas na máquina
   skillsDir: '',
   agent: '',          // nome do que roda no próximo review
@@ -80,8 +81,8 @@ function gasto(job) {
 // gastoTitle explica o número onde ele aparece.
 function gastoTitle(job) {
   return job.tokens_partial
-    ? 'conta parcial — o total fecha quando o agente termina, com o que as lentes gastaram'
-    : 'tokens que os agentes deste review consumiram, sub-agentes incluídos';
+    ? 'partial count — it closes when the agent finishes, with what its lenses spent'
+    : "tokens this review's agents consumed, sub-agents included";
 }
 
 function banner(msg) {
@@ -106,18 +107,20 @@ async function boot() {
     state.me = st.me;
     state.jobs = st.jobs || [];
     $('#who').textContent = '@' + st.me;
-    $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagente: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nreviews simultâneos: ${st.concurrency}`;
+    $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagent: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nconcurrent reviews: ${st.concurrency}`;
+    state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
+    renderQuota();
     applyAgents(st.agents || []);
     state.repos = st.repos || [];
     renderRepoFilter();
     if (!state.repos.length) {
-      banner('Nenhum repositório monitorado — abra "config" no topo e adicione um (owner/repo).');
+      banner('No repositories watched — open "config" at the top and add one (owner/repo).');
     } else if (!selectableAgents().length) {
-      banner('Nenhum agente configurado — abra "config" no topo e monte a sua lista a partir das skills instaladas.');
+      banner('No agents configured — open "config" at the top and build your list out of the installed skills.');
     }
     renderJobs();
   } catch (err) {
-    banner('Não consegui falar com o servidor: ' + err.message);
+    banner('Could not reach the server: ' + err.message);
     return;
   }
   loadPRs(false);
@@ -140,7 +143,7 @@ async function loadPRs(force) {
     renderPRs();
   } catch (err) {
     list.innerHTML = '';
-    const p = el('p', 'empty', 'falhou: ' + err.message);
+    const p = el('p', 'empty', 'failed: ' + err.message);
     list.append(p);
   } finally {
     $('#refresh').disabled = false;
@@ -157,6 +160,7 @@ function connect() {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
     if (ev.type === 'job') upsertJob(ev.data);
+    if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
     // Outra aba tirou este job da fila: some daqui também.
     if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
@@ -203,7 +207,7 @@ function dropJob(id) {
 async function removeJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (job && (job.state === 'queued' || job.state === 'running')) {
-    if (!confirm(`Este review ainda está rodando. Tirar da fila cancela ele.\n\nTirar mesmo assim?`)) return;
+    if (!confirm(`This review is still running. Dropping it from the queue cancels it.\n\nDrop it anyway?`)) return;
   }
   btn.disabled = true;
   try {
@@ -228,7 +232,7 @@ async function reviewRefs(refs) {
   const chosen = state.agents.find((a) => a.name === state.agent);
   if (chosen && chosen.posts) {
     const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
-    if (!confirm(`O agente "${chosen.name}" publica o review direto em ${alvo}. Rodar assim mesmo?`)) return;
+    if (!confirm(`The agent "${chosen.name}" publishes the review straight to ${alvo}. Run it anyway?`)) return;
   }
   $('#review').disabled = true;
   try {
@@ -282,25 +286,25 @@ function openPR(key) {
     el('span', null, `${pr.branch} → ${pr.base}`),
     el('span', 'add', '+' + pr.additions),
     el('span', 'del', '−' + pr.deletions),
-    el('span', null, `${pr.changed_files} arq`),
+    el('span', null, `${pr.changed_files} files`),
     el('span', null, pr.age),
   );
   if (pr.draft) sub.append(el('span', 'tag draft', 'draft'));
-  if (pr.review_decision === 'APPROVED') sub.append(el('span', 'tag approved', 'aprovado'));
-  if (pr.review_decision === 'CHANGES_REQUESTED') sub.append(el('span', 'tag changes', 'mudanças'));
+  if (pr.review_decision === 'APPROVED') sub.append(el('span', 'tag approved', 'approved'));
+  if (pr.review_decision === 'CHANGES_REQUESTED') sub.append(el('span', 'tag changes', 'changes'));
   for (const t of reviewTags(pr)) sub.append(t);
   grow.append(h, sub);
 
-  const act = el('button', 'btn primary', 'revisar este PR');
+  const act = el('button', 'btn primary', 'review this PR');
   act.addEventListener('click', () => reviewRefs([pr.key]));
   head.append(grow, act);
   v.append(head);
 
   if (pr.changed_since_review) {
     const aviso = el('div', 'stale-box');
-    aviso.textContent = `Este PR mudou depois do review de ${pr.reviewed_at} atrás`
+    aviso.textContent = `This PR changed after the review from ${pr.reviewed_at} ago`
       + (pr.review_agent ? ` (${pr.review_agent})` : '')
-      + ' — o que está aqui não é mais o que o agente leu.';
+      + ' — what is here is no longer what the agent read.';
     v.append(aviso);
   }
 
@@ -309,14 +313,14 @@ function openPR(key) {
     md.innerHTML = pr.body_html;
     v.append(md);
   } else {
-    v.append(el('p', 'dim', '(sem descrição)'));
+    v.append(el('p', 'dim', '(no description)'));
   }
 
   const done = state.jobs.filter((j) => j.pr.key === pr.key);
   if (done.length) {
     const back = el('p', 'dim');
     back.style.marginTop = '28px';
-    back.append(document.createTextNode('reviews nesta sessão: '));
+    back.append(document.createTextNode('reviews in this session: '));
     for (const j of done) {
       const a = el('a', null, `${j.id} (${label(j)})`);
       a.href = '#';
@@ -358,8 +362,8 @@ async function cancelJob(id) {
 async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
-  if (!confirm(`Publicar este review em ${job.pr.key} com comentários inline?\n\nO agente vai rodar de novo, só para publicar o que você acabou de ler.`)) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'publicando…'; }
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe agent runs again, only to publish what you have just read.`)) return;
+  if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   try {
     const view = await api(`/api/jobs/${encodeURIComponent(id)}/publish`, { method: 'POST' });
     upsertJob(view);
@@ -369,7 +373,7 @@ async function publishJob(id, btn) {
     renderViewer();
   } catch (err) {
     banner(err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'publicar review inline'; }
+    if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
   }
 }
 
@@ -377,15 +381,15 @@ async function postJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const aviso = job.posts
-    ? `O agente "${job.agent}" já publicou este review em ${job.pr.key}. Publicar de novo, como comentário?`
-    : `Publicar este review como comentário em ${job.pr.key}?`;
+    ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
+    : `Publish this review as a comment on ${job.pr.key}?`;
   if (!confirm(aviso)) return;
-  if (btn) { btn.disabled = true; btn.textContent = 'publicando…'; }
+  if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST' }));
   } catch (err) {
-    banner('falha ao publicar: ' + err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'publicar no PR'; }
+    banner('failed to publish: ' + err.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'publish to the PR'; }
   }
 }
 
@@ -418,9 +422,65 @@ async function openSaved(name) {
     const md = el('div', 'md');
     md.innerHTML = data.html;
     v.append(md);
+
+    // Um review salvo continua publicável: fechar o Bazel antes de mandá-lo
+    // ao PR não pode custar o trabalho do agente.
+    const entry = state.saved.find((x) => x.name === name);
+    if (entry && entry.repo) {
+      const bar = el('div', 'viewer-actions');
+      const pub = el('button', 'btn primary', 'publish inline review');
+      pub.title = `runs the post skill and publishes to ${entry.repo}#${entry.number} with inline comments`;
+      pub.addEventListener('click', () => publishSaved(name, pub));
+      const cm = el('button', 'btn ghost', 'or paste as a comment');
+      cm.title = `pastes this review as a single comment on ${entry.repo}#${entry.number}`;
+      cm.addEventListener('click', () => commentSaved(name, cm));
+      bar.append(pub, cm);
+      v.append(bar);
+    }
     v.scrollTop = 0;
   } catch (err) {
     banner(err.message);
+  }
+}
+
+// publishSaved manda o agente de publicação levar ao PR um review que está em
+// disco — o de uma sessão anterior, aberto aqui nos salvos.
+async function publishSaved(name, btn) {
+  const entry = state.saved.find((x) => x.name === name);
+  const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.`)) return;
+  btn.disabled = true;
+  try {
+    const job = await api('/api/reviews/' + encodeURIComponent(name) + '/publish', { method: 'POST' });
+    upsertJob(job);
+    state.tab = 'queue';
+    state.activeJob = job.id;
+    state.activeSaved = null;
+    renderTabs();
+    renderJobs();
+    renderViewer();
+  } catch (err) {
+    banner(err.message);
+    btn.disabled = false;
+  }
+}
+
+// commentSaved cola o review salvo no PR, sem agente.
+async function commentSaved(name, btn) {
+  const entry = state.saved.find((x) => x.name === name);
+  const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
+  if (!confirm(`Paste this saved review as a comment on ${alvo}?`)) return;
+  btn.disabled = true;
+  const antes = btn.textContent;
+  btn.textContent = 'publishing…';
+  try {
+    await api('/api/reviews/' + encodeURIComponent(name) + '/comment', { method: 'POST' });
+    btn.textContent = '✓ commented on ' + alvo;
+    loadPRs(false);
+  } catch (err) {
+    banner('failed to publish: ' + err.message);
+    btn.disabled = false;
+    btn.textContent = antes;
   }
 }
 
@@ -477,7 +537,7 @@ function renderRepoFilter() {
   if (state.repoFilter && !repos.includes(state.repoFilter)) state.repoFilter = '';
 
   sel.innerHTML = '';
-  const todos = el('option', null, `qualquer repo (${state.prs.length})`);
+  const todos = el('option', null, `any repo (${state.prs.length})`);
   todos.value = '';
   sel.append(todos);
   for (const repo of repos) {
@@ -521,7 +581,7 @@ function renderAgents() {
   if (!opcoes.length) { sel.hidden = true; return; }
   sel.hidden = false;
   for (const a of opcoes) {
-    const opt = el('option', null, a.name + (a.pipeline ? ' ⛓' : '') + (a.posts ? ' ⇧ publica' : ''));
+    const opt = el('option', null, a.name + (a.pipeline ? ' ⛓' : '') + (a.posts ? ' ⇧ publishes' : ''));
     opt.value = a.name;
     opt.title = [a.description, a.pipeline ? (a.steps || []).join(' → ') : '']
       .filter(Boolean).join('\n');
@@ -533,11 +593,11 @@ function renderAgents() {
 
 function agentTitle(name) {
   const a = state.agents.find((x) => x.name === name);
-  if (!a) return 'qual agente roda sobre os PRs marcados';
+  if (!a) return 'which agent runs over the ticked PRs';
   return [
     a.description,
     a.pipeline ? 'pipeline: ' + (a.steps || []).join(' → ') : '',
-    a.posts ? '⇧ este agente publica o review no PR sozinho' : '',
+    a.posts ? '⇧ this agent publishes the review to the PR on its own' : '',
   ].filter(Boolean).join('\n') || a.name;
 }
 
@@ -545,7 +605,7 @@ function agentTitle(name) {
 // quem ainda nem começou.
 function stepsBox(job) {
   const box = el('div', 'steps');
-  if (job.cloning) box.append(stepRow({ name: 'clonando o repositório…', state: 'running' }));
+  if (job.cloning) box.append(stepRow({ name: 'cloning the repository…', state: 'running' }));
   for (const st of job.steps || []) {
     box.append(stepRow(st));
   }
@@ -590,7 +650,7 @@ function logState(id) {
 // ela que dá a cor de cada terminal.
 function noteAgents(st, lines) {
   for (const l of lines) {
-    const who = l.agent || 'agente';
+    const who = l.agent || 'agent';
     if (!st.agents.includes(who)) st.agents.push(who);
   }
 }
@@ -632,7 +692,7 @@ const maxTermLines = 300;
 // agentName é o nome que vai no cabeçalho do terminal. Linha sem assinatura é
 // do agente do passo — o servidor já manda esse nome preenchido.
 function agentName(l) {
-  return l.agent || 'agente';
+  return l.agent || 'agent';
 }
 
 function logLineEl(l) {
@@ -679,7 +739,7 @@ function logTerminals(id) {
   wrap.dataset.job = id;
   const st = logState(id);
   for (const l of st.lines) pushLine(wrap, id, l);
-  if (!st.lines.length) wrap.append(el('p', 'log-empty', 'esperando o agente falar…'));
+  if (!st.lines.length) wrap.append(el('p', 'log-empty', 'waiting for the agent to speak…'));
   return wrap;
 }
 
@@ -700,9 +760,9 @@ function logCountLabel(id, total) {
   const st = logState(id);
   const n = Math.max(st.next, total || 0);
   const agentes = st.agents.length;
-  return `${n} linha${n === 1 ? '' : 's'}`
-    + (agentes > 1 ? ` · ${agentes} agentes` : '')
-    + (st.dropped ? ` · ${st.dropped} mais antigas descartadas` : '');
+  return `${n} line${n === 1 ? '' : 's'}`
+    + (agentes > 1 ? ` · ${agentes} agents` : '')
+    + (st.dropped ? ` · ${st.dropped} older dropped` : '');
 }
 
 function logPanel(job, open) {
@@ -711,7 +771,7 @@ function logPanel(job, open) {
   const sum = el('summary');
   const count = el('span', 'dim', logCountLabel(job.id, job.log_lines));
   count.id = 'log-count';
-  sum.append(el('span', null, 'log dos agentes'), document.createTextNode(' · '), count);
+  sum.append(el('span', null, 'agent log'), document.createTextNode(' · '), count);
 
   wrap.append(sum, logTerminals(job.id));
   // Log de review já terminado só é buscado quando alguém abre.
@@ -727,8 +787,8 @@ function renderStats() {
   // continua à vista, senão some a pista de que há um filtro escondendo PR.
   const conta = shown === total
     ? `${total} PR${total === 1 ? '' : 's'}`
-    : `${shown} de ${total} PRs`;
-  $('#stats').textContent = conta + (marked ? ` · ${marked} marcado${marked === 1 ? '' : 's'}` : '');
+    : `${shown} of ${total} PRs`;
+  $('#stats').textContent = conta + (marked ? ` · ${marked} ticked` : '');
 }
 
 function renderPRs() {
@@ -736,7 +796,7 @@ function renderPRs() {
   const prs = visiblePRs();
   list.innerHTML = '';
   if (!prs.length) {
-    list.append(el('p', 'empty', state.prs.length ? 'nada bate com o filtro' : 'nenhum PR aberto'));
+    list.append(el('p', 'empty', state.prs.length ? 'nothing matches the filter' : 'no open PRs'));
     renderStats();
     updateReviewButton();
     return;
@@ -758,9 +818,9 @@ function renderPRs() {
     const top = el('div', 'pr-top');
     top.append(el('span', 'num', '#' + pr.number), el('span', 'repo', pr.slug));
     if (pr.draft) top.append(el('span', 'tag draft', 'draft'));
-    if (pr.mine) top.append(el('span', 'tag mine', 'você'));
-    if (pr.review_decision === 'APPROVED') top.append(el('span', 'tag approved', 'aprovado'));
-    if (pr.review_decision === 'CHANGES_REQUESTED') top.append(el('span', 'tag changes', 'mudanças'));
+    if (pr.mine) top.append(el('span', 'tag mine', 'you'));
+    if (pr.review_decision === 'APPROVED') top.append(el('span', 'tag approved', 'approved'));
+    if (pr.review_decision === 'CHANGES_REQUESTED') top.append(el('span', 'tag changes', 'changes'));
     for (const t of reviewTags(pr)) top.append(t);
 
     const meta = el('div', 'meta');
@@ -768,7 +828,7 @@ function renderPRs() {
       el('span', null, '@' + pr.author),
       el('span', 'add', '+' + pr.additions),
       el('span', 'del', '−' + pr.deletions),
-      el('span', null, `${pr.changed_files} arq`),
+      el('span', null, `${pr.changed_files} files`),
       el('span', null, pr.age),
     );
 
@@ -787,12 +847,12 @@ function renderPRs() {
 function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
-    const t = el('span', 'tag stale', '⟳ mudou desde o review');
-    t.title = `revisado há ${pr.reviewed_at} por ${pr.review_agent || 'um agente'}, e o PR recebeu commit novo depois`;
+    const t = el('span', 'tag stale', '⟳ changed since review');
+    t.title = `reviewed ${pr.reviewed_at} ago by ${pr.review_agent || 'an agent'}, and the PR got new commits afterwards`;
     return [t];
   }
-  const t = el('span', 'tag reviewed', '✓ revisado ' + pr.reviewed_at + (pr.review_posted ? ' · publicado' : ''));
-  t.title = `revisado por ${pr.review_agent || 'um agente'}`;
+  const t = el('span', 'tag reviewed', '✓ reviewed ' + pr.reviewed_at + (pr.review_posted ? ' · published' : ''));
+  t.title = `reviewed by ${pr.review_agent || 'an agent'}`;
   return [t];
 }
 
@@ -807,9 +867,9 @@ function updateReviewButton() {
   const semAgente = !selectableAgents().length;
   btn.disabled = n === 0 || semAgente;
   btn.title = semAgente
-    ? 'nenhum agente configurado — abra "config" e monte a lista a partir das suas skills'
-    : 'roda o agente escolhido sobre os PRs marcados';
-  btn.textContent = n > 1 ? `revisar ${n}` : 'revisar';
+    ? 'no agents configured — open "config" and build the list out of your skills'
+    : 'runs the chosen agent over the ticked PRs';
+  btn.textContent = n > 1 ? `review ${n}` : 'review';
 }
 
 // togglePRs recolhe a lista da esquerda até a faixa do hambúrguer e a traz de
@@ -819,7 +879,7 @@ function togglePRs(hide) {
   state.prsHidden = hide;
   document.querySelector('main').classList.toggle('no-prs', hide);
   const b = $('#toggle-prs');
-  b.title = hide ? 'mostrar a lista de PRs' : 'esconder a lista (deixa o review em tela cheia)';
+  b.title = hide ? 'show the PR list' : 'hide the list (gives the review the full window)';
   b.setAttribute('aria-expanded', hide ? 'false' : 'true');
   try {
     localStorage.setItem('bazel.prsHidden', hide ? '1' : '');
@@ -831,6 +891,41 @@ function togglePRs(hide) {
 function renderTabs() {
   document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === state.tab));
   if (state.tab === 'saved') loadSaved(); else renderJobs();
+}
+
+// renderQuota mostra a cota do Claude — as mesmas janelas do `/usage`: cinco
+// horas e sete dias. Ela não se consulta: chega de carona no stream de quem
+// está rodando, então o que está na tela é a última leitura, e o título diz de
+// quando ela é.
+function renderQuota() {
+  const box = $('#quota');
+  const l = state.limits;
+  if (!l) { box.hidden = true; return; }
+  box.hidden = false;
+  box.textContent = '';
+  box.append(document.createTextNode('claude '));
+  box.append(quotaPart('session', l.session), document.createTextNode(' · '), quotaPart('week', l.week));
+
+  const quando = l.at ? new Date(l.at).toLocaleTimeString() : '';
+  box.title = [
+    'Claude usage, as of the last agent that ran' + (quando ? ' (' + quando + ')' : ''),
+    resetLine('session', l.session),
+    resetLine('week', l.week),
+    l.status && l.status !== 'allowed' ? 'status: ' + l.status : '',
+  ].filter(Boolean).join('\n');
+}
+
+// quotaPart pinta a janela conforme ela enche: amarelo aos 75%, vermelho aos
+// 90% — o número sozinho não avisa que a parede está perto.
+function quotaPart(nome, w) {
+  const pct = Math.round((w && w.utilization ? w.utilization : 0) * 100);
+  const cls = pct >= 90 ? 'hot' : pct >= 75 ? 'warn' : '';
+  return el('span', cls, `${nome} ${pct}%`);
+}
+
+function resetLine(nome, w) {
+  if (!w || !w.resets_at) return '';
+  return `${nome} resets at ${new Date(w.resets_at).toLocaleString()}`;
 }
 
 // renderSpend soma o que os reviews desta sessão consumiram. Fica na barra de
@@ -845,7 +940,7 @@ function renderSpend() {
   box.textContent = [tokens ? (parcial ? '~' : '') + fmtTokens(tokens) + ' tokens' : '',
     cost ? '$' + cost.toFixed(2) : ''].filter(Boolean).join(' · ');
   const n = state.jobs.filter((j) => j.tokens || j.cost_usd).length;
-  box.title = `gasto de ${n} review${n === 1 ? '' : 's'} nesta sessão`;
+  box.title = `spend of ${n} review${n === 1 ? '' : 's'} in this session`;
 }
 
 function renderJobs() {
@@ -869,15 +964,15 @@ function renderJobs() {
     top.append(el('span', 'num', '#' + job.pr.number), el('span', 'repo', job.pr.slug));
     const sp = el('div', 'spacer'); sp.style.flex = '1';
     const x = el('button', 'card-x', '✕');
-    x.title = 'tirar da fila';
+    x.title = 'drop from the queue';
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
     top.append(sp, st, x);
     card.append(top, el('div', 'title', job.pr.title));
     if (job.agent) {
       const who = el('div', 'meta');
       who.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
-      if (job.publishing) who.append(el('span', 'tag posts', '⇧ publicando'));
-      else if (job.posts) who.append(el('span', 'tag posts', '⇧ publica'));
+      if (job.publishing) who.append(el('span', 'tag posts', '⇧ publishing'));
+      else if (job.posts) who.append(el('span', 'tag posts', '⇧ publishes'));
       const custo = gasto(job);
       if (custo) {
         const g = el('span', 'tokens', custo);
@@ -890,22 +985,22 @@ function renderJobs() {
 
     const actions = el('div', 'card-actions');
     if (job.state === 'queued' || job.state === 'running') {
-      const b = el('button', 'btn small ghost', 'cancelar');
+      const b = el('button', 'btn small ghost', 'cancel');
       b.addEventListener('click', (e) => { e.stopPropagation(); cancelJob(job.id); });
       actions.append(b);
     }
     if (job.state === 'done' && !job.publishing) {
       if (!job.posted) {
-        const p = el('button', 'btn small', 'publicar review inline');
-        p.title = 'roda a skill de post e publica com comentários inline';
+        const p = el('button', 'btn small', 'publish inline review');
+        p.title = 'runs the post skill and publishes with inline comments';
         p.addEventListener('click', (e) => { e.stopPropagation(); publishJob(job.id, p); });
         actions.append(p);
       }
       if (job.posted) {
-        actions.append(el('span', 'state done', '✓ comentado'));
+        actions.append(el('span', 'state done', '✓ commented'));
       } else {
-        const b = el('button', 'btn small ghost', 'comentar');
-        b.title = 'cola o review como um comentário só, sem agente';
+        const b = el('button', 'btn small ghost', 'comment');
+        b.title = 'pastes the review as a single comment, no agent';
         b.addEventListener('click', (e) => { e.stopPropagation(); postJob(job.id, b); });
         actions.append(b);
       }
@@ -929,11 +1024,11 @@ function jobSeconds(job) {
 // alta pelo CSS; o tempo, não — "8S" não é oito segundos, é oito siemens.
 function labelParts(job) {
   switch (job.state) {
-    case 'queued': return ['na fila', ''];
-    case 'running': return ['rodando', jobSeconds(job) + 's'];
-    case 'done': return ['pronto em', job.seconds + 's'];
-    case 'failed': return ['falhou', ''];
-    case 'canceled': return ['cancelado', ''];
+    case 'queued': return ['queued', ''];
+    case 'running': return ['running', jobSeconds(job) + 's'];
+    case 'done': return ['done in', job.seconds + 's'];
+    case 'failed': return ['failed', ''];
+    case 'canceled': return ['canceled', ''];
     default: return [job.state, ''];
   }
 }
@@ -955,7 +1050,7 @@ function renderSaved() {
   const rail = $('#rail');
   rail.innerHTML = '';
   if (!state.saved.length) {
-    clearViewer().append(el('p', 'empty', 'nenhum review salvo ainda'));
+    clearViewer().append(el('p', 'empty', 'no saved reviews yet'));
     return;
   }
   if (!state.activeSaved) {
@@ -1027,20 +1122,20 @@ function renderViewer() {
   link.rel = 'noreferrer';
   sub.append(link, el('span', null, '@' + job.pr.author), el('span', null, `${job.pr.branch} → ${job.pr.base}`), fillState(el('span', 'state ' + job.state), job));
   if (job.agent) sub.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
-  if (job.posts) sub.append(el('span', 'tag posts', '⇧ publica no PR'));
+  if (job.posts) sub.append(el('span', 'tag posts', '⇧ publishes to the PR'));
   grow.append(h, sub);
   head.append(grow);
   v.append(head);
 
   if (job.state === 'queued') {
-    v.append(el('p', 'dim', 'na fila — começa assim que um worker liberar.'));
+    v.append(el('p', 'dim', 'queued — starts as soon as a worker frees up.'));
     if (job.steps && job.steps.length) v.append(stepsBox(job));
     return;
   }
   if (job.state === 'running') {
     v.append(el('p', 'dim', job.publishing
-      ? 'publicando no PR o review que você leu — clonando e comentando linha a linha.'
-      : 'rodando no clone do PR. Pode fechar a aba, o review continua.'));
+      ? 'publishing the review you read — cloning the PR and commenting line by line.'
+      : 'running inside the PR clone. You can close the tab, the review keeps going.'));
     v.append(stepsBox(job));
     const custo = gasto(job);
     if (custo) {
@@ -1053,11 +1148,11 @@ function renderViewer() {
     return;
   }
   if (job.state === 'canceled') {
-    v.append(el('p', 'dim', 'cancelado.'));
+    v.append(el('p', 'dim', 'canceled.'));
     return;
   }
   if (job.state === 'failed') {
-    v.append(el('div', 'error-box', job.error || 'falhou'));
+    v.append(el('div', 'error-box', job.error || 'failed'));
     if (job.log_lines) v.append(logPanel(job, true));
     pollLog(job.id);
     return;
@@ -1065,7 +1160,7 @@ function renderViewer() {
 
   const html = state.bodies[job.id];
   if (!html) {
-    v.append(el('p', 'dim', 'carregando review…'));
+    v.append(el('p', 'dim', 'loading review…'));
     return;
   }
   const md = el('div', 'md');
@@ -1079,14 +1174,14 @@ function renderViewer() {
   // quando terminou de ler — que é o momento de decidir se isso vai para o PR.
   if (!job.publishing) {
     const bar = el('div', 'viewer-actions');
-    const pub = el('button', 'btn primary', 'publicar review inline');
-    pub.title = 'roda a skill de post e publica no PR com comentários inline';
+    const pub = el('button', 'btn primary', 'publish inline review');
+    pub.title = 'runs the post skill and publishes to the PR with inline comments';
     pub.addEventListener('click', () => publishJob(job.id, pub));
     bar.append(pub);
     if (job.posted) {
-      bar.append(el('span', 'state done', '✓ já comentado no PR'));
+      bar.append(el('span', 'state done', '✓ already commented on the PR'));
     } else {
-      const cm = el('button', 'btn ghost', 'ou colar como comentário');
+      const cm = el('button', 'btn ghost', 'or paste as a comment');
       cm.addEventListener('click', () => postJob(job.id, cm));
       bar.append(cm);
     }
@@ -1095,10 +1190,10 @@ function renderViewer() {
 
   const foot = el('p', 'dim');
   foot.style.marginTop = '32px';
-  foot.textContent = job.saved_to ? 'salvo em ' + job.saved_to : '';
-  if (job.workdir) foot.textContent += (foot.textContent ? ' · ' : '') + 'clone preservado em ' + job.workdir;
-  if (job.truncated) foot.textContent += ' · diff truncado';
-  if (job.post_error) v.append(el('div', 'error-box', 'falha ao publicar: ' + job.post_error));
+  foot.textContent = job.saved_to ? 'saved to ' + job.saved_to : '';
+  if (job.workdir) foot.textContent += (foot.textContent ? ' · ' : '') + 'clone kept at ' + job.workdir;
+  if (job.truncated) foot.textContent += ' · diff truncated';
+  if (job.post_error) v.append(el('div', 'error-box', 'failed to publish: ' + job.post_error));
   v.append(foot);
 
   // O que o review custou, no fim dele — é onde você chega depois de ler.
@@ -1180,7 +1275,7 @@ function renderAgentList() {
   box.innerHTML = '';
   const meus = state.agents.filter((a) => !a.publisher);
   if (!meus.length) {
-    box.append(el('p', 'none', 'nenhum agente ainda — escolha abaixo, nas skills instaladas, quais viram agente.'));
+    box.append(el('p', 'none', 'no agents yet — pick below, among the installed skills, which ones become agents.'));
   }
   for (const a of state.agents) {
     const row = el('div', 'agent-row');
@@ -1188,21 +1283,21 @@ function renderAgentList() {
     const top = el('div', 'agent-top');
     top.append(el('span', 'agent-name', a.name));
     if (a.pipeline) top.append(el('span', 'tag', 'pipeline'));
-    if (a.posts) top.append(el('span', 'tag posts', '⇧ publica'));
-    if (a.publisher) top.append(el('span', 'tag', 'usado ao publicar'));
-    else if (state.agent === a.name) top.append(el('span', 'tag mine', 'padrão'));
+    if (a.posts) top.append(el('span', 'tag posts', '⇧ publishes'));
+    if (a.publisher) top.append(el('span', 'tag', 'used when publishing'));
+    else if (state.agent === a.name) top.append(el('span', 'tag mine', 'default'));
 
     // O agente de publicação não é uma escolha da lista: ele é o que roda
     // quando você manda publicar um review já lido, e não sai daqui.
     if (!a.publisher) {
       top.append(el('div', 'spacer'));
       if (state.agent !== a.name) {
-        const d = el('button', 'btn small ghost', 'tornar padrão');
-        d.title = 'passa a ser o agente que já vem escolhido no seletor';
+        const d = el('button', 'btn small ghost', 'make default');
+        d.title = 'becomes the agent the selector starts on';
         d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
         top.append(d);
       }
-      const rm = el('button', 'btn small ghost', 'remover');
+      const rm = el('button', 'btn small ghost', 'remove');
       rm.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name), 'DELETE', rm));
       top.append(rm);
     }
@@ -1216,11 +1311,11 @@ function renderAgentList() {
       const t = el('span', 'skill-ref ' + (sk.installed ? 'ok' : 'missing'),
         (sk.installed ? '✓ /' : '✗ /') + sk.name);
       t.title = sk.installed
-        ? 'instalada em ' + state.skillsDir
-        : `esta skill não está em ${state.skillsDir} — o agente vai falhar ao rodar`;
+        ? 'installed in ' + state.skillsDir
+        : `this skill is not in ${state.skillsDir} — the agent will fail at run time`;
       usa.append(t);
     }
-    if (!(a.skills || []).length) usa.append(el('span', 'dim', 'não chama skill nenhuma'));
+    if (!(a.skills || []).length) usa.append(el('span', 'dim', 'calls no skill'));
     row.append(usa);
 
     box.append(row);
@@ -1236,7 +1331,7 @@ async function agentAction(path, method, btn, body) {
     applyAgents(res.agents || [], path.endsWith('/default'));
     // Esvaziar a lista de novo é voltar ao estado inicial: sem agente não há
     // review, e quem está com a configuração aberta precisa saber.
-    banner(selectableAgents().length ? '' : 'Nenhum agente configurado — escolha abaixo quais skills viram agente.');
+    banner(selectableAgents().length ? '' : 'No agents configured — pick below which skills become agents.');
     await refreshConfig();
   } catch (err) {
     banner(err.message);
@@ -1252,7 +1347,7 @@ function renderSkillList() {
   box.innerHTML = '';
   $('#skills-dir').textContent = state.skillsDir ? '· ' + state.skillsDir : '';
   if (!state.skills.length) {
-    box.append(el('p', 'none', `nada em ${state.skillsDir || '~/.claude/skills'} — sem skill instalada não há agente para montar.`));
+    box.append(el('p', 'none', `nothing in ${state.skillsDir || '~/.claude/skills'} — with no skill installed there is no agent to build.`));
     return;
   }
   // As que já viraram agente vêm primeiro: são as que importam aqui.
@@ -1274,15 +1369,15 @@ function renderSkillList() {
       const b = el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo);
       if (nomes.has(nome)) {
         b.disabled = true;
-        b.title = `${nome} já está na lista de agentes`;
+        b.title = `${nome} is already in the agent list`;
       } else {
         b.title = dica;
         b.addEventListener('click', () => agentAction('/api/agents', 'POST', b, { skill: sk.name, posts }));
       }
       acoes.append(b);
     };
-    add('usar', false, `vira o agente ${sk.name}: roda /${sk.name} no PR e devolve o review para você ler`);
-    add('⇧ publica', true, `vira o agente ${sk.name}-post: roda /${sk.name} --post e publica o review direto no PR`);
+    add('use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
+    add('⇧ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
     row.append(acoes);
 
     box.append(row);
@@ -1325,13 +1420,13 @@ function renderRepos() {
   const box = $('#repo-list');
   box.innerHTML = '';
   if (!state.repos.length) {
-    box.append(el('p', 'none', 'nenhum ainda — o Bazel não tem onde procurar PR.'));
+    box.append(el('p', 'none', 'none yet — Bazel has nowhere to look for PRs.'));
     return;
   }
   for (const repo of state.repos) {
     const row = el('div', 'repo-row');
     row.append(el('span', null, repo));
-    const rm = el('button', 'btn small ghost', 'remover');
+    const rm = el('button', 'btn small ghost', 'remove');
     rm.addEventListener('click', () => removeRepo(repo, rm));
     row.append(rm);
     box.append(row);

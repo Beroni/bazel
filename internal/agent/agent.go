@@ -33,6 +33,9 @@ const (
 	// EventUsage é o gasto parcial do review, atualizado enquanto o agente
 	// trabalha. Só quem fala stream-json emite isto.
 	EventUsage EventKind = "usage"
+	// EventLimits é a cota do Claude, que vem de carona no stream de quem
+	// está rodando.
+	EventLimits EventKind = "limits"
 )
 
 // Event é o andamento de um review. É o que permite a TUI e a interface web
@@ -53,6 +56,8 @@ type Event struct {
 	// Usage só vem no EventUsage: o gasto do review inteiro até agora,
 	// passos anteriores incluídos.
 	Usage Usage
+	// Limits só vem no EventLimits.
+	Limits Limits
 }
 
 // StepResult é a saída de um passo do review.
@@ -177,10 +182,13 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				total := fechado
 				total.add(parcial)
 				emit(Event{Kind: EventUsage, Index: i, Total: total.Total(), Name: step.Name, Usage: total})
+			},
+			func(l Limits) {
+				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
 		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
-			res.Err = fmt.Errorf("o agente `%s` não devolveu nada", step.Command)
+			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
 		fechado.add(used)
 		steps = append(steps, res)
@@ -229,7 +237,7 @@ func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (
 	}
 	if !wantsDiff {
 		if pr.ChangedFiles == 0 {
-			return "", false, fmt.Errorf("%s não tem arquivos alterados — nada a revisar", pr.Key())
+			return "", false, fmt.Errorf("%s has no changed files — nothing to review", pr.Key())
 		}
 		return "", false, nil
 	}
@@ -239,7 +247,7 @@ func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (
 		return "", false, fmt.Errorf("baixando diff de %s: %w", pr.Key(), err)
 	}
 	if strings.TrimSpace(diff) == "" {
-		return "", false, fmt.Errorf("%s não tem diff — nada a revisar", pr.Key())
+		return "", false, fmt.Errorf("%s has no diff — nothing to review", pr.Key())
 	}
 	if truncated {
 		diff += "\n\n[... diff truncado em " + strconv.Itoa(r.cfg.MaxDiffBytes) + " bytes ...]"
@@ -264,7 +272,7 @@ func joinSteps(steps []StepResult) (string, error) {
 			}
 		}
 		if len(errs) == 0 {
-			return "", errors.New("nenhum agente rodou")
+			return "", errors.New("no agent ran")
 		}
 		return "", errors.Join(errs...)
 	}
@@ -279,7 +287,7 @@ func joinSteps(steps []StepResult) (string, error) {
 		}
 		fmt.Fprintf(&b, "## %s\n\n", s.Name)
 		if s.Err != nil {
-			fmt.Fprintf(&b, "> ✗ falhou: %s\n", firstLine(s.Err.Error()))
+			fmt.Fprintf(&b, "> ✗ failed: %s\n", firstLine(s.Err.Error()))
 			continue
 		}
 		b.WriteString(s.Body + "\n")
@@ -297,7 +305,7 @@ func joinSteps(steps []StepResult) (string, error) {
 // O gasto de modelo sai junto do relatório — quem lê a saída é quem sabe
 // contá-lo — e vai saindo pelo caminho por onUsage, que é o que faz a conta
 // andar na tela em vez de aparecer só no fim.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage)) (string, Usage, error) {
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -305,7 +313,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 
 	if _, err := exec.LookPath(step.Command); err != nil {
-		return "", Usage{}, fmt.Errorf("agente `%s` não encontrado no PATH", step.Command)
+		return "", Usage{}, fmt.Errorf("agent `%s` not found in PATH", step.Command)
 	}
 
 	cmd := exec.CommandContext(ctx, step.Command, step.Args...)
@@ -320,7 +328,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		return "", Usage{}, err
 	}
 	if err := cmd.Start(); err != nil {
-		return "", Usage{}, fmt.Errorf("agente `%s` não subiu: %w", step.Command, err)
+		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
 
 	log := func(stream, who, text string) {
@@ -341,6 +349,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	go func() {
 		defer wg.Done()
 		visto := 0
+		var cota time.Time
 		eachLine(stdout, func(line string) {
 			if !stream {
 				raw.WriteString(line)
@@ -357,6 +366,10 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 				visto = gasto.Total()
 				onUsage(gasto)
 			}
+			if onLimits != nil && parser.limits.At.After(cota) {
+				cota = parser.limits.At
+				onLimits(parser.limits)
+			}
 		})
 	}()
 	go func() {
@@ -372,7 +385,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	err = cmd.Wait()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", Usage{}, fmt.Errorf("`%s` estourou o timeout de %ds", step.Name, step.TimeoutSeconds)
+		return "", Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		return "", Usage{}, context.Canceled
@@ -382,7 +395,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", Usage{}, fmt.Errorf("agente `%s` falhou: %s", step.Command, msg)
+		return "", Usage{}, fmt.Errorf("agent `%s` failed: %s", step.Command, msg)
 	}
 	if stream {
 		return parser.report(), parser.spend(), nil
@@ -440,10 +453,10 @@ func firstLine(s string) string {
 func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[string]string) string {
 	body := strings.TrimSpace(pr.Body)
 	if body == "" {
-		body = "(sem descrição)"
+		body = "(no description)"
 	}
 	if workdir == "" {
-		workdir = "(sem clone local)"
+		workdir = "(no local clone)"
 	}
 	// A task entra no molde antes da substituição, e não como mais um par do
 	// Replacer: ela também tem placeholders ("/review-fleet {{number}}"), e o

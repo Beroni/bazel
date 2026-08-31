@@ -70,7 +70,7 @@ func (s Status) Age(now time.Time) string {
 	d := now.Sub(s.At)
 	switch {
 	case d < time.Minute:
-		return "agora"
+		return "just now"
 	case d < time.Hour:
 		return strconv.Itoa(int(d.Minutes())) + "m"
 	case d < 24*time.Hour:

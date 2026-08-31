@@ -260,12 +260,12 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 
 	got := strings.Join(log, "\n")
 	for _, want := range []string{
-		"· sessão iniciada · 2 ferramentas",
+		"· session started · 2 tools",
 		"→ Read internal/gh/gh.go",
 		"→ Agent(exploit-digger): varrer o diff",
 		"achei uma brecha",
 		"✗ No files found",
-		"✓ pronto em 12s · 34,2k tokens · $0.42",
+		"✓ done in 12s · 34,2k tokens · $0.42",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("o log não tem %q:\n%s", want, got)
@@ -407,7 +407,7 @@ func TestReviewKeepsGoingAfterFailedStep(t *testing.T) {
 	if res.Steps[0].Err == nil {
 		t.Error("o primeiro passo devia ter falhado")
 	}
-	if !strings.Contains(res.Body, "✗ falhou") || !strings.Contains(res.Body, "achado") {
+	if !strings.Contains(res.Body, "✗ failed") || !strings.Contains(res.Body, "achado") {
 		t.Errorf("o relatório devia trazer a falha e o achado:\n%s", res.Body)
 	}
 }

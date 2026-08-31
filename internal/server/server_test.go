@@ -148,9 +148,14 @@ func TestPipelineJobReportsEveryStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	// Na fila o job já anuncia o que vai rodar.
-	if view.Agent != "dupla" || len(view.Steps) != 2 || view.Steps[0].State != StateQueued {
+	// Na fila o job já anuncia o que vai rodar. O estado do primeiro passo
+	// não entra na conta: o worker é livre para pegá-lo antes desta linha, e
+	// exigir "queued" aqui é uma corrida com ele.
+	if view.Agent != "dupla" || len(view.Steps) != 2 {
 		t.Fatalf("job enfileirado devia listar os passos: %+v", view)
+	}
+	if view.Steps[0].Name != "primeiro" || view.Steps[1].Name != "segundo" {
+		t.Fatalf("os passos deviam vir na ordem da pipeline: %+v", view.Steps)
 	}
 
 	done := waitFor(t, ch, view.ID, StateDone)
@@ -719,7 +724,7 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 	// Skill que não está na máquina não vira agente: isso só falharia na hora
 	// de rodar, que é tarde demais.
 	rec, _ = call(http.MethodPost, "/api/agents", `{"skill":"nao-instalada"}`)
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "não está instalada") {
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "is not installed") {
 		t.Errorf("skill ausente devia dar 400 explicando: %d %s", rec.Code, rec.Body)
 	}
 
@@ -774,7 +779,7 @@ func TestReviewSemAgenteConfigurado(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("sem agente devia dar 400, deu %d: %s", rec.Code, rec.Body)
 	}
-	if !strings.Contains(rec.Body.String(), "nenhum agente configurado") {
+	if !strings.Contains(rec.Body.String(), "no agents configured") {
 		t.Errorf("o erro devia dizer o que fazer: %s", rec.Body)
 	}
 }
@@ -814,7 +819,7 @@ func TestJobViewLevaOGastoDeTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lendo review salvo: %v", err)
 	}
-	if !strings.Contains(string(saved), "- Gasto: 33,2k tokens") {
+	if !strings.Contains(string(saved), "- Spend: 33,2k tokens") {
 		t.Errorf("o review salvo devia registrar o gasto:\n%s", saved)
 	}
 }
@@ -923,5 +928,58 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 			t.Fatal("o worker não ficou livre depois da remoção")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// Fechar o Bazel antes de publicar não pode custar o review: ele está em
+// disco, e daí ainda dá para mandá-lo ao PR — sem job de origem nenhum, que é
+// justamente o caso de quem reiniciou o servidor.
+func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+	// O agente de publicação também é o `cat` daqui: o que se testa é o
+	// caminho do arquivo até a fila, não o que o post-report faria. Sem
+	// clone: publicar de verdade clona, mas o repositório daqui é fictício.
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &semClone}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	path := filepath.Join(dir, "acme-api-core-482-20260830-120000.md")
+	if err := os.WriteFile(path, []byte("# acme/api-core#482 — feat\n\n---\n\n# Verdict\n\nAll good.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.")
+	if err != nil {
+		t.Fatalf("PublishSaved: %v", err)
+	}
+	if !view.Publishing || view.Agent != "post" {
+		t.Fatalf("devia virar um job de publicação: %+v", view)
+	}
+
+	// Pedir de novo enquanto o primeiro roda não abre um segundo: publicar
+	// duas vezes o mesmo arquivo é comentar duas vezes no PR.
+	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.")
+	if err != nil {
+		t.Fatalf("PublishSaved de novo: %v", err)
+	}
+	if again.ID != view.ID && again.State != StateDone {
+		t.Errorf("esperava o mesmo job em curso, veio %+v", again)
+	}
+
+	// Uma publicação não gera outro arquivo: o review já está salvo, e este
+	// job só levou o que estava nele ao PR.
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.SavedTo != "" {
+		t.Errorf("uma publicação não devia salvar outro review: %q", done.SavedTo)
+	}
+	if _, err := m.PublishSaved(testPR(482), false, "", "corpo"); err == nil {
+		t.Error("sem arquivo não há o que publicar")
 	}
 }

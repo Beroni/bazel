@@ -53,7 +53,7 @@ func (p PR) Age(now time.Time) string {
 	d := now.Sub(p.UpdatedAt)
 	switch {
 	case d < time.Minute:
-		return "agora"
+		return "just now"
 	case d < time.Hour:
 		return fmt.Sprintf("%dm", int(d.Minutes()))
 	case d < 24*time.Hour:
@@ -68,13 +68,13 @@ const prFields = "number,title,url,body,isDraft,additions,deletions,changedFiles
 // CheckAuth confirma que o `gh` existe e está logado.
 func CheckAuth(ctx context.Context) error {
 	if _, err := exec.LookPath("gh"); err != nil {
-		return fmt.Errorf("`gh` não encontrado no PATH — instale o GitHub CLI (brew install gh)")
+		return fmt.Errorf("`gh` not found in PATH — install the GitHub CLI (brew install gh)")
 	}
 	cmd := exec.CommandContext(ctx, "gh", "auth", "status")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("`gh` não está autenticado — rode `gh auth login`")
+		return fmt.Errorf("`gh` is not authenticated — run `gh auth login`")
 	}
 	return nil
 }
@@ -204,20 +204,20 @@ func ParseRef(ref string) (repo string, number int, err error) {
 		if len(parts) >= 4 && parts[2] == "pull" {
 			n, convErr := strconv.Atoi(parts[3])
 			if convErr != nil {
-				return "", 0, fmt.Errorf("número de PR inválido em %q", ref)
+				return "", 0, fmt.Errorf("invalid PR number in %q", ref)
 			}
 			return parts[0] + "/" + parts[1], n, nil
 		}
-		return "", 0, fmt.Errorf("URL de PR inválida: %q", ref)
+		return "", 0, fmt.Errorf("invalid PR URL: %q", ref)
 	}
 	if i := strings.Index(ref, "#"); i > 0 {
 		n, convErr := strconv.Atoi(strings.TrimSpace(ref[i+1:]))
 		if convErr != nil {
-			return "", 0, fmt.Errorf("número de PR inválido em %q", ref)
+			return "", 0, fmt.Errorf("invalid PR number in %q", ref)
 		}
 		return strings.TrimSpace(ref[:i]), n, nil
 	}
-	return "", 0, fmt.Errorf("referência inválida: %q (use owner/repo#123 ou a URL do PR)", ref)
+	return "", 0, fmt.Errorf("invalid reference: %q (use owner/repo#123 or the PR URL)", ref)
 }
 
 // Get busca um PR específico.

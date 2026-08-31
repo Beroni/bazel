@@ -41,6 +41,10 @@ body {
 /* O gasto da sessão fica ao lado da contagem de PRs: é o número que responde
    "quanto isso me custou hoje" sem abrir review nenhum. */
 .spend { font-variant-numeric: tabular-nums; padding-left: 12px; border-left: 1px solid var(--line); }
+/* A cota do Claude — as mesmas janelas do /usage. Fica discreta até apertar. */
+.quota { font-variant-numeric: tabular-nums; padding-left: 12px; border-left: 1px solid var(--line); }
+.quota .warn { color: var(--warn); }
+.quota .hot { color: var(--err); }
 .who { color: var(--dim); font-size: 12px; }
 .spacer { flex: 1; }
 

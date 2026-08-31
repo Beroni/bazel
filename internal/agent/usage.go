@@ -44,7 +44,7 @@ func (u Usage) String() string {
 	}
 	s := FormatTokens(u.Total()) + " tokens"
 	if u.InputTokens+u.OutputTokens > 0 {
-		s += fmt.Sprintf(" (entrada %s · saída %s · cache %s)",
+		s += fmt.Sprintf(" (in %s · out %s · cache %s)",
 			FormatTokens(u.InputTokens), FormatTokens(u.OutputTokens),
 			FormatTokens(u.CacheRead+u.CacheWrite))
 	}

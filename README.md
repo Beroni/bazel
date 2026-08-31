@@ -95,7 +95,7 @@ On first run `~/.bazel/config.yaml` is created for you. Then, in the page:
 
 1. Open **config** and add a repository (`owner/repo`).
 2. In the same dialog, turn one of your installed skills into an **agent**.
-3. Tick a PR, pick the agent, hit **revisar**.
+3. Tick a PR, pick the agent, hit **review**.
 
 | Flag | Effect |
 | --- | --- |
@@ -119,10 +119,10 @@ From the page you can:
 
 - **tick PRs** and choose **which agent** runs over them;
 - **filter the list**: by text (title, repo or author), by ownership
-  (`todos` / `só meus`), by repository, and by review state — `sem review`,
-  `✓ revisado`, `⟳ mudou desde o review`. With a filter on, the header counter
-  becomes `12 de 92 PRs`. Filtering never unticks anything, but **revisar** only
-  runs on what is currently visible;
+  (`everyone` / `mine only`), by repository, and by review state —
+  `not reviewed`, `✓ reviewed`, `⟳ changed since review`. With a filter on, the
+  header counter becomes `12 of 92 PRs`. Filtering never unticks anything, but
+  **review** only runs on what is currently visible;
 - **collapse the list** — the `☰` button sits in the list itself and stays
   behind as a thin rail, so a review can take the full window; the choice is
   remembered in the browser;
@@ -132,7 +132,7 @@ From the page you can:
   disk either way;
 - **read the rendered review** and decide whether it goes to the PR — inline
   comments or a plain comment, see [Publishing](#publishing-to-the-pr);
-- re-read older reviews saved on disk;
+- re-read older reviews saved on disk — **and still publish them**, see below;
 - add and remove watched repositories, and build your
   [agent list](#agents-are-your-skills) from the installed skills.
 
@@ -142,8 +142,8 @@ Once a review finishes, the PR is **marked in the list** — and when it gets ne
 commits afterwards, the check turns into a warning:
 
 ```
-#482  ✓ revisado 2h · publicado
-#479  ⟳ mudou desde o review
+#482  ✓ reviewed 2h · published
+#479  ⟳ changed since review
 ```
 
 The index lives in `<BAZEL_HOME>/reviews/.index.json`, keyed by the head commit
@@ -160,26 +160,26 @@ In **config**, the page lists what is actually installed — read from
 into an agent with one click:
 
 ```
-skills instaladas · ~/.claude/skills
-  /review-fleet     Runs a fleet of review lenses over one diff   [usar] [⇧ publica]
-  /exploit-digger   Adversarial sweep of a diff                   [usar] [⇧ publica]
+installed skills · ~/.claude/skills
+  /review-fleet     Runs a fleet of review lenses over one diff   [use] [⇧ publishes]
+  /exploit-digger   Adversarial sweep of a diff                   [use] [⇧ publishes]
 ```
 
-- **usar** creates the agent `review-fleet`, with the task
+- **use** creates the agent `review-fleet`, with the task
   `/review-fleet {{number}}`: it hands the review back to you to read.
-- **⇧ publica** creates `review-fleet-post`, with `--post` and the prompt
+- **⇧ publishes** creates `review-fleet-post`, with `--post` and the prompt
   template that authorizes writing to GitHub — the page warns you before firing
   one of those.
 
 The same skill can become both. In the list above each agent shows the skill it
-calls, a **tornar padrão** button (the first one runs when you don't choose) and
-**remover**:
+calls, a **make default** button (the first one runs when you don't choose) and
+**remove**:
 
 ```
-review-fleet      padrão      ✓ /review-fleet
-review-fleet-post ⇧ publica   ✓ /review-fleet
-frota-em-série    pipeline    ✓ /senior-code-reviewer  ✓ /exploit-digger
-post-report       usado ao publicar                    ✗ /post-report
+review-fleet      default              ✓ /review-fleet
+review-fleet-post ⇧ publishes          ✓ /review-fleet
+serial-fleet      pipeline             ✓ /senior-code-reviewer  ✓ /exploit-digger
+post-report       used when publishing                          ✗ /post-report
 ```
 
 The `✗` is the warning that matters: that agent calls a skill that is **not on
@@ -235,7 +235,7 @@ what is missing, once a second. The agent's stderr is included, in another color
 When an agent finishes, its last log line says what the run cost:
 
 ```
-review-fleet          | ✓ pronto em 4m12s · 1,8M tokens · $2.41
+review-fleet          | ✓ done in 4m12s · 1,8M tokens · $2.41
 ```
 
 **The count climbs while the agent works.** Every streamed message carries the
@@ -264,11 +264,27 @@ pipeline it is the sum of the steps. The same number goes into the header of the
 saved markdown:
 
 ```
-- Gasto: 1,8M tokens (entrada 12k · saída 84k · cache 1,7M) · $2.41
+- Spend: 1,8M tokens (in 12k · out 84k · cache 1,7M) · $2.41
 ```
 
 An agent that doesn't speak `stream-json` reports no spend, and the line simply
 doesn't appear.
+
+### Your Claude quota
+
+The page also shows how much of your Claude allowance is gone — the same two
+windows the `/usage` command reports:
+
+```
+claude session 86% · week 16%
+```
+
+It turns yellow at 75% and red at 90%, and the tooltip carries the reset times.
+
+There is no command to ask for this, so Bazel doesn't ask: the number rides
+along in the stream of whichever agent is running (`rate_limit_event`). What
+you see is therefore the reading from the last agent that ran, and the tooltip
+says when that was. A fresh server shows nothing until the first review.
 
 ## Where reviews go
 
@@ -277,7 +293,8 @@ Every review lands in three places, in this order:
 1. **The page** — markdown rendered in the right-hand pane.
 2. **A file** — `<BAZEL_HOME>/reviews/<repo>-<number>-<date>.md`, with the PR
    header, the agent that ran (per-step timings in a pipeline) and the
-   [token spend](#token-usage).
+   [token spend](#token-usage). This is the copy that outlives the server: the
+   **saved** tab reads it back and can still take it to the PR.
 3. **The PR on GitHub** — only if you ask, and only after you have read it.
 
 ## Publishing to the PR
@@ -285,20 +302,25 @@ Every review lands in three places, in this order:
 Three ways in, from the most deliberate to the most direct.
 
 **1. Read, then publish** (the default). Run a review, read it on screen, then
-click **publicar review inline**. That runs the `post_agent` — the `post-report`
+click **publish inline review**. That runs the `post_agent` — the `post-report`
 skill — over a clone of the PR, with the markdown file you just read in the
 prompt and the instruction **not to redo the review**: it publishes what is in
 the file, with inline comments on the right lines, 👍 on what is already flagged
 in the PR, and an all-clear when there is nothing to say. It becomes a job like
 any other, with steps and a log.
 
-**2. Paste as a comment** ("ou colar como comentário"). This is Bazel writing,
+**2. Paste as a comment** ("or paste as a comment"). This is Bazel writing,
 with no agent: the review markdown becomes a single comment, immediately. No
 inline anchors, but no agent spend either.
 
 **3. Publish directly**, skipping your reading: pick an agent marked `⇧` in the
-selector before reviewing — the one you created with **⇧ publica**. It reviews
+selector before reviewing — the one you created with **⇧ publishes**. It reviews
 and publishes in the same pass.
+
+None of this expires when the server does. The queue lives in memory, but every
+review is on disk the moment it finishes, so one you read and did not publish is
+waiting under **saved** — with the same two buttons, aimed at the PR named in
+its header. Closing Bazel costs you the queue, not the review.
 
 Agents in paths 1 and 3 carry their own prompt template: the default one forbids
 writing to GitHub, and theirs replaces that with explicit authorization. Any
@@ -369,13 +391,13 @@ agents:
     task: /review-fleet {{number}} --post
     posts: true
   # A lens can run on another model, or another executable entirely.
-  - name: rapidinha
+  - name: quick-pass
     task: /senior-code-reviewer {{number}}
     args: ["-p", "--model", "claude-haiku-4-5-20251001", "--allowedTools", "Read,Grep,Glob,Bash"]
     timeout_seconds: 600
 
 pipelines:
-  - name: frota-em-série
+  - name: serial-fleet
     description: the three lenses one at a time, each in its own process
     steps: [senior-code-reviewer, exploit-digger, lazy-senior-dev]
 ```
@@ -384,7 +406,7 @@ A **pipeline** chains agents by name, in order, over the same clone; the report
 comes out with one section per step. A step pointing at an agent that doesn't
 exist is skipped.
 
-With no agents at all, the **revisar** button stays disabled and the page tells
+With no agents at all, the **review** button stays disabled and the page tells
 you what is missing. If you wrote your own `agent.prompt` and have no `agents:`,
 the selector shows a single choice — the bare `agent` block, which is how Bazel
 behaved before the selector existed.

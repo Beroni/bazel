@@ -61,25 +61,25 @@ func main() {
 }
 
 func usage() {
-	fmt.Print(`bazel — pull requests do time, revisados por agentes de IA
+	fmt.Print(`bazel — your team's pull requests, reviewed by AI agents
 
-USO
-  bazel                     sobe a interface web em 127.0.0.1:7777
-  bazel --open              e já abre o navegador
+USAGE
+  bazel                     serves the web UI on 127.0.0.1:7777
+  bazel --open              and opens the browser
 
 FLAGS
-  --addr <host:porta>  endereço de escuta (padrão 127.0.0.1:7777)
-  --jobs <n>           reviews simultâneos (padrão 2)
-  --open               abre o navegador
-  --keep               não apaga os clones temporários dos PRs
-  --no-splash          pula a animação de abertura
-  --version            versão
+  --addr <host:port>   listen address (default 127.0.0.1:7777)
+  --jobs <n>           concurrent reviews (default 2)
+  --open               open the browser
+  --keep               keep the throwaway PR clones
+  --no-splash          skip the opening animation
+  --version            version
 
-AMBIENTE
-  BAZEL_HOME        diretório de configuração (padrão: ~/.bazel)
-  BAZEL_NO_SPLASH   desliga a animação
+ENVIRONMENT
+  BAZEL_HOME        configuration directory (default: ~/.bazel)
+  BAZEL_NO_SPLASH   turns the animation off
 
-Repositórios, agentes e reviews se gerenciam na própria página.
+Repositories, agents and reviews are all managed from the page.
 `)
 }
 
@@ -105,14 +105,14 @@ func serve(ctx context.Context, args []string) error {
 	if v := flagValue(args, "--jobs"); v != "" {
 		n, convErr := strconv.Atoi(v)
 		if convErr != nil || n < 1 {
-			return fmt.Errorf("--jobs precisa ser um número maior que zero, não %q", v)
+			return fmt.Errorf("--jobs needs a number greater than zero, not %q", v)
 		}
 		jobs = n
 	}
 
 	me, err := gh.CurrentUser(ctx)
 	if err != nil {
-		return fmt.Errorf("não consegui identificar seu usuário no GitHub: %w", err)
+		return fmt.Errorf("could not identify your GitHub user: %w", err)
 	}
 
 	srv, err := server.New(ctx, cfg, me, server.Options{
@@ -128,21 +128,21 @@ func serve(ctx context.Context, args []string) error {
 	splash.Play()
 
 	url := srv.URL(addr)
-	fmt.Println(styBold.Render("  BAZEL") + styDim.Render("  ·  interface web"))
+	fmt.Println(styBold.Render("  BAZEL") + styDim.Render("  ·  web interface"))
 	fmt.Println("  " + styOK.Render(url))
-	fmt.Println(styDim.Render(fmt.Sprintf("  @%s · %d repo(s) · %d review(s) em paralelo · ctrl-c para parar",
+	fmt.Println(styDim.Render(fmt.Sprintf("  @%s · %d repo(s) · %d review(s) in parallel · ctrl-c to stop",
 		me, len(cfg.Repos), jobs)))
 	if criado {
 		path, _ := config.Path()
-		fmt.Println(styDim.Render("  configuração criada em " + path))
+		fmt.Println(styDim.Render("  configuration created at " + path))
 	}
 	if len(cfg.Repos) == 0 {
-		fmt.Println(styDim.Render("  nenhum repositório monitorado — adicione um em \"config\", na página"))
+		fmt.Println(styDim.Render("  no repositories watched — add one under \"config\", in the page"))
 	}
 	// A lista de agentes começa vazia: é montada na página, a partir das
 	// skills que o Claude Code tem instaladas nesta máquina.
 	if len(cfg.Choices()) == 0 {
-		fmt.Println(styDim.Render("  nenhum agente configurado — monte a lista em \"config\", a partir das suas skills"))
+		fmt.Println(styDim.Render("  no agents configured — build the list under \"config\", out of your skills"))
 	}
 	if hasFlag(args, "--open") {
 		openBrowser(url)
@@ -151,7 +151,7 @@ func serve(ctx context.Context, args []string) error {
 	if err := srv.Run(ctx); err != nil {
 		return err
 	}
-	fmt.Println(styDim.Render("  servidor parado"))
+	fmt.Println(styDim.Render("  server stopped"))
 	return nil
 }
 

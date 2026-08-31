@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="pt-BR">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -11,12 +11,13 @@
 
 <header class="bar">
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> BAZEL</div>
-  <div class="stats" id="stats">carregando…</div>
+  <div class="stats" id="stats">loading…</div>
   <div class="stats spend" id="spend" hidden></div>
+  <div class="stats quota" id="quota" hidden></div>
   <div class="spacer"></div>
   <div class="who" id="who"></div>
-  <button class="btn" id="refresh" title="recarrega a lista do GitHub">recarregar</button>
-  <button class="btn ghost" id="show-config" title="ver a configuração">config</button>
+  <button class="btn" id="refresh" title="refresh the list from GitHub">refresh</button>
+  <button class="btn ghost" id="show-config" title="open the configuration">config</button>
 </header>
 
 <div id="banner" class="banner" hidden></div>
@@ -26,50 +27,50 @@
     <div class="pane-head">
       <div class="row">
         <button class="burger" id="toggle-prs" aria-expanded="true" aria-controls="pr-list"
-                title="esconder a lista (deixa o review em tela cheia)"><span></span><span></span><span></span></button>
-        <input id="filter" type="search" placeholder="filtrar por título, repo ou autor…" autocomplete="off">
+                title="hide the list (gives the review the full window)"><span></span><span></span><span></span></button>
+        <input id="filter" type="search" placeholder="filter by title, repo or author…" autocomplete="off">
       </div>
       <div class="row">
         <div class="segmented" id="scope">
-          <button data-scope="all" class="on">todos</button>
-          <button data-scope="mine">só meus</button>
+          <button data-scope="all" class="on">everyone</button>
+          <button data-scope="mine">mine only</button>
         </div>
-        <label class="check tiny"><input type="checkbox" id="hide-drafts"> esconder drafts</label>
+        <label class="check tiny"><input type="checkbox" id="hide-drafts"> hide drafts</label>
       </div>
       <div class="row">
-        <select id="repo-filter" title="mostra só os PRs de um repositório"></select>
-        <select id="review-filter" title="filtra pelo que o Bazel já revisou">
-          <option value="all">qualquer review</option>
-          <option value="none">sem review</option>
-          <option value="reviewed">✓ revisado</option>
-          <option value="changed">⟳ mudou desde o review</option>
+        <select id="repo-filter" title="show only the PRs of one repository"></select>
+        <select id="review-filter" title="filter by what Bazel has already reviewed">
+          <option value="all">any review state</option>
+          <option value="none">not reviewed</option>
+          <option value="reviewed">✓ reviewed</option>
+          <option value="changed">⟳ changed since review</option>
         </select>
       </div>
     </div>
-    <div id="pr-list" class="list"><p class="empty">carregando PRs…</p></div>
+    <div id="pr-list" class="list"><p class="empty">loading PRs…</p></div>
     <div class="pane-foot">
-      <label class="check"><input type="checkbox" id="select-all"> marcar todos</label>
+      <label class="check"><input type="checkbox" id="select-all"> select all</label>
       <div class="spacer"></div>
-      <select id="agent" title="qual agente roda sobre os PRs marcados"></select>
-      <button class="btn primary" id="review" disabled>revisar</button>
+      <select id="agent" title="which agent runs over the ticked PRs"></select>
+      <button class="btn primary" id="review" disabled>review</button>
     </div>
   </aside>
 
   <section class="pane main">
     <div class="tabs">
-      <button class="tab on" data-tab="queue">fila <span class="pill" id="queue-count">0</span></button>
-      <button class="tab" data-tab="saved">salvos</button>
+      <button class="tab on" data-tab="queue">queue <span class="pill" id="queue-count">0</span></button>
+      <button class="tab" data-tab="saved">saved</button>
       <div class="spacer"></div>
-      <div class="conn" id="conn" title="stream de eventos">●</div>
+      <div class="conn" id="conn" title="event stream">●</div>
     </div>
     <div id="rail" class="rail"></div>
     <article id="viewer" class="viewer">
       <div class="placeholder">
         <img class="logo big" src="/static/bazelgeuse.webp" alt="" width="500" height="500">
-        <p>Marque um PR à esquerda, escolha o agente e clique em <b>revisar</b>.</p>
-        <p class="dim">O agente clona o repositório, roda sobre o PR e o resultado aparece aqui.
-        Pode fechar a aba: o review continua no servidor.</p>
-        <p class="dim only-collapsed">A lista está escondida — clique no <b>☰</b>, na borda esquerda, para trazê-la de volta.</p>
+        <p>Tick a PR on the left, pick an agent and hit <b>review</b>.</p>
+        <p class="dim">The agent clones the repository, runs over the PR and the result shows up here.
+        You can close the tab: the review keeps going on the server.</p>
+        <p class="dim only-collapsed">The list is hidden — click the <b>☰</b> on the left edge to bring it back.</p>
       </div>
     </article>
   </section>
@@ -77,23 +78,23 @@
 
 <div id="modal" class="modal" hidden>
   <div class="modal-box">
-    <div class="modal-head"><b id="modal-title">configuração</b><button class="btn ghost" id="modal-close">fechar</button></div>
+    <div class="modal-head"><b id="modal-title">configuration</b><button class="btn ghost" id="modal-close">close</button></div>
     <div class="modal-body">
-      <h3>repositórios monitorados</h3>
+      <h3>watched repositories</h3>
       <div id="repo-list" class="repo-list"></div>
       <form class="row" id="repo-form">
         <input type="text" id="repo-input" placeholder="owner/repo" autocomplete="off">
-        <button class="btn primary" type="submit">adicionar</button>
+        <button class="btn primary" type="submit">add</button>
       </form>
 
-      <h3>agentes</h3>
-      <p class="dim tiny">Cada agente é uma skill sua rodando sobre o PR. A lista começa vazia:
-      monte a sua abaixo, a partir do que está instalado nesta máquina. O primeiro é o padrão.</p>
+      <h3>agents</h3>
+      <p class="dim tiny">An agent is one of your skills running over the PR. The list starts empty:
+      build yours below, out of what is installed on this machine. The first one is the default.</p>
       <div id="agent-list" class="agent-list"></div>
 
-      <h3>skills instaladas <span class="dim" id="skills-dir"></span></h3>
-      <p class="dim tiny"><b>usar</b> vira um agente que devolve o review para você ler;
-      <b>⇧ publica</b> vira um que publica direto no PR.</p>
+      <h3>installed skills <span class="dim" id="skills-dir"></span></h3>
+      <p class="dim tiny"><b>use</b> makes an agent that hands the review back for you to read;
+      <b>⇧ publishes</b> makes one that posts straight to the PR.</p>
       <div id="skill-list" class="skill-list"></div>
 
       <h3 id="config-path"></h3>

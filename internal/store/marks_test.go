@@ -35,7 +35,7 @@ func TestMarkReviewedAndChangeDetection(t *testing.T) {
 	if !st.Reviewed || st.Agent != "review-fleet" || st.Changed || st.Posted {
 		t.Fatalf("status logo após o review: %+v", st)
 	}
-	if st.Age(time.Now()) != "agora" {
+	if st.Age(time.Now()) != "just now" {
 		t.Errorf("idade do review: %q", st.Age(time.Now()))
 	}
 
@@ -107,5 +107,35 @@ func TestMarksTrim(t *testing.T) {
 	}
 	if _, ok := m[gh.PR{Repo: "acme/api", Number: maxMarks + 9}.Key()]; !ok {
 		t.Error("o mais novo tinha de ficar")
+	}
+}
+
+// Um review salvo diz de que PR ele veio: é o que permite publicá-lo depois de
+// o servidor ter sido reiniciado.
+func TestPRFromTitleEReviewBody(t *testing.T) {
+	file := "# acme/api-core#482 — feat: rate limiting\n\n" +
+		"- Author: @maria\n- Spend: 1,2k tokens\n\n---\n\n# Verdict\n\nAll good.\n"
+
+	if got := Heading(file); got != "acme/api-core#482 — feat: rate limiting" {
+		t.Fatalf("cabeçalho inesperado: %q", got)
+	}
+	repo, number := PRFromTitle(Heading(file))
+	if repo != "acme/api-core" || number != 482 {
+		t.Errorf("PR do cabeçalho: %q #%d", repo, number)
+	}
+	// O que vai ao PR é o relatório, sem o cabeçalho que o Save escreveu.
+	if body := ReviewBody(file); body != "# Verdict\n\nAll good." {
+		t.Errorf("corpo inesperado: %q", body)
+	}
+
+	// Cabeçalho de outro formato não vira um PR inventado.
+	for _, ruim := range []string{"", "um título qualquer", "semrepo#12", "acme/api#abc"} {
+		if r, n := PRFromTitle(ruim); r != "" || n != 0 {
+			t.Errorf("%q não devia virar PR: %q #%d", ruim, r, n)
+		}
+	}
+	// Arquivo sem separador é todo ele o relatório.
+	if got := ReviewBody("só o texto"); got != "só o texto" {
+		t.Errorf("sem separador o corpo é o arquivo: %q", got)
 	}
 }

@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/skills", s.handleSkills)
 	mux.HandleFunc("GET /api/reviews", s.handleSavedList)
 	mux.HandleFunc("GET /api/reviews/{name}", s.handleSavedOne)
+	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
+	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
 
 	return s.guard(mux)
 }
@@ -136,7 +139,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	ln, err := net.Listen("tcp", s.opts.Addr)
 	if err != nil {
-		return fmt.Errorf("não consegui escutar em %s: %w", s.opts.Addr, err)
+		return fmt.Errorf("could not listen on %s: %w", s.opts.Addr, err)
 	}
 
 	errc := make(chan error, 1)
@@ -179,14 +182,14 @@ func (s *Server) URL(addr string) string {
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.loopback() && !localHost(r.Host) {
-			http.Error(w, "host não permitido", http.StatusForbidden)
+			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if origin := r.Header.Get("Origin"); origin != "" {
 				u, err := url.Parse(origin)
 				if err != nil || u.Host != r.Host {
-					http.Error(w, "origem não permitida", http.StatusForbidden)
+					http.Error(w, "origin not allowed", http.StatusForbidden)
 					return
 				}
 			}
@@ -257,6 +260,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		},
 		"agents": s.agentViews(),
 		"jobs":   s.jobViews(),
+		// A cota do Claude vem vazia até o primeiro review desta sessão.
+		"limits": s.jobs.Limits(),
 	})
 }
 
@@ -361,11 +366,11 @@ type reviewRequest struct {
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	var req reviewRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpo inválido: %w", err))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
 	if len(req.Refs) == 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("nenhum PR informado"))
+		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
 		return
 	}
 
@@ -431,7 +436,7 @@ func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	view, ok := s.jobs.View(r.PathValue("id"), true)
 	if !ok {
-		writeErr(w, http.StatusNotFound, errors.New("review não encontrado"))
+		writeErr(w, http.StatusNotFound, errors.New("review not found"))
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -452,7 +457,7 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	}
 	view, ok := s.jobs.Log(r.PathValue("id"), from)
 	if !ok {
-		writeErr(w, http.StatusNotFound, errors.New("review não encontrado"))
+		writeErr(w, http.StatusNotFound, errors.New("review not found"))
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -500,7 +505,7 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming não suportado", http.StatusInternalServerError)
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
@@ -546,12 +551,12 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		Repo string `json:"repo"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpo inválido: %w", err))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
 	repo := strings.TrimSpace(req.Repo)
 	if !strings.Contains(strings.TrimPrefix(repo, "https://github.com/"), "/") {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("repositório inválido: %q (use owner/repo)", repo))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid repository: %q (use owner/repo)", repo))
 		return
 	}
 
@@ -605,7 +610,7 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		Posts bool   `json:"posts"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("corpo inválido: %w", err))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
 
@@ -622,7 +627,7 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if found == nil {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("a skill %q não está instalada em %s", name, dir))
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("the skill %q is not installed in %s", name, dir))
 		return
 	}
 
@@ -663,7 +668,7 @@ func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !ok {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("o agente %q não está na lista", r.PathValue("name")))
+		writeErr(w, http.StatusNotFound, fmt.Errorf("the agent %q is not in the list", r.PathValue("name")))
 		return
 	}
 	s.writeAgents(w, http.StatusOK, nil)
@@ -698,7 +703,7 @@ func summarize(s string) string {
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, fmt.Errorf("não consegui ler %s — rode `bazel init`", s.configPath))
+		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"path": s.configPath, "yaml": string(data)})
@@ -727,6 +732,61 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 		"body": body,
 		"html": renderMarkdown(body),
 	})
+}
+
+// --- publicar um review salvo ---
+//
+// Um review sobrevive ao servidor: está em markdown no disco. A chance de
+// levá-lo ao PR tem de sobreviver junto — antes, fechar o Bazel antes de
+// publicar deixava o texto lá e nenhuma forma de usá-lo.
+
+// savedPR relê um review salvo e devolve o PR de onde ele veio, junto com o
+// caminho e o corpo. O PR é buscado no GitHub: o arquivo guarda o cabeçalho,
+// não o estado atual dele.
+func (s *Server) savedPR(ctx context.Context, name string) (gh.PR, string, string, error) {
+	file, err := store.Read(s.reviewsDir, name)
+	if err != nil {
+		return gh.PR{}, "", "", err
+	}
+	repo, number := store.PRFromTitle(store.Heading(file))
+	if repo == "" {
+		return gh.PR{}, "", "", fmt.Errorf("could not tell which PR %q belongs to", name)
+	}
+	pr, err := gh.Get(ctx, repo, number)
+	if err != nil {
+		return gh.PR{}, "", "", err
+	}
+	return pr, filepath.Join(s.reviewsDir, name), store.ReviewBody(file), nil
+}
+
+// handleSavedPublish roda o agente de publicação sobre um review salvo.
+func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
+	pr, path, body, err := s.savedPR(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), path, body)
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, view)
+}
+
+// handleSavedComment cola um review salvo no PR, sem agente.
+func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
+	pr, _, body, err := s.savedPR(r.Context(), r.PathValue("name"))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := s.jobs.CommentSaved(r.Context(), pr, body); err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	s.invalidatePRs()
+	writeJSON(w, http.StatusOK, map[string]any{"posted": pr.Key()})
 }
 
 // --- helpers ---

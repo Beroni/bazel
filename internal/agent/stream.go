@@ -54,6 +54,15 @@ type streamEvent struct {
 		CacheWrite   int     `json:"cacheCreationInputTokens"`
 		CostUSD      float64 `json:"costUSD"`
 	} `json:"modelUsage"`
+	// RateLimit vem no evento `rate_limit_event`: é a cota do Claude, com as
+	// janelas de cinco horas e sete dias. Chega sozinho, sem ninguém pedir.
+	RateLimit *struct {
+		Status         string `json:"status"`
+		UnifiedWindows map[string]struct {
+			Utilization float64 `json:"utilization"`
+			ResetsAt    int64   `json:"resetsAt"`
+		} `json:"unifiedWindows"`
+	} `json:"rate_limit_info"`
 	// ParentToolUseID marca o que rodou dentro de um sub-agente.
 	ParentToolUseID *string `json:"parent_tool_use_id"`
 	Tools           []any   `json:"tools"`
@@ -138,6 +147,8 @@ type streamParser struct {
 	// trabalha. Fica abaixo do total: só enxerga a conversa principal, e as
 	// lentes que rodam como sub-agente só entram no fechamento.
 	live Usage
+	// limits é a última leitura da cota do Claude.
+	limits Limits
 	// texts é o texto que o assistente escreveu, usado como relatório se o
 	// evento final não vier (agente morto no meio, formato diferente).
 	texts []string
@@ -170,9 +181,15 @@ func (p *streamParser) line(raw string) []logEntry {
 	one := func(text string) []logEntry { return []logEntry{{Agent: who, Text: text}} }
 
 	switch ev.Type {
+	case "rate_limit_event":
+		p.readLimits(ev)
+		// Não vira linha de log: é um número de canto de tela, não algo que o
+		// agente esteja fazendo.
+		return nil
+
 	case "system":
 		if ev.Subtype == "init" {
-			return one(fmt.Sprintf("· sessão iniciada · %d ferramentas", len(ev.Tools)))
+			return one(fmt.Sprintf("· session started · %d tools", len(ev.Tools)))
 		}
 		return nil
 
@@ -183,9 +200,9 @@ func (p *streamParser) line(raw string) []logEntry {
 		// queimados do mesmo jeito.
 		p.usage.add(ev.spent())
 		if ev.IsError || ev.Subtype != "success" {
-			return one(fmt.Sprintf("✗ o agente terminou com erro (%s)", ev.Subtype))
+			return one(fmt.Sprintf("✗ the agent ended with an error (%s)", ev.Subtype))
 		}
-		line := fmt.Sprintf("✓ pronto em %s", took.Round(time.Second))
+		line := fmt.Sprintf("✓ done in %s", took.Round(time.Second))
 		if t := p.usage.Total(); t > 0 {
 			line += " · " + FormatTokens(t) + " tokens"
 		}
@@ -275,7 +292,7 @@ func (p *streamParser) rememberSubagent(b contentBlock) {
 		name = str(b.Input["description"])
 	}
 	if name == "" {
-		name = "sub-agente"
+		name = "sub-agent"
 	}
 	p.register(b.ID, truncateRunes(name, 40))
 }
@@ -312,7 +329,7 @@ func (p *streamParser) subagentName(parentID string) string {
 	if name, ok := p.subagents[parentID]; ok {
 		return name
 	}
-	p.register(parentID, "sub-agente")
+	p.register(parentID, "sub-agent")
 	return p.subagents[parentID]
 }
 
@@ -383,6 +400,28 @@ func rawText(raw json.RawMessage) string {
 		return strings.Join(parts, " ")
 	}
 	return string(raw)
+}
+
+// readLimits guarda a cota que veio no evento. Janela que o Claude não mandar
+// fica zerada — o formato pode ganhar outras, e adivinhar não ajudaria.
+func (p *streamParser) readLimits(ev streamEvent) {
+	if ev.RateLimit == nil {
+		return
+	}
+	l := Limits{Status: ev.RateLimit.Status, At: time.Now()}
+	for nome, w := range ev.RateLimit.UnifiedWindows {
+		janela := Window{Utilization: w.Utilization}
+		if w.ResetsAt > 0 {
+			janela.ResetsAt = time.Unix(w.ResetsAt, 0)
+		}
+		switch nome {
+		case "five_hour":
+			l.Session = janela
+		case "seven_day":
+			l.Week = janela
+		}
+	}
+	p.limits = l
 }
 
 // spend é o gasto do agente: o fechado, quando o evento final chegou, ou a

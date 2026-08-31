@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -133,6 +134,11 @@ type Manager struct {
 	jobs  map[string]*Job
 	order []string
 	seq   int
+
+	// limits é a última leitura da cota do Claude. Não pertence a job
+	// nenhum: é da máquina, e vale para a página inteira.
+	limitsMu sync.RWMutex
+	limits   agent.Limits
 }
 
 // NewManager sobe o pool de workers. concurrency limita quantos agentes rodam
@@ -204,8 +210,8 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	select {
 	case m.queue <- job:
 	default:
-		m.finish(job, StateFailed, "fila cheia — espere os reviews em andamento")
-		return m.mustView(job.ID), fmt.Errorf("fila cheia")
+		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
+		return m.mustView(job.ID), fmt.Errorf("queue is full")
 	}
 	m.publish(job)
 	return m.mustView(job.ID), nil
@@ -293,7 +299,7 @@ func (m *Manager) run(job *Job) {
 	job.Result = res
 	job.SavedTo = path
 	if saveErr != nil {
-		job.Err = "review pronto, mas não consegui salvar em disco: " + saveErr.Error()
+		job.Err = "review done, but I could not save it to disk: " + saveErr.Error()
 	}
 	job.State = StateDone
 	job.FinishedAt = time.Now()
@@ -314,6 +320,16 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		m.mu.Lock()
 		job.appendLog(e.Index, e.Agent, e.Stream, e.Text)
 		m.mu.Unlock()
+		return
+	}
+
+	// A cota do Claude não é do job: chega pelo stream dele, mas vale para a
+	// máquina toda e vai para a página por um aviso próprio.
+	if e.Kind == agent.EventLimits {
+		m.limitsMu.Lock()
+		m.limits = e.Limits
+		m.limitsMu.Unlock()
+		m.hub.Broadcast("limits", e.Limits)
 		return
 	}
 
@@ -419,7 +435,7 @@ func (m *Manager) Remove(id string) error {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("job %q não existe", id)
+		return fmt.Errorf("job %q does not exist", id)
 	}
 	cancel := job.cancel
 	vivo := job.State == StateQueued || job.State == StateRunning
@@ -451,7 +467,7 @@ func (m *Manager) Cancel(id string) error {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("job %q não existe", id)
+		return fmt.Errorf("job %q does not exist", id)
 	}
 	switch job.State {
 	case StateQueued:
@@ -469,7 +485,7 @@ func (m *Manager) Cancel(id string) error {
 		return nil
 	default:
 		m.mu.Unlock()
-		return fmt.Errorf("esse review já terminou")
+		return fmt.Errorf("that review has already finished")
 	}
 }
 
@@ -482,19 +498,19 @@ func (m *Manager) PublishWithAgent(id string) (jobView, error) {
 	src, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q não existe", id)
+		return jobView{}, fmt.Errorf("job %q does not exist", id)
 	}
 	if src.State != StateDone {
 		m.mu.Unlock()
-		return jobView{}, errors.New("esse review não terminou")
+		return jobView{}, errors.New("that review has not finished")
 	}
 	if src.publish != nil {
 		m.mu.Unlock()
-		return jobView{}, errors.New("isso já é uma publicação")
+		return jobView{}, errors.New("that one is already a publication")
 	}
 	if src.SavedTo == "" {
 		m.mu.Unlock()
-		return jobView{}, errors.New("esse review não foi salvo em disco — não há o que publicar")
+		return jobView{}, errors.New("that review was not saved to disk — there is nothing to publish")
 	}
 	// Já publicando este mesmo review: devolve o job que está em curso.
 	for _, other := range m.order {
@@ -530,11 +546,70 @@ func (m *Manager) PublishWithAgent(id string) (jobView, error) {
 	select {
 	case m.queue <- job:
 	default:
-		m.finish(job, StateFailed, "fila cheia — espere os reviews em andamento")
-		return m.mustView(job.ID), errors.New("fila cheia")
+		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
+		return m.mustView(job.ID), errors.New("queue is full")
 	}
 	m.publish(job)
 	return m.mustView(job.ID), nil
+}
+
+// PublishSaved leva ao PR um review que está em disco — o de uma sessão
+// anterior, aberto na aba dos salvos. É o mesmo caminho do PublishWithAgent,
+// mas partindo do arquivo: um review sobrevive ao servidor, e a chance de
+// publicá-lo tem de sobreviver junto.
+func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string) (jobView, error) {
+	if strings.TrimSpace(path) == "" {
+		return jobView{}, errors.New("no review file to publish")
+	}
+	m.mu.Lock()
+	// Já publicando este mesmo arquivo: devolve o job que está em curso.
+	for _, id := range m.order {
+		j := m.jobs[id]
+		if j.publish != nil && j.publish.Path == path && (j.State == StateQueued || j.State == StateRunning) {
+			v := j.view(false)
+			m.mu.Unlock()
+			return v, nil
+		}
+	}
+
+	choice := m.cfg.PostChoice()
+	m.seq++
+	job := &Job{
+		ID:       fmt.Sprintf("j%d", m.seq),
+		PR:       pr,
+		Mine:     mine,
+		Choice:   choice,
+		Steps:    []jobStep{{Name: choice.Steps[0].Name, State: StateQueued}},
+		publish:  &publishInput{Path: path, Body: body},
+		State:    StateQueued,
+		QueuedAt: time.Now(),
+	}
+	m.jobs[job.ID] = job
+	m.order = append(m.order, job.ID)
+	m.trimLocked()
+	m.mu.Unlock()
+
+	select {
+	case m.queue <- job:
+	default:
+		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
+		return m.mustView(job.ID), errors.New("queue is full")
+	}
+	m.publish(job)
+	return m.mustView(job.ID), nil
+}
+
+// CommentSaved cola no PR um review que está em disco, sem agente nenhum. É o
+// caminho barato do arquivo para o GitHub.
+func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, body string) error {
+	if strings.TrimSpace(body) == "" {
+		return errors.New("that review has no body to publish")
+	}
+	err := gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
+	if err == nil {
+		_ = store.MarkPosted(m.reviewsDir, pr.Key())
+	}
+	return err
 }
 
 // Post publica o review como comentário no PR.
@@ -543,15 +618,15 @@ func (m *Manager) Post(ctx context.Context, id string) (jobView, error) {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q não existe", id)
+		return jobView{}, fmt.Errorf("job %q does not exist", id)
 	}
 	if job.State != StateDone {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("esse review não terminou")
+		return jobView{}, fmt.Errorf("that review has not finished")
 	}
 	if job.Posted {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("esse review já foi publicado")
+		return jobView{}, fmt.Errorf("that review was already published")
 	}
 	res := job.Result
 	m.mu.Unlock()
@@ -600,6 +675,14 @@ func (m *Manager) Snapshot() []jobView {
 		out = append(out, m.jobs[m.order[i]].view(false))
 	}
 	return out
+}
+
+// Limits é a última leitura da cota do Claude, vazia até o primeiro review
+// desta sessão — ela só chega no stream de um agente rodando.
+func (m *Manager) Limits() agent.Limits {
+	m.limitsMu.RLock()
+	defer m.limitsMu.RUnlock()
+	return m.limits
 }
 
 // Active conta os reviews esperando ou rodando.

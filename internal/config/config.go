@@ -198,7 +198,7 @@ func legacyArgs() []string {
 func defaultPostAgent() AgentDef {
 	return AgentDef{
 		Name:        "post-report",
-		Description: "publica no PR o review que você acabou de ler, com comentários inline",
+		Description: "publishes the review you have just read, with inline comments",
 		Task:        "/post-report {{review_file}}",
 		Prompt:      publishPrompt,
 		Posts:       true,
@@ -258,14 +258,14 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("configuração não encontrada em %s", path)
+			return nil, fmt.Errorf("no configuration found at %s", path)
 		}
 		return nil, err
 	}
 
 	cfg := Default()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("config inválido (%s): %w", path, err)
+		return nil, fmt.Errorf("invalid config (%s): %w", path, err)
 	}
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
@@ -380,7 +380,7 @@ func (c *Config) RemoveRepo(repo string) bool {
 // ErrNoAgents é o que sai quando ainda não há agente nenhum na configuração.
 // Um config novo começa assim: a lista é montada na página, a partir das
 // skills que o Claude Code tem instaladas nesta máquina.
-var ErrNoAgents = errors.New("nenhum agente configurado — abra a configuração e adicione um a partir das suas skills")
+var ErrNoAgents = errors.New("no agents configured — open the configuration and add one out of your skills")
 
 // AddAgentFromSkill acrescenta um agente que roda uma skill do Claude Code
 // sobre o PR. É por aqui que a lista vazia de um config novo é preenchida: o
@@ -391,10 +391,10 @@ var ErrNoAgents = errors.New("nenhum agente configurado — abra a configuraçã
 func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (AgentDef, error) {
 	skill = strings.TrimPrefix(strings.TrimSpace(skill), "/")
 	if skill == "" {
-		return AgentDef{}, errors.New("skill sem nome")
+		return AgentDef{}, errors.New("skill with no name")
 	}
 	if strings.ContainsAny(skill, " \t\n/") {
-		return AgentDef{}, fmt.Errorf("%q não é nome de skill", skill)
+		return AgentDef{}, fmt.Errorf("%q is not a skill name", skill)
 	}
 	def := AgentDef{
 		Name:        skill,
@@ -411,7 +411,7 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	}
 	for _, a := range c.Agents {
 		if strings.EqualFold(strings.TrimSpace(a.Name), def.Name) {
-			return AgentDef{}, fmt.Errorf("o agente %q já está na lista", def.Name)
+			return AgentDef{}, fmt.Errorf("the agent %q is already in the list", def.Name)
 		}
 	}
 	c.Agents = append(c.Agents, def)
@@ -561,7 +561,7 @@ func (c *Config) ChoiceByName(name string) (Choice, error) {
 	for _, ch := range choices {
 		names = append(names, ch.Name)
 	}
-	return Choice{}, fmt.Errorf("agente %q não existe — disponíveis: %s", name, strings.Join(names, ", "))
+	return Choice{}, fmt.Errorf("no such agent %q — available: %s", name, strings.Join(names, ", "))
 }
 
 // PostChoice é o agente de publicação, pronto para rodar.
@@ -584,8 +584,8 @@ func (c *Config) PostChoice() Choice {
 // baseChoice embrulha o bloco `agent` num Choice de um passo só.
 func (c *Config) baseChoice() Choice {
 	ra := ResolvedAgent{
-		Name:           "padrão",
-		Description:    "o agente configurado em `agent`",
+		Name:           "default",
+		Description:    "the agent configured under `agent`",
 		Command:        c.Agent.Command,
 		Args:           c.Agent.Args,
 		Prompt:         c.Agent.Prompt,
