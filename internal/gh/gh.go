@@ -108,13 +108,36 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 		opts.Limit = 100
 	}
 
+	authors := lowerSet(opts.Authors)
+
+	// Se há múltiplos repos, tenta uma busca única com `gh search prs`.
+	// Se falhar, cai de volta para o fan-out por repo (preserva compatibilidade).
+	if len(repos) > 1 {
+		prs, err := searchRepoPRs(ctx, repos, opts)
+		if err == nil {
+			all := make([]PR, 0, len(prs))
+			for _, pr := range prs {
+				if pr.IsDraft && !opts.IncludeDrafts {
+					continue
+				}
+				if len(authors) > 0 && !authors[strings.ToLower(pr.Author.Login)] {
+					continue
+				}
+				all = append(all, pr)
+			}
+			sort.Slice(all, func(i, j int) bool {
+				return all[i].UpdatedAt.After(all[j].UpdatedAt)
+			})
+			return all, nil
+		}
+	}
+
 	var (
-		mu      sync.Mutex
-		all     []PR
-		errs    []RepoError
-		wg      sync.WaitGroup
-		sem     = make(chan struct{}, 6)
-		authors = lowerSet(opts.Authors)
+		mu   sync.Mutex
+		all  []PR
+		errs []RepoError
+		wg   sync.WaitGroup
+		sem  = make(chan struct{}, 6)
 	)
 
 	for _, repo := range repos {
@@ -149,6 +172,38 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 	})
 	sort.Slice(errs, func(i, j int) bool { return errs[i].Repo < errs[j].Repo })
 	return all, errs
+}
+
+func searchRepoPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, error) {
+	args := []string{"search", "prs", "--state", "open", "--json", prFields}
+	if opts.Limit > 0 {
+		args = append(args, "--limit", strconv.Itoa(opts.Limit))
+	}
+	query := ""
+	for _, repo := range repos {
+		if query != "" {
+			query += " "
+		}
+		query += "repo:" + repo
+	}
+	args = append(args, "--")
+	if query != "" {
+		args = append(args, query)
+	}
+	out, err := run(ctx, "gh", args...)
+	if err != nil {
+		return nil, err
+	}
+	var prs []PR
+	if err := json.Unmarshal([]byte(out), &prs); err != nil {
+		return nil, fmt.Errorf("unexpected response from gh search prs: %w", err)
+	}
+	for i := range prs {
+		if prs[i].Repo == "" {
+			prs[i].Repo = deriveRepoFromURL(prs[i].URL)
+		}
+	}
+	return prs, nil
 }
 
 func listRepoPRs(ctx context.Context, repo string, limit int) ([]PR, error) {
@@ -260,4 +315,17 @@ func lowerSet(items []string) map[string]bool {
 		}
 	}
 	return m
+}
+
+func deriveRepoFromURL(urlStr string) string {
+	if urlStr == "" {
+		return ""
+	}
+	urlStr = strings.TrimPrefix(urlStr, "https://github.com/")
+	urlStr = strings.TrimPrefix(urlStr, "http://github.com/")
+	parts := strings.Split(urlStr, "/")
+	if len(parts) >= 2 {
+		return parts[0] + "/" + parts[1]
+	}
+	return ""
 }
