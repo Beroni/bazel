@@ -450,7 +450,7 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("from"); v != "" {
 		n, err := strconv.Atoi(v)
 		if err != nil || n < 0 {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("from inválido: %q", v))
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid \"from\": %q", v))
 			return
 		}
 		from = n
