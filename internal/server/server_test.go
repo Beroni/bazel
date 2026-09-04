@@ -458,7 +458,14 @@ func TestJobLogIsIncremental(t *testing.T) {
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
-		t.Errorf("from inválido devia dar 400, deu %d", rec.Code)
+		t.Errorf("invalid from should return 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "inválido") {
+		t.Errorf("Portuguese leftover in response: %s", body)
+	}
+	if !strings.Contains(body, "invalid") || !strings.Contains(body, "from") {
+		t.Errorf("expected English invalid from message, got %s", body)
 	}
 }
 
