@@ -250,7 +250,7 @@ func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (
 		return "", false, fmt.Errorf("%s has no diff — nothing to review", pr.Key())
 	}
 	if truncated {
-		diff += "\n\n[... diff truncado em " + strconv.Itoa(r.cfg.MaxDiffBytes) + " bytes ...]"
+		diff += "\n\n[... diff truncated at " + strconv.Itoa(r.cfg.MaxDiffBytes) + " bytes ...]"
 	}
 	return diff, truncated, nil
 }
