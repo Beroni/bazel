@@ -1258,18 +1258,20 @@ func TestConfigDownload(t *testing.T) {
 	}
 }
 
-// A pipeline com `pause` roda o que vem antes, para, e espera. O worker sai —
-// a fila não pode ficar parada esperando uma pessoa ler — e o clone fica.
-func TestPipelinePausaEContinua(t *testing.T) {
+// A pipeline que termina em `publish` não publica sozinha: salva o review e
+// para mostrando só o que vai ao PR — o passo que não é review fica à parte —
+// para você escolher os achados e mandar.
+func TestPipelineEsperaParaPublicar(t *testing.T) {
 	cfg := cfgFor(t, "echo")
 	cfg.Agent.Prompt = "{{task}}"
 	cfg.Agent.Checkout = false
+	nao := false
 	cfg.Agents = []config.AgentDef{
-		{Name: "primeiro", Command: "echo", Args: []string{"o que saiu do primeiro"}},
-		{Name: "segundo", Command: "echo", Args: []string{"o que saiu do segundo"}},
+		{Name: "historia", Command: "echo", Args: []string{"a história do PR"}, Publishable: &nao},
+		{Name: "frota", Command: "echo", Args: []string{"o review da frota"}},
 	}
-	cfg.Pipelines = []config.Pipeline{{Name: "com pausa", Steps: []string{"primeiro", "pause", "segundo"}}}
-	choice, err := cfg.ChoiceByName("com pausa")
+	cfg.Pipelines = []config.Pipeline{{Name: "ler antes", Steps: []string{"historia", "frota", "publish"}}}
+	choice, err := cfg.ChoiceByName("ler antes")
 	if err != nil {
 		t.Fatalf("ChoiceByName: %v", err)
 	}
@@ -1286,98 +1288,31 @@ func TestPipelinePausaEContinua(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	parado := waitFor(t, ch, view.ID, StatePaused)
-	if !parado.Paused {
-		t.Error("o job devia dizer à página que está esperando por ela")
-	}
-	if parado.NextStep != "segundo" {
-		t.Errorf("o botão precisa dizer o que vem: %q", parado.NextStep)
-	}
-	// O relatório do que já rodou está na tela, e nada foi salvo nem publicado.
-	cheio, _ := m.View(view.ID, true)
-	if !strings.Contains(cheio.Body, "o que saiu do primeiro") {
-		t.Errorf("o parcial devia estar legível: %q", cheio.Body)
-	}
-	if strings.Contains(cheio.Body, "o que saiu do segundo") {
-		t.Error("o passo depois da pausa não podia ter rodado")
-	}
-	if cheio.SavedTo != "" {
-		t.Error("meio de pipeline não vira arquivo em disco")
-	}
-
-	// E o worker está livre: outro review roda enquanto este espera.
-	solo, err := cfg.ChoiceByName("primeiro")
-	if err != nil {
-		t.Fatalf("ChoiceByName: %v", err)
-	}
-	outro, err := m.Enqueue(testPR(483), false, solo)
-	if err != nil {
-		t.Fatalf("Enqueue do segundo PR: %v", err)
-	}
-	waitFor(t, ch, outro.ID, StateDone)
-
-	if _, err := m.Continue(view.ID); err != nil {
-		t.Fatalf("Continue: %v", err)
-	}
 	fim := waitFor(t, ch, view.ID, StateDone)
-	if fim.Paused {
-		t.Error("continuado, o job não está mais esperando ninguém")
+	if !fim.AwaitsPublish {
+		t.Error("o job devia dizer à página que espera você publicar")
 	}
-	completo, _ := m.View(view.ID, true)
-	if !strings.Contains(completo.Body, "o que saiu do primeiro") ||
-		!strings.Contains(completo.Body, "o que saiu do segundo") {
-		t.Errorf("o relatório final junta as duas rodadas:\n%s", completo.Body)
+	if fim.Posted || fim.Publishing {
+		t.Error("o passo publish não pode publicar sem você mandar")
 	}
-	if completo.SavedTo == "" {
-		t.Error("terminada, a pipeline salva o review inteiro")
+	if len(fim.Steps) != 2 {
+		t.Errorf("o agente de publicação não podia ter entrado no card: %+v", fim.Steps)
 	}
-
-	// Continuar o que não está parado é erro, não um segundo disparo.
-	if _, err := m.Continue(view.ID); err == nil {
-		t.Error("continuar um job terminado devia dar erro")
+	cheio, _ := m.View(view.ID, true)
+	if cheio.SavedTo == "" {
+		t.Error("o review devia estar salvo — é ele que vai ao PR")
 	}
-}
-
-// Desistir de uma pipeline parada não apaga o que já foi lido, e larga o clone.
-func TestPipelinePausadaPodeSerAbandonada(t *testing.T) {
-	cfg := cfgFor(t, "echo")
-	cfg.Agent.Prompt = "{{task}}"
-	cfg.Agent.Checkout = false
-	cfg.Agents = []config.AgentDef{
-		{Name: "primeiro", Command: "echo", Args: []string{"parcial"}},
-		{Name: "segundo", Command: "echo", Args: []string{"nunca roda"}},
+	if !strings.Contains(cheio.PublishHTML, "o review da frota") || strings.Contains(cheio.PublishHTML, "a história do PR") {
+		t.Errorf("o que vai ao PR é só o review:\n%s", cheio.PublishHTML)
 	}
-	cfg.Pipelines = []config.Pipeline{{Name: "com pausa", Steps: []string{"primeiro", "pause", "segundo"}}}
-	choice, _ := cfg.ChoiceByName("com pausa")
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	hub := NewHub()
-	ch := hub.Subscribe()
-	defer hub.Unsubscribe(ch)
-
-	m := NewManager(ctx, cfg, t.TempDir(), 1, false, hub)
-	view, err := m.Enqueue(testPR(482), false, choice)
-	if err != nil {
-		t.Fatalf("Enqueue: %v", err)
-	}
-	waitFor(t, ch, view.ID, StatePaused)
-
-	if err := m.Cancel(view.ID); err != nil {
-		t.Fatalf("Cancel: %v", err)
-	}
-	fim := waitFor(t, ch, view.ID, StateCanceled)
-	if fim.Paused {
-		t.Error("cancelada, não espera mais ninguém")
-	}
-	if _, err := m.Continue(view.ID); err == nil {
-		t.Error("não dá para continuar o que foi abandonado")
+	if !strings.Contains(cheio.ContextHTML, "a história do PR") {
+		t.Errorf("a história fica à parte, no Bazel:\n%s", cheio.ContextHTML)
 	}
 }
 
 // O agente às vezes devolve o relatório colado num bloco ```markdown. Dentro
 // dele nada renderiza — a tela mostra o markdown cru em vez do review — e por
-// isso o bloco sai antes de qualquer outra coisa: na pausa, no disco e no que
+// isso o bloco sai antes de qualquer outra coisa: na tela, no disco e no que
 // vai ao PR.
 func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	const relatorio = "```markdown\n# Review Fleet — PR #482\n\n**Verdict:** comment\n\n## Findings\n\n### Token stored client-side\n\nThe refresh token is written to localStorage.\n```"
@@ -1389,8 +1324,8 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 		{Name: "frota", Command: "printf", Args: []string{"%s", relatorio}},
 		{Name: "depois", Command: "echo", Args: []string{"segundo passo"}},
 	}
-	cfg.Pipelines = []config.Pipeline{{Name: "com pausa", Steps: []string{"frota", "pause", "depois"}}}
-	choice, err := cfg.ChoiceByName("com pausa")
+	cfg.Pipelines = []config.Pipeline{{Name: "dupla", Steps: []string{"frota", "depois"}}}
+	choice, err := cfg.ChoiceByName("dupla")
 	if err != nil {
 		t.Fatalf("ChoiceByName: %v", err)
 	}
@@ -1408,20 +1343,6 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 		t.Fatalf("Enqueue: %v", err)
 	}
 
-	// Na pausa, o que você lê já é o review — não o markdown dele.
-	waitFor(t, ch, view.ID, StatePaused)
-	parado, _ := m.View(view.ID, true)
-	if strings.HasPrefix(strings.TrimSpace(parado.Body), "```") {
-		t.Errorf("o parcial da pausa ainda está embrulhado:\n%s", parado.Body)
-	}
-	if !strings.Contains(parado.HTML, "<h1>") {
-		t.Errorf("o parcial devia renderizar como review, veio:\n%.200s", parado.HTML)
-	}
-
-	// E continuar não pode trazer a cerca de volta pelo corpo do passo guardado.
-	if _, err := m.Continue(view.ID); err != nil {
-		t.Fatalf("Continue: %v", err)
-	}
 	waitFor(t, ch, view.ID, StateDone)
 	fim, _ := m.View(view.ID, true)
 	if strings.Contains(fim.Body, "```markdown") {

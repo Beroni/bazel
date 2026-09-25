@@ -117,7 +117,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
-	mux.HandleFunc("POST /api/jobs/{id}/continue", s.handleContinue)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -529,17 +528,6 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, view)
-}
-
-// handleContinue solta uma pipeline que parou para você ler: ela volta para a
-// fila e recomeça do passo seguinte, dentro do mesmo clone.
-func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
-	view, err := s.jobs.Continue(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return

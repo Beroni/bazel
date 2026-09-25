@@ -89,27 +89,21 @@ type Pipeline struct {
 	Steps []string `yaml:"steps"`
 }
 
-// Passos reservados de uma pipeline. Não são agentes: o Bazel os executa por
-// conta própria, e é por isso que ninguém pode ter um agente com esses nomes.
-//
-//	pause   — para a sequência e espera você ler o que saiu até ali. O clone
-//	          fica de pé, e a fila não: o worker sai e outro review roda.
-//	publish — leva ao PR o relatório produzido até aqui, com o mesmo agente de
-//	          publicação do botão. Vindo depois de um pause, é "li e aprovei"
-//	          declarado na pipeline em vez de clicado.
-const (
-	StepPause   = "pause"
-	StepPublish = "publish"
-)
+// StepPublish é o passo reservado de uma pipeline. Não é agente: o Bazel o
+// executa por conta própria, e é por isso que ninguém pode ter um agente com
+// esse nome. A pipeline termina nele mostrando o que vai ao PR — só o que é
+// publicável, achado por achado — e espera você escolher e mandar, com o
+// mesmo agente de publicação do botão.
+const StepPublish = "publish"
+
+// stepPause é o passo que existia antes do publish esperar por você. Só
+// sobrevive para sair das pipelines gravadas com ele.
+const stepPause = "pause"
 
 // ReservedStep diz se um nome de passo é executado pelo Bazel em vez de ser um
 // agente da lista.
 func ReservedStep(name string) bool {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case StepPause, StepPublish:
-		return true
-	}
-	return false
+	return strings.EqualFold(strings.TrimSpace(name), StepPublish)
 }
 
 // ResolvedAgent é um AgentDef com os campos herdados de agent já preenchidos.
@@ -127,7 +121,7 @@ type ResolvedAgent struct {
 	TimeoutSeconds int
 	Env            map[string]string
 	// Reserved é o nome do passo reservado quando este não é um agente de
-	// verdade — `pause` ou `publish`. Vazio no resto.
+	// verdade — `publish`. Vazio no resto.
 	Reserved string
 }
 
@@ -375,6 +369,7 @@ func Load() (*Config, error) {
 	// Mesma ideia dos args: quem está com o padrão antigo ganha a skill
 	// embarcada, que funciona sem nada instalado.
 	cfg.PostAgent = migratePostAgent(cfg.PostAgent)
+	cfg.migratePipelines()
 	if cfg.MaxDiffBytes <= 0 {
 		cfg.MaxDiffBytes = Default().MaxDiffBytes
 	}
@@ -494,9 +489,9 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	if strings.ContainsAny(skill, " \t\n/") {
 		return AgentDef{}, fmt.Errorf("%q is not a skill name", skill)
 	}
-	// `pause` e `publish` são passos que o Bazel executa dentro de uma
-	// pipeline. Um agente com esse nome tornaria ambíguo o que um passo quer
-	// dizer, e a pipeline escolheria errado.
+	// `publish` é um passo que o Bazel executa dentro de uma pipeline. Um
+	// agente com esse nome tornaria ambíguo o que o passo quer dizer, e a
+	// pipeline escolheria errado.
 	if ReservedStep(skill) {
 		return AgentDef{}, fmt.Errorf("%q is a reserved pipeline step — an agent cannot be called that", skill)
 	}
@@ -587,9 +582,8 @@ func (c *Config) AddPipeline(name, description string, steps []string) (Pipeline
 
 // resolveSteps valida a sequência que a página montou e devolve os nomes já
 // normalizados. As regras existem porque cada uma delas produz, em runtime, um
-// comportamento que parece bug: pausa antes de qualquer agente para sem ter o
-// que mostrar, pausa no fim não tem para onde continuar, e duas seguidas pedem
-// dois cliques para nada.
+// comportamento que parece bug: publicar antes de qualquer agente, ou duas
+// vezes, ou no meio da sequência.
 func (c *Config) resolveSteps(steps []string) ([]string, error) {
 	out := make([]string, 0, len(steps))
 	vistos := make(map[string]bool, len(steps))
@@ -605,20 +599,13 @@ func (c *Config) resolveSteps(steps []string) ([]string, error) {
 			if agentes == 0 {
 				return nil, fmt.Errorf("%q cannot be the first step — there would be nothing to show you yet", nome)
 			}
-			// Duas pausas seguidas pedem dois cliques para nada. Já
-			// `pause` → `publish` é o ponto do recurso: parar, ler, mandar.
-			if nome == StepPause && len(out) > 0 && strings.EqualFold(out[len(out)-1], StepPause) {
-				return nil, errors.New("two pauses in a row ask for two clicks and run nothing between them")
+			if publica {
+				return nil, errors.New("a pipeline publishes at most once — a second review on the same PR is noise")
 			}
-			if nome == StepPublish {
-				if publica {
-					return nil, errors.New("a pipeline publishes at most once — a second review on the same PR is noise")
-				}
-				if !c.temPublicavelAntes(out) {
-					return nil, errors.New("nothing before this step produces a review that can go to the PR")
-				}
-				publica = true
+			if !c.temPublicavelAntes(out) {
+				return nil, errors.New("nothing before this step produces a review that can go to the PR")
 			}
+			publica = true
 			out = append(out, nome)
 			continue
 		}
@@ -645,9 +632,6 @@ func (c *Config) resolveSteps(steps []string) ([]string, error) {
 
 	if agentes == 0 {
 		return nil, errors.New("a pipeline needs at least one agent")
-	}
-	if strings.EqualFold(out[len(out)-1], StepPause) {
-		return nil, errors.New("a pause at the end has nothing to continue into — it is the same as stopping there")
 	}
 	// Publicar é o fim da linha: o relatório que vai ao PR é o que a pipeline
 	// produziu, e continuar revisando depois de já ter publicado deixaria em
@@ -746,16 +730,6 @@ func (c Choice) Agents() []ResolvedAgent {
 		}
 	}
 	return out
-}
-
-// HasPause diz se a sequência para no meio para você ler o que saiu.
-func (c Choice) HasPause() bool {
-	for _, s := range c.Steps {
-		if s.Reserved == StepPause {
-			return true
-		}
-	}
-	return false
 }
 
 // sameArgs compara duas listas de argumentos.
@@ -901,9 +875,9 @@ func (c *Config) Choices() []Choice {
 		}
 		posts, publicavel := false, false
 		for _, st := range steps {
-			// Um passo `publish` escreve no PR sozinho — a página avisa antes
-			// de disparar a escolha, como faz com qualquer agente que publica.
-			posts = posts || st.Posts || st.Reserved == StepPublish
+			// O passo `publish` não conta: ele espera você mandar. Só um
+			// agente que publica por conta própria escreve no PR sem pedir.
+			posts = posts || st.Posts
 			publicavel = publicavel || st.Publishable
 		}
 		out = append(out, Choice{
@@ -920,9 +894,8 @@ func (c *Config) Choices() []Choice {
 
 // semReservadoSolto tira os passos reservados que sobraram sem agente nenhum
 // para acompanhar. Um agente pode ter sido removido da lista depois que a
-// pipeline foi montada, e o que resta pode ser um `pause` sem nada para ler
-// antes ou um `publish` sem relatório para publicar — parar ou publicar o nada
-// é pior do que simplesmente não fazer.
+// pipeline foi montada, e o que resta pode ser um `publish` sem relatório para
+// publicar — publicar o nada é pior do que simplesmente não fazer.
 func semReservadoSolto(steps []ResolvedAgent) []ResolvedAgent {
 	out := make([]ResolvedAgent, 0, len(steps))
 	agentes := 0
@@ -932,21 +905,14 @@ func semReservadoSolto(steps []ResolvedAgent) []ResolvedAgent {
 			out = append(out, st)
 			continue
 		}
-		// Reservado só vale com algum agente antes dele, e pausa nunca vem
-		// logo depois de outra pausa.
+		// Reservado só vale com algum agente antes dele.
 		if agentes == 0 {
-			continue
-		}
-		if st.Reserved == StepPause && len(out) > 0 && out[len(out)-1].Reserved == StepPause {
 			continue
 		}
 		out = append(out, st)
 	}
-	// Pausa no fim não tem para onde continuar; publish que deixou de ser o
-	// último (porque um agente depois dele sumiu) também não vale mais.
-	for len(out) > 0 && out[len(out)-1].Reserved == StepPause {
-		out = out[:len(out)-1]
-	}
+	// publish que deixou de ser o último (porque um agente depois dele
+	// sumiu) também não vale mais.
 	for i := 0; i < len(out)-1; i++ {
 		if out[i].Reserved == StepPublish {
 			out = out[:i]
@@ -1010,6 +976,32 @@ func (c *Config) ChoiceByName(name string) (Choice, error) {
 		names = append(names, ch.Name)
 	}
 	return Choice{}, fmt.Errorf("no such agent %q — available: %s", name, strings.Join(names, ", "))
+}
+
+// migratePipelines arruma o que a página deixava gravar antes: o `pause` sai
+// das pipelines. Quem para para você ler agora é o próprio `publish`, e
+// `pause → publish` vira só `publish`.
+func (c *Config) migratePipelines() {
+	for i, p := range c.Pipelines {
+		steps := make([]string, 0, len(p.Steps))
+		publica := false
+		for _, step := range p.Steps {
+			nome := strings.ToLower(strings.TrimSpace(step))
+			if nome == stepPause {
+				continue
+			}
+			if ReservedStep(step) {
+				// Publicar duas vezes não existe: o segundo seria o mesmo
+				// review de novo no PR.
+				if publica {
+					continue
+				}
+				publica = true
+			}
+			steps = append(steps, step)
+		}
+		c.Pipelines[i].Steps = steps
+	}
 }
 
 // PostChoice é o agente de publicação, pronto para rodar.

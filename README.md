@@ -452,9 +452,9 @@ pipelines:
   - name: serial-fleet
     description: the three lenses one at a time, each in its own process
     steps: [senior-code-reviewer, exploit-digger, lazy-senior-dev]
-  # `pause` and `publish` are steps Bazel runs itself: read before it goes out.
+  # `publish` is a step Bazel runs itself: you choose what goes before it goes out.
   - name: read before sending
-    steps: [review-fleet, pause, publish]
+    steps: [review-fleet, publish]
 
 # Which choice runs when you don't pick one. Empty = the first in the selector.
 default: serial-fleet
@@ -464,20 +464,16 @@ A **pipeline** chains agents by name, in order, over the same clone; the report
 comes out with one section per step. A step pointing at an agent that doesn't
 exist is skipped.
 
-Two steps are not agents — Bazel runs them itself:
+One step is not an agent — Bazel runs it itself: **`publish`**. It has to be
+the last step, and it does not publish on its own. The pipeline runs, the review
+is saved, and the card stops **waiting on you** with what would go to the PR on
+screen, each finding with its **report** checkbox. Untick what should not go and
+hit **publish inline review**: from there it is the same path as the button on
+any review.
 
-| Step | What it does |
-|---|---|
-| `pause` | Stops there. The clone stays up, the worker goes back to the queue, and the card waits with the report so far on screen and a **continue** button. |
-| `publish` | Takes the report to the PR with the publishing agent — the same one the **publish inline review** button uses. Has to be the last step. |
-
-That is what `review-fleet → pause → publish` is for: the fleet runs, you read
-what it found, and only then does anything reach the PR. Continuing resumes
-**inside the same clone** — cloning again would give you a different commit, and
-the steps that already ran would be talking about another repository.
-
-While a pipeline is paused it holds no worker: other reviews keep running. Give
-up with **stop here** and what you read stays on screen; the clone goes.
+The screen shows exactly what goes. When a step's output is not a review
+(`history-pr`, say), it shows up apart, under *stays in Bazel*, and the
+checkboxes live only in the part under *goes to the PR*.
 
 You build one in the page rather than here: under **pipelines** on the config
 page, drag a step out of the tray into the chain and drag the cards to reorder
@@ -485,10 +481,11 @@ them — clicking works the same, for when dragging is not worth it. Name it and
 create. Only agents already in the list can be steps — that
 is what guarantees each step arrives with its prompt, its command and its
 publishing flag already settled. The same agent twice in one sequence is refused:
-it would be the same work twice over the same clone. The rules around `pause` and
-`publish` are enforced on the way in, not at run time: neither can open a
-pipeline, a pause never follows a pause nor closes the sequence, `publish` runs
+it would be the same work twice over the same clone. The rules around `publish`
+are enforced on the way in, not at run time: it cannot open a pipeline, it runs
 at most once and always last, and it needs something publishable before it.
+
+A config saved with the old `pause` step is fixed when it loads.
 
 `default:` names the choice that runs when you don't pick one. A pipeline can be
 it — the selector lists agents before pipelines, so being first is not something

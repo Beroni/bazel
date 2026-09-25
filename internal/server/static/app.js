@@ -29,6 +29,7 @@ const state = {
   activeSaved: null,
   activePR: null,      // chave do PR aberto no painel da direita
   bodies: {},        // id do job -> html do review
+  splits: {},        // id do job -> {pub, ctx} quando só parte vai ao PR
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set dos achados desmarcados
   logs: {},          // id do job -> {next, lines, dropped, live, busy}
 };
@@ -208,6 +209,7 @@ function dropJob(id) {
   state.jobs = state.jobs.filter((j) => j.id !== id);
   if (state.jobs.length === antes) return;
   delete state.bodies[id];
+  delete state.splits[id];
   delete state.picks[pickKey('job', id)];
   delete state.logs[id];
   if (state.activeJob === id) {
@@ -359,6 +361,7 @@ async function openJob(id) {
   try {
     const full = await api('/api/jobs/' + encodeURIComponent(id));
     state.bodies[id] = full.html;
+    if (full.publish_html) state.splits[id] = { pub: full.publish_html, ctx: full.context_html || '' };
     if (state.activeJob === id) renderViewer();
   } catch (err) {
     banner(err.message);
@@ -392,24 +395,6 @@ async function publishJob(id, btn) {
   } catch (err) {
     banner(err.message);
     if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
-  }
-}
-
-// continueJob solta uma pipeline parada. O card volta a rodar do passo
-// seguinte, dentro do mesmo clone que ficou de pé durante a leitura.
-async function continueJob(id, btn) {
-  if (btn) { btn.disabled = true; btn.textContent = 'continuing…'; }
-  try {
-    const view = await api(`/api/jobs/${encodeURIComponent(id)}/continue`, { method: 'POST' });
-    upsertJob(view);
-    state.activeJob = view.id;
-    state.tab = 'queue';
-    renderTabs();
-    renderJobs();
-    renderViewer();
-  } catch (err) {
-    banner(err.message);
-    if (btn) { btn.disabled = false; btn.textContent = 'continue'; }
   }
 }
 
@@ -1121,20 +1106,17 @@ function renderJobs() {
       b.addEventListener('click', (e) => { e.stopPropagation(); cancelJob(job.id); });
       actions.append(b);
     }
-    if (job.paused) {
-      const c = el('button', 'btn small', 'continue');
-      c.title = job.next_step ? `runs ${job.next_step} next` : 'runs the rest of the pipeline';
-      c.addEventListener('click', (e) => { e.stopPropagation(); continueJob(job.id, c); });
-      actions.append(c);
-      const d = el('button', 'btn small ghost', 'stop here');
-      d.title = 'gives up on the rest of the pipeline — what already ran stays on screen';
-      d.addEventListener('click', (e) => { e.stopPropagation(); cancelJob(job.id); });
-      actions.append(d);
-    }
     if (job.state === 'done' && !job.publishing && job.publishable === false) {
       const t = el('span', 'dim', 'stays here');
       t.title = `what "${job.agent}" produces does not go to the PR`;
       actions.append(t);
+    } else if (job.state === 'done' && !job.publishing && job.awaits_publish && !job.posted) {
+      // Terminou num `publish`: publicar daqui mandaria tudo sem você ver o
+      // que vai. O card só chama para o review, onde estão os tiques.
+      const r = el('button', 'btn small', 'choose what goes');
+      r.title = 'opens the review with what goes to the PR, finding by finding';
+      r.addEventListener('click', (e) => { e.stopPropagation(); openJob(job.id); });
+      actions.append(r);
     } else if (job.state === 'done' && !job.publishing) {
       if (!job.posted) {
         const p = el('button', 'btn small', 'publish inline review');
@@ -1172,10 +1154,10 @@ function labelParts(job) {
   switch (job.state) {
     case 'queued': return ['queued', ''];
     case 'running': return ['running', jobSeconds(job) + 's'];
-    case 'done': return ['done in', job.seconds + 's'];
+    case 'done': return job.awaits_publish && !job.posted && !job.publishing
+      ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
     case 'failed': return ['failed', ''];
     case 'canceled': return ['canceled', ''];
-    case 'paused': return ['waiting on you', ''];
     default: return [job.state, ''];
   }
 }
@@ -1188,6 +1170,9 @@ function label(job) {
 // da caixa alta. Não limpa o elemento: o ponto colorido do card já está lá.
 function fillState(span, job) {
   const [texto, tempo] = labelParts(job);
+  // Esperando você publicar é um fim só pela metade: a cor de aviso é o que
+  // separa o card dos reviews que não pedem mais nada.
+  if (job.awaits_publish && !job.posted && !job.publishing) span.classList.add('awaits');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
   return span;
@@ -1310,31 +1295,40 @@ function renderViewer() {
     v.append(el('p', 'dim', 'loading review…'));
     return;
   }
-  const md = el('div', 'md');
-  md.innerHTML = html;
-  v.append(md);
+  // Terminou num `publish`: a pipeline não mandou nada, e é aqui que você
+  // escolhe o que vai. Dizer isso antes do review é o que faz a leitura ser
+  // a de quem decide, e não a de quem só confere.
+  if (job.awaits_publish && !job.posted && !job.publishing) {
+    v.append(el('p', 'awaits-note', 'Nothing has gone to the PR yet. Untick the findings that should not go,'
+      + ' then publish at the end.'));
+  }
+  // Com parte dos passos fora do PR, a tela separa as duas coisas: os tiques
+  // ficam só no que sobe, na mesma numeração que o servidor usa para tirar
+  // os achados — no relatório inteiro, o número apontaria para outro achado.
+  const split = job.publishable !== false ? state.splits[job.id] : null;
   const key = pickKey('job', job.id);
-  const total = decorateFindings(md, key);
+  let total;
+  if (split) {
+    if (split.ctx) {
+      v.append(el('p', 'section-label', 'stays in Bazel — not published'));
+      const ctx = el('div', 'md context');
+      ctx.innerHTML = split.ctx;
+      v.append(ctx);
+    }
+    v.append(el('p', 'section-label', 'goes to the PR'));
+    const pub = el('div', 'md');
+    pub.innerHTML = split.pub;
+    v.append(pub);
+    total = decorateFindings(pub, key);
+  } else {
+    const md = el('div', 'md');
+    md.innerHTML = html;
+    v.append(md);
+    total = decorateFindings(md, key);
+  }
 
   if (job.steps && job.steps.length > 1) v.append(stepsBox(job));
   if (job.log_lines) v.append(logPanel(job, false));
-
-  // Parada: você acabou de ler o que saiu até aqui, e a decisão é seguir ou
-  // não. Publicar não entra — o que está na tela é meio de uma pipeline, e não
-  // foi nem salvo em disco ainda.
-  if (job.paused) {
-    const bar = el('div', 'viewer-actions');
-    const go = el('button', 'btn primary', job.next_step ? 'continue → ' + job.next_step : 'continue');
-    go.addEventListener('click', () => continueJob(job.id, go));
-    const stop = el('button', 'btn ghost', 'stop here');
-    stop.title = 'gives up on the rest of the pipeline — what you just read stays on screen';
-    stop.addEventListener('click', () => cancelJob(job.id));
-    bar.append(go, stop);
-    v.append(bar);
-    v.append(el('p', 'dim', 'This pipeline is paused: the clone is still up and the rest of it runs'
-      + ' inside the same one when you continue. Nothing has been saved or published yet.'));
-    return;
-  }
 
   // As ações ficam depois do review, e não antes: é aqui que você chega
   // quando terminou de ler — que é o momento de decidir se isso vai para o PR.
@@ -1556,7 +1550,7 @@ let arrasto = null;
 // alvo é a posição onde o passo cairia, e é o que desenha a fenda aberta.
 let alvo = null;
 
-const RESERVADOS = ['pause', 'publish'];
+const RESERVADOS = ['publish'];
 const ehReservado = (n) => RESERVADOS.includes(n);
 
 function renderPipelineBuilder() {
@@ -1564,8 +1558,8 @@ function renderPipelineBuilder() {
   box.innerHTML = '';
 
   const disponiveis = state.agents.filter((a) => !a.publisher && !a.pipeline);
-  // Um agente já basta: `review-fleet → pause → publish` é uma pipeline de um
-  // agente só, e é justamente a que existe para você ler antes de mandar.
+  // Um agente já basta: `review-fleet → publish` é uma pipeline de um agente
+  // só, e é justamente a que existe para você escolher o que vai antes de mandar.
   if (!disponiveis.length) {
     box.append(el('p', 'none', 'add an agent above, and you can chain it into a pipeline here.'));
     state.pipeSteps = [];
@@ -1619,7 +1613,7 @@ function no(nome, i) {
 
   const topo = el('div', 'pipe-node-top');
   topo.append(el('span', 'n', String(i + 1)));
-  topo.append(el('span', 'pipe-node-name', nome === 'pause' ? '⏸ pause' : nome));
+  topo.append(el('span', 'pipe-node-name', nome));
   const tira = el('button', 'x', '×');
   tira.title = 'take this step out';
   tira.draggable = false;
@@ -1631,8 +1625,7 @@ function no(nome, i) {
   card.append(topo);
 
   const a = state.agents.find((x) => x.name === nome);
-  const nota = nome === 'pause' ? 'waits for you'
-    : nome === 'publish' ? 'goes to the PR'
+  const nota = nome === 'publish' ? 'you choose what goes'
     : a && a.publishable === false ? 'stays here' : '';
   if (nota) card.append(el('div', 'pipe-node-note', nota));
 
@@ -1647,8 +1640,8 @@ function no(nome, i) {
   return card;
 }
 
-// bandeja são os passos que dá para acrescentar: os agentes da lista e os dois
-// que o Bazel executa por conta própria.
+// bandeja são os passos que dá para acrescentar: os agentes da lista e o
+// publish, que o Bazel executa por conta própria.
 function bandeja(disponiveis) {
   const box = el('div', 'pipe-tray');
   const fechada = state.pipeSteps.includes('publish');
@@ -1687,18 +1680,12 @@ function bandeja(disponiveis) {
   box.append(el('span', 'pipe-sep', '·'));
   // As mesmas regras que o servidor aplica — desabilitar aqui é dizer o porquê
   // antes, em vez de recusar depois.
-  const ultimo = state.pipeSteps[state.pipeSteps.length - 1];
   const semAgente = !state.pipeSteps.some((n) => !ehReservado(n));
   const nadaPublicavel = !state.pipeSteps.some((n) => {
     const a = state.agents.find((x) => x.name === n);
     return a && a.publishable !== false;
   });
-  item('pause', '+ ⏸ pause', 'stops here and waits for you to read what came out before the rest runs',
-    semAgente ? 'needs an agent before it — there would be nothing to show you yet'
-      : fechada ? 'publish is the last step — nothing runs after it'
-      : ultimo === 'pause' ? 'two pauses in a row run nothing between them'
-      : '');
-  item('publish', '+ publish', 'takes the report to the PR with the publishing agent — put it after a pause',
+  item('publish', '+ publish', 'stops with what would go to the PR — you untick what should not, then send it with the publishing agent',
     semAgente ? 'needs an agent before it — there would be nothing to publish yet'
       : fechada ? 'a pipeline publishes at most once'
       : nadaPublicavel ? 'nothing before it produces a review that can go to the PR'
@@ -1737,11 +1724,9 @@ function linhaDeCriar() {
 
   const criar = el('button', 'btn primary', 'create pipeline');
   const agentes = state.pipeSteps.filter((n) => !ehReservado(n)).length;
-  const ultimo = state.pipeSteps[state.pipeSteps.length - 1];
   let impede = '';
   if (!agentes) impede = 'a pipeline needs at least one agent';
   else if (agentes < 2 && state.pipeSteps.length < 2) impede = 'a pipeline chains two agents or more, or one agent and a step of its own';
-  else if (ultimo === 'pause') impede = 'a pause at the end has nothing to continue into — add a step after it, or drop the pause';
   criar.disabled = !!impede;
   criar.title = impede || 'creates the sequence and puts it in the selector';
 
