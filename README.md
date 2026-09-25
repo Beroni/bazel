@@ -485,7 +485,11 @@ it would be the same work twice over the same clone. The rules around `publish`
 are enforced on the way in, not at run time: it cannot open a pipeline, it runs
 at most once and always last, and it needs something publishable before it.
 
-A config saved with the old `pause` step is fixed when it loads.
+The publishing skill (`bazel-post-report`, or whatever `post_agent.task` calls)
+is not offered as an agent: on its own, as an ordinary step, it would run
+without the review or the prompt that authorizes posting. In a pipeline it is
+the `publish` step. A config saved with it as an agent, or with the old `pause`
+step, is fixed when it loads.
 
 `default:` names the choice that runs when you don't pick one. A pipeline can be
 it — the selector lists agents before pipelines, so being first is not something

@@ -1780,6 +1780,16 @@ function renderSkillList() {
     row.append(el('span', 'skill-desc', sk.description || ''));
 
     const acoes = el('span', 'skill-actions');
+    if (sk.name === state.postSkill) {
+      // A de publicação não vira agente: sozinha ela roda sem o review e não
+      // posta nada. Ela entra pelo botão de publicar e pelo passo publish.
+      const t = el('span', 'tag', 'runs as publish');
+      t.title = 'publishes a review you have read — from the publish button or the publish step of a pipeline';
+      acoes.append(t);
+      row.append(acoes);
+      box.append(row);
+      continue;
+    }
     const add = (rotulo, posts, dica) => {
       const nome = posts ? sk.name + '-post' : sk.name;
       const b = el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo);
@@ -1805,6 +1815,7 @@ async function loadSkills() {
     const data = await api('/api/skills');
     state.skills = data.skills || [];
     state.skillsDir = data.dir || '';
+    state.postSkill = data.post_skill || '';
   } catch (err) {
     state.skills = [];
   }

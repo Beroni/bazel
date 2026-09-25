@@ -495,6 +495,9 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	if ReservedStep(skill) {
 		return AgentDef{}, fmt.Errorf("%q is a reserved pipeline step — an agent cannot be called that", skill)
 	}
+	if post := c.PostSkill(); post != "" && strings.EqualFold(skill, post) {
+		return AgentDef{}, fmt.Errorf("%q is the publishing skill — in a pipeline it is the publish step, not an agent", skill)
+	}
 	def := AgentDef{
 		Name:        skill,
 		Description: strings.TrimSpace(description),
@@ -978,10 +981,49 @@ func (c *Config) ChoiceByName(name string) (Choice, error) {
 	return Choice{}, fmt.Errorf("no such agent %q — available: %s", name, strings.Join(names, ", "))
 }
 
-// migratePipelines arruma o que a página deixava gravar antes: o `pause` sai
-// das pipelines. Quem para para você ler agora é o próprio `publish`, e
-// `pause → publish` vira só `publish`.
+// PostSkill é a skill que o agente de publicação chama. Ela não vira agente
+// da lista: sozinha, num passo comum, roda sem o review nem o prompt de
+// publicar e não posta nada. Numa pipeline quem publica é o passo `publish`.
+func (c *Config) PostSkill() string {
+	post := c.PostAgent
+	if strings.TrimSpace(post.Name) == "" {
+		post = defaultPostAgent()
+	}
+	return taskSkill(post.Task)
+}
+
+// isPostAgent diz se um agente da lista é o de publicação com outro chapéu: o
+// mesmo nome do post_agent, ou uma task que chama a mesma skill.
+func (c *Config) isPostAgent(a AgentDef) bool {
+	name := strings.TrimSpace(a.Name)
+	if name == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(c.PostAgent.Name), name) {
+		return true
+	}
+	skill := c.PostSkill()
+	return skill != "" && strings.EqualFold(taskSkill(a.Task), skill)
+}
+
+// migratePipelines arruma o que a página deixava gravar antes:
+//
+//   - o agente de publicação como agente comum sai da lista, e os passos dele
+//     nas pipelines viram `publish`, que é o que eles queriam dizer;
+//   - o `pause` sai das pipelines. Quem para para você ler agora é o próprio
+//     `publish`, e `pause → publish` vira só `publish`.
 func (c *Config) migratePipelines() {
+	removidos := map[string]bool{}
+	agents := c.Agents[:0]
+	for _, a := range c.Agents {
+		if c.isPostAgent(a) {
+			removidos[strings.ToLower(strings.TrimSpace(a.Name))] = true
+			c.clearDefault(a.Name)
+			continue
+		}
+		agents = append(agents, a)
+	}
+	c.Agents = agents
 	for i, p := range c.Pipelines {
 		steps := make([]string, 0, len(p.Steps))
 		publica := false
@@ -989,6 +1031,9 @@ func (c *Config) migratePipelines() {
 			nome := strings.ToLower(strings.TrimSpace(step))
 			if nome == stepPause {
 				continue
+			}
+			if removidos[nome] {
+				step = StepPublish
 			}
 			if ReservedStep(step) {
 				// Publicar duas vezes não existe: o segundo seria o mesmo
@@ -1002,6 +1047,15 @@ func (c *Config) migratePipelines() {
 		}
 		c.Pipelines[i].Steps = steps
 	}
+}
+
+// taskSkill é a skill que uma task chama — `/nome args` vira `nome`.
+func taskSkill(task string) string {
+	f := strings.Fields(task)
+	if len(f) == 0 || !strings.HasPrefix(f[0], "/") {
+		return ""
+	}
+	return strings.TrimPrefix(f[0], "/")
 }
 
 // PostChoice é o agente de publicação, pronto para rodar.

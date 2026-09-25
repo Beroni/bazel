@@ -1051,7 +1051,12 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 // agente. É a lista de onde a configuração monta a sua.
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	dir, list := s.installedSkills()
-	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list})
+	s.cfgMu.Lock()
+	post := s.cfg.PostSkill()
+	s.cfgMu.Unlock()
+	// post_skill vai junto para a página não oferecê-la como agente: ela só
+	// publica quando roda como o passo publish.
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
 }
 
 // installedSkills lê as skills do disco a cada chamada: instalar uma skill não

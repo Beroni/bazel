@@ -470,24 +470,47 @@ func TestPostChoice(t *testing.T) {
 	}
 }
 
-// O pause saiu: quem para para você escolher o que vai é o passo publish. Uma
-// config gravada com ele sai sem ele, e publicando uma vez só.
+// A skill de publicação não vira agente: num passo comum ela roda sem o review
+// nem o prompt de publicar, e não posta nada. Quem publica é o passo publish —
+// e é ele que para para você escolher o que vai, por isso o pause saiu.
 func TestMigraPipelines(t *testing.T) {
+	cfg := Default()
+	for _, posts := range []bool{false, true} {
+		if _, err := cfg.AddAgentFromSkill("bazel-post-report", "", posts); err == nil {
+			t.Errorf("a skill de publicação não podia virar agente (posts=%v)", posts)
+		}
+	}
+
+	// Config gravada antes disso: o agente sai e o passo vira publish.
 	old := loadFrom(t, `repos: [acme/api]
 agents:
   - name: review-fleet
     task: /review-fleet {{number}}
+  - name: bazel-post-report
+    task: /bazel-post-report {{number}}
 pipelines:
+  - name: gravada
+    steps: [review-fleet, pause, bazel-post-report]
   - name: pausada
     steps: [review-fleet, pause, publish]
   - name: dupla
-    steps: [review-fleet, publish, publish]
+    steps: [review-fleet, bazel-post-report, publish]
+default: bazel-post-report
 `)
+	if len(old.Agents) != 1 || old.Agents[0].Name != "review-fleet" {
+		t.Errorf("o agente de publicação devia sair da lista: %+v", old.Agents)
+	}
 	if got := strings.Join(old.Pipelines[0].Steps, ","); got != "review-fleet,publish" {
-		t.Errorf("a pausa devia sair: %s", got)
+		t.Errorf("o passo devia virar publish, e a pausa sair: %s", got)
 	}
 	if got := strings.Join(old.Pipelines[1].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("a pausa devia sair: %s", got)
+	}
+	if got := strings.Join(old.Pipelines[2].Steps, ","); got != "review-fleet,publish" {
 		t.Errorf("publicar uma vez só: %s", got)
+	}
+	if old.Default != "" {
+		t.Errorf("o padrão apontava para o agente removido: %q", old.Default)
 	}
 }
 
