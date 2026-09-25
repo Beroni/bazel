@@ -341,7 +341,8 @@ inline anchors, but no agent spend either.
 **Leaving a false positive behind.** Every finding on screen — each `###`
 under `## Findings` or `## Cuts`, or each `**1. …**` paragraph in reports that
 number their findings in bold instead — carries a **report** checkbox, ticked
-by default. Untick the ones you disagree with and they drop out of whatever you
+by default. So does each item under `## Needs human verification`: a doubt you
+have already settled doesn't need to reach the PR. Untick the ones you disagree with and they drop out of whatever you
 publish next, on both paths above: the inline publish hands the post agent a
 copy of the review without them (written to `publish/` inside the reviews
 directory, the saved file stays whole), and the pasted comment simply omits

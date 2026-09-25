@@ -37,6 +37,12 @@ Delete the helper.
 ## Needs human verification
 
 - something to confirm
+  with a second line
+- another doubt
+
+Prose after the list is not an item.
+
+## Notes
 
 ### Not a finding: h3 outside the sections
 
@@ -60,12 +66,13 @@ func TestSplitFindingsRecortaSoOsAchados(t *testing.T) {
 	if back.String() != relatorio {
 		t.Fatal("juntar as partes devia devolver o review inteiro")
 	}
-	want := []string{"### 1. Gas diverges by platform", "### 2. No host-side test", "### Hand-rolled retry"}
+	want := []string{"### 1. Gas diverges by platform", "### 2. No host-side test", "### Hand-rolled retry",
+		"- something to confirm", "- another doubt"}
 	if strings.Join(titulos, "|") != strings.Join(want, "|") {
 		t.Fatalf("achados errados:\n%v\nqueria\n%v", titulos, want)
 	}
-	if n := Findings(relatorio); n != 3 {
-		t.Errorf("Findings = %d, queria 3", n)
+	if n := Findings(relatorio); n != 5 {
+		t.Errorf("Findings = %d, queria 5", n)
 	}
 	// O primeiro achado leva a cerca de código inteira, com os falsos headings.
 	for _, p := range parts {
@@ -74,6 +81,12 @@ func TestSplitFindingsRecortaSoOsAchados(t *testing.T) {
 		}
 		if p.Finding && strings.HasPrefix(p.Text, "### 2.") && !strings.Contains(p.Text, "#### detail") {
 			t.Error("o #### devia ficar dentro do achado")
+		}
+		if p.Finding && strings.HasPrefix(p.Text, "- something") && !strings.Contains(p.Text, "with a second line") {
+			t.Error("a linha recuada devia ficar dentro do item")
+		}
+		if p.Finding && strings.Contains(p.Text, "Prose after the list") {
+			t.Error("o parágrafo depois da lista não é item")
 		}
 	}
 }
@@ -98,7 +111,7 @@ func TestSplitFindingsReconheceNegritoNumerado(t *testing.T) {
 	src := "## Findings (2) — both pre-existing\n\nNeither is a reason to hold the merge.\n\n" +
 		"**1. `major · error-handling` — panic escapes** (`routes.go:398`)\n\nprose one\n\n**Fix:** recover.\n\n" +
 		"**2. major · resource — fan-out** (`routes.go:360`)\nprose two\n\n" +
-		"## Cuts (−4 lines)\n\n`routes.go:401` dead check.\n\n## Needs human verification\n\n**1. not a finding here**\n"
+		"## Cuts (−4 lines)\n\n`routes.go:401` dead check.\n\n## Coverage\n\n**1. not a finding here**\n"
 	parts := SplitFindings(src)
 	var got []string
 	for _, p := range parts {
@@ -136,8 +149,8 @@ func TestDropFindingsTiraSoOsDesmarcados(t *testing.T) {
 	if DropFindings(relatorio, nil) != relatorio {
 		t.Error("sem skip o review não muda")
 	}
-	if Findings(got) != 2 {
-		t.Errorf("sobraram %d achados, queria 2", Findings(got))
+	if Findings(got) != 4 {
+		t.Errorf("sobraram %d achados, queria 4", Findings(got))
 	}
 }
 
@@ -197,5 +210,19 @@ func TestUnwrapTiraOBlocoMarkdownDeFora(t *testing.T) {
 	}
 	if ReviewBody("# acme#1 — t\n\n---\n\n```markdown\n## Findings\n\n### A\n```\n") != "## Findings\n\n### A" {
 		t.Error("ReviewBody devia desembrulhar")
+	}
+}
+
+// A dúvida que você já resolveu sai do que vai ao PR como um achado: a caixa
+// é a mesma, e o resto da seção fica.
+func TestDropFindingsTiraDuvidaResolvida(t *testing.T) {
+	got := DropFindings(relatorio, []int{3})
+	if strings.Contains(got, "something to confirm") || strings.Contains(got, "with a second line") {
+		t.Errorf("a dúvida desmarcada devia ter saído:\n%s", got)
+	}
+	for _, keep := range []string{"## Needs human verification", "- another doubt", "Prose after the list"} {
+		if !strings.Contains(got, keep) {
+			t.Errorf("faltou %q depois do corte:\n%s", keep, got)
+		}
 	}
 }

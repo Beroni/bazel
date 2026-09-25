@@ -13,8 +13,10 @@ import (
 // comentário `<!-- finding ... -->` que o review-fleet grava. Seção que não
 // usa `###` e numera os achados em negrito (`**1. major · …**`, o formato dos
 // reviews mais antigos) tem cada parágrafo numerado como um achado, até o
-// próximo número ou heading. É a unidade que a página deixa marcar: um falso
-// positivo sai do que vai ao PR sem que o resto do review mude.
+// próximo número ou heading. Em `## Needs human verification` cada item da
+// lista também é um: a dúvida que você já resolveu não precisa ir ao PR. É a
+// unidade que a página deixa marcar: um falso positivo sai do que vai ao PR
+// sem que o resto do review mude.
 type Part struct {
 	Text    string
 	Finding bool
@@ -32,7 +34,8 @@ func SplitFindings(body string) []Part {
 		finding bool
 		inFence bool
 		fence   string
-		section bool // dentro de um `##` de findings/cuts
+		section bool // dentro de um `##` de findings/cuts/human verification
+		human   bool // e é a de human verification, que lista em vez de `###`
 		h3Seen  bool // a seção atual numera os achados com `###`
 	)
 	flush := func() {
@@ -72,6 +75,19 @@ func SplitFindings(body string) []Part {
 				flush()
 				finding = true
 			}
+			// Item de lista no começo da linha abre outro; parágrafo solto
+			// fecha o item e não é de ninguém. Linha recuada ou em branco
+			// fica no item em que aparece.
+			if human && !h3Seen && trim != "" && line[0] != ' ' && line[0] != '\t' {
+				switch {
+				case listItem(trim):
+					flush()
+					finding = true
+				case !boldNumbered(trim) && finding:
+					flush()
+					finding = false
+				}
+			}
 			cur.WriteString(line)
 			continue
 		case level <= 2:
@@ -79,7 +95,8 @@ func SplitFindings(body string) []Part {
 			// diz se o que vem agora é uma seção de achados.
 			flush()
 			finding = false
-			section = level == 2 && isFindingsSection(title)
+			human = level == 2 && isHumanSection(title)
+			section = level == 2 && (isFindingsSection(title) || human)
 			h3Seen = false
 		case level == 3:
 			flush()
@@ -192,6 +209,25 @@ func headingOf(trim string) (int, string) {
 func isFindingsSection(title string) bool {
 	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
 	return strings.HasPrefix(t, "finding") || strings.HasPrefix(t, "cut")
+}
+
+// isHumanSection reconhece o `## Needs human verification` que a frota grava
+// com o que as lentes não conseguiram confirmar.
+func isHumanSection(title string) bool {
+	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
+	return strings.HasPrefix(t, "needs human")
+}
+
+// listItem diz se a linha abre um item de lista: `- `, `* `, `+ ` ou `1. `.
+func listItem(trim string) bool {
+	if strings.HasPrefix(trim, "- ") || strings.HasPrefix(trim, "* ") || strings.HasPrefix(trim, "+ ") {
+		return true
+	}
+	n := 0
+	for n < len(trim) && trim[n] >= '0' && trim[n] <= '9' {
+		n++
+	}
+	return n > 0 && n+1 < len(trim) && (trim[n] == '.' || trim[n] == ')') && trim[n+1] == ' '
 }
 
 // Unwrap tira o review de dentro de um bloco ```markdown, quando o agente
