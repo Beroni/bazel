@@ -147,7 +147,7 @@ func TestSavedEntryCarregaOAgente(t *testing.T) {
 	dir := t.TempDir()
 	pr := prFor("abc123")
 
-	if _, err := Save(dir, agent.Result{PR: pr, Agent: "history-pr", Body: "48 commits"}); err != nil {
+	if _, err := Save(dir, agent.Result{PR: pr, Agent: "history-pr", Body: "48 commits"}, nil); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	entries, err := List(dir)

@@ -196,6 +196,7 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 	}
 	runner := agent.New(cfg)
 	runner.KeepWorkspace = keep
+	runner.PricingTable = &cfg.Agent.Pricing
 
 	m := &Manager{
 		cfg:        cfg,
@@ -373,7 +374,7 @@ func (m *Manager) run(job *Job) {
 		saveErr error
 	)
 	if job.publish == nil {
-		path, saveErr = store.Save(m.reviewsDir, res)
+		path, saveErr = store.Save(m.reviewsDir, res, &m.cfg.Agent.Pricing)
 	}
 
 	// O PR entra no índice: é o ✓ da lista, e é o commit gravado aqui que

@@ -12,10 +12,12 @@ import (
 	"time"
 
 	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 // Save grava o review em markdown e devolve o caminho do arquivo.
-func Save(dir string, res agent.Result) (string, error) {
+// pricing pode ser nil, caso em que o custo vem do campo CostUSD do Usage.
+func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
@@ -42,7 +44,7 @@ func Save(dir string, res agent.Result) (string, error) {
 	if res.Agent != "" {
 		fmt.Fprintf(&b, "- Agent: %s\n", agentLine(res))
 	}
-	if u := res.Usage.String(); u != "" {
+	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
 	}
 	if res.Posts {

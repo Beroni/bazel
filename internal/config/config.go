@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/beroni/bazel/internal/pricing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -168,7 +169,18 @@ type Agent struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// Env is merged into every agent process that does not set its own env.
 	Env map[string]string `yaml:"env,omitempty"`
+	// Pricing é a tabela de preços por modelo, em USD por 1M de tokens.
+	// Vazia = usar o default shipped com o código. Os preços mudam, e o
+	// binário não pode precisar de rebuild.
+	Pricing PricingTable `yaml:"pricing,omitempty"`
 }
+
+// Rate é o custo por 1M de tokens, em USD, para uma categoria de uso.
+type Rate = pricing.Rate
+
+// PricingTable é a tabela de preços por modelo, em USD por 1M de tokens.
+// Chave: nome do modelo (case-insensitive). Valor: rate por categoria.
+type PricingTable = pricing.Table
 
 const defaultPrompt = `{{task}}
 
@@ -308,6 +320,7 @@ func Default() *Config {
 			Checkout:       true,
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
+			Pricing:        defaultPricing(),
 		},
 		// Agents e Pipelines nascem vazios de propósito: quem monta a lista é
 		// você, na página, a partir das skills que estão instaladas na sua
@@ -315,6 +328,13 @@ func Default() *Config {
 		// apontaria para skills que este computador pode nunca ter tido.
 		PostAgent: defaultPostAgent(),
 	}
+}
+
+// defaultPricing é a tabela de preços shipped com o código. Os preços mudam
+// — um modelo novo sai, uma tarifa muda — e o binário não pode precisar de
+// rebuild. O usuário sobrescreve em config.yaml.
+func defaultPricing() PricingTable {
+	return pricing.Default
 }
 
 // Dir é o diretório de configuração do Bazel.

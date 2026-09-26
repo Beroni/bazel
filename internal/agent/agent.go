@@ -16,6 +16,7 @@ import (
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/pricing"
 	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/workspace"
 )
@@ -112,6 +113,9 @@ type Runner struct {
 	cfg *config.Config
 	// KeepWorkspace preserva o clone temporário depois do review.
 	KeepWorkspace bool
+	// PricingTable é a tabela de preços usada para calcular o custo em USD.
+	// Se nil, o custo vem do campo total_cost_usd do stream-json (Claude Code).
+	PricingTable *pricing.Table
 }
 
 // New cria um Runner.
@@ -544,10 +548,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
 	}
-	if err := adapter.err(); err != nil {
-		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, err)
+	u := adapter.usage()
+	// Com pricing table configurada, recalcula o custo a partir dos tokens
+	// e do modelo — é o que permite que o custo mude sem rebuild do binário.
+	if r.PricingTable != nil && u.Model != "" {
+		u.CostUSD = r.PricingTable.Cost(u.Model, u.InputTokens, u.OutputTokens, u.CacheWrite, u.CacheRead)
 	}
-	return adapter.report(), adapter.usage(), nil
+	return adapter.report(), u, nil
 }
 
 func agentFailure(step config.ResolvedAgent, message string) error {
