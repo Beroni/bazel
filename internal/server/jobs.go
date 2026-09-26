@@ -259,12 +259,15 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
 	m.trimLocked()
-	m.mu.Unlock()
 
+	// Hold the lock until the job is safely enqueued to prevent
+	// duplicate jobs from concurrent requests (BUG-01).
 	select {
 	case m.queue <- job:
+		m.mu.Unlock()
 	default:
 		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
+		m.mu.Unlock()
 		return m.mustView(job.ID), fmt.Errorf("queue is full")
 	}
 	m.publish(job)
