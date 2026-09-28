@@ -470,6 +470,50 @@ func TestPostChoice(t *testing.T) {
 	}
 }
 
+// A skill de publicação não vira agente: num passo comum ela roda sem o review
+// nem o prompt de publicar, e não posta nada. Quem publica é o passo publish —
+// e é ele que para para você escolher o que vai, por isso o pause saiu.
+func TestMigraPipelines(t *testing.T) {
+	cfg := Default()
+	for _, posts := range []bool{false, true} {
+		if _, err := cfg.AddAgentFromSkill("bazel-post-report", "", posts); err == nil {
+			t.Errorf("a skill de publicação não podia virar agente (posts=%v)", posts)
+		}
+	}
+
+	// Config gravada antes disso: o agente sai e o passo vira publish.
+	old := loadFrom(t, `repos: [acme/api]
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: bazel-post-report
+    task: /bazel-post-report {{number}}
+pipelines:
+  - name: gravada
+    steps: [review-fleet, pause, bazel-post-report]
+  - name: pausada
+    steps: [review-fleet, pause, publish]
+  - name: dupla
+    steps: [review-fleet, bazel-post-report, publish]
+default: bazel-post-report
+`)
+	if len(old.Agents) != 1 || old.Agents[0].Name != "review-fleet" {
+		t.Errorf("o agente de publicação devia sair da lista: %+v", old.Agents)
+	}
+	if got := strings.Join(old.Pipelines[0].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("o passo devia virar publish, e a pausa sair: %s", got)
+	}
+	if got := strings.Join(old.Pipelines[1].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("a pausa devia sair: %s", got)
+	}
+	if got := strings.Join(old.Pipelines[2].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("publicar uma vez só: %s", got)
+	}
+	if old.Default != "" {
+		t.Errorf("o padrão apontava para o agente removido: %q", old.Default)
+	}
+}
+
 func loadFrom(t *testing.T, yaml string) *Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -768,8 +812,8 @@ func TestPipelinePodeSerOPadrao(t *testing.T) {
 	}
 }
 
-// `pause` e `publish` são passos que o Bazel executa, não agentes. As regras
-// existem porque cada uma delas produz, em runtime, algo que parece bug.
+// `publish` é um passo que o Bazel executa, não um agente. As regras existem
+// porque cada uma delas produz, em runtime, algo que parece bug.
 func TestPassosReservados(t *testing.T) {
 	novo := func(t *testing.T) *Config {
 		t.Helper()
@@ -784,53 +828,41 @@ func TestPassosReservados(t *testing.T) {
 
 	t.Run("a sequência que o usuário pediu", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("read before sending", "", []string{"review-fleet", "pause", "publish"}); err != nil {
+		if _, err := cfg.AddPipeline("read before sending", "", []string{"review-fleet", "publish"}); err != nil {
 			t.Fatalf("AddPipeline: %v", err)
 		}
 		ch, err := cfg.ChoiceByName("read before sending")
 		if err != nil {
 			t.Fatalf("ChoiceByName: %v", err)
 		}
-		if len(ch.Steps) != 3 {
-			t.Fatalf("os três passos deviam estar lá: %v", ch.StepNames())
-		}
-		if !ch.HasPause() {
-			t.Error("a escolha devia anunciar que para no meio")
+		if len(ch.Steps) != 2 {
+			t.Fatalf("os dois passos deviam estar lá: %v", ch.StepNames())
 		}
 		if len(ch.Agents()) != 1 {
 			t.Errorf("só um passo é agente de verdade: %d", len(ch.Agents()))
 		}
-		if !ch.Posts {
-			t.Error("uma pipeline que publica escreve no PR sozinha — a página avisa antes de rodar")
+		if ch.Posts {
+			t.Error("o publish espera você mandar — a pipeline não escreve no PR sozinha")
 		}
-		if ch.Steps[1].Reserved != StepPause || ch.Steps[2].Reserved != StepPublish {
-			t.Errorf("os reservados deviam vir marcados: %+v", ch.Steps)
+		if ch.Steps[1].Reserved != StepPublish {
+			t.Errorf("o reservado devia vir marcado: %+v", ch.Steps)
 		}
-		if ch.StepPublishes("pause") || ch.StepPublishes("publish") {
+		if ch.StepPublishes("publish") {
 			t.Error("passo reservado não tem corpo para publicar")
 		}
 	})
 
-	t.Run("reservado não pode abrir a pipeline", func(t *testing.T) {
+	t.Run("publish não pode abrir a pipeline", func(t *testing.T) {
 		cfg := novo(t)
-		for _, step := range []string{"pause", "publish"} {
-			if _, err := cfg.AddPipeline("x", "", []string{step, "review-fleet"}); err == nil {
-				t.Errorf("%q no começo não teria o que mostrar", step)
-			}
+		if _, err := cfg.AddPipeline("x", "", []string{"publish", "review-fleet"}); err == nil {
+			t.Error("publish no começo não teria o que mostrar")
 		}
 	})
 
-	t.Run("dois reservados seguidos", func(t *testing.T) {
+	t.Run("pause não existe mais", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause", "pause"}); err == nil {
-			t.Error("duas pausas seguidas pedem dois cliques para nada")
-		}
-	})
-
-	t.Run("pausa no fim", func(t *testing.T) {
-		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause"}); err == nil {
-			t.Error("pausa no fim não tem para onde continuar")
+		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause", "publish"}); err == nil {
+			t.Error("pause não é agente da lista nem passo reservado")
 		}
 	})
 
@@ -839,8 +871,8 @@ func TestPassosReservados(t *testing.T) {
 		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "publish", "history-pr"}); err == nil {
 			t.Error("revisar depois de publicar deixaria em disco um review diferente do que o time leu")
 		}
-		if _, err := cfg.AddPipeline("y", "", []string{"review-fleet", "publish", "pause"}); err == nil {
-			t.Error("publish com qualquer coisa depois devia ser recusado")
+		if _, err := cfg.AddPipeline("y", "", []string{"review-fleet", "publish", "publish"}); err == nil {
+			t.Error("publicar duas vezes devia ser recusado")
 		}
 	})
 
@@ -849,18 +881,18 @@ func TestPassosReservados(t *testing.T) {
 		if err := cfg.SetAgentPublishable("history-pr", false); err != nil {
 			t.Fatalf("SetAgentPublishable: %v", err)
 		}
-		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "pause", "publish"}); err == nil {
+		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "publish"}); err == nil {
 			t.Error("history-pr não produz review — não há o que publicar")
 		}
 		// Com um agente publicável na frente, passa.
-		if _, err := cfg.AddPipeline("y", "", []string{"history-pr", "review-fleet", "pause", "publish"}); err != nil {
+		if _, err := cfg.AddPipeline("y", "", []string{"history-pr", "review-fleet", "publish"}); err != nil {
 			t.Errorf("com um review no meio devia passar: %v", err)
 		}
 	})
 
-	t.Run("agente não pode se chamar pause", func(t *testing.T) {
+	t.Run("agente não pode se chamar publish", func(t *testing.T) {
 		cfg := Default()
-		for _, n := range []string{"pause", "publish", "PAUSE"} {
+		for _, n := range []string{"publish", "PUBLISH"} {
 			if _, err := cfg.AddAgentFromSkill(n, "", false); err == nil {
 				t.Errorf("%q é passo reservado — um agente assim tornaria a pipeline ambígua", n)
 			}
@@ -869,17 +901,13 @@ func TestPassosReservados(t *testing.T) {
 
 	t.Run("agente removido deixa o reservado órfão", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "pause", "review-fleet"}); err != nil {
+		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "publish"}); err != nil {
 			t.Fatalf("AddPipeline: %v", err)
 		}
-		// Sem o history-pr, a pausa fica sem nada para mostrar antes dela.
-		cfg.RemoveAgent("history-pr")
-		ch, err := cfg.ChoiceByName("x")
-		if err != nil {
-			t.Fatalf("ChoiceByName: %v", err)
-		}
-		if len(ch.Steps) != 1 || ch.Steps[0].Name != "review-fleet" {
-			t.Errorf("a pausa órfã devia sumir junto: %v", ch.StepNames())
+		// Sem o review-fleet, o publish fica sem nada para publicar.
+		cfg.RemoveAgent("review-fleet")
+		if ch, err := cfg.ChoiceByName("x"); err == nil && len(ch.Steps) != 0 {
+			t.Errorf("o publish órfão devia sumir junto: %v", ch.StepNames())
 		}
 	})
 }

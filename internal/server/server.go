@@ -117,7 +117,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
-	mux.HandleFunc("POST /api/jobs/{id}/continue", s.handleContinue)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -529,17 +528,6 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, view)
-}
-
-// handleContinue solta uma pipeline que parou para você ler: ela volta para a
-// fila e recomeça do passo seguinte, dentro do mesmo clone.
-func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
-	view, err := s.jobs.Continue(r.PathValue("id"))
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -1063,7 +1051,12 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 // agente. É a lista de onde a configuração monta a sua.
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	dir, list := s.installedSkills()
-	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list})
+	s.cfgMu.Lock()
+	post := s.cfg.PostSkill()
+	s.cfgMu.Unlock()
+	// post_skill vai junto para a página não oferecê-la como agente: ela só
+	// publica quando roda como o passo publish.
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
 }
 
 // installedSkills lê as skills do disco a cada chamada: instalar uma skill não

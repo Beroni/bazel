@@ -379,6 +379,21 @@ main.no-prs .burger span { background: var(--accent); }
   margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line);
 }
 
+/* Pipeline que parou no publish: nada subiu ainda, e a escolha é sua. */
+.awaits-note {
+  margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
+  background: #2a1b12; color: var(--warn);
+  border: 1px solid #4a3218; border-radius: 6px;
+}
+/* Quando só parte do relatório vai ao PR, as duas partes ganham rótulo. O
+   que fica no Bazel vem apagado: é contexto para você, não para o autor. */
+.section-label {
+  margin: 28px 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--dim); border-bottom: 1px solid var(--line); padding-bottom: 6px;
+}
+.section-label:first-child { margin-top: 0; }
+.md.context { opacity: .7; }
+
 /* A caixa de cada achado: desmarcada, ele fica para trás na publicação.
    O que apaga é o conteúdo, não a caixa — é ela que traz o achado de volta. */
 .finding { margin-top: 22px; padding-left: 14px; border-left: 2px solid var(--line); }
@@ -472,8 +487,7 @@ main.no-prs .burger span { background: var(--accent); }
 #config-raw { margin-top: 10px; }
 #config-raw summary { cursor: pointer; }
 #config-raw pre { margin-top: 8px; }
-.state.paused { color: var(--warn); }
-.step.paused { color: var(--warn); }
+.state.awaits { color: var(--warn); }
 
 /* O aviso do molde que dispara comando sozinho. Fica no topo da configuração,
    que é onde se conserta. */
