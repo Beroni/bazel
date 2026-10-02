@@ -43,6 +43,11 @@ type Config struct {
 	// para o PR: em vez de escolher um agente que publica sozinho, você roda
 	// a frota, lê o resultado e só então manda publicar.
 	PostAgent AgentDef `yaml:"post_agent"`
+	// MCPAllowPublish abre o caminho para o PR a quem chega pelo /mcp. Desligado,
+	// um agente externo enfileira e lê, mas não publica — nem por ferramenta,
+	// nem escolhendo um agente que publica sozinho. "Você é o portão do PR":
+	// review que nenhum humano leu não vai para o GitHub por padrão.
+	MCPAllowPublish bool `yaml:"mcp_allow_publish,omitempty"`
 }
 
 // AgentDef é um agente nomeado que aparece no seletor da TUI.
