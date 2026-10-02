@@ -364,6 +364,34 @@ mark it with `⇧` and ask before firing — publishing is a write on someone el
 PR. And if you ask to comment over a review the agent already published, Bazel
 warns you first.
 
+## Driving Bazel from another agent (MCP)
+
+The same server answers [MCP](https://modelcontextprotocol.io) on `/mcp`
+(streamable HTTP, same port, same loopback guard). Register it once and any MCP
+client — a Claude Code session, a chat bot, a scheduled routine — can queue
+reviews that outlive the conversation:
+
+```sh
+claude mcp add --transport http bazel http://127.0.0.1:7777/mcp
+```
+
+| Tool | Does |
+| --- | --- |
+| `list_prs` | open PRs, filtered by `repo`, `mine`, `author`, review `status` |
+| `enqueue_review` | queues `refs` with an `agent` → job ids |
+| `list_jobs` / `job_status` | the queue; `job_status` long-polls with `wait_seconds` and carries the review body once done |
+| `job_log` | the agent log from `from` on (pass back `next`) |
+| `list_reviews` / `read_review` | the reviews saved on disk |
+| `list_agents` | the agents and pipelines you can pick |
+
+Every result carries `web_ui`, the page where a human reads the review.
+
+**MCP cannot publish.** You are the gate to the PR: there is no publishing
+tool, and agents that publish on their own (`posts: true`, or a pipeline with a
+publish step) are refused. To open that door on purpose, set
+`mcp_allow_publish: true` in the config — that also adds a `publish_review`
+tool.
+
 ## Configuration
 
 The interface is two pages, switched from the top right and addressable by URL:
@@ -599,7 +627,8 @@ uses the machine's already-authenticated `gh` — anyone who reaches it can make
 it clone repositories and run an agent with `Bash` enabled. So it listens on
 loopback, rejects a `Host` that isn't local (blocking DNS rebinding) and rejects
 `POST` from another origin (blocking a random tab from firing reviews in your
-name). Don't put this behind a public IP without authentication in front.
+name). `/mcp` sits behind the same checks. Don't put this behind a public IP
+without authentication in front.
 
 ## Development
 
