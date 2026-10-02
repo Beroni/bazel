@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -70,13 +71,14 @@ func (u Usage) String() string {
 }
 
 // StringWithCost é o gasto em uma linha, garantindo que o custo apareça
-// mesmo se não veio do stream (usando pricing table).
+// mesmo se não veio do stream (usando pricing table). Um custo que já veio —
+// do provedor ou do Runner, que já passou pela tabela — não é refeito: aqui
+// só se preenche o que faltou.
 func (u Usage) StringWithCost(pricing *pricing.Table) string {
 	if u.Empty() {
 		return ""
 	}
-	// Recalcula o custo se tiver pricing table e modelo
-	if pricing != nil && u.Model != "" {
+	if pricing != nil && u.CostUSD == 0 {
 		u.CostUSD = pricing.Cost(u.Model, u.InputTokens, u.OutputTokens, u.CacheWrite, u.CacheRead)
 	}
 	s := FormatTokens(u.Total()) + " tokens"
@@ -89,6 +91,39 @@ func (u Usage) StringWithCost(pricing *pricing.Table) string {
 		s += fmt.Sprintf(" · $%.2f", u.CostUSD)
 	}
 	return s
+}
+
+// priced refaz o custo pela tabela de preços. byModel é o gasto separado por
+// modelo, quando o adapter o tem: uma rodada do Claude Code mistura modelos —
+// o principal, as lentes que rodaram como sub-agente, os auxiliares — e cada
+// um é cobrado pelo seu preço. Um modelo que a tabela não conhece fica com o
+// custo que o próprio provedor reportou para ele. Sem nenhum modelo conhecido
+// o custo do provedor fica como veio — zerá-lo apagaria o único número que
+// existe.
+func priced(u Usage, byModel []Usage, table *pricing.Table) Usage {
+	if table == nil {
+		return u
+	}
+	parts := byModel
+	if len(parts) == 0 {
+		parts = []Usage{u}
+	}
+	var (
+		total float64
+		known bool
+	)
+	for _, p := range parts {
+		if c, ok := table.CostOf(p.Model, p.InputTokens, p.OutputTokens, p.CacheWrite, p.CacheRead); ok {
+			total += c
+			known = true
+		} else {
+			total += p.CostUSD
+		}
+	}
+	if known {
+		u.CostUSD = math.Round(total*100) / 100
+	}
+	return u
 }
 
 // FormatTokens abrevia a contagem: um review da frota queima milhões de

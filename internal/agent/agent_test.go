@@ -9,6 +9,7 @@ import (
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 func testPR() gh.PR {
@@ -859,5 +860,61 @@ func TestBuiltinPrecisaDoClone(t *testing.T) {
 	}}
 	if usaBuiltin(propria) || builtinSemClone(propria) != "" {
 		t.Error("a skill do usuário não é embarcada — checkout: false nela é escolha dele")
+	}
+}
+
+// Uma rodada do Claude Code mistura modelos. O principal é o que mais gastou
+// — sempre o mesmo, rodada após rodada — e a tabela cobra cada modelo pelo
+// seu preço em vez de cobrar tudo pelo preço do principal.
+func TestCustoPorModeloEModeloPrincipalEstavel(t *testing.T) {
+	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":1},` +
+		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":8}}}`
+	for range 20 {
+		var p streamParser
+		p.line(ev)
+		if p.usage.Model != "claude-opus-5-5" {
+			t.Fatalf("modelo principal devia ser o que mais gastou, veio %q", p.usage.Model)
+		}
+		u := priced(p.spend(), p.models(), &pricing.Default)
+		// 2M de Opus 5.5 a $4 + 1M de Haiku 4.5 a $1 — não 3M a $4.
+		if u.CostUSD != 9 {
+			t.Fatalf("custo por modelo = %.2f, queria 9.00", u.CostUSD)
+		}
+	}
+}
+
+// Modelo fora da tabela não zera o custo que o provedor reportou: o Grok traz
+// o próprio total_cost_usd, e apagá-lo deixaria o card em $0.00.
+func TestCustoDoProvedorSobreviveModeloDesconhecido(t *testing.T) {
+	u := priced(Usage{InputTokens: 1000, CostUSD: 0.42, Model: "grok"}, nil, &pricing.Default)
+	if u.CostUSD != 0.42 {
+		t.Errorf("custo do provedor apagado: %.2f", u.CostUSD)
+	}
+	// Num modelo misto, o desconhecido entra com o custo que o provedor deu
+	// para ele e o conhecido com o preço da tabela.
+	u = priced(Usage{CostUSD: 5}, []Usage{
+		{InputTokens: 1_000_000, Model: "claude-haiku-4-5", CostUSD: 3},
+		{InputTokens: 1_000_000, Model: "modelo-local", CostUSD: 0.5},
+	}, &pricing.Default)
+	if u.CostUSD != 1.5 {
+		t.Errorf("custo misto = %.2f, queria 1.50", u.CostUSD)
+	}
+	// Sem tabela, nada muda.
+	if u := priced(Usage{CostUSD: 0.42, Model: "claude-opus-5-5"}, nil, nil); u.CostUSD != 0.42 {
+		t.Errorf("sem tabela o custo mudou: %.2f", u.CostUSD)
+	}
+}
+
+// O custo que já veio pronto não é refeito no rodapé do review: refazer pelo
+// modelo principal desfaria a conta por modelo.
+func TestStringWithCostNaoRefazCustoPronto(t *testing.T) {
+	u := Usage{InputTokens: 1_000_000, CostUSD: 1.23, Model: "claude-opus-5-5"}
+	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$1.23") {
+		t.Errorf("custo pronto refeito: %q", got)
+	}
+	u.CostUSD = 0
+	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$4.00") {
+		t.Errorf("custo ausente devia vir da tabela: %q", got)
 	}
 }
