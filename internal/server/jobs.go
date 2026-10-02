@@ -196,7 +196,8 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 	}
 	runner := agent.New(cfg)
 	runner.KeepWorkspace = keep
-	runner.PricingTable = &cfg.Agent.Pricing
+	prices := cfg.Agent.Prices()
+	runner.PricingTable = &prices
 
 	m := &Manager{
 		cfg:        cfg,
@@ -259,15 +260,17 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
 	m.trimLocked()
+	// O job já está em m.jobs como queued: um Enqueue concorrente do mesmo PR
+	// o acha no laço de cima e devolve este, então soltar o lock antes de
+	// mandar para a fila não abre espaço para duplicata. Segurar o lock aqui
+	// travaria o Manager inteiro no caminho da fila cheia — finish trava o
+	// mesmo mutex, e ele não é reentrante.
+	m.mu.Unlock()
 
-	// Hold the lock until the job is safely enqueued to prevent
-	// duplicate jobs from concurrent requests (BUG-01).
 	select {
 	case m.queue <- job:
-		m.mu.Unlock()
 	default:
 		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
-		m.mu.Unlock()
 		return m.mustView(job.ID), fmt.Errorf("queue is full")
 	}
 	m.publish(job)
@@ -377,15 +380,16 @@ func (m *Manager) run(job *Job) {
 		saveErr error
 	)
 	if job.publish == nil {
-		path, saveErr = store.Save(m.reviewsDir, res, &m.cfg.Agent.Pricing)
+		path, saveErr = store.Save(m.reviewsDir, res, m.runner.PricingTable)
 	}
 
 	// O PR entra no índice: é o ✓ da lista, e é o commit gravado aqui que
 	// depois denuncia mudança no PR depois do review.
+	var markErr error
 	if job.publish == nil {
-		_ = store.MarkReviewed(m.reviewsDir, res, path)
+		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	} else {
-		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
+		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
 	}
 
 	m.mu.Lock()
@@ -402,8 +406,13 @@ func (m *Manager) run(job *Job) {
 		job.Result = res
 		job.SavedTo = path
 	}
-	if saveErr != nil {
+	switch {
+	case saveErr != nil:
 		job.Err = "review done, but I could not save it to disk: " + saveErr.Error()
+	case markErr != nil:
+		// Sem o índice o PR volta a aparecer como não revisado, e o ⟳ de
+		// mudança depois do review deixa de funcionar — melhor avisar.
+		job.Err = "done, but I could not update the reviewed index: " + markErr.Error()
 	}
 	job.State = StateDone
 	job.FinishedAt = time.Now()

@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 // Um config novo nasce sem agente nenhum: a lista é montada na página, a
@@ -906,5 +908,63 @@ func TestStrayCommand(t *testing.T) {
 		if got := cfg.StrayCommand(); got != c.want {
 			t.Errorf("%s: StrayCommand() = %q, queria %q", c.nome, got, c.want)
 		}
+	}
+}
+
+// Um preço no config.yaml troca só aquele modelo: os demais continuam com o
+// default, e o default do pacote não é tocado pelo yaml do usuário.
+func TestPricingDoUsuarioSobrescreveSemMexerNoDefault(t *testing.T) {
+	cfg := loadFrom(t, "agent:\n  pricing:\n    Claude-Opus-5-5:\n      input: 99\n    meu-modelo:\n      input: 1\n")
+	prices := cfg.Agent.Prices()
+	// A chave com outra caixa troca o preço em vez de disputar com o default.
+	for range 50 {
+		if r, _ := prices.Rate("claude-opus-5-5"); r.Input != 99 {
+			t.Fatalf("preço do usuário não entrou: %.2f", r.Input)
+		}
+	}
+	if _, ok := prices.Rate("claude-haiku-4-5"); !ok {
+		t.Error("os outros modelos do default sumiram")
+	}
+	if got := pricing.Default["claude-opus-5-5"].Input; got != 4 {
+		t.Errorf("o yaml do usuário escreveu no pricing.Default: %.2f", got)
+	}
+	if _, ok := pricing.Default["meu-modelo"]; ok {
+		t.Error("modelo do usuário vazou para o pricing.Default")
+	}
+}
+
+// Versões anteriores gravavam a tabela default inteira no config.yaml, com
+// preços errados. Essas linhas não podem valer por cima da tabela corrigida,
+// e o Save não grava mais o default — só o que o usuário escreveu.
+func TestPricingDefaultAntigoNaoVence(t *testing.T) {
+	cfg := loadFrom(t, "agent:\n  pricing:\n"+
+		"    claude-opus-5: {input: 15, output: 75, cache_write: 1.5, cache_read: 0.75}\n"+
+		"    claude-sonnet-4: {input: 3, output: 15, cache_write: 0.3, cache_read: 0.15}\n"+
+		"    claude-haiku-4-5: {input: 2, output: 5, cache_write: 1.25, cache_read: 0.1}\n")
+	prices := cfg.Agent.Prices()
+	if r, _ := prices.Rate("claude-opus-5-20260101"); r.Input != 5 || r.CacheWrite != 6.25 {
+		t.Errorf("linha antiga do opus-5 venceu: %+v", r)
+	}
+	if r, _ := prices.Rate("claude-sonnet-4-5"); r.CacheWrite != 3.75 {
+		t.Errorf("linha antiga do sonnet-4 venceu: %+v", r)
+	}
+	// Uma linha que o usuário mudou não é resto do default: fica.
+	if r, _ := prices.Rate("claude-haiku-4-5"); r.Input != 2 {
+		t.Errorf("preço editado pelo usuário sumiu: %+v", r)
+	}
+
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	path, _ := Path()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("lendo config: %v", err)
+	}
+	if strings.Contains(string(data), "claude-opus-5-5") || strings.Contains(string(data), "claude-opus-5:") {
+		t.Errorf("o Save gravou o default no config.yaml:%s\n%s", "", data)
+	}
+	if !strings.Contains(string(data), "claude-haiku-4-5") {
+		t.Errorf("o Save perdeu o preço do usuário:\n%s", data)
 	}
 }

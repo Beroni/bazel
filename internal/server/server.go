@@ -216,6 +216,22 @@ func (s *Server) guard(next http.Handler) http.Handler {
 	})
 }
 
+// Exposed diz que o servidor escuta além do loopback: um IP de rede, o
+// 0.0.0.0, ou um endereço sem host (`:7777`), que o net.Listen abre em todas
+// as interfaces. É diferente de loopback(), que decide a checagem de Host —
+// `:7777` continua só aceitando Host local, mas a porta está na rede.
+func (s *Server) Exposed() bool {
+	host, _, err := net.SplitHostPort(s.opts.Addr)
+	if err != nil {
+		return false
+	}
+	if host == "localhost" {
+		return false
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip == nil || !ip.IsLoopback()
+}
+
 func (s *Server) loopback() bool {
 	host, _, err := net.SplitHostPort(s.opts.Addr)
 	if err != nil {
