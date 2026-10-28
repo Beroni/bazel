@@ -35,8 +35,17 @@ func (u Usage) Total() int {
 func (u Usage) Empty() bool { return u.Total() == 0 && u.CostUSD == 0 }
 
 // add soma outro gasto a este — é como os passos de uma pipeline viram um
-// número só no fim do review.
+// número só no fim do review. O Model acompanha a soma enquanto ela for de um
+// modelo só: somar passos de modelos diferentes zera o Model, porque nenhuma
+// linha da tabela precifica essa mistura.
 func (u *Usage) add(o Usage) {
+	switch {
+	case u.Empty():
+		u.Model = o.Model
+	case o.Empty():
+	case u.Model != o.Model:
+		u.Model = ""
+	}
 	u.InputTokens += o.InputTokens
 	u.OutputTokens += o.OutputTokens
 	u.CacheWrite += o.CacheWrite

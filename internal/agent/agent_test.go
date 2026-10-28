@@ -706,6 +706,22 @@ func TestUsageSomaEFormata(t *testing.T) {
 	}
 }
 
+// A soma dos passos guarda o modelo enquanto ele for um só — é o que deixa o
+// fallback de StringWithCost precificar um total que chegou sem custo. Passos
+// de modelos diferentes não têm uma linha da tabela que os precifique juntos.
+func TestUsageSomaLevaOModelo(t *testing.T) {
+	var u Usage
+	u.add(Usage{InputTokens: 10, Model: "claude-opus-4-5"})
+	u.add(Usage{OutputTokens: 5, Model: "claude-opus-4-5"})
+	u.add(Usage{})
+	if u.Model != "claude-opus-4-5" {
+		t.Errorf("soma de um modelo só perdeu o Model: %q", u.Model)
+	}
+	if got := u.Plus(Usage{InputTokens: 1, Model: "claude-haiku-4-5"}).Model; got != "" {
+		t.Errorf("soma de modelos diferentes devia zerar o Model, ficou %q", got)
+	}
+}
+
 // Sem modelUsage — um agente mais simples, ou uma versão antiga do Claude Code
 // — o `usage` da conversa principal ainda vale.
 func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
