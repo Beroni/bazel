@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/beroni/bazel/internal/pricing"
+	"github.com/beroni/bazel/internal/skills"
 	"gopkg.in/yaml.v3"
 )
 
@@ -1041,7 +1042,7 @@ func (c *Config) PostSkill() string {
 	if strings.TrimSpace(post.Name) == "" {
 		post = defaultPostAgent()
 	}
-	return taskSkill(post.Task)
+	return skills.TaskSkill(post.Task)
 }
 
 // isPostAgent reports whether an agent in the list is the post agent in
@@ -1066,7 +1067,7 @@ func (c *Config) isPostAgent(a AgentDef) bool {
 	if strings.EqualFold(strings.TrimSpace(post.Name), name) {
 		return true
 	}
-	if skill := taskSkill(a.Task); skill != "" && strings.EqualFold(skill, taskSkill(defaultPostAgent().Task)) {
+	if skill := skills.TaskSkill(a.Task); skill != "" && strings.EqualFold(skill, skills.TaskSkill(defaultPostAgent().Task)) {
 		return true
 	}
 	shape := taskShape(post.Task)
@@ -1211,15 +1212,6 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 		}
 	}
 	return AgentDef{}, false
-}
-
-// taskSkill é a skill que uma task chama — `/nome args` vira `nome`.
-func taskSkill(task string) string {
-	f := strings.Fields(task)
-	if len(f) == 0 || !strings.HasPrefix(f[0], "/") {
-		return ""
-	}
-	return strings.TrimPrefix(f[0], "/")
 }
 
 // PostChoice é o agente de publicação, pronto para rodar.
