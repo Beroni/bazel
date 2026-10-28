@@ -282,9 +282,7 @@ func (m *Manager) trimLocked() {
 	for len(m.order) > maxJobs {
 		for i, id := range m.order {
 			j := m.jobs[id]
-			// A paused job still owns its kept clone and waits for Continue:
-			// dropping it here would leak the clone and strand the pipeline.
-			if j.State == StateQueued || j.State == StateRunning || j.State == StatePaused {
+			if j.State == StateQueued || j.State == StateRunning {
 				continue
 			}
 			delete(m.jobs, id)

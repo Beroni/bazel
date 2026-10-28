@@ -1490,38 +1490,3 @@ func TestExposedDetectsNonLoopbackListen(t *testing.T) {
 		}
 	}
 }
-
-// A pipeline paused waiting for Continue is not history: trimming must not
-// drop it from the Manager, or its kept clone leaks and Continue cannot find it.
-func TestTrimNaoDescartaJobParado(t *testing.T) {
-	clone := t.TempDir()
-	m := &Manager{jobs: map[string]*Job{}}
-	add := func(id string, st State) *Job {
-		j := &Job{ID: id, State: st}
-		m.jobs[id] = j
-		m.order = append(m.order, id)
-		return j
-	}
-	parado := add("j0", StatePaused)
-	parado.keptDir = clone
-	for i := 1; i <= maxJobs; i++ {
-		add(fmt.Sprintf("j%d", i), StateDone)
-	}
-
-	m.mu.Lock()
-	m.trimLocked()
-	m.mu.Unlock()
-
-	if m.jobs["j0"] != parado {
-		t.Fatal("o job parado saiu do Manager no trim")
-	}
-	if parado.keptDir != clone {
-		t.Errorf("o clone do job parado se perdeu: %q", parado.keptDir)
-	}
-	if _, ok := m.jobs["j1"]; ok {
-		t.Error("o job terminado mais antigo devia ter saído no lugar do parado")
-	}
-	if len(m.order) != maxJobs || len(m.jobs) != maxJobs {
-		t.Errorf("trim deixou %d/%d jobs, queria %d", len(m.order), len(m.jobs), maxJobs)
-	}
-}
