@@ -317,12 +317,7 @@ func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (
 // O bool diz se sobrou algo de fora: com ele falso o relatório inteiro é o que
 // se publica, e o arquivo em disco já serve.
 func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
-	kept := make([]StepResult, 0, len(res.Steps))
-	for _, s := range res.Steps {
-		if choice.StepPublishes(s.Name) {
-			kept = append(kept, s)
-		}
-	}
+	kept := stepsWhere(res, choice, true)
 	if len(kept) == len(res.Steps) {
 		return res.Body, false, nil
 	}
@@ -339,12 +334,7 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 // ContextBody é o avesso do PublishableBody: o corpo dos passos que ficam no
 // Bazel. É o que a tela mostra à parte, para ficar claro que não vai ao PR.
 func ContextBody(res Result, choice config.Choice) string {
-	kept := make([]StepResult, 0, len(res.Steps))
-	for _, s := range res.Steps {
-		if !choice.StepPublishes(s.Name) {
-			kept = append(kept, s)
-		}
-	}
+	kept := stepsWhere(res, choice, false)
 	if len(kept) == 0 {
 		return ""
 	}
@@ -363,6 +353,18 @@ func ContextBody(res Result, choice config.Choice) string {
 		return strings.Join(notes, "\n\n") + "\n"
 	}
 	return body
+}
+
+// stepsWhere separa os passos que vão ao PR (publishes=true) dos que ficam no
+// Bazel (publishes=false).
+func stepsWhere(res Result, choice config.Choice, publishes bool) []StepResult {
+	kept := make([]StepResult, 0, len(res.Steps))
+	for _, s := range res.Steps {
+		if choice.StepPublishes(s.Name) == publishes {
+			kept = append(kept, s)
+		}
+	}
+	return kept
 }
 
 // joinSteps monta o relatório final. Um passo só sai cru, como sempre saiu;
