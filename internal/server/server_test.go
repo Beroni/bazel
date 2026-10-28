@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1469,6 +1470,47 @@ func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
 	// O Manager continua respondendo depois.
 	if _, ok := m.View("j1", false); !ok {
 		t.Error("job da fila cheia sumiu")
+	}
+}
+
+// Com a fila cheia, ninguém pode ver o job como queued antes de ele falhar:
+// um Enqueue concorrente do mesmo PR que o achasse nessa janela receberia
+// sucesso e um job que nunca entrou na fila.
+func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
+	cfg := cfgFor(t, "cat")
+	m := &Manager{
+		cfg:   cfg,
+		hub:   NewHub(),
+		ctx:   context.Background(),
+		queue: make(chan *Job), // sem worker e sem buffer: sempre cheia
+		jobs:  map[string]*Job{},
+	}
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+			if err == nil {
+				errs <- fmt.Errorf("Enqueue com a fila cheia devolveu sucesso (job %s, %s)", v.ID, v.State)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.jobs {
+		if j.State != StateFailed {
+			t.Errorf("job %s ficou %q com a fila cheia", j.ID, j.State)
+		}
 	}
 }
 
