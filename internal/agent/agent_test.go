@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -868,8 +869,8 @@ func TestBuiltinPrecisaDoClone(t *testing.T) {
 // seu preço em vez de cobrar tudo pelo preço do principal.
 func TestCustoPorModeloEModeloPrincipalEstavel(t *testing.T) {
 	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
-		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":1},` +
-		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":8}}}`
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":0.5},` +
+		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":3}}}`
 	for range 20 {
 		var p streamParser
 		p.line(ev)
@@ -916,5 +917,56 @@ func TestStringWithCostNaoRefazCustoPronto(t *testing.T) {
 	u.CostUSD = 0
 	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$4.00") {
 		t.Errorf("custo ausente devia vir da tabela: %q", got)
+	}
+}
+
+// Each step keeps its unrounded cost: five cheap steps of $0.004 add up to
+// $0.02 at the end of the review, not $0.00.
+func TestCustoDePassosBaratosNaoSomaZero(t *testing.T) {
+	var total Usage
+	for range 5 {
+		// 4k Haiku 4.5 tokens at $1/M = $0.004.
+		total.add(priced(Usage{InputTokens: 4000, Model: "claude-haiku-4-5"}, nil, &pricing.Default))
+	}
+	if math.Abs(total.CostUSD-0.02) > 1e-9 {
+		t.Errorf("soma de 5 passos de $0.004 = %f, queria 0.02", total.CostUSD)
+	}
+	if got := total.String(); !strings.Contains(got, "$0.02") {
+		t.Errorf("a linha de gasto devia mostrar $0.02: %q", got)
+	}
+}
+
+// The whole path (process, stream-json, per-model usage, price table) prices
+// each model at its own rate in Review, instead of keeping the event's
+// total_cost_usd or pricing everything at the main model's rate.
+func TestReviewCobraCadaModeloPelaTabela(t *testing.T) {
+	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":0.5},` +
+		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":3}}}`
+
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{
+		Name:    "stream",
+		Command: "sh",
+		Args:    []string{"-c", "cat <<'FIM'\n" + ev + "\nFIM\n", "sh", "--output-format", "stream-json"},
+	}}
+	cfg.Pipelines = nil
+	choice, _ := cfg.ChoiceByName("stream")
+
+	r := New(cfg)
+	r.PricingTable = &pricing.Default
+	res, err := r.Review(context.Background(), testPR(), choice, func(Event) {})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	// 2M Opus 5.5 at $4 + 1M Haiku 4.5 at $1.
+	if res.Usage.CostUSD != 9 {
+		t.Errorf("custo do review = %.2f, queria 9.00", res.Usage.CostUSD)
+	}
+	if len(res.Steps) != 1 || res.Steps[0].Usage.Model != "claude-opus-5-5" || res.Steps[0].Usage.CostUSD != 9 {
+		t.Errorf("passo devia levar o principal e o custo da tabela: %+v", res.Steps)
 	}
 }

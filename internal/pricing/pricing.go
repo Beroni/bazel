@@ -8,7 +8,6 @@ package pricing
 
 import (
 	"fmt"
-	"math"
 	"strings"
 )
 
@@ -22,9 +21,11 @@ type Rate struct {
 	CacheRead  float64 `yaml:"cache_read"`
 }
 
-// Table é a tabela de preços, indexada pelo nome do modelo (case-insensitive).
-// Uma chave vale também para as versões datadas do modelo: o Claude Code
-// reporta `claude-opus-4-5-20251101`, e quem acha o preço é `claude-opus-4-5`.
+// Table is the price table, keyed by model name (case-insensitive). A key also
+// covers the dated releases of that model: Claude Code reports
+// `claude-opus-4-5-20251101`, and the price comes from `claude-opus-4-5`. A new
+// minor of a family (`claude-opus-4-9`) does not inherit the family price: it
+// needs its own row, otherwise it keeps the cost the provider reported.
 type Table map[string]Rate
 
 // Default é a tabela usada quando o usuário não configurou nada. Preços de
@@ -41,19 +42,23 @@ var Default = Table{
 	"claude-opus-4-7": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.50},
 	"claude-opus-4-6": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.50},
 	"claude-opus-4-5": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.50},
-	// Opus 4 e 4.1 — `claude-opus-4` cobre `claude-opus-4-1-…` e `claude-opus-4-2025…`.
+	// Opus 4 and 4.1 cost the same.
+	"claude-opus-4-1":   {Input: 15, Output: 75, CacheWrite: 18.75, CacheRead: 1.50},
 	"claude-opus-4":     {Input: 15, Output: 75, CacheWrite: 18.75, CacheRead: 1.50},
 	"claude-sonnet-5-5": {Input: 2, Output: 10, CacheWrite: 2.50, CacheRead: 0.20},
 	"claude-sonnet-5":   {Input: 2, Output: 10, CacheWrite: 2.50, CacheRead: 0.20},
-	// Sonnet 4, 4.5 e 4.6 custam o mesmo.
-	"claude-sonnet-4":  {Input: 3, Output: 15, CacheWrite: 3.75, CacheRead: 0.30},
-	"claude-haiku-4-5": {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
+	// Sonnet 4, 4.5 and 4.6 cost the same.
+	"claude-sonnet-4-6": {Input: 3, Output: 15, CacheWrite: 3.75, CacheRead: 0.30},
+	"claude-sonnet-4-5": {Input: 3, Output: 15, CacheWrite: 3.75, CacheRead: 0.30},
+	"claude-sonnet-4":   {Input: 3, Output: 15, CacheWrite: 3.75, CacheRead: 0.30},
+	"claude-haiku-4-5":  {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
 }
 
-// Rate acha o preço de um modelo. O nome exato ganha; sem ele vale a chave
-// mais longa que é prefixo do nome até um hífen — `claude-opus-4-5-20251101`
-// cai em `claude-opus-4-5`, nunca em `claude-opus-4`. Um sufixo de variante
-// entre colchetes (`[1m]`) é ignorado.
+// Rate finds the price of a model. The exact name wins; failing that, a dated
+// name (`claude-opus-4-5-20251101`) is priced by the key without the date
+// (`claude-opus-4-5`). No other suffix matches: `claude-opus-4-9` is not
+// `claude-opus-4`, and pricing it as such would replace the provider's cost
+// with a guess. A bracketed variant suffix (`[1m]`) is ignored.
 func (t Table) Rate(model string) (Rate, bool) {
 	name := strings.ToLower(strings.TrimSpace(model))
 	if i := strings.IndexByte(name, '['); i >= 0 {
@@ -62,25 +67,41 @@ func (t Table) Rate(model string) (Rate, bool) {
 	if name == "" {
 		return Rate{}, false
 	}
-	// O nome exato ganha de tudo — inclusive de uma chave com outra caixa,
-	// que o laço abaixo acharia numa ordem que muda a cada chamada.
+	if rate, ok := t.lookup(name); ok {
+		return rate, true
+	}
+	if base, ok := undated(name); ok {
+		return t.lookup(base)
+	}
+	return Rate{}, false
+}
+
+// lookup finds the key equal to name, ignoring case. The exact key wins over
+// one with different case, which the loop would find in random map order.
+func (t Table) lookup(name string) (Rate, bool) {
 	if rate, ok := t[name]; ok {
 		return rate, true
 	}
-	var (
-		best    Rate
-		bestLen = -1
-	)
 	for key, rate := range t {
-		k := strings.ToLower(key)
-		if k == name {
+		if strings.ToLower(key) == name {
 			return rate, true
 		}
-		if len(k) > bestLen && strings.HasPrefix(name, k) && name[len(k)] == '-' {
-			best, bestLen = rate, len(k)
+	}
+	return Rate{}, false
+}
+
+// undated strips a `-YYYYMMDD` date suffix from name; ok is false without one.
+func undated(name string) (string, bool) {
+	const suffix = len("-20060102")
+	if len(name) <= suffix || name[len(name)-suffix] != '-' {
+		return "", false
+	}
+	for _, c := range name[len(name)-suffix+1:] {
+		if c < '0' || c > '9' {
+			return "", false
 		}
 	}
-	return best, bestLen >= 0
+	return name[:len(name)-suffix], true
 }
 
 // Cost calcula o custo em USD para um usage, usando a rate do modelo.
@@ -122,20 +143,15 @@ func (t Table) Clone() Table {
 	return c
 }
 
-// costOf calcula o custo a partir de uma rate e contadores de tokens.
-// Preços são por 1M de tokens; o custo é arredondado para centavos.
+// costOf computes the cost from a rate and token counts; prices are per 1M
+// tokens. The result is not rounded: the steps of a review are summed later,
+// and rounding each one would zero out the cheap ones. Cents are for display.
 func costOf(rate Rate, input, output, cacheWrite, cacheRead int) float64 {
 	inputCost := float64(input) * rate.Input / 1_000_000
 	outputCost := float64(output) * rate.Output / 1_000_000
 	cacheWriteCost := float64(cacheWrite) * rate.CacheWrite / 1_000_000
 	cacheReadCost := float64(cacheRead) * rate.CacheRead / 1_000_000
-	return roundCents(inputCost + outputCost + cacheWriteCost + cacheReadCost)
-}
-
-// roundCents arredonda para 2 casas decimais, sem estourar de ponto flutuante.
-// Usa math.Round para evitar problemas de precisão de ponto flutuante.
-func roundCents(v float64) float64 {
-	return math.Round(v*100) / 100
+	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
 // FormatUSD formata um valor em dólar, com vírgula decimal e 2 casas.

@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"math"
 	"strconv"
 	"strings"
 
@@ -120,8 +119,10 @@ func priced(u Usage, byModel []Usage, table *pricing.Table) Usage {
 			total += p.CostUSD
 		}
 	}
+	// Not rounded here: a review sums its steps, and rounding each step would
+	// zero out the cheap ones. String and the page round when displaying.
 	if known {
-		u.CostUSD = math.Round(total*100) / 100
+		u.CostUSD = total
 	}
 	return u
 }

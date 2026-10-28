@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"math"
 	"testing"
 )
 
@@ -12,6 +13,10 @@ func TestDefaultTableHasKnownModels(t *testing.T) {
 		"claude-sonnet-5-5",
 		"claude-sonnet-4",
 		"claude-haiku-4-5",
+		// Minors that used to be priced only through the family prefix.
+		"claude-opus-4-1",
+		"claude-sonnet-4-5",
+		"claude-sonnet-4-6",
 	} {
 		if _, ok := Default[name]; !ok {
 			t.Errorf("Default não tem %q", name)
@@ -57,8 +62,8 @@ func TestCostUnknownModelReturnsZero(t *testing.T) {
 	}
 }
 
-// O Claude Code reporta o modelo com data e às vezes com variante; a chave
-// mais longa que é prefixo até um hífen é a que vale.
+// Claude Code reports the model with a date and sometimes a variant; once the
+// 8-digit date and the variant are stripped, the rest must be a table key.
 func TestRateMatchesVersionedNames(t *testing.T) {
 	cases := []struct {
 		model string
@@ -72,8 +77,19 @@ func TestRateMatchesVersionedNames(t *testing.T) {
 		{"claude-haiku-4-5-20251001", 1, true},
 		{"claude-opus-5-5[1m]", 4, true},
 		{"claude-fable-5-1", 10, true},
-		// Prefixo sem hífen na fronteira não é o mesmo modelo.
+		{"claude-opus-4-5-20251101[1m]", 5, true},
+		{"claude-sonnet-4-6", 3, true},
+		{"claude-opus-4-1", 15, true},
+		// A longer number is a different model, not a dated name.
 		{"claude-opus-40", 0, false},
+		// A minor the table does not know does not inherit the family price:
+		// the provider's cost beats a guess.
+		{"claude-opus-4-9", 0, false},
+		{"claude-sonnet-4-7-20270101", 0, false},
+		{"claude-opus-5-5-preview", 0, false},
+		// Only an 8-digit date is stripped from the name.
+		{"claude-opus-4-5-2025110", 0, false},
+		{"claude-opus-4-5-2025110x", 0, false},
 		{"claude", 0, false},
 		{"", 0, false},
 	}
@@ -82,6 +98,39 @@ func TestRateMatchesVersionedNames(t *testing.T) {
 		if ok != c.ok || r.Input != c.input {
 			t.Errorf("Rate(%q) = (%.2f, %v), queria (%.2f, %v)", c.model, r.Input, ok, c.input, c.ok)
 		}
+	}
+}
+
+// Every table key matches itself, not some other key.
+func TestRateExactForEveryKey(t *testing.T) {
+	for name, want := range Default {
+		if got, ok := Default.Rate(name); !ok || got != want {
+			t.Errorf("Rate(%q) = (%+v, %v), queria (%+v, true)", name, got, ok, want)
+		}
+	}
+}
+
+// config.yaml overrides use the same matching: a user key covers its dated
+// releases, not a minor it does not name.
+func TestRateOverrideUsesSameMatching(t *testing.T) {
+	tbl := Default.With(Table{"Claude-Opus-5-5": {Input: 99}, "modelo-local": {Input: 7}})
+	if r, ok := tbl.Rate("claude-opus-5-5-20260101"); !ok || r.Input != 99 {
+		t.Errorf("override datado = (%.2f, %v), queria (99.00, true)", r.Input, ok)
+	}
+	if r, ok := tbl.Rate("modelo-local-20260101"); !ok || r.Input != 7 {
+		t.Errorf("chave nova datada = (%.2f, %v), queria (7.00, true)", r.Input, ok)
+	}
+	if _, ok := tbl.Rate("modelo-local-2"); ok {
+		t.Error("modelo-local-2 não é modelo-local")
+	}
+}
+
+// A step's cost is not rounded: five steps of $0.004 are $0.02, not zero.
+// Rounding is left to whoever displays the number.
+func TestCostNaoArredondaCentavos(t *testing.T) {
+	cost := Default.Cost("claude-haiku-4-5", 4000, 0, 0, 0)
+	if math.Abs(cost-0.004) > 1e-12 {
+		t.Errorf("Cost(haiku, 4k input) = %f, queria 0.004", cost)
 	}
 }
 
@@ -103,36 +152,6 @@ func TestCloneIsIndependent(t *testing.T) {
 func TestCostZeroTokens(t *testing.T) {
 	if cost := Default.Cost("claude-opus-5", 0, 0, 0, 0); cost != 0 {
 		t.Errorf("sem tokens o custo devia ser 0, foi %.2f", cost)
-	}
-}
-
-// roundCents arredonda para 2 casas decimais, sem estourar de ponto flutuante.
-// math.Round usa "banker's rounding" (round to even) para halfway cases.
-// NOTA: Devido à precisão de ponto flutuante, 9.995 * 100 = 999.4999... arredonda para 999 (9.99),
-// enquanto 9.985 * 100 = 998.5 arredonda para 999 (9.99).
-func TestRoundCents(t *testing.T) {
-	cases := []struct {
-		in   float64
-		want float64
-	}{
-		{0, 0},
-		{0.001, 0},
-		{0.005, 0.01},
-		{0.014, 0.01},
-		{0.015, 0.02},
-		{1.234, 1.23},
-		// Devido a precisão de ponto flutuante: 9.995 * 100 = 999.4999... -> 999 (9.99)
-		{9.995, 9.99},
-		{9.994, 9.99},
-		{9.996, 10.00},
-		// 9.985 * 100 = 998.5 (exato) -> 999 (banker's: even) / 100 = 9.99
-		{9.985, 9.99},
-		{9.975, 9.98},
-	}
-	for _, c := range cases {
-		if got := roundCents(c.in); got != c.want {
-			t.Errorf("roundCents(%f) = %f, queria %f", c.in, got, c.want)
-		}
 	}
 }
 
