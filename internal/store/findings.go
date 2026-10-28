@@ -92,7 +92,8 @@ func SplitFindings(body string) []Part {
 				switch {
 				case listItem(trim):
 					flush()
-					finding = true
+					// "- None." diz que não há dúvida: não é uma para desmarcar.
+					finding = !emptyItem(trim)
 					bold = false
 				case !boldNumbered(trim) && finding && !bold && wasBlank:
 					flush()
@@ -258,6 +259,21 @@ func listItem(trim string) bool {
 		n++
 	}
 	return n > 0 && n+1 < len(trim) && (trim[n] == '.' || trim[n] == ')') && trim[n+1] == ' '
+}
+
+// emptyItem diz se o item de lista só avisa que não há nada — "- None.",
+// "- n/a", "- Nenhum" —, o que a seção de dúvidas costuma trazer vazia.
+func emptyItem(trim string) bool {
+	text := trim
+	if i := strings.IndexByte(trim, ' '); i >= 0 {
+		text = trim[i+1:]
+	}
+	text = strings.ToLower(strings.Trim(text, " .*_!"))
+	switch text {
+	case "none", "nothing", "n/a", "na", "nenhum", "nenhuma", "nada", "-", "—":
+		return true
+	}
+	return false
 }
 
 // Unwrap tira o review de dentro de um bloco ```markdown, quando o agente
