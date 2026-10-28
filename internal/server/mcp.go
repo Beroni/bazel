@@ -415,11 +415,12 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	// Um agente que publica sozinho é publicar por outro caminho: sem a chave
-	// no config, ele não roda a pedido de quem chega pelo /mcp.
-	if choice.Posts && !s.allowPublish() {
-		return nil, fmt.Errorf("%q publishes to the PR on its own, and publishing over MCP is disabled "+
-			"(set mcp_allow_publish: true in the Bazel config to allow it)", choice.Name)
+	// Uma escolha que pode publicar sem passar pela tela é publicar por outro
+	// caminho: sem a chave no config, ela não roda a pedido de quem chega pelo
+	// /mcp. Não é só o posts declarado — PublishesBy recusa na dúvida.
+	if how := choice.PublishesBy(); how != "" && !s.allowPublish() {
+		return nil, fmt.Errorf("%q %s, and publishing over MCP is disabled "+
+			"(set mcp_allow_publish: true in the Bazel config to allow it)", choice.Name, how)
 	}
 	queued, errs := s.enqueueRefs(ctx, refs, choice)
 	if len(queued) == 0 {

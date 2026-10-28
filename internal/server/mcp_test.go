@@ -138,6 +138,15 @@ func TestMCPProtocolErrors(t *testing.T) {
 	}
 }
 
+// withLens dá ao servidor um agente nomeado. O bloco `agent` sozinho, que é o
+// que newTestServer deixa, é recusado pelo /mcp sem a proibição de publicar.
+func withLens(srv *Server) *Server {
+	srv.cfgMu.Lock()
+	srv.cfg.Agents = []config.AgentDef{{Name: "lente", Task: "revise"}}
+	srv.cfgMu.Unlock()
+	return srv
+}
+
 // O /mcp manda clonar e rodar agente tanto quanto a página: o guard vale igual.
 func TestMCPBehindGuard(t *testing.T) {
 	h := newTestServer(t).Handler()
@@ -153,7 +162,7 @@ func TestMCPBehindGuard(t *testing.T) {
 
 // O caminho inteiro de um agente externo: enfileira, espera, lê o review.
 func TestMCPEnqueueAndPollToCompletion(t *testing.T) {
-	srv := newTestServer(t)
+	srv := withLens(newTestServer(t))
 	srv.prs = []gh.PR{testPR(482)}
 	h := srv.Handler()
 
@@ -309,6 +318,56 @@ func TestMCPPublishGateOtherDoors(t *testing.T) {
 	}
 }
 
+// Publicar sem ter declarado posts também é publicar: uma task com --post, um
+// prompt que autoriza, e o bloco `agent` sozinho, cujo prompt o Bazel não
+// escreveu. Sem a chave, o /mcp recusa todos; com a proibição do molde padrão,
+// o bloco `agent` passa.
+func TestMCPPublishGateUndeclared(t *testing.T) {
+	ref := []string{"acme/api-core#482"}
+	cases := []struct {
+		nome   string
+		mod    func(*config.Config)
+		agent  string
+		recusa bool
+	}{
+		{"task com --post sem posts", func(c *config.Config) {
+			c.Agents = append(c.Agents, config.AgentDef{Name: "furtivo", Task: "/review-fleet {{number}} --post"})
+		}, "furtivo", true},
+		{"prompt que autoriza publicar", func(c *config.Config) {
+			c.Agents = append(c.Agents, config.AgentDef{Name: "furtivo", Task: "revise",
+				Prompt: "{{task}}\nYou are authorized to publish on PR #{{number}}."})
+		}, "furtivo", true},
+		{"pipeline com passo que passa --post", func(c *config.Config) {
+			c.Agents = append(c.Agents, config.AgentDef{Name: "furtivo", Task: "/x --post"})
+			c.Pipelines = []config.Pipeline{{Name: "frota", Steps: []string{"lente", "furtivo"}}}
+		}, "frota", true},
+		{"bloco agent sem a proibição", func(c *config.Config) {
+			c.Agents = nil
+		}, "", true},
+		{"bloco agent com a proibição", func(c *config.Config) {
+			c.Agents = nil
+			c.Agent.Prompt = "revise o PR {{number}}.\nDo not publish\nanything to GitHub."
+		}, "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.nome, func(t *testing.T) {
+			srv := gateServer(t, "cat", c.mod)
+			h := srv.Handler()
+			args := map[string]any{"refs": ref}
+			if c.agent != "" {
+				args["agent"] = c.agent
+			}
+			res := mcpToolResult(t, h, "enqueue_review", args)
+			if got := res["isError"] == true; got != c.recusa {
+				t.Fatalf("recusado = %v, queria %v: %v", got, c.recusa, res["content"])
+			}
+			if c.recusa && len(srv.jobs.Snapshot()) != 0 {
+				t.Errorf("nada devia ter entrado na fila: %v", srv.jobs.Snapshot())
+			}
+		})
+	}
+}
+
 // With the switch on, publish_review still only publishes what finished,
 // exists and has valid indices.
 func TestMCPPublishReviewGuards(t *testing.T) {
@@ -459,7 +518,7 @@ func TestMCPOpenWorldHints(t *testing.T) {
 // MCP only queues what the config watches, and no more than mcpMaxRefs at a
 // time. The page (/api/reviews) has no such limit.
 func TestMCPEnqueueLimits(t *testing.T) {
-	srv := newTestServer(t)
+	srv := withLens(newTestServer(t))
 	srv.prs = []gh.PR{testPR(482)}
 	h := srv.Handler()
 

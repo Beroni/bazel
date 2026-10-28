@@ -385,6 +385,31 @@ func TestLoadUpgradesLegacyArgs(t *testing.T) {
 	}
 }
 
+// PublishesBy acha os caminhos de publicar que Posts não declara, sem
+// confundir uma flag parecida com --post.
+func TestChoicePublishesBy(t *testing.T) {
+	for _, c := range []struct {
+		nome string
+		ch   Choice
+		quer bool
+	}{
+		{"lente comum", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review {{number}}", Prompt: defaultPrompt}}}, false},
+		{"flag parecida", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --poster"}}}, false},
+		{"posts", Choice{Steps: []ResolvedAgent{{Name: "p", Posts: true}}}, true},
+		{"--post", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review {{number}} --post"}}}, true},
+		{"--post=inline", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review --post=inline"}}}, true},
+		{"passo publish", Choice{Steps: []ResolvedAgent{{Name: "l"}, {Name: StepPublish, Reserved: StepPublish}}}, true},
+		{"postPrompt", Choice{Steps: []ResolvedAgent{{Name: "p", Prompt: postPrompt}}}, true},
+		{"publishPrompt", Choice{Steps: []ResolvedAgent{{Name: "p", Prompt: publishPrompt}}}, true},
+		{"bloco agent sem proibição", Choice{Bare: true, Steps: []ResolvedAgent{{Name: "default", Prompt: "revise"}}}, true},
+		{"bloco agent com o molde padrão", Choice{Bare: true, Steps: []ResolvedAgent{{Name: "default", Prompt: defaultPrompt}}}, false},
+	} {
+		if got := c.ch.PublishesBy() != ""; got != c.quer {
+			t.Errorf("%s: PublishesBy = %q, queria publicar = %v", c.nome, c.ch.PublishesBy(), c.quer)
+		}
+	}
+}
+
 func TestFormatOmissionAndRoundTrip(t *testing.T) {
 	cfg := loadFrom(t, "repos: [acme/api]\nagent:\n  command: codex\nagents:\n  - name: custom\n    command: gemini\n")
 	if cfg.Agent.Format != "" || cfg.Agents[0].Format != "" {

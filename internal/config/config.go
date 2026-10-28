@@ -152,7 +152,67 @@ type Choice struct {
 	// um passo publicável. Numa pipeline, só o corpo desses passos é que sobe
 	// — o resto você lê na tela e fica por aí.
 	Publishable bool
-	Steps       []ResolvedAgent
+	// Bare diz que esta é a escolha única do bloco `agent`, sem lista de
+	// agents: o prompt é todo seu, e o Bazel não tem como saber se ele publica.
+	Bare  bool
+	Steps []ResolvedAgent
+}
+
+// PublishesBy diz por onde esta escolha pode escrever no PR sem passar pela
+// tela, ou "" quando não há caminho nenhum à vista. Vai além de Posts, que é só
+// o que foi declarado: um passo `publish`, uma task com --post, um prompt que
+// autoriza publicar e o bloco `agent`, cujo prompt o Bazel não escreveu. Quem
+// decide recusar (o /mcp) recusa na dúvida.
+func (c Choice) PublishesBy() string {
+	// O bloco `agent` sozinho roda um prompt que o Bazel não escreveu, e ele
+	// nunca declara posts. Só passa se mantiver a proibição do molde padrão.
+	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
+		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
+	}
+	for _, st := range c.Steps {
+		switch {
+		case st.Posts:
+			return fmt.Sprintf("has %q, which publishes to the PR on its own", st.Name)
+		case st.Reserved == StepPublish:
+			return "has a publish step"
+		case taskPosts(st.Task):
+			return fmt.Sprintf("has %q, whose task passes --post", st.Name)
+		case promptAuthorizesPosting(st.Prompt):
+			return fmt.Sprintf("has %q, whose prompt authorizes publishing", st.Name)
+		}
+	}
+	return ""
+}
+
+// taskPosts diz se a task passa --post à skill, a flag com que as skills de
+// review publicam o que acharam.
+func taskPosts(task string) bool {
+	for _, f := range strings.Fields(task) {
+		if f == "--post" || strings.HasPrefix(f, "--post=") {
+			return true
+		}
+	}
+	return false
+}
+
+// noPublishLine é a proibição de escrever no GitHub que o molde padrão carrega.
+const noPublishLine = "do not publish anything to GitHub"
+
+// promptForbidsPosting diz se o prompt traz a proibição do molde padrão, sem
+// ligar para quebra de linha nem caixa.
+func promptForbidsPosting(prompt string) bool {
+	flat := strings.ToLower(strings.Join(strings.Fields(prompt), " "))
+	return strings.Contains(flat, strings.ToLower(noPublishLine))
+}
+
+// promptAuthorizesPosting reconhece os moldes que liberam escrever no PR — o
+// postPrompt, o publishPrompt e qualquer prompt que diga o mesmo com as
+// palavras deles.
+func promptAuthorizesPosting(prompt string) bool {
+	if prompt == postPrompt || prompt == publishPrompt {
+		return true
+	}
+	return strings.Contains(strings.ToLower(prompt), "authorized to publish")
 }
 
 // Agent descreve como invocar o agente de IA que faz o review.
@@ -1071,7 +1131,7 @@ func (c *Config) baseChoice() Choice {
 		TimeoutSeconds: c.Agent.TimeoutSeconds,
 		Env:            c.Agent.Env,
 	}
-	return Choice{Name: ra.Name, Description: ra.Description, Publishable: true, Steps: []ResolvedAgent{ra}}
+	return Choice{Name: ra.Name, Description: ra.Description, Publishable: true, Bare: true, Steps: []ResolvedAgent{ra}}
 }
 
 // resolve preenche com o bloco `agent` tudo que o AgentDef não sobrescreve.

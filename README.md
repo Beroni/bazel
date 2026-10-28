@@ -387,8 +387,11 @@ claude mcp add --transport http bazel http://127.0.0.1:7777/mcp
 Every result carries `web_ui`, the page where a human reads the review.
 
 **MCP does not offer publishing.** The tool surface is curated so that you stay
-the gate to the PR: there is no publishing tool, and agents that publish on
-their own (`posts: true`, or a pipeline with a publish step) are refused. To
+the gate to the PR: there is no publishing tool, and anything that could
+publish on its own is refused — `posts: true`, a task with `--post`, a prompt
+that authorizes publishing, a pipeline with a publish step or with any of
+those, and the bare `agent` block unless its prompt keeps the default's
+"do not publish anything to GitHub". When in doubt, it refuses. To
 open that door on purpose, set `mcp_allow_publish: true` in the config — that
 also adds a `publish_review` tool.
 
