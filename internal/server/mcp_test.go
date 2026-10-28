@@ -484,6 +484,24 @@ func TestMCPJSONRPCErrorCodes(t *testing.T) {
 	if err := json.Unmarshal(raw, &batch); err != nil || len(batch) != 1 || rpcErrorCode(batch[0]) != rpcInvalidRequest {
 		t.Errorf("[1] devia dar uma resposta -32600, veio %s", raw)
 	}
+
+	// Lote acima do teto: recusado inteiro, sem rodar nenhum item.
+	items := make([]string, mcpMaxBatch+1)
+	for i := range items {
+		items[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"ping"}`, i)
+	}
+	code, raw = mcpRaw(t, h, "["+strings.Join(items, ",")+"]")
+	var tooBig map[string]any
+	if err := json.Unmarshal(raw, &tooBig); err != nil || rpcErrorCode(tooBig) != rpcInvalidRequest {
+		t.Errorf("lote de %d devia dar uma única resposta -32600, veio %s", len(items), raw)
+	}
+	if code != http.StatusBadRequest {
+		t.Errorf("lote grande demais devia dar 400, deu %d", code)
+	}
+	code, raw = mcpRaw(t, h, "["+strings.Join(items[:mcpMaxBatch], ",")+"]")
+	if err := json.Unmarshal(raw, &batch); err != nil || len(batch) != mcpMaxBatch || code != http.StatusOK {
+		t.Errorf("lote de %d devia passar, veio %d %s", mcpMaxBatch, code, raw)
+	}
 }
 
 // The tool's reach into the world: whatever brings third-party text (title,

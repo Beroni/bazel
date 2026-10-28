@@ -46,6 +46,12 @@ const mcpMaxWait = 60
 // mcpMaxRefs is the most PRs one enqueue_review call may queue.
 const mcpMaxRefs = 20
 
+// mcpMaxBatch é o máximo de mensagens num lote. Sem teto, o limite de refs por
+// chamada não valeria por requisição: um lote de centenas de enqueue_review
+// enfileiraria milhares de PRs, e um de job_status com espera prenderia a
+// conexão por horas.
+const mcpMaxBatch = 10
+
 const (
 	rpcParseError     = -32700
 	rpcInvalidRequest = -32600
@@ -100,6 +106,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 		if len(batch) == 0 {
 			// Valid JSON, but not a request: a single error response.
 			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcInvalidRequest, "empty batch"))
+			return
+		}
+		if len(batch) > mcpMaxBatch {
+			// Recusa o lote inteiro: rodar só o começo dele deixaria o cliente
+			// sem saber o que foi feito.
+			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcInvalidRequest,
+				fmt.Sprintf("batch too large: %d messages, at most %d", len(batch), mcpMaxBatch)))
 			return
 		}
 		var out []rpcResponse
