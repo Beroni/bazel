@@ -348,7 +348,20 @@ func ContextBody(res Result, choice config.Choice) string {
 	if len(kept) == 0 {
 		return ""
 	}
-	body, _ := joinSteps(kept)
+	body, err := joinSteps(kept)
+	if err != nil {
+		// Todos os passos que ficam no Bazel falharam. Sem esta nota a seção
+		// sumiria da tela, e a falha só apareceria na caixa de passos.
+		notes := make([]string, 0, len(kept))
+		for _, s := range kept {
+			msg := "no output"
+			if s.Err != nil {
+				msg = firstLine(s.Err.Error())
+			}
+			notes = append(notes, fmt.Sprintf("> ✗ %s failed: %s", s.Name, msg))
+		}
+		return strings.Join(notes, "\n\n") + "\n"
+	}
 	return body
 }
 
