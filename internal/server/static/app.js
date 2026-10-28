@@ -32,6 +32,7 @@ const state = {
   splits: {},        // id do job -> {pub, ctx} quando só parte vai ao PR
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set dos achados desmarcados
   logs: {},          // id do job -> {next, lines, dropped, live, busy}
+  instance: null,    // id of the server process; changes when it restarts
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -59,8 +60,21 @@ async function api(path, opts = {}) {
     ...opts,
   });
   const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error || `${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    const err = new Error(body.error || `${res.status} ${res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
   return body;
+}
+
+// waiting says the card ended on a `publish` step and is waiting for you to
+// choose what goes to the PR. It only holds for a finished, publishable review:
+// when it failed, or when the agent's output stays in Bazel, there is nothing
+// to choose and nothing to wait for.
+function waiting(job) {
+  return job.state === 'done' && job.awaits_publish === true && job.publishable !== false
+    && !job.posted && !job.publishing;
 }
 
 // fmtTokens abrevia a contagem do jeito que o servidor abrevia: um review da
@@ -109,6 +123,7 @@ async function boot() {
   connect();
   try {
     const st = await api('/api/state');
+    adoptInstance(st.instance);
     state.me = st.me;
     state.jobs = st.jobs || [];
     $('#who').textContent = '@' + st.me;
@@ -175,11 +190,53 @@ function connect() {
   src.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
+    if (ev.type === 'hello') adoptInstance(ev.data.instance);
     if (ev.type === 'job') upsertJob(ev.data);
     if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
     // Outra aba tirou este job da fila: some daqui também.
     if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
+}
+
+// adoptInstance keeps the id of the server process. Job ids restart at j1 on
+// every boot, so with a different id everything the page cached by job id
+// (review body, split, ticks, log) belongs to another job, or to none. It
+// forgets all that and redoes what depended on it.
+function adoptInstance(id) {
+  if (!id || id === state.instance) return;
+  const anterior = state.instance;
+  state.instance = id;
+  if (anterior === null) return; // first time we hear from the server
+  state.bodies = {};
+  state.splits = {};
+  state.logs = {};
+  for (const key of Object.keys(state.picks)) {
+    if (key.startsWith('job:')) delete state.picks[key];
+  }
+  state.jobs = [];
+  state.activeJob = null;
+  if (state.tab === 'queue' && !state.activePR && !state.activeSaved) clearViewer();
+  renderJobs();
+  resync();
+}
+
+// resync redoes what the server restart made stale: the session queue, the PR
+// list with its badges, and the Saved tab.
+async function resync() {
+  try {
+    const st = await api('/api/state');
+    state.jobs = st.jobs || [];
+    state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
+    renderQuota();
+    applyAgents(st.agents || []);
+    renderJobs();
+    if (state.tab === 'queue') renderViewer();
+  } catch (err) {
+    banner('Could not reach the server: ' + err.message);
+    return;
+  }
+  loadPRs(false);
+  if (state.tab === 'saved') loadSaved();
 }
 
 function upsertJob(job) {
@@ -393,8 +450,39 @@ async function publishJob(id, btn) {
     renderJobs();
     renderViewer();
   } catch (err) {
-    banner(err.message);
+    banner(err.status === 409 ? conflictNote(err) : err.message);
+    if (err.status === 409) refreshJob(id);
     if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
+  }
+}
+
+// conflictNote explains a 409 on publish: another publication in flight, or a
+// review that already went to the PR. It is not a gh failure, and saying
+// "failed" would scare someone who just clicked twice.
+function conflictNote(err) {
+  return `Nothing new was sent to the PR: ${err.message}.`;
+}
+
+// refreshJob fetches the job as the server sees it now. After a 409 the card on
+// screen is stale: someone published, or the publication is still running.
+async function refreshJob(id) {
+  try {
+    upsertJob(await api('/api/jobs/' + encodeURIComponent(id)));
+  } catch (err) {
+    // The job may have gone with the server; the banner already said what matters.
+  }
+}
+
+// dismissJob is "keep it here": the review stays in Bazel, the card stops
+// waiting, and nothing goes to the PR. The saved review stays in the Saved tab.
+async function dismissJob(id, btn) {
+  if (btn) btn.disabled = true;
+  try {
+    upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }));
+  } catch (err) {
+    banner(err.status === 409 ? `Could not keep it here: ${err.message}.` : err.message);
+    if (err.status === 409) refreshJob(id);
+    if (btn) btn.disabled = false;
   }
 }
 
@@ -410,7 +498,8 @@ async function postJob(id, btn) {
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
   } catch (err) {
-    banner('failed to publish: ' + err.message);
+    banner(err.status === 409 ? conflictNote(err) : 'failed to publish: ' + err.message);
+    if (err.status === 409) refreshJob(id);
     if (btn) { btn.disabled = false; btn.textContent = 'publish to the PR'; }
   }
 }
@@ -1110,13 +1199,17 @@ function renderJobs() {
       const t = el('span', 'dim', 'stays here');
       t.title = `what "${job.agent}" produces does not go to the PR`;
       actions.append(t);
-    } else if (job.state === 'done' && !job.publishing && job.awaits_publish && !job.posted) {
+    } else if (waiting(job)) {
       // Terminou num `publish`: publicar daqui mandaria tudo sem você ver o
       // que vai. O card só chama para o review, onde estão os tiques.
       const r = el('button', 'btn small', 'choose what goes');
       r.title = 'opens the review with what goes to the PR, finding by finding';
       r.addEventListener('click', (e) => { e.stopPropagation(); openJob(job.id); });
       actions.append(r);
+      const k = el('button', 'btn small ghost', 'keep it here');
+      k.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
+      k.addEventListener('click', (e) => { e.stopPropagation(); dismissJob(job.id, k); });
+      actions.append(k);
     } else if (job.state === 'done' && !job.publishing) {
       if (!job.posted) {
         const p = el('button', 'btn small', 'publish inline review');
@@ -1154,7 +1247,7 @@ function labelParts(job) {
   switch (job.state) {
     case 'queued': return ['queued', ''];
     case 'running': return ['running', jobSeconds(job) + 's'];
-    case 'done': return job.awaits_publish && !job.posted && !job.publishing
+    case 'done': return waiting(job)
       ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
     case 'failed': return ['failed', ''];
     case 'canceled': return ['canceled', ''];
@@ -1172,7 +1265,7 @@ function fillState(span, job) {
   const [texto, tempo] = labelParts(job);
   // Esperando você publicar é um fim só pela metade: a cor de aviso é o que
   // separa o card dos reviews que não pedem mais nada.
-  if (job.awaits_publish && !job.posted && !job.publishing) span.classList.add('awaits');
+  if (waiting(job)) span.classList.add('awaits');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
   return span;
@@ -1206,6 +1299,9 @@ function viewerSignature(job) {
     job.id, job.state, job.cloning ? 'c' : '',
     (job.steps || []).map((s) => s.state).join(''),
     job.posted ? 'p' : '', job.post_error ? 'e' : '',
+    // Waiting on you or not changes the note and the buttons, so "keep it
+    // here" has to redraw the viewer even though state is still done.
+    waiting(job) ? 'w' : '', job.publishable === false ? 'n' : '',
     state.bodies[job.id] ? 'b' : '',
   ].join('|');
 }
@@ -1298,9 +1394,9 @@ function renderViewer() {
   // Terminou num `publish`: a pipeline não mandou nada, e é aqui que você
   // escolhe o que vai. Dizer isso antes do review é o que faz a leitura ser
   // a de quem decide, e não a de quem só confere.
-  if (job.awaits_publish && !job.posted && !job.publishing) {
+  if (waiting(job)) {
     v.append(el('p', 'awaits-note', 'Nothing has gone to the PR yet. Untick the findings that should not go,'
-      + ' then publish at the end.'));
+      + ' then publish at the end, or keep it here.'));
   }
   // Com parte dos passos fora do PR, a tela separa as duas coisas: os tiques
   // ficam só no que sobe, na mesma numeração que o servidor usa para tirar
@@ -1347,6 +1443,12 @@ function renderViewer() {
     pub.title = 'runs the post skill and publishes to the PR with inline comments';
     pub.addEventListener('click', () => publishJob(job.id, pub));
     bar.append(pub);
+    if (waiting(job)) {
+      const keep = el('button', 'btn ghost', 'keep it here');
+      keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
+      keep.addEventListener('click', () => dismissJob(job.id, keep));
+      bar.append(keep);
+    }
     if (job.posted) {
       bar.append(el('span', 'state done', '✓ already on the PR'));
     } else {

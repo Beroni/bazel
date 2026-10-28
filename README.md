@@ -465,15 +465,37 @@ comes out with one section per step. A step pointing at an agent that doesn't
 exist is skipped.
 
 One step is not an agent — Bazel runs it itself: **`publish`**. It has to be
-the last step, and it does not publish on its own. The pipeline runs, the review
-is saved, and the card stops **waiting on you** with what would go to the PR on
-screen, each finding with its **report** checkbox. Untick what should not go and
-hit **publish inline review**: from there it is the same path as the button on
-any review.
+the last step. Bazel's own code publishes nothing on its own: only your clicks
+do. The pipeline runs, the review is saved, and the card stops **waiting on
+you** with what would go to the PR on screen, each finding with its **report**
+checkbox. Untick what should not go and hit **publish inline review**: from
+there it is the same path as the button on any review. If nothing should go,
+hit **keep it here** — the card stops waiting and nothing is sent. The card
+only waits when there is something to choose: a pipeline whose agents already
+post on their own, or whose steps produce nothing publishable, ends as a
+normal finished review.
 
-The screen shows exactly what goes. When a step's output is not a review
-(`history-pr`, say), it shows up apart, under *stays in Bazel*, and the
-checkboxes live only in the part under *goes to the PR*.
+That guarantee is about Bazel's code, not about the agents. They run with
+`Bash` and your `gh` login inside the code of the PR under review, so a hostile
+PR can try a prompt injection that makes an agent comment, or do worse, without
+any click of yours. The `publish` step is a gate in front of Bazel's publishing
+path, not a sandbox around the agents: be careful with PRs from people you
+do not trust.
+
+The wait lives in memory. It survives in the session history — the queue —
+until the server restarts, and then it is gone; the review itself is already
+saved to disk and stays in the **Saved** tab, where it can be published later
+with the same ticks. **keep it here** drops the wait, not the review.
+
+The screen shows what goes, as Bazel renders it. Raw HTML in the review is
+shown as escaped text (in a block of its own for HTML blocks) instead of being
+interpreted or hidden, so what you see is the text that would be published. The
+one exception is the `<!-- finding … -->` comment right after a finding's `###`:
+it is metadata for the post agent that GitHub does not show either, so it is
+left out. (The PR description is the author's text, not something Bazel
+publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
+not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
+the checkboxes live only in the part under *goes to the PR*.
 
 You build one in the page rather than here: under **pipelines** on the config
 page, drag a step out of the tray into the chain and drag the cards to reorder

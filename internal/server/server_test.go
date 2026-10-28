@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,9 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
@@ -649,8 +652,8 @@ func TestRenderMarkdownSanitizes(t *testing.T) {
 	}{
 		{"link javascript", "[clica](javascript:alert(1))", "javascript:"},
 		{"script cru", "<script>alert(1)</script>", "<script"},
-		{"img onerror", "<img src=x onerror=alert(1)>", "onerror"},
-		{"svg onload", "<svg onload=alert(1)>", "onload"},
+		{"img onerror", "<img src=x onerror=alert(1)>", "<img"},
+		{"svg onload", "<svg onload=alert(1)>", "<svg"},
 		{"iframe", "<iframe src=//evil.com></iframe>", "<iframe"},
 		{"link data:", "[x](data:text/html,<script>alert(1)</script>)", "data:text/html"},
 	}
@@ -1046,7 +1049,8 @@ func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 	cfg := cfgFor(t, "cat")
 	cfg.Agent.Prompt = "## Findings\n\n### First\n\nreal bug\n\n### Second\n\nfalse positive\n"
 	semClone := false
-	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &semClone, Prompt: "{{task}}"}
+	cfg.PostAgent = agenteQueLeACopia()
+	cfg.PostAgent.Posts, cfg.PostAgent.Checkout = true, &semClone
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1072,28 +1076,29 @@ func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 	if !end.Posted {
 		t.Fatalf("devia ter publicado: %+v", end)
 	}
-	copia := filepath.Join(dir, "publish", filepath.Base(done.SavedTo))
-	data, err := os.ReadFile(copia)
-	if err != nil {
-		t.Fatalf("a cópia sem o achado devia estar em publish/: %v", err)
+	// The agent got the copy, not the original, and read only the ticked finding in it.
+	log, _ := m.Log(review.ID, 0)
+	var lido strings.Builder
+	var caminho string
+	for _, l := range log.Lines {
+		if caminho == "" && strings.Contains(l.Text, filepath.Join(dir, "publish")) {
+			caminho = l.Text
+			continue
+		}
+		// Only what comes after the path line was printed by the post agent.
+		if caminho != "" {
+			lido.WriteString(l.Text + "\n")
+		}
 	}
-	if strings.Contains(string(data), "false positive") || !strings.Contains(string(data), "real bug") {
-		t.Errorf("a cópia devia ter só o achado marcado:\n%s", data)
+	if !strings.HasPrefix(filepath.Base(caminho), strings.TrimSuffix(filepath.Base(done.SavedTo), ".md")+"-") || caminho == done.SavedTo {
+		t.Errorf("o agente de post devia receber uma cópia em publish/: %q", caminho)
+	}
+	if strings.Contains(lido.String(), "false positive") || !strings.Contains(lido.String(), "real bug") {
+		t.Errorf("a cópia devia ter só o achado marcado:\n%s", lido.String())
 	}
 	orig, _ := os.ReadFile(done.SavedTo)
 	if !strings.Contains(string(orig), "false positive") {
 		t.Error("o review salvo não devia perder o achado desmarcado")
-	}
-	// O agente recebeu a cópia, não o original.
-	log, _ := m.Log(review.ID, 0)
-	var viuCopia bool
-	for _, l := range log.Lines {
-		if strings.Contains(l.Text, copia) {
-			viuCopia = true
-		}
-	}
-	if !viuCopia {
-		t.Errorf("o agente de post devia receber %s: %+v", copia, log.Lines)
 	}
 	// E o review na tela continua inteiro.
 	after, _ := m.View(review.ID, true)
@@ -1350,5 +1355,863 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	}
 	if !strings.Contains(fim.HTML, "<h1>") || !strings.Contains(fim.Body, "segundo passo") {
 		t.Errorf("o relatório final devia ter os dois passos, renderizados:\n%s", fim.Body)
+	}
+}
+
+// agenteQueLeACopia is a post agent that prints the path it got and the file's
+// content: the copy in publish/ goes away when the publication ends, so what the
+// agent read can only be checked in the log.
+func agenteQueLeACopia() config.AgentDef {
+	return config.AgentDef{
+		Name: "post", Command: "sh", Args: []string{"-c", `read cmd file; echo "$file"; cat "$file"`},
+		Task: "publish {{review_file}}", Prompt: "{{task}}",
+	}
+}
+
+// ghFalso puts a fake `gh` in front of PATH. Each call writes "start" and "end"
+// to the returned log; the script decides the rest.
+func ghFalso(t *testing.T, script string) string {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(bin, "gh.log")
+	corpo := "#!/bin/sh\necho start >> " + log + "\n" + script + "\necho end >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(corpo), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+func contaNoLog(path, linha string) int {
+	data, _ := os.ReadFile(path)
+	n := 0
+	for _, l := range strings.Split(string(data), "\n") {
+		if l == linha {
+			n++
+		}
+	}
+	return n
+}
+
+// relatorioDaFrota has two findings; the history has one too, so numbering the
+// ticks over the whole report would point at the wrong finding.
+const relatorioDaFrota = "## Findings\n\n### First\n\nreal bug\n\n### Second\n\nfalse positive\n"
+const relatorioDaHistoria = "## Findings\n\n### Contexto\n\na história do PR\n"
+
+// esperaPublicar runs `[historia, frota, publish]` until the card stops to wait
+// for you. post is the post agent; frota, what the fleet prints.
+func esperaPublicar(t *testing.T, dir, frota string, post config.AgentDef) (*Manager, chan []byte, jobView) {
+	t.Helper()
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	nao, semClone := false, false
+	cfg.Agents = []config.AgentDef{
+		{Name: "historia", Command: "printf", Args: []string{"%s", relatorioDaHistoria}, Publishable: &nao},
+		{Name: "frota", Command: "printf", Args: []string{"%s", frota}},
+	}
+	cfg.Pipelines = []config.Pipeline{{Name: "ler antes", Steps: []string{"historia", "frota", "publish"}}}
+	if post.Checkout == nil {
+		post.Checkout = &semClone
+	}
+	cfg.PostAgent = post
+	choice, err := cfg.ChoiceByName("ler antes")
+	if err != nil {
+		t.Fatalf("ChoiceByName: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	hub := NewHub()
+	ch := hub.Subscribe()
+	t.Cleanup(func() { hub.Unsubscribe(ch) })
+
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, choice)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	fim := waitFor(t, ch, view.ID, StateDone)
+	if !fim.AwaitsPublish {
+		t.Fatalf("o card devia esperar você publicar: %+v", fim)
+	}
+	return m, ch, fim
+}
+
+// Publishing through the post agent ends the card's wait and marks it published.
+func TestPublicarPeloAgenteEncerraAEspera(t *testing.T) {
+	m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
+		config.AgentDef{Name: "post", Command: "cat", Task: "publish {{review_file}}", Prompt: "{{task}}"})
+	if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+		t.Fatalf("PublishWithAgent: %v", err)
+	}
+	end := waitFor(t, ch, fim.ID, StateDone)
+	if !end.Posted || end.AwaitsPublish {
+		t.Errorf("publicado, o card sai da espera: posted=%v awaits=%v err=%q", end.Posted, end.AwaitsPublish, end.PostErr)
+	}
+	// And published is published: another click does not send the agent again.
+	if _, err := m.PublishWithAgent(fim.ID, nil); err == nil {
+		t.Error("o review já foi ao PR — publicar de novo devia ser recusado")
+	}
+}
+
+// A publication that fails or is canceled puts the card back to waiting: nothing
+// went to the PR.
+func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
+	t.Run("agente de post falha", func(t *testing.T) {
+		m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
+			config.AgentDef{Name: "post", Command: "false", Task: "publish {{review_file}}", Prompt: "{{task}}"})
+		if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+			t.Fatalf("PublishWithAgent: %v", err)
+		}
+		end := waitFor(t, ch, fim.ID, StateDone)
+		if end.Posted || !end.AwaitsPublish || end.PostErr == "" {
+			t.Errorf("a falha não publicou nada: posted=%v awaits=%v err=%q", end.Posted, end.AwaitsPublish, end.PostErr)
+		}
+	})
+	t.Run("publicação cancelada", func(t *testing.T) {
+		m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
+			config.AgentDef{Name: "post", Command: "sleep", Args: []string{"5"}, Task: "publish {{review_file}}", Prompt: "{{task}}"})
+		if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+			t.Fatalf("PublishWithAgent: %v", err)
+		}
+		if err := m.Cancel(fim.ID); err != nil {
+			t.Fatalf("Cancel: %v", err)
+		}
+		end := waitFor(t, ch, fim.ID, StateDone)
+		if end.Posted || !end.AwaitsPublish {
+			t.Errorf("cancelada, a publicação não foi: posted=%v awaits=%v", end.Posted, end.AwaitsPublish)
+		}
+	})
+	t.Run("comentário falha", func(t *testing.T) {
+		log := ghFalso(t, "exit 1")
+		m, _, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota, config.AgentDef{Name: "post", Command: "echo"})
+		for i := range 2 {
+			_, err := m.Post(context.Background(), fim.ID, nil)
+			if err == nil || errors.Is(err, errPublishBusy) {
+				t.Fatalf("tentativa %d: queria o erro do gh, veio %v", i, err)
+			}
+		}
+		if n := contaNoLog(log, "start"); n != 2 {
+			t.Errorf("a falha devia liberar a segunda tentativa: gh chamado %d vezes", n)
+		}
+		v, _ := m.View(fim.ID, false)
+		if v.Posted || !v.AwaitsPublish || v.PostErr == "" {
+			t.Errorf("o comentário não foi: posted=%v awaits=%v err=%q", v.Posted, v.AwaitsPublish, v.PostErr)
+		}
+	})
+	t.Run("comentário vai", func(t *testing.T) {
+		log := ghFalso(t, "cat > /dev/null")
+		m, _, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota, config.AgentDef{Name: "post", Command: "echo"})
+		v, err := m.Post(context.Background(), fim.ID, nil)
+		if err != nil {
+			t.Fatalf("Post: %v", err)
+		}
+		if !v.Posted || v.AwaitsPublish {
+			t.Errorf("comentado, o card sai da espera: posted=%v awaits=%v", v.Posted, v.AwaitsPublish)
+		}
+		if n := contaNoLog(log, "end"); n != 1 {
+			t.Errorf("gh chamado %d vezes", n)
+		}
+	})
+}
+
+// Ticks are numbered over what goes to the PR, not the whole report: [1] is the
+// fleet's second finding, even though the history has a finding before it.
+func TestPularAchadoNumeradoNoQueVaiAoPR(t *testing.T) {
+	dir := t.TempDir()
+	m, ch, fim := esperaPublicar(t, dir, relatorioDaFrota, agenteQueLeACopia())
+	cheio, _ := m.View(fim.ID, true)
+	if strings.Count(cheio.PublishHTML, `class="finding"`) != 2 {
+		t.Fatalf("o que vai ao PR devia ter os dois achados da frota:\n%s", cheio.PublishHTML)
+	}
+	if _, err := m.PublishWithAgent(fim.ID, []int{1}); err != nil {
+		t.Fatalf("PublishWithAgent: %v", err)
+	}
+	waitFor(t, ch, fim.ID, StateDone)
+	log, _ := m.Log(fim.ID, 0)
+	var lido strings.Builder
+	var viuCaminho bool
+	for _, l := range log.Lines {
+		if strings.Contains(l.Text, filepath.Join(dir, "publish")) {
+			viuCaminho = true
+			continue
+		}
+		// Only what comes after the path line was printed by the post agent.
+		if viuCaminho {
+			lido.WriteString(l.Text + "\n")
+		}
+	}
+	got := lido.String()
+	if got == "" {
+		t.Fatal("o agente de post não imprimiu a cópia que recebeu")
+	}
+	if strings.Contains(got, "false positive") || !strings.Contains(got, "real bug") {
+		t.Errorf("a cópia devia perder o achado 2 e manter o 1:\n%s", got)
+	}
+	if strings.Contains(got, "a história do PR") {
+		t.Errorf("a história não vai ao PR:\n%s", got)
+	}
+}
+
+// Two publications of the same review with different selections do not share
+// the copy: each gets its own, and one does not overwrite the other.
+func TestCopiaDePublicacaoEPorPublicacao(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "acme-api-core-482-20260909-120000.md")
+	if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(context.Background(), cfgFor(t, "echo"), dir, 1, false, NewHub())
+	a, err := m.publishInputFor(orig, relatorioDaFrota, []int{0}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := m.publishInputFor(orig, relatorioDaFrota, []int{1}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.Path == b.Path {
+		t.Fatalf("as duas publicações gravaram no mesmo arquivo: %s", a.Path)
+	}
+	da, _ := os.ReadFile(a.Path)
+	db, _ := os.ReadFile(b.Path)
+	if strings.Contains(string(da), "real bug") || !strings.Contains(string(db), "real bug") || strings.Contains(string(db), "false positive") {
+		t.Errorf("uma cópia mexeu na outra:\n%s\n---\n%s", da, db)
+	}
+	if a.Source != orig || b.Source != orig {
+		t.Errorf("a cópia tem de lembrar de onde veio: %q %q", a.Source, b.Source)
+	}
+}
+
+// The same file published twice from the Saved tab while the first is still
+// running returns the same job, even with a finding unticked, when what goes to
+// the agent is a copy in publish/.
+func TestPublishSavedDeduplicaPelaOrigem(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "acme-api-core-482-20260909-120000.md")
+	if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sleep", "5")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Checkout: &semClone, Prompt: "{{task}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
+	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	if err != nil {
+		t.Fatalf("PublishSaved: %v", err)
+	}
+	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	if err != nil {
+		t.Fatalf("PublishSaved (2): %v", err)
+	}
+	if um.ID != dois.ID {
+		t.Errorf("o mesmo arquivo virou duas publicações: %s e %s", um.ID, dois.ID)
+	}
+	_ = m.Cancel(um.ID)
+}
+
+// A report fenced in ``` comes out of the fence step by step: what goes to the
+// PR comes from each step's body.
+func TestDesembrulhaPorPassoNoQueVaiAoPR(t *testing.T) {
+	const cercado = "```markdown\n# Review Fleet — PR #482\n\n## Findings\n\n### Token stored client-side\n\nThe refresh token is written to localStorage.\n```"
+	m, _, fim := esperaPublicar(t, t.TempDir(), cercado, config.AgentDef{Name: "post", Command: "echo"})
+	cheio, _ := m.View(fim.ID, true)
+	if strings.Contains(cheio.PublishHTML, "```") || !strings.Contains(cheio.PublishHTML, "<h1>") {
+		t.Errorf("o que vai ao PR devia sair do bloco e renderizar:\n%s", cheio.PublishHTML)
+	}
+}
+
+// Only a card with something to choose waits: nothing publishable, an agent
+// that already posted on its own, or no publishable step with output leave the
+// card at the plain end.
+func TestQuandoAPipelineNaoEspera(t *testing.T) {
+	nao := false
+	for _, tc := range []struct {
+		nome   string
+		agents []config.AgentDef
+		steps  []string
+	}{
+		{"nada publicável", []config.AgentDef{
+			{Name: "historia", Command: "echo", Args: []string{"a história"}, Publishable: &nao},
+		}, []string{"historia", "publish"}},
+		{"agente que posta sozinho", []config.AgentDef{
+			{Name: "frota-post", Command: "echo", Args: []string{"postei"}, Posts: true},
+		}, []string{"frota-post", "publish"}},
+		{"todo passo publicável falhou", []config.AgentDef{
+			{Name: "historia", Command: "echo", Args: []string{"a história"}, Publishable: &nao},
+			{Name: "frota", Command: "false"},
+		}, []string{"historia", "frota", "publish"}},
+	} {
+		t.Run(tc.nome, func(t *testing.T) {
+			cfg := cfgFor(t, "echo")
+			cfg.Agent.Prompt = "{{task}}"
+			cfg.Agents = tc.agents
+			cfg.Pipelines = []config.Pipeline{{Name: "p", Steps: tc.steps}}
+			choice, err := cfg.ChoiceByName("p")
+			if err != nil {
+				t.Fatalf("ChoiceByName: %v", err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			hub := NewHub()
+			ch := hub.Subscribe()
+			defer hub.Unsubscribe(ch)
+			m := NewManager(ctx, cfg, t.TempDir(), 1, false, hub)
+			view, err := m.Enqueue(testPR(482), false, choice)
+			if err != nil {
+				t.Fatalf("Enqueue: %v", err)
+			}
+			fim := waitFor(t, ch, view.ID, StateDone)
+			if fim.AwaitsPublish {
+				t.Error("não há o que escolher — o card não pode ficar esperando você")
+			}
+		})
+	}
+}
+
+// A review that was not saved reaches neither the wait nor the comment button:
+// the gate cannot be bypassed exactly when something already went wrong.
+func TestPipelineQueNaoSalvouNaoPublica(t *testing.T) {
+	log := ghFalso(t, "cat > /dev/null")
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agents = []config.AgentDef{{Name: "frota", Command: "printf", Args: []string{"%s", relatorioDaFrota}}}
+	cfg.Pipelines = []config.Pipeline{{Name: "p", Steps: []string{"frota", "publish"}}}
+	choice, err := cfg.ChoiceByName("p")
+	if err != nil {
+		t.Fatalf("ChoiceByName: %v", err)
+	}
+	// A file where the directory should be: Save has nowhere to write.
+	dir := filepath.Join(t.TempDir(), "arquivo")
+	if err := os.WriteFile(dir, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, choice)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	fim := waitFor(t, ch, view.ID, StateFailed)
+	if fim.AwaitsPublish || !strings.Contains(fim.Err, "could not save") {
+		t.Errorf("o card devia falhar dizendo por quê: awaits=%v err=%q", fim.AwaitsPublish, fim.Err)
+	}
+	if _, err := m.Post(context.Background(), view.ID, nil); err == nil {
+		t.Error("comentar contornaria o passo publish")
+	}
+	if _, err := m.PublishWithAgent(view.ID, nil); err == nil {
+		t.Error("o agente de post contornaria o passo publish")
+	}
+	if n := contaNoLog(log, "start"); n != 0 {
+		t.Errorf("nada podia ter ido ao PR: gh chamado %d vezes", n)
+	}
+}
+
+// poeJob puts a finished job in the Manager, as if a review had just ended.
+// The route tests use it so they do not depend on an agent.
+func poeJob(m *Manager, j *Job) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs[j.ID] = j
+	m.order = append(m.order, j.ID)
+}
+
+func jobEsperando(t *testing.T, srv *Server, id string) *Job {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "review.md")
+	if err := os.WriteFile(path, []byte("# x\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pr := testPR(482)
+	j := &Job{
+		ID:            id,
+		PR:            pr,
+		Choice:        srv.cfg.DefaultChoice(),
+		State:         StateDone,
+		QueuedAt:      time.Now(),
+		SavedTo:       path,
+		Result:        agent.Result{PR: pr, Body: relatorioDaFrota, StoppedAt: 1},
+		AwaitsPublish: true,
+	}
+	if !j.Choice.Publishable {
+		t.Fatalf("a escolha padrão devia ser publicável: %+v", j.Choice)
+	}
+	poeJob(srv.jobs, j)
+	return j
+}
+
+// "Keep it here": the card stops waiting without publishing anything, and the
+// page learns about it over SSE.
+func TestDispensarAPublicacao(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	post := func(path string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	jobEsperando(t, srv, "j900")
+	ch := srv.hub.Subscribe()
+	defer srv.hub.Unsubscribe(ch)
+
+	rec := post("/api/jobs/j900/dismiss")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dispensar: %d %s", rec.Code, rec.Body)
+	}
+	var v jobView
+	if err := json.Unmarshal(rec.Body.Bytes(), &v); err != nil {
+		t.Fatal(err)
+	}
+	if v.AwaitsPublish || v.Posted || v.State != StateDone {
+		t.Errorf("dispensado, o card não espera e nada foi: %+v", v)
+	}
+	select {
+	case msg := <-ch:
+		var ev struct {
+			Type string  `json:"type"`
+			Data jobView `json:"data"`
+		}
+		if err := json.Unmarshal(msg, &ev); err != nil || ev.Type != "job" || ev.Data.ID != "j900" || ev.Data.AwaitsPublish {
+			t.Errorf("o SSE devia levar o card fora da espera: %s", msg)
+		}
+	case <-time.After(2 * time.Second):
+		t.Error("dispensar não avisou a página")
+	}
+	if rec := post("/api/jobs/j900/dismiss"); rec.Code != http.StatusConflict {
+		t.Errorf("o que não espera não tem o que dispensar: %d", rec.Code)
+	}
+	if rec := post("/api/jobs/j404/dismiss"); rec.Code == http.StatusOK {
+		t.Errorf("job inexistente: %d", rec.Code)
+	}
+}
+
+// Two clicks at once publish only once: the second is refused while the first
+// is still in gh, through the comment or through the agent.
+func TestPublicacaoDuplaERecusada(t *testing.T) {
+	log := ghFalso(t, "cat > /dev/null\nsleep 1")
+	srv := newTestServer(t)
+	h := srv.Handler()
+	post := func(path string) int {
+		req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1"+path, nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	jobEsperando(t, srv, "j900")
+
+	primeiro := make(chan int, 1)
+	go func() { primeiro <- post("/api/jobs/j900/post") }()
+	deadline := time.Now().Add(5 * time.Second)
+	for contaNoLog(log, "start") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("o gh falso não foi chamado")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i, rota := range []string{"/api/jobs/j900/post", "/api/jobs/j900/publish"} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i] = post(rota)
+		}()
+	}
+	wg.Wait()
+	for i, c := range codes {
+		if c != http.StatusConflict {
+			t.Errorf("clique %d durante a publicação devia dar 409, deu %d", i, c)
+		}
+	}
+	if c := <-primeiro; c != http.StatusOK {
+		t.Fatalf("o primeiro clique devia publicar: %d", c)
+	}
+	if c := post("/api/jobs/j900/post"); c != http.StatusConflict {
+		t.Errorf("já publicado, outro comentário devia dar 409: %d", c)
+	}
+	if c := post("/api/jobs/j900/publish"); c != http.StatusConflict {
+		t.Errorf("já publicado, o agente de post devia dar 409: %d", c)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("o PR recebeu %d comentários", n)
+	}
+	v, _ := srv.jobs.View("j900", false)
+	if !v.Posted || v.AwaitsPublish || v.Publishing {
+		t.Errorf("o card devia terminar publicado uma vez: %+v", v)
+	}
+}
+
+// The session window does not drop the card waiting on you: it is the only
+// place that review goes to the PR from with the choice made on screen.
+func TestTrimGuardaQuemEspera(t *testing.T) {
+	m := NewManager(context.Background(), cfgFor(t, "echo"), t.TempDir(), 1, false, NewHub())
+	for i := range maxJobs + 1 {
+		poeJob(m, &Job{ID: fmt.Sprintf("j%d", i), State: StateDone, AwaitsPublish: i == 0})
+	}
+	m.mu.Lock()
+	m.trimLocked()
+	_, espera := m.jobs["j0"]
+	_, velho := m.jobs["j1"]
+	n := len(m.order)
+	m.mu.Unlock()
+	if !espera {
+		t.Error("o card que espera você publicar foi descartado")
+	}
+	if velho || n != maxJobs {
+		t.Errorf("devia sair o mais velho que não espera: j1 ficou=%v, %d jobs", velho, n)
+	}
+}
+
+// The copy in publish/ exists only for the post agent to read: once the
+// publication ends (success, failure or cancel) it serves no one, and one per
+// click must not pile up.
+func TestCopiaDePublicacaoSomeDepoisDoAgente(t *testing.T) {
+	casos := []struct {
+		nome string
+		post config.AgentDef
+		fim  func(t *testing.T, m *Manager, id string)
+	}{
+		{"agente publica", config.AgentDef{Name: "post", Command: "cat", Task: "publish {{review_file}}", Prompt: "{{task}}"}, nil},
+		{"agente falha", config.AgentDef{Name: "post", Command: "false", Task: "publish {{review_file}}", Prompt: "{{task}}"}, nil},
+		{"publicação cancelada", config.AgentDef{Name: "post", Command: "sleep", Args: []string{"5"}, Task: "publish {{review_file}}", Prompt: "{{task}}"},
+			func(t *testing.T, m *Manager, id string) {
+				if err := m.Cancel(id); err != nil {
+					t.Fatalf("Cancel: %v", err)
+				}
+			}},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			dir := t.TempDir()
+			m, ch, fim := esperaPublicar(t, dir, relatorioDaFrota, c.post)
+			if _, err := m.PublishWithAgent(fim.ID, []int{1}); err != nil {
+				t.Fatalf("PublishWithAgent: %v", err)
+			}
+			if c.fim != nil {
+				c.fim(t, m, fim.ID)
+			}
+			waitFor(t, ch, fim.ID, StateDone)
+			// waitFor returns at the first done event; the worker may still be
+			// finishing, so give the cleanup a moment before declaring a leak.
+			var copias []string
+			for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+				copias, _ = filepath.Glob(filepath.Join(dir, "publish", "*.md"))
+				if len(copias) == 0 {
+					break
+				}
+			}
+			if len(copias) != 0 {
+				t.Errorf("a cópia devia sumir quando a publicação termina: %v", copias)
+			}
+			if _, err := os.Stat(fim.SavedTo); err != nil {
+				t.Errorf("o review salvo não pode sumir com a cópia: %v", err)
+			}
+		})
+	}
+}
+
+// Publishing from the Saved tab also uses a copy, and it goes away the same way.
+func TestCopiaDePublicacaoSomeNoPublishSaved(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "acme-api-core-482-20260909-120000.md")
+	if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "echo")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Command: "cat", Task: "publish {{review_file}}", Prompt: "{{task}}", Checkout: &semClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	if err != nil {
+		t.Fatalf("PublishSaved: %v", err)
+	}
+	waitFor(t, ch, v.ID, StateDone)
+	var copias []string
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		copias, _ = filepath.Glob(filepath.Join(dir, "publish", "*.md"))
+		if len(copias) == 0 {
+			break
+		}
+	}
+	if len(copias) != 0 {
+		t.Errorf("a cópia devia sumir: %v", copias)
+	}
+	if _, err := os.Stat(orig); err != nil {
+		t.Errorf("o review salvo não pode sumir: %v", err)
+	}
+}
+
+// A publication canceled while queued and sent again leaves two entries for
+// the same job in the queue. With two workers, one of them takes the stale
+// entry while the other runs the second publication. Whichever worker runs it,
+// the live copy is not deleted under the post agent, which reads it and
+// publishes, and no copy is left behind.
+func TestRepublicarDepoisDeCancelarNaFila(t *testing.T) {
+	dir := t.TempDir()
+	libera := filepath.Join(t.TempDir(), "libera")
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	semClone := false
+	post := agenteQueLeACopia()
+	// The post agent waits before reading, so the worker holding the other
+	// queue entry gets to it while the copy is still needed.
+	post.Args = []string{"-c", `sleep 1; read cmd file; echo "$file"; cat "$file"`}
+	post.Checkout = &semClone
+	cfg.PostAgent = post
+	cfg.Agents = []config.AgentDef{
+		{Name: "frota", Command: "printf", Args: []string{"%s", relatorioDaFrota}},
+		// Holds a worker until the test creates the file.
+		{Name: "trava", Command: "sh", Args: []string{"-c", `while [ ! -e "$0" ]; do sleep 0.05; done; echo livre`, libera}},
+	}
+	frota, err := cfg.ChoiceByName("frota")
+	if err != nil {
+		t.Fatalf("ChoiceByName: %v", err)
+	}
+	trava, err := cfg.ChoiceByName("trava")
+	if err != nil {
+		t.Fatalf("ChoiceByName: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, dir, 2, false, hub)
+	v, err := m.Enqueue(testPR(482), false, frota)
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, ch, v.ID, StateDone)
+
+	// Both workers busy: the publications below stay in the queue.
+	var travas []string
+	for _, n := range []int{1, 2} {
+		tv, err := m.Enqueue(testPR(n), false, trava)
+		if err != nil {
+			t.Fatalf("Enqueue: %v", err)
+		}
+		travas = append(travas, tv.ID)
+	}
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		rodando := 0
+		for _, id := range travas {
+			if tv, _ := m.View(id, false); tv.State == StateRunning {
+				rodando++
+			}
+		}
+		if rodando == len(travas) {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatal("os dois workers deviam estar ocupados")
+		}
+	}
+
+	if _, err := m.PublishWithAgent(v.ID, []int{1}); err != nil {
+		t.Fatalf("PublishWithAgent: %v", err)
+	}
+	if err := m.Cancel(v.ID); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if _, err := m.PublishWithAgent(v.ID, []int{1}); err != nil {
+		t.Fatalf("PublishWithAgent de novo: %v", err)
+	}
+	if err := os.WriteFile(libera, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var fim jobView
+	for end := time.Now().Add(20 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		fim, _ = m.View(v.ID, false)
+		if fim.State == StateDone && (fim.Posted || fim.PostErr != "") {
+			break
+		}
+		if time.Now().After(end) {
+			t.Fatalf("a publicação não terminou: %+v", fim)
+		}
+	}
+	if !fim.Posted || fim.PostErr != "" {
+		t.Fatalf("a segunda publicação devia concluir: posted=%v err=%q", fim.Posted, fim.PostErr)
+	}
+	log, _ := m.Log(v.ID, 0)
+	var lido strings.Builder
+	var viuCaminho bool
+	for _, l := range log.Lines {
+		if strings.Contains(l.Text, filepath.Join(dir, "publish")) {
+			viuCaminho = true
+			continue
+		}
+		// Only what comes after the path line was printed by the post agent.
+		if viuCaminho {
+			lido.WriteString(l.Text + "\n")
+		}
+	}
+	got := lido.String()
+	if !strings.Contains(got, "real bug") || strings.Contains(got, "false positive") {
+		t.Errorf("o agente de post devia ler a cópia da segunda publicação:\n%s", got)
+	}
+	var copias []string
+	for end := time.Now().Add(2 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		copias, _ = filepath.Glob(filepath.Join(dir, "publish", "*.md"))
+		if len(copias) == 0 {
+			break
+		}
+	}
+	if len(copias) != 0 {
+		t.Errorf("nenhuma das duas cópias podia sobrar: %v", copias)
+	}
+}
+
+// A publication canceled or removed while still queued never reaches the post
+// agent, so its copy goes away right there — not later, when a worker happens
+// to pull the dead entry out of the queue.
+func TestCopiaSomeQuandoAPublicacaoSaiDaFila(t *testing.T) {
+	casos := []struct {
+		nome   string
+		salvo  bool
+		remove bool
+	}{
+		{"salvo cancelado", true, false},
+		{"salvo removido", true, true},
+		{"no card removido", false, true},
+	}
+	for _, c := range casos {
+		t.Run(c.nome, func(t *testing.T) {
+			dir := t.TempDir()
+			libera := filepath.Join(t.TempDir(), "libera")
+			cfg := cfgFor(t, "echo")
+			cfg.Agent.Prompt = "{{task}}"
+			semClone := false
+			cfg.PostAgent = config.AgentDef{Name: "post", Command: "cat", Task: "publish {{review_file}}", Prompt: "{{task}}", Checkout: &semClone}
+			cfg.Agents = []config.AgentDef{
+				{Name: "frota", Command: "printf", Args: []string{"%s", relatorioDaFrota}},
+				{Name: "trava", Command: "sh", Args: []string{"-c", `while [ ! -e "$0" ]; do sleep 0.05; done; echo livre`, libera}},
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			hub := NewHub()
+			ch := hub.Subscribe()
+			defer hub.Unsubscribe(ch)
+			m := NewManager(ctx, cfg, dir, 1, false, hub)
+			// Release the worker on the way out, before the temp dirs go.
+			defer os.WriteFile(libera, nil, 0o644)
+
+			var reviewID string
+			if !c.salvo {
+				frota, _ := cfg.ChoiceByName("frota")
+				v, err := m.Enqueue(testPR(482), false, frota)
+				if err != nil {
+					t.Fatalf("Enqueue: %v", err)
+				}
+				waitFor(t, ch, v.ID, StateDone)
+				reviewID = v.ID
+			}
+			trava, _ := cfg.ChoiceByName("trava")
+			tv, err := m.Enqueue(testPR(1), false, trava)
+			if err != nil {
+				t.Fatalf("Enqueue: %v", err)
+			}
+			waitFor(t, ch, tv.ID, StateRunning)
+
+			var pub jobView
+			if c.salvo {
+				orig := filepath.Join(dir, "acme-api-core-482-20260909-120000.md")
+				if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+			} else {
+				pub, err = m.PublishWithAgent(reviewID, []int{1})
+			}
+			if err != nil {
+				t.Fatalf("publicando: %v", err)
+			}
+			if pub.State != StateQueued {
+				t.Fatalf("a publicação devia esperar na fila: %s", pub.State)
+			}
+			if copias, _ := filepath.Glob(filepath.Join(dir, "publish", "*.md")); len(copias) != 1 {
+				t.Fatalf("devia haver uma cópia na fila: %v", copias)
+			}
+			if c.remove {
+				err = m.Remove(pub.ID)
+			} else {
+				err = m.Cancel(pub.ID)
+			}
+			if err != nil {
+				t.Fatalf("tirando da fila: %v", err)
+			}
+			if copias, _ := filepath.Glob(filepath.Join(dir, "publish", "*.md")); len(copias) != 0 {
+				t.Errorf("a cópia devia sumir quando a publicação sai da fila: %v", copias)
+			}
+			if err := os.WriteFile(libera, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			waitFor(t, ch, tv.ID, StateDone)
+		})
+	}
+}
+
+// Each server process has its own id: that is how the page sees the server
+// restarted and the job ids started over from j1.
+func TestInstanciaDoServidor(t *testing.T) {
+	a, b := newTestServer(t), newTestServer(t)
+	h := a.Handler()
+	estado := func() string {
+		req := httptest.NewRequest(http.MethodGet, "http://127.0.0.1/api/state", nil)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		var st struct {
+			Instance string `json:"instance"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
+			t.Fatal(err)
+		}
+		return st.Instance
+	}
+	id := estado()
+	if id == "" {
+		t.Fatal("/api/state devia trazer o id da instância")
+	}
+	if again := estado(); again != id {
+		t.Errorf("o id tem de ser estável dentro do processo: %q depois %q", id, again)
+	}
+	if other := b.instance; other == "" || other == id {
+		t.Errorf("outro processo precisa de outro id: %q e %q", id, other)
+	}
+
+	// The stream opens with the same id, before any job event.
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	resp, err := http.Get(ts.URL + "/api/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	linhas := make(chan string, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, _ := resp.Body.Read(buf)
+		linhas <- string(buf[:n])
+	}()
+	select {
+	case got := <-linhas:
+		if !strings.Contains(got, `"type":"hello"`) || !strings.Contains(got, `"instance":"`+id+`"`) {
+			t.Errorf("o primeiro evento do SSE devia ser o hello com a instância %q: %q", id, got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("o SSE não mandou nada ao conectar")
 	}
 }

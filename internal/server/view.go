@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
 )
@@ -143,8 +144,8 @@ type jobView struct {
 	ContextHTML string `json:"context_html,omitempty"`
 }
 
-// view serializa o job. Chamar com o lock do Manager seguro.
-func (j *Job) view(withBody bool) jobView {
+// view serializes the job, without the body. Call with the Manager lock held.
+func (j *Job) view() jobView {
 	v := jobView{
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
@@ -191,17 +192,36 @@ func (j *Job) view(withBody bool) jobView {
 		t := j.FinishedAt
 		v.FinishedAt = &t
 	}
-	if withBody && j.Result.Body != "" {
-		v.Body = j.Result.Body
-		v.HTML = renderReview(j.Result.Body)
-		if j.Choice.Publishable {
-			if pub, trimmed, err := agent.PublishableBody(j.Result, j.Choice); err == nil && trimmed {
-				v.PublishHTML = renderReview(pub)
-				v.ContextHTML = renderReview(agent.ContextBody(j.Result, j.Choice))
-			}
+	return v
+}
+
+// bodySource is what renderBody needs from a job, copied under the lock so
+// the rendering can run without it.
+type bodySource struct {
+	res    agent.Result
+	choice config.Choice
+}
+
+// bodySource copies the result and the choice. Call with the Manager lock held.
+func (j *Job) bodySource() bodySource {
+	res := j.Result
+	res.Steps = append([]agent.StepResult(nil), j.Result.Steps...)
+	return bodySource{res: res, choice: j.Choice}
+}
+
+// renderBody fills the body fields of v. Runs without the Manager lock.
+func (v *jobView) renderBody(src bodySource) {
+	if src.res.Body == "" {
+		return
+	}
+	v.Body = src.res.Body
+	v.HTML = renderReview(src.res.Body)
+	if src.choice.Publishable {
+		if pub, trimmed, err := agent.PublishableBody(src.res, src.choice); err == nil && trimmed {
+			v.PublishHTML = renderReview(pub)
+			v.ContextHTML = renderReview(agent.ContextBody(src.res, src.choice))
 		}
 	}
-	return v
 }
 
 // stepViews serializa os passos. Chamar com o lock do Manager seguro.

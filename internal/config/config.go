@@ -4,8 +4,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/beroni/bazel/internal/pricing"
@@ -43,6 +45,10 @@ type Config struct {
 	// para o PR: em vez de escolher um agente que publica sozinho, você roda
 	// a frota, lê o resultado e só então manda publicar.
 	PostAgent AgentDef `yaml:"post_agent"`
+
+	// Warnings are what Load had to drop while migrating an old config, one
+	// line each. They are never written back to the file.
+	Warnings []string `yaml:"-"`
 }
 
 // AgentDef é um agente nomeado que aparece no seletor da TUI.
@@ -390,6 +396,9 @@ func Load() (*Config, error) {
 	// embarcada, que funciona sem nada instalado.
 	cfg.PostAgent = migratePostAgent(cfg.PostAgent)
 	cfg.migratePipelines()
+	for _, w := range cfg.Warnings {
+		fmt.Fprintln(warnOut, "bazel: "+w)
+	}
 	if cfg.MaxDiffBytes <= 0 {
 		cfg.MaxDiffBytes = Default().MaxDiffBytes
 	}
@@ -398,6 +407,10 @@ func Load() (*Config, error) {
 	}
 	return cfg, nil
 }
+
+// warnOut is where Load reports what it dropped while migrating. The server
+// runs in a terminal, so stderr is where you see it.
+var warnOut io.Writer = os.Stderr
 
 // LoadOrInit lê a configuração e, se ela ainda não existir, escreve a padrão
 // e devolve essa. O Bazel é uma interface web: não há shell para rodar um
@@ -628,6 +641,11 @@ func (c *Config) resolveSteps(steps []string) ([]string, error) {
 			if !c.temPublicavelAntes(out) {
 				return nil, errors.New("nothing before this step produces a review that can go to the PR")
 			}
+			// An agent that posts on its own has already written to the PR by
+			// the time publish stops to let you choose what goes.
+			if quem, ok := c.postaAntes(out); ok {
+				return nil, fmt.Errorf("%q posts to the PR on its own, so it cannot come before %q — that step waits for you to choose what goes, and by then %q has already posted", quem, nome, quem)
+			}
 			publica = true
 			out = append(out, nome)
 			continue
@@ -683,6 +701,20 @@ func (c *Config) temPublicavelAntes(steps []string) bool {
 		}
 	}
 	return false
+}
+
+// postaAntes returns the first agent among steps that posts to the PR on its
+// own.
+func (c *Config) postaAntes(steps []string) (string, bool) {
+	for _, step := range steps {
+		if ReservedStep(step) {
+			continue
+		}
+		if a, ok := c.agentNamed(step); ok && a.Posts {
+			return strings.TrimSpace(a.Name), true
+		}
+	}
+	return "", false
 }
 
 // RemovePipeline tira uma pipeline da lista.
@@ -1012,26 +1044,56 @@ func (c *Config) PostSkill() string {
 	return taskSkill(post.Task)
 }
 
-// isPostAgent diz se um agente da lista é o de publicação com outro chapéu: o
-// mesmo nome do post_agent, ou uma task que chama a mesma skill.
+// isPostAgent reports whether an agent in the list is the post agent in
+// another hat.
+//
+// It matches by the post_agent's exact name, or by its whole task once
+// placeholders and spacing are set aside. Sharing the skill is not enough: a
+// post_agent built on a reviewing skill's --post mode
+// (`/review-fleet {{review_file}} --post`) would otherwise take the
+// `review-fleet` reviewer out of the list. The one skill that is enough is the
+// built-in post skill (bazel-post-report): it only publishes, so an agent that
+// calls it is a post agent whatever post_agent says, `posts: true` or not.
 func (c *Config) isPostAgent(a AgentDef) bool {
 	name := strings.TrimSpace(a.Name)
 	if name == "" {
 		return false
 	}
-	if strings.EqualFold(strings.TrimSpace(c.PostAgent.Name), name) {
+	post := c.PostAgent
+	if strings.TrimSpace(post.Name) == "" {
+		post = defaultPostAgent()
+	}
+	if strings.EqualFold(strings.TrimSpace(post.Name), name) {
 		return true
 	}
-	skill := c.PostSkill()
-	return skill != "" && strings.EqualFold(taskSkill(a.Task), skill)
+	if skill := taskSkill(a.Task); skill != "" && strings.EqualFold(skill, taskSkill(defaultPostAgent().Task)) {
+		return true
+	}
+	shape := taskShape(post.Task)
+	return shape != "" && strings.EqualFold(taskShape(a.Task), shape)
+}
+
+// placeholderRe matches one {{placeholder}} in a task.
+var placeholderRe = regexp.MustCompile(`\{\{[^{}]*\}\}`)
+
+// taskShape is a task with every placeholder blanked and spacing collapsed:
+// `/x {{review_file}}` and `/x  {{number}}` have the same shape.
+func taskShape(task string) string {
+	return strings.Join(strings.Fields(placeholderRe.ReplaceAllString(task, "{{}}")), " ")
 }
 
 // migratePipelines arruma o que a página deixava gravar antes:
 //
-//   - o agente de publicação como agente comum sai da lista, e os passos dele
-//     nas pipelines viram `publish`, que é o que eles queriam dizer;
+//   - the post agent listed as a regular agent leaves the list, and its steps
+//     in the pipelines become a single `publish` at the end, which is what they
+//     meant;
 //   - o `pause` sai das pipelines. Quem para para você ler agora é o próprio
 //     `publish`, e `pause → publish` vira só `publish`.
+//
+// A pipeline that cannot be carried over without losing the human gate, or
+// that is left with no agent, is dropped with a line in Warnings, and
+// `default:` is cleared if it named it. Pipelines with nothing to migrate are
+// left exactly as written.
 func (c *Config) migratePipelines() {
 	removidos := map[string]bool{}
 	agents := c.Agents[:0]
@@ -1044,29 +1106,111 @@ func (c *Config) migratePipelines() {
 		agents = append(agents, a)
 	}
 	c.Agents = agents
-	for i, p := range c.Pipelines {
-		steps := make([]string, 0, len(p.Steps))
-		publica := false
-		for _, step := range p.Steps {
-			nome := strings.ToLower(strings.TrimSpace(step))
-			if nome == stepPause {
-				continue
-			}
-			if removidos[nome] {
-				step = StepPublish
-			}
-			if ReservedStep(step) {
-				// Publicar duas vezes não existe: o segundo seria o mesmo
-				// review de novo no PR.
-				if publica {
-					continue
-				}
-				publica = true
-			}
-			steps = append(steps, step)
+
+	pipes := c.Pipelines[:0]
+	for _, p := range c.Pipelines {
+		steps, motivo := c.migrateSteps(p.Name, p.Steps, removidos)
+		if motivo != "" {
+			c.Warnings = append(c.Warnings, fmt.Sprintf("pipeline %q was removed while upgrading the config: %s", p.Name, motivo))
+			c.clearDefault(p.Name)
+			continue
 		}
-		c.Pipelines[i].Steps = steps
+		p.Steps = steps
+		pipes = append(pipes, p)
 	}
+	c.Pipelines = pipes
+}
+
+// migrateSteps rewrites one pipeline's steps. A non-empty reason means the
+// pipeline has to go.
+//
+// Every post agent step and every `publish` comes out of where it was, and a
+// single `publish` goes at the end when something before it produces a review
+// (the rules resolveSteps enforces), unless an agent that posts on its own is
+// left before it. A `pause` used to stop before every later step, so an agent
+// that posts on its own after one becomes that `publish` too: keeping it would
+// post what nobody read.
+//
+// When that final publish is left out because an agent already posts before it,
+// a line goes to Warnings: the step the user wrote (or the post agent after a
+// pause) is gone, and nothing else says so. So does an agent that posted after
+// a pause and became the publish step: it no longer runs.
+func (c *Config) migrateSteps(pipeline string, steps []string, removidos map[string]bool) ([]string, string) {
+	precisa := false
+	for _, step := range steps {
+		nome := strings.ToLower(strings.TrimSpace(step))
+		if nome == stepPause || removidos[nome] || ReservedStep(nome) {
+			precisa = true
+			break
+		}
+	}
+	if !precisa {
+		return steps, ""
+	}
+
+	out := make([]string, 0, len(steps))
+	publica, pausou := false, false
+	for _, step := range steps {
+		step = strings.TrimSpace(step)
+		nome := strings.ToLower(step)
+		switch {
+		case nome == "":
+			continue
+		case nome == stepPause:
+			pausou = true
+			continue
+		case removidos[nome] || ReservedStep(nome):
+			publica = true
+			continue
+		}
+		if a, ok := c.agentNamed(step); ok && a.Posts && pausou {
+			if !c.temPublicavelAntes(out) {
+				return nil, fmt.Sprintf("%q posted to the PR after a pause, and nothing before it produces a review the publish step could show you", a.Name)
+			}
+			// The agent the user put there stops running, and the pipeline
+			// looks like any other with a publish step: say so.
+			c.Warnings = append(c.Warnings, fmt.Sprintf(
+				"pipeline %q: %q (after a pause) became the publish step and no longer runs",
+				pipeline, strings.TrimSpace(a.Name)))
+			publica = true
+			continue
+		}
+		out = append(out, step)
+	}
+
+	agentes := 0
+	for _, step := range out {
+		if _, ok := c.agentNamed(step); ok {
+			agentes++
+		}
+	}
+	if agentes == 0 {
+		return nil, "no agent is left once the publishing and pause steps are taken out"
+	}
+	// An agent that posts on its own and stays before the final publish was
+	// already posting with no gate before the upgrade; a publish after it would
+	// be a second post, and resolveSteps refuses that shape. (One that came
+	// after a pause has already turned into the publish above.)
+	posta, postaSozinho := c.postaAntes(out)
+	if publica && postaSozinho {
+		c.Warnings = append(c.Warnings, fmt.Sprintf(
+			"pipeline %q lost its publish step while upgrading the config: %q already posts to the PR on its own, and a publish after it would be a second post",
+			pipeline, posta))
+	} else if publica && c.temPublicavelAntes(out) {
+		out = append(out, StepPublish)
+	}
+	return out, ""
+}
+
+// agentNamed finds an agent in the list by name, ignoring case.
+func (c *Config) agentNamed(name string) (AgentDef, bool) {
+	name = strings.TrimSpace(name)
+	for _, a := range c.Agents {
+		if strings.EqualFold(strings.TrimSpace(a.Name), name) {
+			return a, true
+		}
+	}
+	return AgentDef{}, false
 }
 
 // taskSkill é a skill que uma task chama — `/nome args` vira `nome`.

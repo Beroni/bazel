@@ -187,8 +187,13 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .md h2 { font-size: 18px; margin-top: 28px; color: var(--accent); }
 .md h3 { font-size: 15px; margin-top: 22px; }
 .md code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
-.md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .md pre code { background: none; padding: 0; }
+/* Raw HTML in the review shows up as escaped text in a bare <pre> (no <code>
+   inside). Wrap it: it is prose-shaped markup, and a scroll bar would hide the
+   part that is about to go to the PR. Code blocks keep scrolling. */
+.md pre:not(:has(> code)) { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md a { color: var(--blue); }
 .md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 14px; color: var(--dim); }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; }
