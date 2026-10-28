@@ -386,11 +386,24 @@ claude mcp add --transport http bazel http://127.0.0.1:7777/mcp
 
 Every result carries `web_ui`, the page where a human reads the review.
 
-**MCP cannot publish.** You are the gate to the PR: there is no publishing
-tool, and agents that publish on their own (`posts: true`, or a pipeline with a
-publish step) are refused. To open that door on purpose, set
-`mcp_allow_publish: true` in the config — that also adds a `publish_review`
-tool.
+**MCP does not offer publishing.** The tool surface is curated so that you stay
+the gate to the PR: there is no publishing tool, and agents that publish on
+their own (`posts: true`, or a pipeline with a publish step) are refused. To
+open that door on purpose, set `mcp_allow_publish: true` in the config — that
+also adds a `publish_review` tool.
+
+This is a curated surface, not a security boundary. `/mcp` has no authentication
+of its own, so any process that can reach it can also call the web API
+(`/api/jobs/{id}/publish`) directly. What the gate prevents is a model
+publishing by accident, not a hostile process on the machine; closing that is
+tracked in [issue #6](https://github.com/Beroni/bazel/issues/6) (access token).
+
+Two more limits apply only to `/mcp` (the web page has neither):
+
+- `enqueue_review` only accepts PRs from the repositories you watch (`repos` in
+  the config, compared case-insensitively as `owner/repo`). A ref outside the
+  list is refused, and with no `repos` configured nothing can be queued.
+- at most 20 `refs` per call.
 
 ## Configuration
 

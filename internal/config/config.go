@@ -43,10 +43,12 @@ type Config struct {
 	// para o PR: em vez de escolher um agente que publica sozinho, você roda
 	// a frota, lê o resultado e só então manda publicar.
 	PostAgent AgentDef `yaml:"post_agent"`
-	// MCPAllowPublish abre o caminho para o PR a quem chega pelo /mcp. Desligado,
-	// um agente externo enfileira e lê, mas não publica — nem por ferramenta,
-	// nem escolhendo um agente que publica sozinho. "Você é o portão do PR":
-	// review que nenhum humano leu não vai para o GitHub por padrão.
+	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
+	// When off, the MCP surface does not offer publishing — neither as a tool
+	// nor by choosing an agent that publishes on its own. "You are the PR
+	// gate": a review no human has read does not go to GitHub by default. It is
+	// a surface gate, not a security boundary: whoever reaches /mcp reaches
+	// /api/jobs/{id}/publish with no authentication (issue #6, token).
 	MCPAllowPublish bool `yaml:"mcp_allow_publish,omitempty"`
 }
 

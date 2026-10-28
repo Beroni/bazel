@@ -243,6 +243,295 @@ func TestMCPPublishGate(t *testing.T) {
 	}
 }
 
+// gateServer starts a server with the lente and poster agents (the latter
+// publishes on its own), after mod tweaks the config.
+func gateServer(t *testing.T, cmd string, mod func(*config.Config), args ...string) *Server {
+	t.Helper()
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, cmd, args...)
+	cfg.Agents = []config.AgentDef{
+		{Name: "lente", Task: "revise"},
+		{Name: "poster", Task: "revise e publique", Posts: true},
+	}
+	if mod != nil {
+		mod(cfg)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	srv.prs = []gh.PR{testPR(482)}
+	return srv
+}
+
+// The other paths to publishing without the switch: a pipeline with the
+// `publish` step, one that includes an agent that publishes, and a default
+// that publishes.
+func TestMCPPublishGateOtherDoors(t *testing.T) {
+	ref := map[string]any{"refs": []string{"acme/api-core#482"}}
+	cases := []struct {
+		nome  string
+		mod   func(*config.Config)
+		agent string
+	}{
+		{"pipeline com passo publish", func(c *config.Config) {
+			c.Pipelines = []config.Pipeline{{Name: "frota", Steps: []string{"lente", "publish"}}}
+		}, "frota"},
+		{"pipeline com agente que publica", func(c *config.Config) {
+			c.Pipelines = []config.Pipeline{{Name: "frota", Steps: []string{"lente", "poster"}}}
+		}, "frota"},
+		{"padrão que publica, sem agent", func(c *config.Config) {
+			c.Default = "poster"
+		}, ""},
+		{"padrão é pipeline com publish, sem agent", func(c *config.Config) {
+			c.Pipelines = []config.Pipeline{{Name: "frota", Steps: []string{"lente", "publish"}}}
+			c.Default = "frota"
+		}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.nome, func(t *testing.T) {
+			srv := gateServer(t, "cat", c.mod)
+			h := srv.Handler()
+			args := map[string]any{"refs": ref["refs"]}
+			if c.agent != "" {
+				args["agent"] = c.agent
+			}
+			res := mcpToolResult(t, h, "enqueue_review", args)
+			if res["isError"] != true {
+				t.Fatalf("devia ser recusado sem mcp_allow_publish: %v", res)
+			}
+			if got := srv.jobs.Snapshot(); len(got) != 0 {
+				t.Errorf("nada devia ter entrado na fila: %v", got)
+			}
+		})
+	}
+}
+
+// With the switch on, publish_review still only publishes what finished,
+// exists and has valid indices.
+func TestMCPPublishReviewGuards(t *testing.T) {
+	allow := func(c *config.Config) { c.MCPAllowPublish = true }
+
+	t.Run("id inexistente", func(t *testing.T) {
+		h := gateServer(t, "cat", allow).Handler()
+		res := mcpToolResult(t, h, "publish_review", map[string]any{"id": "nao-existe"})
+		if res["isError"] != true {
+			t.Errorf("job inexistente devia ser erro: %v", res)
+		}
+	})
+
+	t.Run("job em execução", func(t *testing.T) {
+		srv := gateServer(t, "sh", allow, "-c", "sleep 30")
+		h := srv.Handler()
+		out := mcpToolCall(t, h, "enqueue_review", map[string]any{"refs": []string{"acme/api-core#482"}, "agent": "lente"})
+		id := out["jobs"].([]any)[0].(map[string]any)["id"].(string)
+		res := mcpToolResult(t, h, "publish_review", map[string]any{"id": id})
+		if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "not finished") {
+			t.Errorf("job que não terminou devia ser recusado: %v", res)
+		}
+	})
+
+	t.Run("skip negativo", func(t *testing.T) {
+		srv := gateServer(t, "cat", allow)
+		h := srv.Handler()
+		out := mcpToolCall(t, h, "enqueue_review", map[string]any{"refs": []string{"acme/api-core#482"}, "agent": "lente"})
+		id := out["jobs"].([]any)[0].(map[string]any)["id"].(string)
+		for range 20 {
+			job := mcpToolCall(t, h, "job_status", map[string]any{"id": id, "wait_seconds": 5})["job"].(map[string]any)
+			if job["state"] == string(StateDone) {
+				break
+			}
+		}
+		res := mcpToolResult(t, h, "publish_review", map[string]any{"id": id, "skip": []int{-1}})
+		if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "invalid finding index") {
+			t.Errorf("skip [-1] devia ser recusado pelo índice: %v", res)
+		}
+	})
+}
+
+// mcpRaw sends the raw body to /mcp and returns the status and body undecoded
+// — a batch comes back as an array, and mcpCall only knows objects.
+func mcpRaw(t *testing.T, h http.Handler, body string) (int, []byte) {
+	t.Helper()
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/mcp", strings.NewReader(body))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	return w.Code, w.Body.Bytes()
+}
+
+// rpcErrorCode returns the error code of a JSON-RPC response, or 0.
+func rpcErrorCode(resp map[string]any) float64 {
+	e, _ := resp["error"].(map[string]any)
+	if e == nil {
+		return 0
+	}
+	code, _ := e["code"].(float64)
+	return code
+}
+
+// JSON that does not parse is -32700; valid JSON that is not a request is
+// -32600. Mixing the two makes the client blame the transport for its own error.
+func TestMCPJSONRPCErrorCodes(t *testing.T) {
+	h := newTestServer(t).Handler()
+
+	single := []struct {
+		nome string
+		body string
+		want float64
+	}{
+		{"JSON inválido", `{nope`, rpcParseError},
+		{"JSON truncado", `{"jsonrpc":"2.0","id":1,`, rpcParseError},
+		{"method com tipo errado", `{"jsonrpc":"2.0","id":1,"method":5}`, rpcInvalidRequest},
+		{"corpo que não é objeto", `42`, rpcInvalidRequest},
+		{"sem method nem id", `{"jsonrpc":"2.0"}`, rpcInvalidRequest},
+		{"lote vazio", `[]`, rpcInvalidRequest},
+		{"lote com JSON inválido", `[{"jsonrpc":"2.0","id":1,"method":"ping"},`, rpcParseError},
+	}
+	for _, c := range single {
+		code, raw := mcpRaw(t, h, c.body)
+		var out map[string]any
+		if err := json.Unmarshal(raw, &out); err != nil {
+			t.Errorf("%s: devia dar uma única resposta objeto, veio %s", c.nome, raw)
+			continue
+		}
+		if got := rpcErrorCode(out); got != c.want {
+			t.Errorf("%s: código = %v, queria %v (%s)", c.nome, got, c.want, raw)
+		}
+		if code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, queria 400", c.nome, code)
+		}
+	}
+
+	// Batch with a non-object item: only that item fails.
+	code, raw := mcpRaw(t, h, `[1,{"jsonrpc":"2.0","id":9,"method":"ping"}]`)
+	var batch []map[string]any
+	if err := json.Unmarshal(raw, &batch); err != nil || len(batch) != 2 {
+		t.Fatalf("lote devia voltar 2 respostas, veio %s", raw)
+	}
+	if code != http.StatusOK {
+		t.Errorf("lote com item ruim devia dar 200, deu %d", code)
+	}
+	if got := rpcErrorCode(batch[0]); got != rpcInvalidRequest {
+		t.Errorf("item [1] devia dar -32600, deu %v: %v", got, batch[0])
+	}
+	if batch[1]["error"] != nil || batch[1]["result"] == nil {
+		t.Errorf("o ping ao lado devia passar: %v", batch[1])
+	}
+
+	_, raw = mcpRaw(t, h, `[1]`)
+	if err := json.Unmarshal(raw, &batch); err != nil || len(batch) != 1 || rpcErrorCode(batch[0]) != rpcInvalidRequest {
+		t.Errorf("[1] devia dar uma resposta -32600, veio %s", raw)
+	}
+}
+
+// The tool's reach into the world: whatever brings third-party text (title,
+// PR body, review) is "open world"; the rest is just server state.
+func TestMCPOpenWorldHints(t *testing.T) {
+	h := newTestServer(t).Handler()
+	_, out := mcpCall(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	tools, _ := out["result"].(map[string]any)["tools"].([]any)
+	want := map[string]bool{
+		"list_prs": true, "job_status": true, "job_log": true, "read_review": true,
+		"list_jobs": true, "list_reviews": true, "list_agents": false, "enqueue_review": true,
+	}
+	seen := 0
+	for _, raw := range tools {
+		tool := raw.(map[string]any)
+		name := tool["name"].(string)
+		exp, ok := want[name]
+		if !ok {
+			continue
+		}
+		seen++
+		ann, _ := tool["annotations"].(map[string]any)
+		if got, _ := ann["openWorldHint"].(bool); got != exp {
+			t.Errorf("%s: openWorldHint = %v, queria %v", name, got, exp)
+		}
+	}
+	if seen != len(want) {
+		t.Errorf("faltou ferramenta na lista: vi %d de %d", seen, len(want))
+	}
+}
+
+// MCP only queues what the config watches, and no more than mcpMaxRefs at a
+// time. The page (/api/reviews) has no such limit.
+func TestMCPEnqueueLimits(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	h := srv.Handler()
+
+	recusa := func(nome string, args map[string]any, contem string) {
+		t.Helper()
+		res := mcpToolResult(t, h, "enqueue_review", args)
+		if res["isError"] != true {
+			t.Errorf("%s: devia ser recusado: %v", nome, res)
+			return
+		}
+		if !strings.Contains(fmt.Sprint(res["content"]), contem) {
+			t.Errorf("%s: mensagem sem %q: %v", nome, contem, res["content"])
+		}
+		if got := srv.jobs.Snapshot(); len(got) != 0 {
+			t.Errorf("%s: nada devia ter entrado na fila: %v", nome, got)
+		}
+	}
+
+	recusa("repo fora da lista", map[string]any{"refs": []string{"outro/repo#1"}}, "not a watched repository")
+	recusa("URL de repo fora da lista", map[string]any{"refs": []string{"https://github.com/outro/repo/pull/1"}}, "not a watched repository")
+	recusa("um dentro e um fora", map[string]any{"refs": []string{"acme/api-core#482", "outro/repo#1"}}, "not a watched repository")
+
+	muitos := make([]string, mcpMaxRefs+1)
+	for i := range muitos {
+		muitos[i] = fmt.Sprintf("acme/api-core#%d", 482+i)
+	}
+	recusa("refs acima do limite", map[string]any{"refs": muitos}, "too many")
+
+	_, out := mcpCall(t, h, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
+	for _, raw := range out["result"].(map[string]any)["tools"].([]any) {
+		tool := raw.(map[string]any)
+		if tool["name"] != "enqueue_review" {
+			continue
+		}
+		refs := tool["inputSchema"].(map[string]any)["properties"].(map[string]any)["refs"].(map[string]any)
+		if got, _ := refs["maxItems"].(float64); got != mcpMaxRefs {
+			t.Errorf("schema de refs sem maxItems=%d: %v", mcpMaxRefs, refs)
+		}
+	}
+
+	// A repo in the wrong case is the same repo, and goes in with the config's spelling.
+	out2 := mcpToolCall(t, h, "enqueue_review", map[string]any{"refs": []string{"ACME/API-Core#482"}})
+	if jobs, _ := out2["jobs"].([]any); len(jobs) != 1 {
+		t.Errorf("owner/repo é case-insensitive: %v", out2)
+	}
+
+	// With no repos in the config there is nothing to watch: refuse and say what to do.
+	srv.cfgMu.Lock()
+	srv.cfg.Repos = nil
+	srv.cfgMu.Unlock()
+	res := mcpToolResult(t, h, "enqueue_review", map[string]any{"refs": []string{"acme/api-core#482"}})
+	if res["isError"] != true || !strings.Contains(fmt.Sprint(res["content"]), "repos") {
+		t.Errorf("sem cfg.Repos devia recusar pedindo para configurar repos: %v", res)
+	}
+}
+
+// The page sends reviews for any repository; only MCP is restricted.
+func TestPageEnqueueIgnoresMCPRepoLimit(t *testing.T) {
+	srv := newTestServer(t)
+	other := testPR(5)
+	other.Repo = "outro/repo"
+	srv.prs = []gh.PR{other}
+	h := srv.Handler()
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":["outro/repo#5"]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code >= 400 {
+		t.Errorf("a página devia aceitar repo fora do config: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func contains(list []string, s string) bool {
 	for _, v := range list {
 		if v == s {

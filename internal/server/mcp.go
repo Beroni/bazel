@@ -7,10 +7,14 @@ package server
 // review continua vivendo aqui, e a página continua sendo a única interface
 // humana: todo resultado aponta para ela.
 //
-// A superfície é curada, não a API inteira: ler e enfileirar. Publicar no PR
-// fica de fora a menos que o config diga `mcp_allow_publish: true` — e isso
-// vale também para escolher um agente que publica sozinho, que seria a mesma
-// porta pelo lado.
+// The surface is curated, not the whole API: read and enqueue. Publishing to
+// the PR stays out unless the config says `mcp_allow_publish: true` — and that
+// also covers choosing an agent that publishes on its own, which would be the
+// same door from the side. It is a surface gate, not a security boundary:
+// whoever reaches /mcp also reaches /api/jobs/{id}/publish, with no
+// authentication (the token from issue #6 is what closes that). What the gate
+// prevents is a model publishing by accident, not a hostile process on the
+// machine.
 //
 // É sem sessão: cada POST traz uma mensagem JSON-RPC e leva a resposta em
 // JSON. Não há o que o servidor precise empurrar sem ser perguntado, então o
@@ -27,6 +31,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
 )
 
@@ -37,6 +42,9 @@ var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05
 // mcpMaxWait é o teto do job_status com espera: segura a requisição, mas não
 // a ponto de o cliente desistir dela.
 const mcpMaxWait = 60
+
+// mcpMaxRefs is the most PRs one enqueue_review call may queue.
+const mcpMaxRefs = 20
 
 const (
 	rpcParseError     = -32700
@@ -85,8 +93,13 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	// custa nada e não deixa um cliente mais velho na mão.
 	if len(data) > 0 && data[0] == '[' {
 		var batch []json.RawMessage
-		if err := json.Unmarshal(data, &batch); err != nil || len(batch) == 0 {
-			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcParseError, "invalid JSON-RPC batch"))
+		if err := json.Unmarshal(data, &batch); err != nil {
+			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcParseError, "invalid JSON"))
+			return
+		}
+		if len(batch) == 0 {
+			// Valid JSON, but not a request: a single error response.
+			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcInvalidRequest, "empty batch"))
 			return
 		}
 		var out []rpcResponse
@@ -116,11 +129,19 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	writeRPC(w, status, resp)
 }
 
-// mcpMessage trata uma mensagem. ok=false quando ela não pede resposta.
+// mcpMessage handles one message. ok=false when it asks for no response.
 func (s *Server) mcpMessage(r *http.Request, raw json.RawMessage) (rpcResponse, bool) {
+	// Text that is not JSON is a parse error; valid JSON with the wrong shape
+	// (a method that is not a string, a batch item that is not an object) is
+	// an invalid request.
+	if !json.Valid(raw) {
+		return rpcFail(nil, rpcParseError, "invalid JSON"), true
+	}
 	var req rpcRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
-		return rpcFail(nil, rpcParseError, "invalid JSON"), true
+		// On a type error the decode carries on and the id may already have
+		// been read: the client recognizes the response to its own request.
+		return rpcFail(req.ID, rpcInvalidRequest, "not a valid JSON-RPC request object"), true
 	}
 	notification := len(req.ID) == 0 || string(req.ID) == "null"
 	if req.Method == "" {
@@ -240,7 +261,7 @@ func (s *Server) mcpTools() []mcpToolDef {
 				"status":  enumProp("Filter by review state.", "any", "unreviewed", "reviewed", "changed", "posted"),
 				"refresh": prop("boolean", "Bypass the 60s cache and query GitHub now."),
 			}),
-			Annotations: readOnly("List PRs"),
+			Annotations: readOnly("List PRs", true),
 			call:        s.mcpListPRs,
 		},
 		{
@@ -252,7 +273,8 @@ func (s *Server) mcpTools() []mcpToolDef {
 					"type":        "array",
 					"items":       map[string]any{"type": "string"},
 					"minItems":    1,
-					"description": "PRs as owner/repo#123 or https://github.com/owner/repo/pull/123.",
+					"maxItems":    mcpMaxRefs,
+					"description": "PRs as owner/repo#123 or https://github.com/owner/repo/pull/123, from the watched repositories (see the repos in the Bazel config).",
 				},
 				"agent": prop("string", "Agent or pipeline name (see list_agents). Empty = the default."),
 			}, "refs"),
@@ -263,7 +285,7 @@ func (s *Server) mcpTools() []mcpToolDef {
 			Name:        "list_jobs",
 			Description: "List the review jobs of this server session, newest first.",
 			InputSchema: schema(map[string]any{}),
-			Annotations: readOnly("List jobs"),
+			Annotations: readOnly("List jobs", true),
 			call: func(context.Context, json.RawMessage) (map[string]any, error) {
 				return map[string]any{"jobs": s.jobViews()}, nil
 			},
@@ -276,7 +298,7 @@ func (s *Server) mcpTools() []mcpToolDef {
 				"id":           prop("string", "Job id from enqueue_review or list_jobs."),
 				"wait_seconds": map[string]any{"type": "integer", "minimum": 0, "maximum": mcpMaxWait, "description": "Long-poll up to this many seconds."},
 			}, "id"),
-			Annotations: readOnly("Job status"),
+			Annotations: readOnly("Job status", true),
 			call:        s.mcpJobStatus,
 		},
 		{
@@ -286,7 +308,7 @@ func (s *Server) mcpTools() []mcpToolDef {
 				"id":   prop("string", "Job id."),
 				"from": map[string]any{"type": "integer", "minimum": 0, "description": "First sequence number to return."},
 			}, "id"),
-			Annotations: readOnly("Job log"),
+			Annotations: readOnly("Job log", true),
 			call:        s.mcpJobLog,
 		},
 		{
@@ -295,7 +317,7 @@ func (s *Server) mcpTools() []mcpToolDef {
 			InputSchema: schema(map[string]any{
 				"repo": prop("string", "Only reviews of this repository (owner/repo)."),
 			}),
-			Annotations: readOnly("List reviews"),
+			Annotations: readOnly("List reviews", true),
 			call:        s.mcpListReviews,
 		},
 		{
@@ -304,14 +326,14 @@ func (s *Server) mcpTools() []mcpToolDef {
 			InputSchema: schema(map[string]any{
 				"name": prop("string", "File name of the review, e.g. owner-repo-123-20260101-120000.md."),
 			}, "name"),
-			Annotations: readOnly("Read review"),
+			Annotations: readOnly("Read review", true),
 			call:        s.mcpReadReview,
 		},
 		{
 			Name:        "list_agents",
 			Description: "List the agents and pipelines a review can run with. The first is the default.",
 			InputSchema: schema(map[string]any{}),
-			Annotations: readOnly("List agents"),
+			Annotations: readOnly("List agents", false),
 			call: func(context.Context, json.RawMessage) (map[string]any, error) {
 				return map[string]any{"agents": s.agentViews(), "mcp_allow_publish": s.allowPublish()}, nil
 			},
@@ -382,6 +404,13 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 	if len(a.Refs) == 0 {
 		return nil, errors.New("no PR given")
 	}
+	if len(a.Refs) > mcpMaxRefs {
+		return nil, fmt.Errorf("too many PRs: %d given, at most %d per call", len(a.Refs), mcpMaxRefs)
+	}
+	refs, err := s.watchedRefs(a.Refs)
+	if err != nil {
+		return nil, err
+	}
 	choice, err := s.resolveChoice(a.Agent)
 	if err != nil {
 		return nil, err
@@ -392,7 +421,7 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 		return nil, fmt.Errorf("%q publishes to the PR on its own, and publishing over MCP is disabled "+
 			"(set mcp_allow_publish: true in the Bazel config to allow it)", choice.Name)
 	}
-	queued, errs := s.enqueueRefs(ctx, a.Refs, choice)
+	queued, errs := s.enqueueRefs(ctx, refs, choice)
 	if len(queued) == 0 {
 		return nil, fmt.Errorf("nothing was queued: %s", strings.Join(errs, "; "))
 	}
@@ -400,6 +429,35 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 		errs = []string{}
 	}
 	return map[string]any{"jobs": queued, "errors": errs}, nil
+}
+
+// watchedRefs limits what comes in over MCP to the repositories in cfg.Repos
+// (owner/repo compared case-insensitively); the page has no such limit. A ref
+// outside the list refuses the whole call, so nothing is queued by halves. The
+// ones that pass are rewritten with the config's spelling, which is also what
+// finds the PR in the cache. A ref that does not parse goes through as is:
+// enqueueRefs reports it item by item.
+func (s *Server) watchedRefs(refs []string) ([]string, error) {
+	s.cfgMu.Lock()
+	repos := append([]string(nil), s.cfg.Repos...)
+	s.cfgMu.Unlock()
+	if len(repos) == 0 {
+		return nil, errors.New("no repositories are configured to review: set repos in the Bazel config first")
+	}
+	out := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		repo, number, err := gh.ParseRef(ref)
+		if err != nil {
+			out = append(out, ref)
+			continue
+		}
+		i := slices.IndexFunc(repos, func(r string) bool { return strings.EqualFold(strings.TrimSpace(r), repo) })
+		if i < 0 {
+			return nil, fmt.Errorf("%q is not a watched repository: MCP only queues reviews for the repos in the Bazel config", repo)
+		}
+		out = append(out, fmt.Sprintf("%s#%d", strings.TrimSpace(repos[i]), number))
+	}
+	return out, nil
 }
 
 func (s *Server) mcpJobStatus(ctx context.Context, raw json.RawMessage) (map[string]any, error) {
@@ -536,8 +594,11 @@ func enumProp(desc string, values ...string) map[string]any {
 	return map[string]any{"type": "string", "enum": values, "description": desc}
 }
 
-func readOnly(title string) map[string]any {
-	return map[string]any{"title": title, "readOnlyHint": true, "openWorldHint": false}
+// readOnly are the annotations of a tool that changes nothing. openWorld marks
+// the ones that return text written by third parties (PR titles and bodies,
+// agent output, reviews), not just server state.
+func readOnly(title string, openWorld bool) map[string]any {
+	return map[string]any{"title": title, "readOnlyHint": true, "openWorldHint": openWorld}
 }
 
 func rpcFail(id json.RawMessage, code int, msg string) rpcResponse {
