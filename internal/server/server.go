@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beroni/bazel/internal/config"
@@ -62,6 +63,10 @@ type Server struct {
 
 	// cfgMu protege os campos do config que a interface edita (repos).
 	cfgMu sync.Mutex
+
+	// bound é o endereço em que o Run de fato escuta — difere de opts.Addr
+	// quando a porta pedida é 0.
+	bound atomic.Pointer[string]
 
 	// fetchMu serializa as consultas ao gh; prMu protege o cache.
 	fetchMu sync.Mutex
@@ -163,6 +168,8 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("could not listen on %s: %w", s.opts.Addr, err)
 	}
+	addr := ln.Addr().String()
+	s.bound.Store(&addr)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -194,6 +201,17 @@ func (s *Server) URL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+// webUI é o endereço da página, montado do que o servidor escuta e não do
+// Host da requisição: fora do loopback o Host não passa pelo guard, e quem
+// pergunta escolheria o link que recebe.
+func (s *Server) webUI() string {
+	addr := s.opts.Addr
+	if b := s.bound.Load(); b != nil {
+		addr = *b
+	}
+	return s.URL(addr) + "/"
 }
 
 // --- middleware ---

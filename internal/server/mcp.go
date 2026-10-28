@@ -229,7 +229,7 @@ func (s *Server) mcpDispatch(r *http.Request, req rpcRequest) (any, *rpcError) {
 				"isError": true,
 			}, nil
 		}
-		out["web_ui"] = webUI(r)
+		out["web_ui"] = s.webUI()
 		text, _ := json.MarshalIndent(out, "", "  ")
 		return map[string]any{
 			"content":           []map[string]any{{"type": "text", "text": string(text)}},
@@ -237,12 +237,6 @@ func (s *Server) mcpDispatch(r *http.Request, req rpcRequest) (any, *rpcError) {
 		}, nil
 	}
 	return nil, &rpcError{Code: rpcMethodNotFound, Message: fmt.Sprintf("method %q not found", req.Method)}
-}
-
-// webUI é o endereço da página para quem está do outro lado. Sai do Host que
-// o guard já aceitou — é por onde o cliente chegou aqui.
-func webUI(r *http.Request) string {
-	return "http://" + r.Host + "/"
 }
 
 func (s *Server) allowPublish() bool {

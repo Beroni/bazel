@@ -160,6 +160,27 @@ func TestMCPBehindGuard(t *testing.T) {
 	}
 }
 
+// web_ui sai do endereço em que o servidor escuta, nunca do Host de quem
+// pergunta — e, depois do Run, da porta que ele de fato pegou.
+func TestMCPWebUIIgnoresHost(t *testing.T) {
+	srv := withLens(newTestServer(t))
+	srv.prs = []gh.PR{testPR(482)}
+	h := srv.Handler()
+
+	body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"list_agents","arguments":{}}}`
+	_, out := mcpCall(t, h, body, func(r *http.Request) { r.Host = "localhost:6666" })
+	got := out["result"].(map[string]any)["structuredContent"].(map[string]any)["web_ui"]
+	if got != "http://127.0.0.1:0/" {
+		t.Errorf("web_ui = %v, queria o endereço configurado e não o Host da requisição", got)
+	}
+
+	bound := "127.0.0.1:54321"
+	srv.bound.Store(&bound)
+	if got := srv.webUI(); got != "http://127.0.0.1:54321/" {
+		t.Errorf("depois do Run, web_ui devia ter a porta real: %q", got)
+	}
+}
+
 // O caminho inteiro de um agente externo: enfileira, espera, lê o review.
 func TestMCPEnqueueAndPollToCompletion(t *testing.T) {
 	srv := withLens(newTestServer(t))
@@ -171,8 +192,8 @@ func TestMCPEnqueueAndPollToCompletion(t *testing.T) {
 	if len(jobs) != 1 {
 		t.Fatalf("esperava 1 job, veio %v", out)
 	}
-	if !strings.HasPrefix(out["web_ui"].(string), "http://127.0.0.1:7777") {
-		t.Errorf("resultado sem o endereço da página: %v", out["web_ui"])
+	if got, want := out["web_ui"], srv.webUI(); got != want || !strings.HasPrefix(want, "http://127.0.0.1:") {
+		t.Errorf("web_ui = %v, queria o endereço do servidor %q", got, want)
 	}
 	id := jobs[0].(map[string]any)["id"].(string)
 
