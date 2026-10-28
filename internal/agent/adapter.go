@@ -26,9 +26,9 @@ func newOutputAdapter(format string, args []string) (outputAdapter, error) {
 	case "claude-stream":
 		return &claudeAdapter{}, nil
 	case "codex-json":
-		return &codexAdapter{}, nil
+		return &codexAdapter{model: "codex"}, nil
 	case "grok-stream":
-		return &grokAdapter{}, nil
+		return &grokAdapter{model: "grok"}, nil
 	case "plain":
 		return &plainAdapter{}, nil
 	default:

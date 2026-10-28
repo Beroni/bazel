@@ -112,6 +112,7 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 
 	// Se há múltiplos repos, tenta uma busca única com `gh search prs`.
 	// Se falhar, cai de volta para o fan-out por repo (preserva compatibilidade).
+	// O erro da busca é propagado para que o chamador saiba que algo deu errado.
 	if len(repos) > 1 {
 		prs, err := searchRepoPRs(ctx, repos, opts)
 		if err == nil {
@@ -130,6 +131,54 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 			})
 			return all, nil
 		}
+		// BUG-04: propaga o erro da busca para que repositórios com erro não sumam silenciosamente.
+		// O fan-out abaixo ainda será tentado, mas o erro da busca única vai junto.
+		searchErr := err
+		var (
+			mu   sync.Mutex
+			all  []PR
+			errs []RepoError
+			wg   sync.WaitGroup
+			sem  = make(chan struct{}, 6)
+		)
+
+		for _, repo := range repos {
+			wg.Add(1)
+			go func(repo string) {
+				defer wg.Done()
+				sem <- struct{}{}
+				defer func() { <-sem }()
+
+				prs, err := listRepoPRs(ctx, repo, opts.Limit)
+				mu.Lock()
+				defer mu.Unlock()
+				if err != nil {
+					errs = append(errs, RepoError{Repo: repo, Err: err})
+					return
+				}
+				for _, pr := range prs {
+					if pr.IsDraft && !opts.IncludeDrafts {
+						continue
+					}
+					if len(authors) > 0 && !authors[strings.ToLower(pr.Author.Login)] {
+						continue
+					}
+					all = append(all, pr)
+				}
+			}(repo)
+		}
+		wg.Wait()
+
+		// Adiciona o erro da busca única como erro global (repo vazio = erro geral).
+		if searchErr != nil {
+			errs = append(errs, RepoError{Repo: "", Err: fmt.Errorf("gh search prs fallback: %w", searchErr)})
+		}
+
+		sort.Slice(all, func(i, j int) bool {
+			return all[i].UpdatedAt.After(all[j].UpdatedAt)
+		})
+		sort.Slice(errs, func(i, j int) bool { return errs[i].Repo < errs[j].Repo })
+		return all, errs
 	}
 
 	var (

@@ -4,18 +4,25 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 // Usage é o que um agente consumiu do modelo. Vem do evento final do
 // stream-json, que já soma os sub-agentes que ele tiver disparado — um
 // executável que não fala esse formato devolve tudo zerado, e a interface
 // simplesmente não mostra gasto nenhum.
+//
+// Model é o nome do modelo principal que rodou. É o que a tabela de preços
+// usa para calcular o custo: um modelo desconhecido cai em tokens-only, sem
+// tentar adivinhar um número que pode enganar.
 type Usage struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
 	CacheWrite   int     `json:"cache_write_tokens,omitempty"`
 	CacheRead    int     `json:"cache_read_tokens,omitempty"`
 	CostUSD      float64 `json:"cost_usd,omitempty"`
+	Model        string  `json:"model,omitempty"`
 }
 
 // Total é tudo que passou pelo modelo. O cache entra na conta: lido ou
@@ -49,6 +56,28 @@ func (u Usage) Plus(o Usage) Usage {
 func (u Usage) String() string {
 	if u.Empty() {
 		return ""
+	}
+	s := FormatTokens(u.Total()) + " tokens"
+	if u.InputTokens+u.OutputTokens > 0 {
+		s += fmt.Sprintf(" (in %s · out %s · cache %s)",
+			FormatTokens(u.InputTokens), FormatTokens(u.OutputTokens),
+			FormatTokens(u.CacheRead+u.CacheWrite))
+	}
+	if u.CostUSD > 0 {
+		s += fmt.Sprintf(" · $%.2f", u.CostUSD)
+	}
+	return s
+}
+
+// StringWithCost é o gasto em uma linha, garantindo que o custo apareça
+// mesmo se não veio do stream (usando pricing table).
+func (u Usage) StringWithCost(pricing *pricing.Table) string {
+	if u.Empty() {
+		return ""
+	}
+	// Recalcula o custo se tiver pricing table e modelo
+	if pricing != nil && u.Model != "" {
+		u.CostUSD = pricing.Cost(u.Model, u.InputTokens, u.OutputTokens, u.CacheWrite, u.CacheRead)
 	}
 	s := FormatTokens(u.Total()) + " tokens"
 	if u.InputTokens+u.OutputTokens > 0 {

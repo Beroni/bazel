@@ -15,6 +15,7 @@ type grokAdapter struct {
 	final      Usage
 	terminal   error
 	tools      map[string]string
+	model      string
 }
 
 type grokEvent struct {
@@ -149,10 +150,12 @@ func (a *grokAdapter) line(raw string) []logEntry {
 }
 
 func (a *grokAdapter) usage() Usage {
-	if !a.final.Empty() {
-		return a.final
+	u := a.final
+	if u.Empty() {
+		u = a.live
 	}
-	return a.live
+	u.Model = a.model
+	return u
 }
 func (a *grokAdapter) limits() Limits { return Limits{} }
 func (a *grokAdapter) report() string { return strings.TrimSpace(a.reportText.String()) }

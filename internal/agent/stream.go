@@ -84,6 +84,10 @@ type streamEvent struct {
 // spent é o gasto do evento final. O detalhe por modelo manda quando existe —
 // é o único que enxerga os sub-agentes; sem ele sobra o `usage`, que é o que um
 // agente mais simples reporta.
+//
+// O custo em USD é calculado a partir da tabela de preços, não do campo
+// `total_cost_usd` do evento: esse campo vem do Claude Code e pode não estar
+// presente em todos os provedores. A tabela é configurável em config.yaml.
 func (ev streamEvent) spent() Usage {
 	u := Usage{CostUSD: ev.CostUSD}
 	if len(ev.ModelUsage) == 0 {
@@ -91,6 +95,7 @@ func (ev streamEvent) spent() Usage {
 		u.OutputTokens = ev.Usage.OutputTokens
 		u.CacheWrite = ev.Usage.CacheWrite
 		u.CacheRead = ev.Usage.CacheRead
+		u.Model = ev.Message.Model
 		return u
 	}
 	var custo float64
@@ -112,6 +117,15 @@ func (ev streamEvent) spent() Usage {
 	// entra quando ele não veio.
 	if u.CostUSD == 0 {
 		u.CostUSD = custo
+	}
+	// O modelo principal é o da primeira entrada do modelUsage, ou do message.
+	if len(ev.ModelUsage) > 0 {
+		for name := range ev.ModelUsage {
+			u.Model = name
+			break
+		}
+	} else if ev.Message.Model != "" {
+		u.Model = ev.Message.Model
 	}
 	return u
 }

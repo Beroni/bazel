@@ -188,6 +188,7 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 	}
 	runner := agent.New(cfg)
 	runner.KeepWorkspace = keep
+	runner.PricingTable = &cfg.Agent.Pricing
 
 	m := &Manager{
 		cfg:        cfg,
@@ -250,12 +251,15 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
 	m.trimLocked()
-	m.mu.Unlock()
 
+	// Hold the lock until the job is safely enqueued to prevent
+	// duplicate jobs from concurrent requests (BUG-01).
 	select {
 	case m.queue <- job:
+		m.mu.Unlock()
 	default:
 		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
+		m.mu.Unlock()
 		return m.mustView(job.ID), fmt.Errorf("queue is full")
 	}
 	m.publish(job)
@@ -352,7 +356,7 @@ func (m *Manager) run(job *Job) {
 		saveErr error
 	)
 	if job.publish == nil {
-		path, saveErr = store.Save(m.reviewsDir, res)
+		path, saveErr = store.Save(m.reviewsDir, res, &m.cfg.Agent.Pricing)
 	}
 
 	// O PR entra no índice: é o ✓ da lista, e é o commit gravado aqui que

@@ -14,6 +14,7 @@ type codexAdapter struct {
 	spend      Usage
 	terminal   error
 	messages   map[string]bool
+	model      string
 }
 
 type codexEvent struct {
@@ -127,7 +128,11 @@ func (ev codexEvent) errorMessage() string {
 	return codexError(ev.Error)
 }
 
-func (a *codexAdapter) usage() Usage   { return a.spend }
+func (a *codexAdapter) usage() Usage {
+	u := a.spend
+	u.Model = a.model
+	return u
+}
 func (a *codexAdapter) limits() Limits { return Limits{} }
 func (a *codexAdapter) report() string { return a.reportText }
 func (a *codexAdapter) err() error     { return a.terminal }
