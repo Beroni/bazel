@@ -1195,8 +1195,13 @@ func TestPassosReservados(t *testing.T) {
 		}
 		// Sem o review-fleet, o publish fica sem nada para publicar.
 		cfg.RemoveAgent("review-fleet")
-		if ch, err := cfg.ChoiceByName("x"); err == nil && len(ch.Steps) != 0 {
-			t.Errorf("o publish órfão devia sumir junto: %v", ch.StepNames())
+		// Sobra só o publish, que não tem o que publicar: a pipeline inteira
+		// sai do seletor.
+		if ch, err := cfg.ChoiceByName("x"); err == nil {
+			t.Errorf("a pipeline só com o publish órfão devia sair do seletor, veio %v", ch.StepNames())
+		}
+		if got := cfg.Choices(); len(got) != 1 || got[0].Name != "history-pr" {
+			t.Errorf("só o history-pr devia continuar no seletor: %v", got)
 		}
 	})
 }
