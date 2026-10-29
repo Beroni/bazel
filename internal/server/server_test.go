@@ -2376,3 +2376,34 @@ func TestInstanciaDoServidor(t *testing.T) {
 		t.Fatal("o SSE não mandou nada ao conectar")
 	}
 }
+
+// POST /api/repos takes exactly owner/name (BUG-QA-03): "acme/" and a PR URL
+// are refused with 400 and leave the config alone; a repository URL goes in
+// trimmed to owner/name.
+func TestRepoAddExigeOwnerName(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	post := func(repo string) (int, string) {
+		body, _ := json.Marshal(map[string]string{"repo": repo})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(string(body)))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	before := append([]string(nil), srv.cfg.Repos...)
+	for _, bad := range []string{"acme/", "https://github.com/acme/web-app/pull/7", "acme"} {
+		if code, body := post(bad); code != http.StatusBadRequest {
+			t.Errorf("%q: status %d (%s), want 400", bad, code, body)
+		}
+	}
+	if code, body := post("https://github.com/acme/web-app/pull/7"); !strings.Contains(body, "pull request") {
+		t.Errorf("a PR URL should say it is a pull request: %d %s", code, body)
+	}
+	if fmt.Sprint(srv.cfg.Repos) != fmt.Sprint(before) {
+		t.Errorf("a refused repo changed the config: %v → %v", before, srv.cfg.Repos)
+	}
+	if code, body := post("https://github.com/acme/web-app.git"); code != http.StatusOK || !strings.Contains(body, `"acme/web-app"`) {
+		t.Errorf("a repository URL should go in as acme/web-app: %d %s", code, body)
+	}
+}

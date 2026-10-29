@@ -732,15 +732,17 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	repo := strings.TrimSpace(req.Repo)
-	if !strings.Contains(strings.TrimPrefix(repo, "https://github.com/"), "/") {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid repository: %q (use owner/repo)", repo))
+	// Exactly owner/name (BUG-QA-03): "acme/" used to go in as "acme", and a PR
+	// URL as "acme/web-app/pull/7", because only the slash was checked.
+	repo, err := config.NormalizeRepo(req.Repo)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
 	s.cfgMu.Lock()
 	added := s.cfg.AddRepo(repo)
-	err := s.cfg.Save()
+	err = s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {

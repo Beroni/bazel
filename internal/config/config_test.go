@@ -1323,3 +1323,33 @@ func TestPricingDefaultAntigoNaoVence(t *testing.T) {
 		t.Errorf("o Save perdeu o preço do usuário:\n%s", data)
 	}
 }
+
+// A watched repo is exactly owner/name (BUG-QA-03). A GitHub repository URL is
+// trimmed down to that; a PR URL, a missing half or a deeper path is refused.
+func TestNormalizeRepo(t *testing.T) {
+	for in, want := range map[string]string{
+		"acme/web-app":                        "acme/web-app",
+		"  acme/web-app  ":                    "acme/web-app",
+		"https://github.com/acme/web-app":     "acme/web-app",
+		"https://github.com/acme/web-app/":    "acme/web-app",
+		"https://github.com/acme/web-app.git": "acme/web-app",
+		"github.com/Beroni/bazel":             "Beroni/bazel",
+		"acme/my.repo_v2":                     "acme/my.repo_v2",
+	} {
+		if got, err := NormalizeRepo(in); err != nil || got != want {
+			t.Errorf("NormalizeRepo(%q) = %q, %v; want %q", in, got, err, want)
+		}
+	}
+	for _, in := range []string{
+		"", "acme", "acme/", "/web-app", "acme/web-app/tree/main", "acme/web app",
+		"-acme/web-app", "acme/..", "https://gitlab.com/acme/web-app",
+	} {
+		if got, err := NormalizeRepo(in); err == nil {
+			t.Errorf("NormalizeRepo(%q) = %q, want an error", in, got)
+		}
+	}
+	_, err := NormalizeRepo("https://github.com/acme/web-app/pull/7")
+	if err == nil || !strings.Contains(err.Error(), "pull request") || !strings.Contains(err.Error(), "acme/web-app") {
+		t.Errorf("a PR URL must be refused naming its repository, got %v", err)
+	}
+}

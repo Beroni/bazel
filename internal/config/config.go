@@ -598,6 +598,33 @@ func (c *Config) AddRepo(repo string) bool {
 	return true
 }
 
+var (
+	repoOwnerRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
+	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+)
+
+// NormalizeRepo turns what was typed into the owner/name the config keeps, or
+// says why it can't. A repository URL (https://github.com/owner/name, with or
+// without .git) is accepted and trimmed; a PR or any deeper URL is refused —
+// it names one pull request, not the repository to watch — and so are an empty
+// owner or name and characters GitHub doesn't allow in them.
+func NormalizeRepo(in string) (string, error) {
+	repo := strings.TrimSpace(in)
+	for _, prefix := range []string{"https://github.com/", "http://github.com/", "github.com/"} {
+		repo = strings.TrimPrefix(repo, prefix)
+	}
+	repo = strings.TrimSuffix(strings.TrimSuffix(repo, "/"), ".git")
+	parts := strings.Split(repo, "/")
+	if len(parts) > 2 && (parts[2] == "pull" || parts[2] == "pulls") {
+		return "", fmt.Errorf("%q is a pull request — add its repository instead: %s/%s", in, parts[0], parts[1])
+	}
+	if len(parts) != 2 || !repoOwnerRe.MatchString(parts[0]) ||
+		!repoNameRe.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
+		return "", fmt.Errorf("invalid repository: %q (use owner/name)", in)
+	}
+	return parts[0] + "/" + parts[1], nil
+}
+
 // RemoveRepo removes a repository from the list.
 func (c *Config) RemoveRepo(repo string) bool {
 	for i, r := range c.Repos {
