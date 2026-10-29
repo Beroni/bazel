@@ -178,6 +178,12 @@ async function loadPRs(force) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'failed: ' + err.message);
     list.append(p);
+    // With no list there is nothing a ticked "select all" could have selected.
+    if (!state.prsLoaded) {
+      const box = $('#select-all');
+      box.checked = false;
+      box.indeterminate = false;
+    }
   } finally {
     $('#refresh').disabled = false;
   }
