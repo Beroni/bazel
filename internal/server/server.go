@@ -27,6 +27,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beroni/bazel/internal/config"
@@ -62,6 +63,10 @@ type Server struct {
 
 	// cfgMu protege os campos do config que a interface edita (repos).
 	cfgMu sync.Mutex
+
+	// bound é o endereço em que o Run de fato escuta — difere de opts.Addr
+	// quando a porta pedida é 0.
+	bound atomic.Pointer[string]
 
 	// fetchMu serializa as consultas ao gh; prMu protege o cache.
 	fetchMu sync.Mutex
@@ -137,6 +142,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
 	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
 
+	// O /mcp passa pelo mesmo guard: é a mesma porta para clonar e rodar
+	// agente, só que falada por máquina.
+	mux.HandleFunc("/mcp", s.handleMCP)
+
 	return s.guard(mux)
 }
 
@@ -159,6 +168,8 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("could not listen on %s: %w", s.opts.Addr, err)
 	}
+	addr := ln.Addr().String()
+	s.bound.Store(&addr)
 
 	errc := make(chan error, 1)
 	go func() {
@@ -190,6 +201,17 @@ func (s *Server) URL(addr string) string {
 		host = "127.0.0.1"
 	}
 	return "http://" + net.JoinHostPort(host, port)
+}
+
+// webUI é o endereço da página, montado do que o servidor escuta e não do
+// Host da requisição: fora do loopback o Host não passa pelo guard, e quem
+// pergunta escolheria o link que recebe.
+func (s *Server) webUI() string {
+	addr := s.opts.Addr
+	if b := s.bound.Load(); b != nil {
+		addr = *b
+	}
+	return s.URL(addr) + "/"
 }
 
 // --- middleware ---
@@ -305,15 +327,45 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
-	force := r.URL.Query().Get("refresh") != ""
-	prs, repoErrs, at, err := s.loadPRs(r.Context(), force)
+	list, err := s.listPRs(r.Context(), prFilter{
+		Refresh: r.URL.Query().Get("refresh") != "",
+		Mine:    r.URL.Query().Get("scope") == "mine",
+		Author:  r.URL.Query().Get("author"),
+		HTML:    true,
+	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return
 	}
+	writeJSON(w, http.StatusOK, list)
+}
 
-	scope := r.URL.Query().Get("scope")
-	author := strings.TrimPrefix(strings.TrimSpace(r.URL.Query().Get("author")), "@")
+// prFilter é o recorte da lista de PRs. A página e o /mcp pedem a mesma
+// lista; só o MCP filtra por repositório e por estado do review, e só a
+// página precisa da descrição em HTML.
+type prFilter struct {
+	Refresh bool
+	Mine    bool
+	Author  string
+	Repo    string
+	// Status é "" (todos), "unreviewed", "reviewed", "changed" ou "posted".
+	Status string
+	HTML   bool
+}
+
+type prList struct {
+	PRs        []prView            `json:"prs"`
+	RepoErrors []map[string]string `json:"repo_errors"`
+	FetchedAt  time.Time           `json:"fetched_at"`
+}
+
+func (s *Server) listPRs(ctx context.Context, f prFilter) (prList, error) {
+	prs, repoErrs, at, err := s.loadPRs(ctx, f.Refresh)
+	if err != nil {
+		return prList{}, err
+	}
+	author := strings.TrimPrefix(strings.TrimSpace(f.Author), "@")
+	repo := strings.TrimSpace(f.Repo)
 
 	now := time.Now()
 	// O índice de reviews é relido a cada listagem: um review que terminou
@@ -322,14 +374,23 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	out := make([]prView, 0, len(prs))
 	for _, pr := range prs {
 		mine := strings.EqualFold(pr.Author.Login, s.me)
-		if scope == "mine" && !mine {
+		if f.Mine && !mine {
 			continue
 		}
 		if author != "" && !strings.EqualFold(pr.Author.Login, author) {
 			continue
 		}
-		v := newPRView(pr, mine, now).withStatus(marks.Status(pr), now)
-		v.BodyHTML = renderMarkdown(pr.Body)
+		if repo != "" && !strings.EqualFold(pr.Repo, repo) {
+			continue
+		}
+		st := marks.Status(pr)
+		if !statusMatches(st, f.Status) {
+			continue
+		}
+		v := newPRView(pr, mine, now).withStatus(st, now)
+		if f.HTML {
+			v.BodyHTML = renderMarkdown(pr.Body)
+		}
 		out = append(out, v)
 	}
 
@@ -337,11 +398,21 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	for _, re := range repoErrs {
 		errs = append(errs, map[string]string{"repo": re.Repo, "error": re.Err.Error()})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"prs":         out,
-		"repo_errors": errs,
-		"fetched_at":  at,
-	})
+	return prList{PRs: out, RepoErrors: errs, FetchedAt: at}, nil
+}
+
+func statusMatches(st store.Status, want string) bool {
+	switch want {
+	case "unreviewed":
+		return !st.Reviewed
+	case "reviewed":
+		return st.Reviewed
+	case "changed":
+		return st.Reviewed && st.Changed
+	case "posted":
+		return st.Reviewed && st.Posted
+	}
+	return true
 }
 
 // loadPRs consulta o gh, com cache: cada listagem sobe um `gh pr list` por
@@ -412,20 +483,37 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
 		return
 	}
-
-	s.cfgMu.Lock()
-	choice, err := s.cfg.DefaultChoice(), error(nil)
-	if strings.TrimSpace(req.Agent) != "" {
-		choice, err = s.cfg.ChoiceByName(req.Agent)
-	} else if len(choice.Steps) == 0 {
-		err = config.ErrNoAgents
-	}
-	s.cfgMu.Unlock()
+	choice, err := s.resolveChoice(req.Agent)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
+	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice)
+	status := http.StatusAccepted
+	if len(queued) == 0 {
+		status = http.StatusBadRequest
+	}
+	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
+}
+
+// resolveChoice acha o agente ou pipeline pelo nome. Vazio = o padrão.
+func (s *Server) resolveChoice(name string) (config.Choice, error) {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	if strings.TrimSpace(name) != "" {
+		return s.cfg.ChoiceByName(name)
+	}
+	choice := s.cfg.DefaultChoice()
+	if len(choice.Steps) == 0 {
+		return config.Choice{}, config.ErrNoAgents
+	}
+	return choice, nil
+}
+
+// enqueueRefs põe na fila um review por referência. O que não deu certo volta
+// em errs, um por item — um ref ruim não derruba os outros.
+func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
 	// Os PRs em cache evitam um `gh pr view` por item quando vieram da lista.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
@@ -434,11 +522,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	}
 	s.prMu.RUnlock()
 
-	var (
-		queued []jobView
-		errs   []string
-	)
-	for _, ref := range req.Refs {
+	for _, ref := range refs {
 		repo, number, err := gh.ParseRef(ref)
 		if err != nil {
 			errs = append(errs, err.Error())
@@ -447,7 +531,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		key := fmt.Sprintf("%s#%d", repo, number)
 		pr, ok := cached[key]
 		if !ok {
-			pr, err = gh.Get(r.Context(), repo, number)
+			pr, err = gh.Get(ctx, repo, number)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 				continue
@@ -460,12 +544,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		}
 		queued = append(queued, view)
 	}
-
-	status := http.StatusAccepted
-	if len(queued) == 0 {
-		status = http.StatusBadRequest
-	}
-	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
+	return queued, errs
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
