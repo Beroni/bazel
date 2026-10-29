@@ -12,69 +12,69 @@
 <header class="bar">
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
   <nav class="nav" id="nav">
-    <a href="#/" data-page="dashboard" class="on">Dashboard</a>
-    <a href="#/config" data-page="config">Config</a>
+    <a href="#/" data-page="dashboard" data-testid="nav-dashboard" class="on">Dashboard</a>
+    <a href="#/config" data-page="config" data-testid="nav-config">Config</a>
   </nav>
   <div class="spacer"></div>
-  <div class="stats" id="stats">loading…</div>
-  <div class="stats spend" id="spend" hidden></div>
-  <div class="stats quota" id="quota" hidden></div>
-  <div class="who" id="who"></div>
-  <button class="btn small ghost" id="refresh" title="refresh the list from GitHub">↻ refresh</button>
+  <div class="stats" id="stats" data-testid="pr-count">loading…</div>
+  <div class="stats spend" id="spend" data-testid="spend-total" hidden></div>
+  <div class="stats quota" id="quota" data-testid="quota" hidden></div>
+  <div class="who" id="who" data-testid="whoami"></div>
+  <button class="btn small ghost" id="refresh" data-testid="refresh" title="refresh the list from GitHub">↻ refresh</button>
 </header>
 
-<div id="banner" class="banner" hidden></div>
+<div id="banner" data-testid="banner" class="banner" hidden></div>
 
 <main id="page-dashboard" class="page">
   <aside class="pane prs">
     <div class="pane-head">
       <div class="row">
-        <button class="burger" id="toggle-prs" aria-expanded="true" aria-controls="pr-list"
+        <button class="burger" id="toggle-prs" data-testid="toggle-prs" aria-expanded="true" aria-controls="pr-list"
                 title="hide the list (gives the review the full window)"><span></span><span></span><span></span></button>
         <label class="search">
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-          <input id="filter" type="search" placeholder="Search title, repo, author" autocomplete="off">
+          <input id="filter" data-testid="pr-filter" type="search" placeholder="Search title, repo, author" autocomplete="off">
         </label>
       </div>
-      <div class="chips" id="review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
+      <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
         <button data-review="all" class="on">All</button>
         <button data-review="none" title="not reviewed yet">New</button>
         <button data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
         <button data-review="changed" title="got new commits after the review">Changed</button>
       </div>
       <div class="row filters">
-        <div class="segmented" id="scope">
+        <div class="segmented" id="scope" data-testid="pr-scope">
           <button data-scope="all" class="on">everyone</button>
           <button data-scope="mine">mine only</button>
         </div>
-        <label class="check tiny"><input type="checkbox" id="hide-drafts"> hide drafts</label>
+        <label class="check tiny"><input type="checkbox" id="hide-drafts" data-testid="pr-hide-drafts"> hide drafts</label>
       </div>
       <div class="row filters">
-        <select id="owner-filter" title="show only the PRs of one owner"></select>
-        <select id="repo-filter" title="show only the PRs of one repository"></select>
+        <select id="owner-filter" data-testid="pr-owner-filter" title="show only the PRs of one owner"></select>
+        <select id="repo-filter" data-testid="pr-repo-filter" title="show only the PRs of one repository"></select>
       </div>
     </div>
     <div id="pr-list" class="list"><p class="empty">loading PRs…</p></div>
     <div class="pane-foot">
       <div class="row">
-        <label class="check tiny"><input type="checkbox" id="select-all"> <span id="sel-count">0 selected</span></label>
+        <label class="check tiny"><input type="checkbox" id="select-all" data-testid="pr-select-all"> <span id="sel-count">0 selected</span></label>
       </div>
       <div class="row">
-        <select id="agent" title="which agent runs over the ticked PRs"></select>
-        <button class="btn primary" id="run" disabled>▶ Review</button>
+        <select id="agent" data-testid="agent-select" title="which agent runs over the ticked PRs"></select>
+        <button class="btn primary" id="run" data-testid="run-review" disabled>▶ Review</button>
       </div>
     </div>
   </aside>
 
   <section class="pane main">
     <div class="tabs">
-      <button class="tab on" data-tab="queue">Queue <span class="pill" id="queue-count">0</span></button>
-      <button class="tab" data-tab="saved">Saved</button>
+      <button class="tab on" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
+      <button class="tab" data-tab="saved" data-testid="tab-saved">Saved</button>
       <div class="spacer"></div>
-      <div class="conn" id="conn" title="event stream">●</div>
+      <div class="conn" id="conn" data-testid="conn-status" data-state="closed" title="event stream">●</div>
     </div>
     <div id="rail" class="rail"></div>
-    <article id="viewer" class="viewer">
+    <article id="viewer" data-testid="review-viewer" class="viewer">
       <div class="placeholder">
         <img class="logo big" src="/static/bazelgeuse.webp" alt="" width="500" height="500">
         <p>Tick a PR on the left, pick an agent and hit <b>Review</b>.</p>
@@ -88,12 +88,12 @@
 
 <section id="page-config" class="page config" hidden>
   <div class="config-body">
-      <div id="stray" class="stray" hidden></div>
+      <div id="stray" data-testid="stray-warning" class="stray" hidden></div>
       <h3>watched repositories</h3>
       <div id="repo-list" class="repo-list"></div>
       <form class="row" id="repo-form">
-        <input type="text" id="repo-input" placeholder="owner/repo" autocomplete="off">
-        <button class="btn primary" type="submit">add</button>
+        <input type="text" id="repo-input" data-testid="repo-input" placeholder="owner/repo" autocomplete="off">
+        <button class="btn primary" type="submit" data-testid="repo-add">add</button>
       </form>
 
       <h3>agents</h3>
@@ -117,13 +117,13 @@
 
       <h3 id="config-path"></h3>
       <div class="row">
-        <button class="btn" id="config-download">save config.yaml</button>
+        <button class="btn" id="config-download" data-testid="config-download">save config.yaml</button>
         <span class="dim tiny">repos, agents and pipelines in one file — drop it at the same path
         on another machine and Bazel comes up configured.</span>
       </div>
       <details id="config-raw">
         <summary class="dim tiny">show the file</summary>
-        <pre id="config-yaml"></pre>
+        <pre id="config-yaml" data-testid="config-yaml"></pre>
       </details>
   </div>
 </section>

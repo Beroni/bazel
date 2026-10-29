@@ -48,6 +48,8 @@ const clearViewer = () => {
   const v = $('#viewer');
   v.innerHTML = '';
   delete v.dataset.sig;
+  delete v.dataset.jobId;
+  delete v.dataset.saved;
   return v;
 };
 // docPanel frames what is not a job — a PR, the saved list, a saved review —
@@ -58,6 +60,14 @@ const docPanel = () => {
   box.append(body);
   clearViewer().append(box);
   return body;
+};
+// tid tags an element for the end-to-end tests — the data-testid contract in
+// .claude/skills/bazel-e2e/references/selectors.md — and sets the attributes
+// that say which item it is. Nothing changes on screen.
+const tid = (node, id, data = {}) => {
+  node.dataset.testid = id;
+  for (const [k, v] of Object.entries(data)) node.dataset[k] = String(v);
+  return node;
 };
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -247,8 +257,8 @@ async function loadPRs(force) {
 
 function connect() {
   const src = new EventSource('/api/events');
-  src.onopen = () => $('#conn').classList.add('on');
-  src.onerror = () => $('#conn').classList.remove('on');
+  src.onopen = () => { $('#conn').classList.add('on'); $('#conn').dataset.state = 'open'; };
+  src.onerror = () => { $('#conn').classList.remove('on'); $('#conn').dataset.state = 'closed'; };
   src.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
@@ -605,6 +615,7 @@ async function openSaved(name) {
   try {
     const data = await api('/api/reviews/' + encodeURIComponent(name));
     const v = docPanel();
+    $('#viewer').dataset.saved = name;
     const entry = state.saved.find((x) => x.name === name);
     const head = el('div', 'viewer-head');
     const grow = el('div', 'grow');
@@ -614,7 +625,7 @@ async function openSaved(name) {
     back.addEventListener('click', () => { state.activeSaved = null; renderSaved(); });
     head.append(grow, back);
     v.append(head);
-    const md = el('div', 'md');
+    const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
     const key = pickKey('saved', name);
@@ -629,10 +640,10 @@ async function openSaved(name) {
       v.append(nota);
     } else if (entry && entry.repo) {
       const bar = el('div', 'viewer-actions');
-      const pub = el('button', 'btn solid', 'Publish inline review');
+      const pub = tid(el('button', 'btn solid', 'Publish inline review'), 'saved-publish');
       pub.title = `runs the post skill and publishes to ${entry.repo}#${entry.number} with inline comments`;
       pub.addEventListener('click', () => publishSaved(name, pub));
-      const cm = el('button', 'btn ghost', 'or paste as a comment');
+      const cm = tid(el('button', 'btn ghost', 'or paste as a comment'), 'saved-comment');
       cm.title = `pastes this review as a single comment on ${entry.repo}#${entry.number}`;
       cm.addEventListener('click', () => commentSaved(name, cm));
       bar.append(pub, cm);
@@ -724,6 +735,7 @@ function decorateFindings(md, key) {
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = !out.has(idx);
+    tid(box, 'finding-pick', { findingIndex: idx });
     box.title = 'untick to leave this finding out of what goes to the PR';
     label.append(box, el('span', null, 'report'));
     sec.classList.toggle('skipped', out.has(idx));
@@ -740,13 +752,13 @@ function decorateFindings(md, key) {
 // pickSummary is the line next to the publish buttons: how many findings go,
 // how many stay, and the shortcuts to tick or untick all of them at once.
 function pickSummary(key, total) {
-  const s = el('span', 'pick-summary');
+  const s = tid(el('span', 'pick-summary'), 'pick-summary');
   s.dataset.key = key;
   s.dataset.total = total;
   const txt = el('span', 'dim');
-  const all = el('button', 'btn small ghost', 'all');
+  const all = tid(el('button', 'btn small ghost', 'all'), 'finding-pick-all');
   all.title = 'tick every finding';
-  const none = el('button', 'btn small ghost', 'none');
+  const none = tid(el('button', 'btn small ghost', 'none'), 'finding-pick-none');
   none.title = 'untick every finding';
   const setAll = (on) => {
     document.querySelectorAll('#viewer section.finding input[type=checkbox]').forEach((box) => {
@@ -977,7 +989,7 @@ function stepsBox(job) {
 }
 
 function stepRow(st) {
-  const row = el('div', 'step ' + st.state);
+  const row = tid(el('div', 'step ' + st.state), 'job-step', { step: st.name, state: st.state });
   row.append(el('span', 'dot'));
   row.append(el('span', 'step-name', st.name));
   const secs = stepSeconds(st);
@@ -1064,7 +1076,8 @@ function agentColor(id, who) {
 
 function logLineEl(id, l) {
   const who = agentName(l);
-  const line = el('div', 'log-line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout'));
+  const line = tid(el('div', 'log-line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout')), 'log-line',
+    { stream: l.stream === 'stderr' ? 'stderr' : 'stdout' });
   line.dataset.agent = who;
   const name = el('span', 'who ' + agentColor(id, who), who);
   name.title = who;
@@ -1126,7 +1139,7 @@ function fillLogAgents(col, id) {
     fillLogAgents(col, id);
   };
   const item = (who, name, n, cor) => {
-    const b = el('button', 'log-agent' + (logFilter(id) === who ? ' on' : ''));
+    const b = tid(el('button', 'log-agent' + (logFilter(id) === who ? ' on' : '')), 'log-pane', { agent: who || 'all' });
     b.append(el('span', 'dot ' + cor), el('span', 'log-agent-name', name), el('span', 'log-agent-n', String(n)));
     b.title = name;
     b.addEventListener('click', () => pick(who));
@@ -1159,7 +1172,7 @@ function logCountLabel(id, total) {
 }
 
 function logPanel(job) {
-  const wrap = el('div', 'logview');
+  const wrap = tid(el('div', 'logview'), 'live-log');
   const stream = logTerminals(job.id);
   if (logFilter(job.id)) stream.classList.add('one');
   wrap.append(logAgents(job.id), stream);
@@ -1213,6 +1226,9 @@ function renderPRs() {
     const box = el('input');
     box.type = 'checkbox';
     box.checked = state.selected.has(pr.key);
+    box.setAttribute('aria-label', `tick ${pr.key}`);
+    tid(box, 'pr-row-check');
+    tid(row, 'pr-row', { prKey: pr.key, selected: state.selected.has(pr.key) });
     box.addEventListener('click', (e) => e.stopPropagation());
     box.addEventListener('change', () => toggle(pr.key, box.checked));
     // The row opens, the checkbox ticks: whoever clicks the PR wants to read it,
@@ -1262,14 +1278,15 @@ const ago = (age) => (age === 'just now' ? age : age + ' ago');
 function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
-    const t = el('span', 'tag stale', '⟳ changed');
+    const t = tid(el('span', 'tag stale', '⟳ changed'), 'pr-review-tag', { state: 'changed' });
     // A stale review that already went to the PR is the case worth flagging.
     t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
       + (pr.review_posted ? ', published on the PR' : '')
       + ', and the PR got new commits afterwards';
     return [t];
   }
-  const t = el('span', 'tag reviewed', '✓ ' + pr.reviewed_at + (pr.review_posted ? ' ↑' : ''));
+  const t = tid(el('span', 'tag reviewed', '✓ ' + pr.reviewed_at + (pr.review_posted ? ' ↑' : '')),
+    'pr-review-tag', { state: pr.review_posted ? 'published' : 'reviewed' });
   t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
     + (pr.review_posted ? ', and published on the PR' : '');
   return [t];
@@ -1326,6 +1343,12 @@ function renderTabs() {
 // whoever is running, so what is on screen is the last reading, and the title
 // says when it is from.
 function renderQuota() {
+  renderQuotaParts();
+  const box = $('#quota');
+  box.dataset.level = box.querySelector('.hot') ? 'crit' : box.querySelector('.warn') ? 'warn' : 'ok';
+}
+
+function renderQuotaParts() {
   const box = $('#quota');
   const l = state.limits;
   if (!l) { box.hidden = true; return; }
@@ -1365,6 +1388,7 @@ function renderSpend() {
   if (!tokens && !cost) { box.hidden = true; return; }
   box.hidden = false;
   const parcial = state.jobs.some((j) => j.tokens_partial);
+  box.dataset.partial = String(parcial);
   box.textContent = [tokens ? (parcial ? '~' : '') + fmtTokens(tokens) + ' tokens' : '',
     cost ? '$' + cost.toFixed(2) : ''].filter(Boolean).join(' · ');
   const n = state.jobs.filter((j) => j.tokens || j.cost_usd).length;
@@ -1386,13 +1410,22 @@ function renderJobs() {
   // next to what they act on.
   for (const job of state.jobs) {
     const card = el('div', 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : ''));
+    tid(card, 'job-card', { jobId: job.id, state: job.state, prKey: job.pr.key });
+    // A named group that takes the keyboard too: Enter or Space opens it, like a click.
+    card.setAttribute('role', 'group');
+    card.setAttribute('aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
+    card.tabIndex = 0;
     card.addEventListener('click', () => openJob(job.id));
+    card.addEventListener('keydown', (e) => {
+      if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openJob(job.id); }
+    });
 
     const top = el('div', 'card-top');
     top.append(el('span', 'dot'), el('span', 'card-ref', `${job.pr.slug} #${job.pr.number}`));
     const sp = el('div', 'spacer');
-    const x = el('button', 'card-x', '✕');
+    const x = tid(el('button', 'card-x', '✕'), 'job-remove');
     x.title = 'drop from the queue';
+    x.setAttribute('aria-label', 'drop from the queue');
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
     top.append(sp, x);
     const title = el('div', 'title', job.pr.title);
@@ -1400,14 +1433,14 @@ function renderJobs() {
     card.append(top, title);
 
     const meta = el('div', 'card-meta');
-    meta.append(fillState(el('span', 'state ' + job.state), job));
+    meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
     if (job.agent) meta.append(el('span', 'card-agent', job.agent + (job.pipeline ? ' ⛓' : '')));
     if (job.publishing) meta.append(el('span', 'tag posts', '⇧ publishing'));
     else if (job.posts) meta.append(el('span', 'tag posts', '⇧ publishes'));
-    else if (job.posted) meta.append(el('span', 'tag reviewed', 'published'));
+    else if (job.posted) meta.append(tid(el('span', 'tag reviewed', '✓ published'), 'job-published'));
     const custo = gasto(job);
     if (custo) {
-      const g = el('span', 'tokens', custo);
+      const g = tid(el('span', 'tokens', custo), 'job-tokens', { partial: !!job.tokens_partial });
       g.title = gastoTitle(job);
       meta.append(g);
     }
@@ -1483,7 +1516,7 @@ function renderSaved() {
     const v = docPanel();
     const list = el('div', 'saved-list');
     for (const s of state.saved) {
-      const row = el('div', 'saved');
+      const row = tid(el('div', 'saved'), 'saved-row', { name: s.name });
       row.append(el('div', 'saved-title', s.title || s.name),
         el('div', 'name', [s.agent, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
@@ -1553,6 +1586,7 @@ function renderViewer() {
   }
   v.innerHTML = '';
   v.dataset.sig = sig;
+  v.dataset.jobId = job.id;
   const view = jobView(job);
   const box = el('div', 'job');
   box.append(jobHead(job), jobTabs(job, view));
@@ -1580,7 +1614,7 @@ function jobHead(job) {
   grow.append(kicker, el('h2', null, job.pr.title));
   head.append(grow, fillState(el('span', 'state state-pill ' + job.state), job));
   if (job.state === 'queued' || job.state === 'running') {
-    const b = el('button', 'btn small', 'Cancel');
+    const b = tid(el('button', 'btn small', 'Cancel'), 'job-cancel');
     b.addEventListener('click', () => cancelJob(job.id));
     head.append(b);
   }
@@ -1731,17 +1765,17 @@ function renderReportView(body, job) {
   if (split) {
     if (split.ctx) {
       v.append(el('p', 'section-label', 'stays in Bazel — not published'));
-      const ctx = el('div', 'md context');
+      const ctx = tid(el('div', 'md context'), 'review-context');
       ctx.innerHTML = split.ctx;
       v.append(ctx);
     }
     v.append(el('p', 'section-label', 'goes to the PR'));
-    const pub = el('div', 'md');
+    const pub = tid(el('div', 'md'), 'review-body');
     pub.innerHTML = split.pub;
     v.append(pub);
     total = decorateFindings(pub, key);
   } else {
-    const md = el('div', 'md');
+    const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = html;
     v.append(md);
     total = decorateFindings(md, key);
@@ -1757,31 +1791,31 @@ function renderReportView(body, job) {
       + ' Run a reviewing agent over this PR when you want something to publish.'));
   } else if (!job.publishing) {
     const bar = el('div', 'viewer-actions');
-    const pub = el('button', 'btn solid', 'Publish inline review');
+    const pub = tid(el('button', 'btn solid', 'Publish inline review'), 'publish-inline');
     pub.title = 'runs the post skill and publishes to the PR with inline comments';
     pub.addEventListener('click', () => publishJob(job.id, pub));
     bar.append(pub);
     if (waiting(job)) {
-      const keep = el('button', 'btn', 'Keep it here');
+      const keep = tid(el('button', 'btn', 'Keep it here'), 'keep-here');
       keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
       keep.addEventListener('click', () => dismissJob(job.id, keep));
       bar.append(keep);
     }
     if (job.posted) {
-      bar.append(el('span', 'state done', '✓ already on the PR'));
+      bar.append(tid(el('span', 'state done', '✓ already on the PR'), 'already-published'));
     } else {
-      const cm = el('button', 'btn ghost', 'or paste as a comment');
+      const cm = tid(el('button', 'btn ghost', 'or paste as a comment'), 'paste-comment');
       cm.addEventListener('click', () => postJob(job.id, cm));
       bar.append(cm);
     }
     if (total) bar.append(pickSummary(key, total));
     v.append(bar);
   }
-  if (job.post_error) v.append(el('div', 'error-box', 'failed to publish: ' + job.post_error));
+  if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));
 
   // What the review cost, at its end — which is where you arrive after reading.
   const custo = gasto(job);
-  const foot = el('p', 'dim tokens-foot');
+  const foot = tid(el('p', 'dim tokens-foot'), 'review-footer');
   foot.textContent = [custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to]
     .filter(Boolean).join(' · ');
   if (custo) foot.title = gastoTitle(job);
@@ -1872,6 +1906,8 @@ function renderAgentList() {
   }
   for (const a of state.agents) {
     const row = el('div', 'agent-row');
+    if (a.pipeline) tid(row, 'pipeline-row', { pipeline: a.name });
+    else tid(row, 'agent-row', { agent: a.name, default: state.agent === a.name, missingSkill: (a.skills || []).some((k) => !k.installed) });
 
     const top = el('div', 'agent-top');
     top.append(el('span', 'agent-name', a.name));
@@ -1886,7 +1922,7 @@ function renderAgentList() {
     if (!a.publisher) {
       top.append(el('div', 'spacer'));
       if (state.agent !== a.name) {
-        const d = el('button', 'btn small ghost', 'make default');
+        const d = tid(el('button', 'btn small ghost', 'make default'), 'agent-default');
         d.title = 'becomes the agent the selector starts on';
         d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
         top.append(d);
@@ -1895,8 +1931,8 @@ function renderAgentList() {
       // it writes on the PR by itself, and turning off a button wouldn't
       // stop it from anything — the way is to take it off the list.
       if (!a.posts && !a.pipeline) {
-        const pb = el('button', 'btn small ghost',
-          a.publishable === false ? 'output stays here' : '⇧ output can go to the PR');
+        const pb = tid(el('button', 'btn small ghost',
+          a.publishable === false ? 'output stays here' : '⇧ output can go to the PR'), 'agent-publishable');
         pb.title = a.publishable === false
           ? 'this agent produces no review — Bazel offers no way to publish it. Click to allow it again.'
           : 'the result of this agent can be published to the PR. Click if it is not a review.';
@@ -1908,7 +1944,7 @@ function renderAgentList() {
       // Pipeline and agent leave through different doors: one lives under
       // `pipelines:`, the other under `agents:`.
       const base = a.pipeline ? '/api/pipelines/' : '/api/agents/';
-      const rm = el('button', 'btn small ghost', 'remove');
+      const rm = tid(el('button', 'btn small ghost', 'remove'), a.pipeline ? 'pipeline-remove' : 'agent-remove');
       rm.addEventListener('click', () => agentAction(base + encodeURIComponent(a.name), 'DELETE', rm));
       top.append(rm);
     }
@@ -1995,7 +2031,7 @@ function renderPipelineBuilder() {
 // cadeia is the assembled sequence: cards and arrows, and the gaps between them
 // where a dragged step lands.
 function cadeia() {
-  const fluxo = el('div', 'pipe-flow');
+  const fluxo = tid(el('div', 'pipe-flow'), 'pipeline-chain');
   if (!state.pipeSteps.length) fluxo.classList.add('empty');
 
   const solta = (i) => {
@@ -2025,8 +2061,8 @@ function cadeia() {
 // no is a step in the chain: the draggable card, with the order number and what
 // it is. The × removes; dragging moves.
 function no(nome, i) {
-  const card = el('div', 'pipe-node' + (ehReservado(nome) ? ' reserved' : '')
-    + (arrasto && arrasto.from === i ? ' dragging' : ''));
+  const card = tid(el('div', 'pipe-node' + (ehReservado(nome) ? ' reserved' : '')
+    + (arrasto && arrasto.from === i ? ' dragging' : '')), 'pipeline-step', { step: nome });
   card.draggable = true;
   card.title = 'drag to move this step';
 
@@ -2062,7 +2098,7 @@ function no(nome, i) {
 // bandeja is the steps that can be added: the agents in the list and the
 // publish, which Bazel runs on its own.
 function bandeja(disponiveis) {
-  const box = el('div', 'pipe-tray');
+  const box = tid(el('div', 'pipe-tray'), 'pipeline-tray');
   const fechada = state.pipeSteps.includes('publish');
 
   const item = (nome, rotulo, dica, porque) => {
@@ -2134,14 +2170,14 @@ function solte(pos) {
 // instead of just being greyed out.
 function linhaDeCriar() {
   const linha = el('div', 'pipe-row');
-  const nome = el('input');
+  const nome = tid(el('input'), 'pipeline-name');
   nome.type = 'text';
   nome.placeholder = 'pipeline name — how it shows up in the selector';
   nome.autocomplete = 'off';
   nome.value = state.pipeName || '';
   nome.addEventListener('input', () => { state.pipeName = nome.value; });
 
-  const criar = el('button', 'btn primary', 'create pipeline');
+  const criar = tid(el('button', 'btn primary', 'create pipeline'), 'pipeline-create');
   const agentes = state.pipeSteps.filter((n) => !ehReservado(n)).length;
   let impede = '';
   if (!agentes) impede = 'a pipeline needs at least one agent';
@@ -2186,7 +2222,7 @@ function renderSkillList() {
   const ordenadas = [...state.skills].sort((x, y) => (usadas.has(y.name) ? 1 : 0) - (usadas.has(x.name) ? 1 : 0));
 
   for (const sk of ordenadas) {
-    const row = el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : ''));
+    const row = tid(el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : '')), 'skill-row', { skill: sk.name });
     row.append(el('span', 'skill-name', '/' + sk.name));
     if (sk.builtin) {
       // This one isn't on disk: it came in the binary and is written into the
@@ -2211,7 +2247,7 @@ function renderSkillList() {
     }
     const add = (rotulo, posts, dica) => {
       const nome = posts ? sk.name + '-post' : sk.name;
-      const b = el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo);
+      const b = tid(el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo), posts ? 'skill-publishes' : 'skill-use');
       if (nomes.has(nome)) {
         b.disabled = true;
         b.title = `${nome} is already in the agent list`;
@@ -2310,9 +2346,9 @@ function renderRepos() {
     return;
   }
   for (const repo of state.repos) {
-    const row = el('div', 'repo-row');
+    const row = tid(el('div', 'repo-row'), 'repo-row', { repo });
     row.append(el('span', null, repo));
-    const rm = el('button', 'btn small ghost', 'remove');
+    const rm = tid(el('button', 'btn small ghost', 'remove'), 'repo-remove');
     rm.addEventListener('click', () => removeRepo(repo, rm));
     row.append(rm);
     box.append(row);
