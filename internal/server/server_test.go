@@ -1025,6 +1025,56 @@ func TestRemovidoNaoVoltaComoFantasma(t *testing.T) {
 	}
 }
 
+// The window pubMu closes (review F3): publish has taken the view of a live
+// job and is about to broadcast it when Remove runs. Without pubMu, job_gone
+// goes out first and the stale "job" event lands after it — the ghost card.
+// With it, Remove waits and job_gone is always the last word.
+func TestRemoveNoMeioDoPublishNaoDeixaFantasma(t *testing.T) {
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	// No worker: this goroutine is the only one that publishes, so the hook
+	// is set and read without a race.
+	m := &Manager{cfg: cfgFor(t, "cat"), hub: hub, ctx: context.Background(), queue: make(chan queued, 1), jobs: map[string]*Job{}}
+	job := &Job{ID: "j1", PR: testPR(482), State: StateRunning}
+	poeJob(m, job)
+	v := struct{ ID string }{job.ID}
+
+	removed := make(chan struct{})
+	var once sync.Once
+	m.beforeBroadcast = func() {
+		once.Do(func() {
+			go func() { _ = m.Remove(v.ID); close(removed) }()
+			// Give Remove the time to broadcast job_gone, if nothing stops it.
+			time.Sleep(100 * time.Millisecond)
+		})
+	}
+	m.publish(job)
+	<-removed
+
+	var order []string
+	timeout := time.After(2 * time.Second)
+	for len(order) < 2 {
+		select {
+		case <-timeout:
+			t.Fatalf("events for %s: %v", v.ID, order)
+		case msg := <-ch:
+			var ev struct {
+				Type string `json:"type"`
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(msg, &ev) == nil && ev.Data.ID == v.ID && (ev.Type == "job" || ev.Type == "job_gone") {
+				order = append(order, ev.Type)
+			}
+		}
+	}
+	if order[0] != "job" || order[1] != "job_gone" {
+		t.Errorf("events for %s: %v, want [job job_gone] — job_gone must be the last word", v.ID, order)
+	}
+}
+
 // Closing Bazel before publishing can't cost you the review: it's on disk, and
 // from there it can still be sent to the PR — with no originating job at all,
 // which is exactly the case of someone who restarted the server.

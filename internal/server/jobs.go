@@ -244,6 +244,9 @@ type Manager struct {
 	// it. A "job" event that saw the job alive therefore always goes out
 	// before the job_gone, never after. Taken before mu, never inside it.
 	pubMu sync.Mutex
+	// beforeBroadcast, when set, runs in publish between taking the view and
+	// broadcasting it. Only tests set it, to land a Remove in that window.
+	beforeBroadcast func()
 
 	// limits is the latest reading of Claude's quota. It belongs to no job: it
 	// is the machine's, and holds for the whole page.
@@ -1100,5 +1103,8 @@ func (m *Manager) publish(job *Job) {
 	}
 	view := job.view()
 	m.mu.Unlock()
+	if m.beforeBroadcast != nil {
+		m.beforeBroadcast()
+	}
 	m.hub.Broadcast("job", view)
 }
