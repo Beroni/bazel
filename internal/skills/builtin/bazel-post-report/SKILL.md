@@ -1,10 +1,11 @@
 ---
 name: bazel-post-report
-description: Publishes to GitHub a review Bazel has already produced and you have already
+description: Publishes to GitHub a review Bazel has already produced and a person has already
   read on screen — the markdown whose path comes in the prompt. Posts a single review with
-  inline comments, reacts 👍 to what is already on the PR instead of repeating it, and posts
-  an all-clear when there were no findings. Ships inside the Bazel binary; not the same as a
-  `post-report` you may have installed, which resolves the file on its own.
+  inline comments, reacts 👍 to what is already on the PR instead of repeating it, stands down
+  on findings the team already settled in a resolved or replied-to thread, and posts an
+  all-clear when there were no findings. Ships inside Bazel; not the same as a `post-report`
+  you may have installed, which resolves the file on its own and asks before posting.
 allowed-tools: Read Grep Glob Bash
 model: inherit
 effort: high
@@ -12,30 +13,28 @@ effort: high
 
 # Bazel Post Report
 
-Leva ao PR um review que **já existe e já foi aprovado por um humano**. O Bazel rodou o
-agente, salvou o markdown, mostrou na tela, e a pessoa clicou em publicar. Seu trabalho
-começa depois disso: pegar aquele arquivo e transformá-lo em comentário de review no GitHub.
+Takes to the PR a review that **already exists and a human already approved**. Bazel ran the
+agent, saved the markdown, showed it on screen, and the person clicked publish. Your job starts
+there: turn that file into a review on GitHub.
 
-Esta skill vem embarcada no binário do Bazel e chega a você como plugin, numa pasta do Bazel
-fora do clone do PR. Ela existe para que publicar funcione em qualquer máquina, sem depender de nada
-instalado em `~/.claude/skills`.
+`.claude/skills/bazel-review-fleet/references/headless.md` applies: nobody answers, and you
+write to stdout what you did. The `gh` commands and the exact shape of every comment are in
+`.claude/skills/bazel-post-report/references/publishing.md`; read it before Step 2.
 
-## O que já foi decidido antes de você
+## What was decided before you
 
-Três coisas, e nenhuma delas é sua para refazer:
+None of these is yours to redo:
 
-- **O review já foi lido.** Não revise o código, não procure achado novo, não melhore a
-  prosa. O que está no arquivo é o que a pessoa leu e aprovou; publicar outra coisa é
-  publicar algo que ninguém viu.
-- **A publicação já foi confirmada.** O Bazel perguntou na página antes de te disparar.
-  **Não peça confirmação** — você roda sem terminal interativo, e uma pergunta aqui ou trava
-  ou é engolida. Decida com o que tem e diga no fim o que fez.
-- **Os achados já foram filtrados.** Se a pessoa desmarcou algum na tela, o arquivo que
-  chegou a você já está sem ele. Publique o que está no arquivo, todo ele.
+- **The review was read.** Do not review the code, do not look for new findings, do not
+  improve the prose. What is in the file is what the person read and approved.
+- **Publishing was confirmed.** Bazel asked on its page before starting you. **Do not ask for
+  confirmation** — there is no terminal; a question either hangs or is swallowed.
+- **The findings were filtered.** A finding the person unticked is already out of the file.
+  Publish what is in it, all of it.
 
-## O arquivo
+## The file
 
-O caminho vem no prompt. O formato é o que o Bazel grava:
+Its path comes in the prompt. It is Bazel's header, a `---` line, then the agent's report:
 
 ```markdown
 # acme/api-core#482 — Add refresh-token rotation
@@ -45,244 +44,166 @@ O caminho vem no prompt. O formato é o que o Bazel grava:
 - Head sha: a1b2c3d4e5f6...
 - Diff: +240 −18 across 7 file(s)
 - Reviewed at: 2026-09-11 14:32 (took 4m12s)
-- Agent: review-fleet
+- Agent: bazel-review-fleet
 
 ---
 
-<o relatório do agente, em markdown>
+<the agent's report>
 ```
 
-A primeira linha dá **repo e número do PR**. O `- Head sha:` dá o commit que foi revisado. O
-que vem depois do `---` é o relatório, e é só ele que vira comentário — o cabeçalho é
-metadado do Bazel, não conteúdo do review.
+The first line gives **repo and PR number**. `- Head sha:` gives the commit that was
+reviewed. Only what comes after the first `---` line is the report, and only the report
+becomes comments — the header is Bazel's metadata.
 
-## Passo 1 — Três gates
+The report is normally in the format of
+`.claude/skills/bazel-review-fleet/references/report-format.md`: a `<!-- review-fleet:v1 … -->`
+header and, under each `###`, a `<!-- finding … -->` line with `path`, `line`, `side`. **Do not
+run `validate-report.sh` on this file**: when the person unticks every finding of a section,
+the section is left empty, which the validator rejects although the file is exactly what was
+approved. Read the metadata directly instead.
 
-Cada um **para a publicação**. Nenhum vira aviso.
+## Step 1 — Gates
 
-- **Sem `# owner/repo#N` na primeira linha** → você não sabe onde publicar. Pare e diga.
-- **Repo diferente do repo atual** (`gh repo view --json nameWithOwner --jq .nameWithOwner`)
-  → você está no clone de um projeto e prestes a comentar em outro. Pare.
-- **`- Head sha:` diferente do HEAD atual do PR:**
+Each one **stops the publication**. None becomes a warning. When one stops you, write to
+stdout which one and why, and publish nothing.
 
-  ```bash
-  gh pr view <N> --json headRefOid --jq .headRefOid
-  ```
+- **No `# owner/repo#N` on the first line** → you do not know where to publish.
+- **Repo different from the clone's** (`gh repo view --json nameWithOwner --jq .nameWithOwner`)
+  → you are about to comment on another project.
+- **`files: 0`** in the report's header → the review never resolved a scope. Publishing it, or
+  an all-clear on top of it, would tell the team code was reviewed when none was.
 
-  Entrou commit depois do review. As linhas se moveram, e uma âncora `path:line` que era
-  certa agora aponta para o lugar errado — pior do que não comentar, porque parece revisão e
-  não é. **Não poste inline.** Caia para um comentário único no corpo (Passo 5), dizendo
-  qual sha foi revisado.
-
-  Cabeçalho **sem** `- Head sha:` é um review salvo por uma versão antiga do Bazel: trate
-  como sha diferente e caia para o corpo. Nunca ancore em linha sem poder provar que o
-  código é o mesmo.
-
-## Passo 2 — Levantar o que já está no PR
-
-Antes de montar qualquer payload. É isso que decide, achado por achado, entre postar e
-reagir, e é o que deixa revisar o mesmo PR duas vezes sem dobrar o ruído.
+Then the **sha gate**. Compare the reviewed sha with the PR's current HEAD:
 
 ```bash
-# comentários inline, ancorados em linha
-gh api repos/{owner}/{repo}/pulls/<N>/comments --paginate \
-  --jq '.[] | {id, path, line: (.line // .original_line), user: .user.login, body}'
-
-# comentários no corpo do PR — onde caem o fallback e o all-clear
-gh api repos/{owner}/{repo}/issues/<N>/comments --paginate \
-  --jq '.[] | {id, user: .user.login, body}'
+gh pr view <N> --json headRefOid --jq .headRefOid
 ```
 
-`.line` vem `null` no comentário que ficou desatualizado (a linha saiu do diff): sem o
-`// .original_line` você perde exatamente os comentários das rodadas anteriores, que são os
-que mais duplicam.
+The reviewed sha is `- Head sha:` in Bazel's header; when the report has its own `head_sha:`,
+both must match the HEAD. Any mismatch, or a header without `- Head sha:` (a review saved by an
+old Bazel), means a commit may have landed after the review: lines moved, and an anchor that was
+right now points at the wrong code. **Do not post inline.** Fall back to a single body comment
+(Step 5) that says which sha was reviewed. Never anchor to a line you cannot prove is the same
+code.
 
-## Passo 3 — Classificar cada achado
+## Step 2 — Survey what is already on the PR
 
-Todo achado do relatório cai em **exatamente um** destes destinos. Classifique todos antes
-de montar qualquer payload:
+Before assembling any payload: **the three calls in `publishing.md`, all three.** The REST
+comment list alone cannot tell a resolved thread (that exists only in GraphQL) and cannot tell
+a reply from an original comment unless you select `in_reply_to_id`. Run the survey short and
+you re-raise what the team already closed.
 
-| Situação | Destino |
+## Step 3 — Classify every finding
+
+Every finding lands in **exactly one** destination. Classify all of them before building any
+payload, checking in this order — the first row that matches wins:
+
+| Situation | Destination |
 |---|---|
-| Já está no PR | 👍 no comentário existente. Nada é postado. |
-| Sem `path`/`line`, sha diferente, ou linha fora do diff | corpo do review |
-| Resto | comentário inline |
+| Already on the PR **and settled** (thread resolved, or somebody replied) | **Nothing written, no 👍.** Out of the verdict; listed as already settled. |
+| Already on the PR | **👍 on the existing comment.** Nothing posted. |
+| No `path`/`line` (`-`), sha mismatch, or a line outside the diff | the review body |
+| Everything else | an inline comment |
 
-### De onde saem `path` e `line`
+The order matters: a settled finding is also a duplicate, and checking duplicates first gives it
+a 👍 it should never get.
 
-Um relatório da frota traz os metadados prontos, uma linha por achado, logo abaixo do `###`:
+**Same finding** = same file **and** lines within 5 of each other **and** same root cause. It
+counts the same whether the existing comment is someone else's or from an earlier run.
+Different wording of the same bug **is** a duplicate — that is the case that fools you most.
+The same file with two different bugs is not. `bazel-review-fleet` deduplicates its lenses with
+this same predicate.
 
-```markdown
-### Transfer debits any account by id
-<!-- finding severity=critical class=authz lenses=senior-code-reviewer+exploit-digger path=src/api/transfer.ts line=88 side=RIGHT ref=CWE-639 -->
-```
+**Settled** means the matching comment sits in a thread that was **resolved**, or that somebody
+**replied to**. That is a decision the team took in writing; you do not reopen it. A settled
+finding writes nothing to GitHub, does not count toward the published verdict (two settled
+`critical`s do not block a merge the team unblocked), and is listed — file, line, who decided —
+in the review body and in your stdout. `isOutdated` is **not** settlement; it only means the
+lines moved.
 
-Use esses valores verbatim quando existirem — `path`, `line`, `side` (`RIGHT` por padrão,
-`LEFT` para linha removida), e `start_line` quando o achado cobre uma faixa.
+Filtering duplicates is not filtering severity: an unsettled `critical` already on the PR still
+counts toward the verdict in the body. It just does not become a second comment.
 
-Um agente que não segue esse formato deixa a âncora na prosa (`src/api/transfer.ts:88`).
-Aí vale ler o caminho e a linha dali — mas **confira que o arquivo e a linha existem no
-diff** antes de ancorar:
+### Where `path` and `line` come from
+
+From the `<!-- finding … -->` line right below each `###`, verbatim: `path`, `line`, `side`
+(`RIGHT` by default, `LEFT` for a removed line), and `start_line` when the finding spans a
+range. The comment body is the finding's prose verbatim — it already opens with its level line
+(`**critical · authz** (senior-code-reviewer + exploit-digger)`). Append `ref` as a trailing
+line when there is one; `confidence` stays out of the PR.
+
+A report that does not follow the format leaves the anchor in the prose
+(`src/api/transfer.ts:88`). You may take it from there, but **check that the file and the line
+are in the diff** before anchoring:
 
 ```bash
 gh pr diff <N> --patch | grep -n "^+++ b/src/api/transfer.ts"
 ```
 
-Na dúvida, corpo. Um achado no corpo do review é lido; um achado ancorado na linha errada
-manda o autor olhar código que não tem nada a ver.
+In doubt, the body. A finding in the body is read; a finding anchored to the wrong line sends the
+author to unrelated code.
 
-### Duplicata leva 👍 e mais nada
+### What never becomes a comment
 
-**Achado que já está no PR não é postado de novo. Ponto.** Não em outras palavras, não
-"complementando", não com o texto de outra lente. Ele sai do payload e vira uma reação.
+`## Needs human verification` **never** becomes a finding. Its items go into the review body as
+open questions, or stay out. They exist because the lens could not confirm them.
 
-**Mesmo achado** = mesmo arquivo **e** linhas a ≤5 de distância **e** mesma causa raiz. Vale
-igual se o comentário é de outra pessoa ou de uma rodada anterior. Redação diferente
-descrevendo o mesmo bug **é** duplicata — é o caso que mais engana, porque o texto novo
-parece achado novo. O que não é duplicata é o mesmo arquivo com dois bugs distintos.
+## Step 4 — Everything that goes to the PR is in English
 
-```bash
-# duplicata de um comentário inline de review
-gh api -X POST repos/{owner}/{repo}/pulls/comments/<id>/reactions -f content=+1
+The body, the inline comments, the headers, the all-clear — all in English, whatever the
+language of the report, of the repo, of the prompt or of the user's own instruction files. The
+report is normally born in English; **sweep the payload before sending and translate whatever
+is left.** The comment is read by the team and stays in the repo's history.
 
-# duplicata de um comentário no corpo do PR
-gh api -X POST repos/{owner}/{repo}/issues/comments/<id>/reactions -f content=+1
-```
+## Step 5 — Publish
 
-São **endpoints diferentes**, e um `id` devolve 404 no outro — o tipo você já sabe, veio de
-qual das duas listas do Passo 2. Reagir é idempotente: três rodadas deixam uma 👍, não três.
+Commands and payload shapes: `publishing.md`.
 
-Filtrar duplicata não é filtrar severidade. Um `critical` que já está no PR continua contando
-no veredito que vai escrito no corpo; ele só não vira um segundo comentário.
+- **A single review** with all inline comments (`POST /pulls/<N>/reviews`), not N loose
+  comments: one notification instead of N.
+- **`event: COMMENT`, always.** Never `REQUEST_CHANGES` — that blocks the merge in the user's
+  name. Never `APPROVE`, not even when the report says `approve`. The verdict goes written in
+  the body.
+- The body carries: the verdict (the report's, and the published one when settled findings
+  changed it), the scope line from the report's header (`scope_cmd`, `files`, `lenses_ran`),
+  findings that go to the body, the open questions, the already-settled list, and
+  ``Reviewed at `<short sha>`.``
+- If the API rejects **one** comment for an invalid line, it rejects the **whole review**.
+  Remove that comment, send the rest, and say which one fell out.
+- **Sha mismatch** → no review with inline comments: a single `gh pr comment` with the report,
+  opening with ``> Reviewed at `a1b2c3d`; the PR has moved since, so findings are not
+  line-anchored.``
+- **Zero findings** (the report has none) → post the all-clear from `publishing.md`, with the
+  coverage line from the report's header and its sha marker. Look for the marker first: same
+  sha already cleared → 👍 it, do not post another; different sha → post a new one and never
+  edit or delete the old.
+- **Every finding a duplicate** → only the 👍s. No empty review, and no all-clear: there were
+  findings, just already said.
+- **Every finding settled** → nothing is written at all, not even a 👍.
 
-### O que nunca vira comentário
+## Step 6 — Say what happened
 
-Uma seção `## Needs human verification` **nunca** vira achado. Ou entra como seção de dúvidas
-no corpo, ou fica fora. Ela existe justamente porque o agente não conseguiu confirmar —
-postar como achado seria afirmar o que o relatório diz não saber.
-
-## Passo 4 — Tudo que vai para o PR é em inglês
-
-Obrigatório, e este é o último ponto onde dá para pegar: **corpo do review, comentários
-inline, cabeçalhos, all-clear — tudo em inglês.** Independente do idioma do relatório, do
-repo ou desta instrução.
-
-O relatório normalmente já nasce em inglês. Mas um agente que espelhou o português do prompt
-pode ter deixado prosa em pt-BR — **varra o payload antes de mandar e traduza o que sobrou.**
-Não é preferência de estilo: o comentário é lido pelo time, fica no histórico do repositório
-e não se apaga sem rastro.
-
-## Passo 5 — Publicar
-
-### Um review único com os inline (preferido)
-
-Agrupa tudo numa notificação só, em vez de N:
-
-```bash
-cat > /tmp/review.json <<'JSON'
-{
-  "body": "## Automated review — Bazel\n\n<veredito e resumo>\n\nReviewed at `a1b2c3d`.",
-  "event": "COMMENT",
-  "comments": [
-    {
-      "path": "src/api/transfer.ts",
-      "line": 88,
-      "side": "RIGHT",
-      "body": "**critical · authz** (senior-code-reviewer + exploit-digger)\n\nTransfer reads `accountId` from the body without checking ownership.\n\n**Trigger:** `POST /api/transfer` with another user's `accountId` debits their account.\n\n**Fix:** resolve the account from the session, or check `account.ownerId === session.userId` before debiting.\n\nCWE-639 / OWASP A01"
-    }
-  ]
-}
-JSON
-
-gh api -X POST repos/{owner}/{repo}/pulls/<N>/reviews --input /tmp/review.json
-```
-
-- **`event: COMMENT`, sempre.** Nunca `REQUEST_CHANGES`: isso bloqueia o merge em nome do
-  usuário, e a decisão é dele — o veredito vai escrito no corpo e ele age. Nunca `APPROVE`,
-  nem quando o relatório diz `approve`.
-- Cada comentário abre com uma linha de cabeçalho (severidade · classe, e de quais lentes
-  veio), depois o que é em 1–2 linhas, o gatilho quando houver, e o **Fix** concreto. Duas
-  lentes no mesmo achado é sinal forte: deixe visível.
-- Se a API recusar **um** comentário por linha inválida, ela recusa o **review inteiro**.
-  Tire o comentário problemático, mande o resto, e diga qual caiu. Não desista de tudo por
-  causa de um, e não engula a perda.
-- **Já existe um review seu no PR?** Não abra outro com os mesmos achados. Os que forem
-  novos vão num review novo; o resto vira 👍.
-
-### Fallback: comentário único no corpo
-
-Quando ancorar não vale a pena (achados espalhados, linhas fora do diff) ou não é seguro (o
-sha não bate):
-
-```bash
-gh pr comment <N> --body-file /tmp/report.md
-```
-
-É o caminho mais seguro e o que se prefere na dúvida. Com sha diferente, o corpo **tem** que
-dizer qual commit foi revisado:
-
-```markdown
-> Reviewed at `a1b2c3d`; the PR has moved since, so findings are not line-anchored.
-```
-
-### Zero achado — poste o tudo-certo
-
-Agente calado é indistinguível de agente que não rodou. Sem nenhum achado, poste dizendo
-isso, com a cobertura junto quando o relatório trouxer uma seção `## Coverage`:
-
-```bash
-gh pr comment <N> --body-file /tmp/all-clear.md
-```
-
-```markdown
-## Automated review — Bazel · no findings
-
-Reviewed at `a1b2c3d` by `review-fleet`.
-
-**Swept clean:**
-- `injection` — every query in src/db goes through prepared statements
-- `authz` — no new endpoint; the two touched routes keep their session guard
-
-<!-- bazel: all-clear @ a1b2c3d -->
-```
-
-"Nenhum problema encontrado" sozinho não diz se o diff foi varrido ou ignorado — quando o
-relatório não traz cobertura, diga qual agente rodou e sobre qual sha, que é o que o Bazel
-sabe de verdade.
-
-Procure o marcador nos comentários do corpo antes de postar:
-
-- **Mesmo sha** já tem all-clear → nada mudou; **👍 nele**, não poste outro.
-- **Sha diferente** → entrou commit novo e o tudo-certo antigo não cobre esse código. Poste
-  um novo, e **não apague nem edite o antigo**: ele era verdade sobre aquele sha.
-
-### Todos os achados eram duplicata
-
-Só as 👍, nenhum review. Não mande review vazio e **não poste o tudo-certo** — all-clear é
-para zero achado, e aqui há achados, só que já ditos.
-
-## Passo 6 — Dizer o que aconteceu
-
-Reação silenciosa parece achado perdido. Feche o stdout com a contagem real, em markdown:
+Your stdout goes back to the review's card in Bazel. End it with the real count, in markdown:
 
 ```
-4 findings: 3 posted inline, 1 already on the PR (👍 on @fulano's comment).
-The review body carried the verdict and 2 items for human verification.
+6 findings: 3 posted inline, 1 was already on the PR (👍 on @someone's comment),
+2 were already settled (thread resolved by @someone on src/api/transfer.ts:88).
+Published verdict: comment — the report said request_changes, and both criticals were among
+the settled ones. The review body carried the verdict, the settled list and 2 open questions.
 ```
 
-É isso que volta para o card do Bazel e é o que a pessoa vê ao lado do review que ela leu.
-Se algum comentário foi recusado pela API, diga qual e por quê.
+If a gate stopped you or the API refused something, say which and why.
 
-## Nunca
+## Never
 
-- Nunca `APPROVE` nem `REQUEST_CHANGES` em nome do usuário.
-- Nunca repostar achado que já está no PR — nem reescrito, nem complementado.
-- Nunca postar em qualquer idioma que não inglês.
-- Nunca resolver nem fechar thread de review existente. A 👍 é a única escrita que se faz em
-  comentário de outra pessoa.
-- Nunca editar ou apagar um all-clear de sha anterior.
-- Nunca ancorar em linha quando o sha não bate.
-- Nunca revisar o código você mesmo para ter o que postar, e nunca acrescentar achado que
-  não estava no arquivo. Você publica o que já foi lido.
-- Nunca editar arquivo, commitar, dar push ou abrir PR.
-- Nunca perguntar. Você roda sem ninguém do outro lado; o Bazel já confirmou.
+- Never ask. Bazel already confirmed.
+- Never `APPROVE` or `REQUEST_CHANGES` in the user's name.
+- Never repost a finding already on the PR — not reworded, not expanded.
+- Never re-raise or 👍 a finding whose thread was resolved or replied to.
+- Never reply to, resolve or close an existing thread. The 👍 is the only write you make on
+  someone else's comment.
+- Never edit or delete an all-clear from an earlier sha.
+- Never anchor to a line when the sha does not match.
+- Never review the code yourself or add a finding that was not in the file.
+- Never post in a language other than English.
+- Never edit files, commit, push or open a PR.
