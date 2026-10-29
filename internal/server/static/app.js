@@ -1180,6 +1180,15 @@ function reviewTags(pr) {
   return [t];
 }
 
+// selectVisible is "select all": it ticks, or unticks, only the PRs the filter
+// shows. Ticks on PRs a filter is hiding stay as they are — filtering never
+// unticks anything, and neither does a box that only sees the visible list.
+function selectVisible(on) {
+  for (const pr of visiblePRs()) {
+    if (on) state.selected.add(pr.key); else state.selected.delete(pr.key);
+  }
+}
+
 function toggle(key, on) {
   if (on) state.selected.add(key); else state.selected.delete(key);
   renderPRs();
@@ -1637,11 +1646,7 @@ function wire() {
   });
   $('#toggle-prs').addEventListener('click', () => togglePRs(!state.prsHidden));
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
-  $('#select-all').addEventListener('change', (e) => {
-    state.selected.clear();
-    if (e.target.checked) visiblePRs().forEach((pr) => state.selected.add(pr.key));
-    renderPRs();
-  });
+  $('#select-all').addEventListener('change', (e) => { selectVisible(e.target.checked); renderPRs(); });
   document.querySelectorAll('#scope button').forEach((b) => {
     b.addEventListener('click', () => {
       state.scope = b.dataset.scope;
