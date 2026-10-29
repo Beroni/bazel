@@ -155,7 +155,7 @@ func TestCostZeroTokens(t *testing.T) {
 	}
 }
 
-// FormatUSD formats a dollar value, with a decimal comma and 2 places.
+// FormatUSD formats a dollar value, with a decimal point and 2 places.
 func TestFormatUSD(t *testing.T) {
 	cases := map[float64]string{
 		0:       "$0.00",

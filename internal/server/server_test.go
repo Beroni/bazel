@@ -417,7 +417,7 @@ func newTestServer(t *testing.T) *Server {
 }
 
 // The local port triggers cloning repositories and running agents with a shell.
-// Any page open in another tab has to hit the post.
+// Any page open in another tab must be turned away.
 // The log reaches the browser in chunks: each request brings only what came
 // after the previous `next`. That's what lets the page follow along live.
 func TestJobLogIsIncremental(t *testing.T) {
@@ -1266,7 +1266,7 @@ func TestConfigDownload(t *testing.T) {
 }
 
 // A pipeline that ends in `publish` doesn't publish on its own: it saves the
-// review and stops showing only what goes to the PR — the step that isn't a
+// review and halts, showing only what goes to the PR — the step that isn't a
 // review stays apart — so you can choose the findings and send them.
 func TestPipelineEsperaParaPublicar(t *testing.T) {
 	cfg := cfgFor(t, "echo")
@@ -1501,8 +1501,8 @@ func contaNoLog(path, linha string) int {
 const relatorioDaFrota = "## Findings\n\n### First\n\nreal bug\n\n### Second\n\nfalse positive\n"
 const relatorioDaHistoria = "## Findings\n\n### Contexto\n\na história do PR\n"
 
-// esperaPublicar runs `[historia, frota, publish]` until the card stops to wait
-// for you. post is the post agent; frota, what the fleet prints.
+// esperaPublicar runs `[historia, frota, publish]` until the card stops and
+// waits for you. post is the post agent; frota, what the fleet prints.
 func esperaPublicar(t *testing.T, dir, frota string, post config.AgentDef) (*Manager, chan []byte, jobView) {
 	t.Helper()
 	cfg := cfgFor(t, "echo")

@@ -154,7 +154,7 @@ func costOf(rate Rate, input, output, cacheWrite, cacheRead int) float64 {
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
-// FormatUSD formats a dollar value, with a decimal comma and 2 places.
+// FormatUSD formats a dollar value, with a decimal point and 2 places.
 func FormatUSD(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }

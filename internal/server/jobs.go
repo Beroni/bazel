@@ -484,9 +484,9 @@ func (m *Manager) run(q queued) {
 	job.FinishedAt = time.Now()
 	job.Cloning = false
 	job.cancel = nil
-	// `publish` step: the pipeline does not publish by itself. The card stops
-	// showing what goes to the PR, finding by finding, and you are the one who
-	// sends it — through the same button as always.
+	// `publish` step: the pipeline does not publish by itself. The card halts
+	// there, showing what goes to the PR finding by finding, and you are the
+	// one who sends it — through the same button as always.
 	if awaits {
 		job.AwaitsPublish = true
 	}

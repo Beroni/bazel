@@ -29,7 +29,7 @@ func TestDefaultComecaSemAgentes(t *testing.T) {
 	if _, err := cfg.ChoiceByName("review-fleet"); !errors.Is(err, ErrNoAgents) {
 		t.Errorf("escolher um agente numa lista vazia devia dar ErrNoAgents, deu %v", err)
 	}
-	// And the publishing agent is still standing: it is not a choice in the
+	// And the publishing agent is still there: it is not a choice in the
 	// list, it is what runs when you order an already read review published.
 	if cfg.PostChoice().Name != "bazel-post-report" {
 		t.Errorf("o post_agent devia continuar no padrão, veio %q", cfg.PostChoice().Name)

@@ -161,8 +161,8 @@ type Choice struct {
 	// — the rest you read on screen and it stays there.
 	Publishable bool
 	// Bare says this is the single choice of the `agent` block, with no list
-	// of agents: the prompt is all its own, and Bazel cannot know whether it
-	// publishes.
+	// of agents: the prompt is entirely the user's, and Bazel cannot know
+	// whether it publishes.
 	Bare  bool
 	Steps []ResolvedAgent
 }

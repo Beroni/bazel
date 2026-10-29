@@ -1919,7 +1919,7 @@ function linhaDeCriar() {
     const n = (state.pipeName || '').trim();
     if (!n) { banner('give the pipeline a name.'); nome.focus(); return; }
     const ok = await agentAction('/api/pipelines', 'POST', criar, { name: n, steps: state.pipeSteps });
-    if (!ok) return; // the error is already in the banner and the draft is still standing
+    if (!ok) return; // the error is already in the banner and the draft is still there
     // Once created, the draft resets: the next build starts from empty, and the
     // pipeline that was just born is already in the list above.
     state.pipeSteps = [];

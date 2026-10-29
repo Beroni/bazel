@@ -25,8 +25,8 @@ var builtinFS embed.FS
 const builtinRoot = "builtin"
 
 // SkillsSubdir is where Claude Code looks for a project's skills, relative
-// to the agent's working directory. One level only: `.claude/skills/<nome>/`
-// is discovered, `.claude/skills/<grupo>/<nome>/` is not.
+// to the agent's working directory. One level only: `.claude/skills/<name>/`
+// is discovered, `.claude/skills/<group>/<name>/` is not.
 const SkillsSubdir = ".claude/skills"
 
 // Builtin lists the embedded skills, in alphabetical order.
