@@ -967,6 +967,64 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	}
 }
 
+// A removed job is never published again (BUG-QA-04). Remove broadcasts
+// job_gone, and the worker, waking up from the cancellation, used to finish the
+// job and broadcast it as "canceled" afterwards — the card came back as a ghost.
+func TestRemovidoNaoVoltaComoFantasma(t *testing.T) {
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, t.TempDir(), 1, false, hub)
+	first, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, ch, first.ID, StateRunning)
+	if err := m.Remove(first.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// One worker: once the second job runs, the first one's run() has returned
+	// and everything it was going to broadcast is already in the channel.
+	second, err := m.Enqueue(testPR(999), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	gone := false
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("the second job never started")
+		case msg := <-ch:
+			var ev struct {
+				Type string `json:"type"`
+				Data struct {
+					ID    string `json:"id"`
+					State State  `json:"state"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(msg, &ev) != nil {
+				continue
+			}
+			switch {
+			case ev.Type == "job_gone" && ev.Data.ID == first.ID:
+				gone = true
+			case ev.Type == "job" && ev.Data.ID == first.ID && gone:
+				t.Fatalf("job %s came back after job_gone as %q", first.ID, ev.Data.State)
+			case ev.Type == "job" && ev.Data.ID == second.ID && ev.Data.State == StateRunning:
+				if !gone {
+					t.Fatal("job_gone never went out")
+				}
+				return
+			}
+		}
+	}
+}
+
 // Closing Bazel before publishing can't cost you the review: it's on disk, and
 // from there it can still be sent to the PR — with no originating job at all,
 // which is exactly the case of someone who restarted the server.

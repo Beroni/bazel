@@ -128,6 +128,11 @@ type Job struct {
 	gen int
 
 	cancel context.CancelFunc
+
+	// removed is set under the Manager lock when Remove takes the job out. The
+	// worker may still be finishing it; publish refuses it from then on, so
+	// the page never gets the card back after job_gone.
+	removed bool
 }
 
 func (j *Job) duration() time.Duration {
@@ -213,6 +218,12 @@ type Manager struct {
 	jobs  map[string]*Job
 	order []string
 	seq   int
+
+	// pubMu orders the broadcasts about a job: publish holds it from the
+	// removed check until its event is out, and Remove sends job_gone under
+	// it. A "job" event that saw the job alive therefore always goes out
+	// before the job_gone, never after. Taken before mu, never inside it.
+	pubMu sync.Mutex
 
 	// limits is the latest reading of Claude's quota. It belongs to no job: it
 	// is the machine's, and holds for the whole page.
@@ -686,6 +697,7 @@ func (m *Manager) Remove(id string) error {
 		job.State = StateCanceled
 		job.FinishedAt = time.Now()
 	}
+	job.removed = true
 	delete(m.jobs, id)
 	for i, other := range m.order {
 		if other == id {
@@ -698,7 +710,9 @@ func (m *Manager) Remove(id string) error {
 	if vivo && cancel != nil {
 		cancel()
 	}
+	m.pubMu.Lock()
 	m.hub.Broadcast("job_gone", map[string]string{"id": id})
+	m.pubMu.Unlock()
 	return nil
 }
 
@@ -1057,7 +1071,13 @@ func (m *Manager) Active() int {
 }
 
 func (m *Manager) publish(job *Job) {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
 	m.mu.Lock()
+	if job.removed {
+		m.mu.Unlock()
+		return
+	}
 	view := job.view()
 	m.mu.Unlock()
 	m.hub.Broadcast("job", view)
