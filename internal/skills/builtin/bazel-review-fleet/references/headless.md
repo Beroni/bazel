@@ -48,7 +48,9 @@ Rules that keep that honest:
 - **Finish in one turn.** Never end a turn with a progress note ("the lenses are still
   running"): each turn you end is a result, and Bazel keeps the last one. Wait for subagents
   in the foreground (`run_in_background: false`), and print nothing before the report.
-- Print the **whole report** as your final message, as plain markdown. Do not wrap it in a
+- Print the **whole report** as your final message, as plain markdown. Its **first
+  characters** are the report's first line (`<!-- review-fleet:v1` or `<!-- history-pr:v1`):
+  no "here is the report", no "validated, printing it now", in any language. Do not wrap it in a
   ```` ```markdown ```` fence, do not add a sentence before or after it, do not end with the
   path of a file. Whatever you print is what Bazel shows and what can go to the PR.
 - Review reports follow `.claude/skills/bazel-review-fleet/references/report-format.md`

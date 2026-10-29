@@ -299,7 +299,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
-		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Body: dropPreamble(strings.TrimSpace(body)), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -336,6 +336,40 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		Workdir:   workdir,
 		StoppedAt: stopped,
 	}, nil
+}
+
+// reportMarkers open the reports the built-in skills print. A report with one
+// of them starts there: the header is its first line.
+var reportMarkers = []string{"<!-- review-fleet:v1", "<!-- history-pr:v1"}
+
+// dropPreamble cuts the sentence an agent sometimes writes before its report
+// ("Validated the report, printing it now."). The skills are told not to, but
+// a model narrates anyway, often in the user's language, and that sentence
+// would be saved, shown and pasted on the PR with the review. Only a short
+// preamble goes: a body with a code fence or a heading before the marker is
+// not a report with a preamble, and is left whole (Unwrap handles the fence).
+func dropPreamble(body string) string {
+	lines := strings.Split(body, "\n")
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		marker := false
+		for _, m := range reportMarkers {
+			if t == m {
+				marker = true
+			}
+		}
+		if !marker {
+			if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") || strings.HasPrefix(t, "#") {
+				return body
+			}
+			continue
+		}
+		if i == 0 || i > 10 {
+			return body
+		}
+		return strings.Join(lines[i:], "\n")
+	}
+	return body
 }
 
 // gitGuard is the git configuration of every agent with a clone, the second
