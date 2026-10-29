@@ -1040,3 +1040,18 @@ func TestDoneLineUsesTheSamePriceAsTheCard(t *testing.T) {
 		t.Errorf("with no table the done line keeps total_cost_usd: %q", done)
 	}
 }
+
+// The Grok done line prices the run like the Runner, too: with a row for the
+// model in the table, the log shows the table's number, not total_cost_usd.
+func TestGrokDoneLineUsesTheTable(t *testing.T) {
+	table := pricing.Table{"grok-x": {Input: 2, Output: 10}}
+	p := grokAdapter{model: "grok-x", pricing: &table}
+	var done string
+	for _, e := range p.line(`{"type":"end","stopReason":"end_turn","usage":{"input_tokens":1000000,"output_tokens":100000,"total_tokens":1100000},"total_cost_usd":9.99}`) {
+		done = e.Text
+	}
+	card := priced(p.usage(), nil, &table)
+	if card.CostUSD != 3 || !strings.HasSuffix(done, "$3.00") {
+		t.Errorf("done line %q should carry the card's $%.2f", done, card.CostUSD)
+	}
+}

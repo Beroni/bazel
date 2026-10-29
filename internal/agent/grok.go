@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 // grokAdapter translates `grok -p --output-format streaming-json` events.
@@ -16,6 +18,9 @@ type grokAdapter struct {
 	terminal   error
 	tools      map[string]string
 	model      string
+	// pricing is the Runner's price table: the done line prices the run with
+	// it, like the Runner does, so the log and the card agree (BUG-QA-01).
+	pricing *pricing.Table
 }
 
 type grokEvent struct {
@@ -141,8 +146,8 @@ func (a *grokAdapter) line(raw string) []logEntry {
 		if total := a.final.Total(); total > 0 {
 			line += " · " + FormatTokens(total) + " tokens"
 		}
-		if a.final.CostUSD > 0 {
-			line += fmt.Sprintf(" · $%.2f", a.final.CostUSD)
+		if c := priced(a.usage(), nil, a.pricing).CostUSD; c > 0 {
+			line += fmt.Sprintf(" · $%.2f", c)
 		}
 		return one(line)
 	}
