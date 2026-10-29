@@ -29,6 +29,13 @@ const builtinRoot = "builtin"
 // calling `/bazel-post-report`.
 const PluginName = "bazel"
 
+// AgentsSubdir is where Claude Code looks for a project's subagents. A
+// built-in skill that fires lenses keeps their definitions in its own
+// `agents/` folder, and they are copied here as well: a subagent is found by
+// name, not by the skill that uses it. A project agent wins over one of the
+// same name in ~/.claude/agents, so the lens that runs is the one Bazel ships.
+const AgentsSubdir = ".claude/agents"
+
 // Builtin lists the embedded skills, in alphabetical order.
 func Builtin() []Skill {
 	entries, err := builtinFS.ReadDir(builtinRoot)
@@ -78,7 +85,7 @@ func Materialize(dir string) error {
 		return fmt.Errorf("no directory to materialize the built-in skills into")
 	}
 	manifest := fmt.Sprintf("{\n  \"name\": %q,\n  \"description\": \"Skills that ship inside Bazel\"\n}\n", PluginName)
-	if err := writeFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest)); err != nil {
+	if err := writeFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest), 0o644); err != nil {
 		return fmt.Errorf("writing the built-in plugin into %s: %w", dir, err)
 	}
 	err := fs.WalkDir(builtinFS, builtinRoot, func(p string, d fs.DirEntry, err error) error {
@@ -93,13 +100,19 @@ func Materialize(dir string) error {
 		if err != nil {
 			return err
 		}
-		if err := writeFile(filepath.Join(dir, "skills", rel), data); err != nil {
+		// The skills call their scripts with `bash <path>`, but an executable
+		// bit costs nothing and spares an agent that runs one directly.
+		mode := fs.FileMode(0o644)
+		if strings.HasSuffix(p, ".sh") {
+			mode = 0o755
+		}
+		if err := writeFile(filepath.Join(dir, "skills", rel), data, mode); err != nil {
 			return err
 		}
 		// A subagent is found by name, not by the skill that uses it: the
 		// plugin's agents/ is where Claude Code looks.
 		if agent, ok := agentFile(rel); ok {
-			return writeFile(filepath.Join(dir, "agents", agent), data)
+			return writeFile(filepath.Join(dir, "agents", agent), data, 0o644)
 		}
 		return nil
 	})
@@ -110,11 +123,11 @@ func Materialize(dir string) error {
 }
 
 // writeFile writes data to path, creating the folders on the way.
-func writeFile(path string, data []byte) error {
+func writeFile(path string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, mode)
 }
 
 // agentFile says whether rel (relative to the embed root) is a subagent
@@ -125,4 +138,47 @@ func agentFile(rel string) (string, bool) {
 		return "", false
 	}
 	return parts[2], true
+}
+
+// Inline turns a task that calls a built-in skill into that skill's
+// instructions, for agent CLIs that do not load Claude Code skills — Codex
+// and Grok read "/bazel-review-fleet 123" as plain text. The SKILL.md body
+// goes into the prompt with the task's arguments, and plugin is the folder
+// Materialize wrote: the files the skill mentions are there. A task that does
+// not call a built-in skill comes back as it was.
+func Inline(task, plugin string) string {
+	name := TaskSkill(task)
+	if name == "" || !IsBuiltin(name) {
+		return task
+	}
+	var body string
+	for _, s := range Builtin() {
+		if strings.EqualFold(s.Name, name) {
+			data, err := builtinFS.ReadFile(s.Dir + "/SKILL.md")
+			if err != nil {
+				return task
+			}
+			body = withoutFrontmatter(string(data))
+			break
+		}
+	}
+	args := strings.TrimSpace(strings.TrimSpace(task)[1+len(name):])
+	if args == "" {
+		args = "none"
+	}
+	return fmt.Sprintf("Run the `%s` skill below. This agent does not load skills by itself, so its "+
+		"instructions are inlined here. Its files are in %s/skills/%s/ and the agents it names in "+
+		"%s/agents/.\n\nArguments: %s\n\n%s", name, plugin, name, plugin, args, body)
+}
+
+// withoutFrontmatter drops the YAML block between the two `---` at the top.
+func withoutFrontmatter(content string) string {
+	rest, ok := strings.CutPrefix(content, "---\n")
+	if !ok {
+		return strings.TrimSpace(content)
+	}
+	if _, body, ok := strings.Cut(rest, "\n---\n"); ok {
+		return strings.TrimSpace(body)
+	}
+	return strings.TrimSpace(content)
 }

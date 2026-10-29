@@ -201,7 +201,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// never in the clone, and that folder goes with the review — on success,
 	// error or cancel alike.
 	var plugin string
-	if runsClaudeAnywhere(choice) {
+	if needsPlugin(choice) {
 		dir, err := newRuntime()
 		if err != nil {
 			return Result{}, err
@@ -269,7 +269,13 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
-		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra)
+		// Claude Code finds the built-in skills in the plugin; the other CLIs
+		// get the skill inside the prompt, with the plugin's path.
+		task := step.Task
+		if !runsClaude(step) {
+			task = skills.Inline(task, plugin)
+		}
+		prompt := buildPrompt(step.Prompt, task, pr, diff, workdir, extra)
 		stepStart := time.Now()
 		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
@@ -419,7 +425,8 @@ const maxLoggedPaths = 20
 // Code, and flags injected there break it. A command that shows neither (a
 // wrapper called `cc`) counts as another CLI, and so does a shell, whose
 // `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
-// protects those runs.
+// protects those runs. Claude Code finds the built-in skills in the plugin;
+// everything else gets them inlined (skills.Inline).
 func runsClaude(step config.ResolvedAgent) bool {
 	if isShell(step.Command) || isLauncher(step.Command) {
 		return false
@@ -493,10 +500,12 @@ func checkLauncher(step config.ResolvedAgent) error {
 	return nil
 }
 
-// runsClaudeAnywhere says whether any step of the choice runs Claude Code.
-func runsClaudeAnywhere(choice config.Choice) bool {
+// needsPlugin says whether a choice needs the built-in plugin: a Claude Code
+// step (which always runs with --plugin-dir), or any step that calls a
+// built-in skill — another CLI gets it inlined, and reads its files there.
+func needsPlugin(choice config.Choice) bool {
 	for _, s := range choice.Steps {
-		if s.Reserved == "" && runsClaude(s) {
+		if s.Reserved == "" && (runsClaude(s) || skills.IsBuiltin(skills.TaskSkill(s.Task))) {
 			return true
 		}
 	}
