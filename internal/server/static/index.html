@@ -31,32 +31,38 @@
       <div class="row">
         <button class="burger" id="toggle-prs" aria-expanded="true" aria-controls="pr-list"
                 title="hide the list (gives the review the full window)"><span></span><span></span><span></span></button>
-        <input id="filter" type="search" placeholder="filter by title, repo or author…" autocomplete="off">
+        <label class="search">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <input id="filter" type="search" placeholder="Search title, repo, author" autocomplete="off">
+        </label>
       </div>
-      <div class="row">
+      <div class="chips" id="review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
+        <button data-review="all" class="on">All</button>
+        <button data-review="none" title="not reviewed yet">New</button>
+        <button data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
+        <button data-review="changed" title="got new commits after the review">Changed</button>
+      </div>
+      <div class="row filters">
         <div class="segmented" id="scope">
           <button data-scope="all" class="on">everyone</button>
           <button data-scope="mine">mine only</button>
         </div>
         <label class="check tiny"><input type="checkbox" id="hide-drafts"> hide drafts</label>
       </div>
-      <div class="row">
+      <div class="row filters">
         <select id="owner-filter" title="show only the PRs of one owner"></select>
         <select id="repo-filter" title="show only the PRs of one repository"></select>
-        <select id="review-filter" title="filter by what Bazel has already reviewed">
-          <option value="all">any review state</option>
-          <option value="none">not reviewed</option>
-          <option value="reviewed">✓ reviewed</option>
-          <option value="changed">⟳ changed since review</option>
-        </select>
       </div>
     </div>
     <div id="pr-list" class="list"><p class="empty">loading PRs…</p></div>
     <div class="pane-foot">
-      <label class="check"><input type="checkbox" id="select-all"> select all</label>
-      <div class="spacer"></div>
-      <select id="agent" title="which agent runs over the ticked PRs"></select>
-      <button class="btn primary" id="run" disabled>run</button>
+      <div class="row">
+        <label class="check tiny"><input type="checkbox" id="select-all"> <span id="sel-count">0 selected</span></label>
+      </div>
+      <div class="row">
+        <select id="agent" title="which agent runs over the ticked PRs"></select>
+        <button class="btn primary" id="run" disabled>▶ Review</button>
+      </div>
     </div>
   </aside>
 

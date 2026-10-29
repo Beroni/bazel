@@ -1140,6 +1140,7 @@ function renderStats() {
     ? `${total} PR${total === 1 ? '' : 's'}`
     : `${shown} of ${total} PRs`;
   $('#stats').textContent = conta + (marked ? ` · ${marked} ticked` : '');
+  $('#sel-count').textContent = `${marked} selected`;
 }
 
 // syncSelectAll makes the "select all" box say what is true: checked only when
@@ -1180,14 +1181,18 @@ function renderPRs() {
     // and ticking for review has a target of its own.
     row.addEventListener('click', () => openPR(pr.key));
 
+    // Title first, the way the eye scans a list; under it the repository and
+    // number with the state tags on the right, and the size of the change.
     const main = el('div', 'pr-main');
-    const top = el('div', 'pr-top');
-    top.append(el('span', 'num', '#' + pr.number), el('span', 'repo', pr.slug));
-    if (pr.draft) top.append(el('span', 'tag draft', 'draft'));
-    if (pr.mine) top.append(el('span', 'tag mine', 'you'));
-    if (pr.review_decision === 'APPROVED') top.append(el('span', 'tag approved', 'approved'));
-    if (pr.review_decision === 'CHANGES_REQUESTED') top.append(el('span', 'tag changes', 'changes'));
-    for (const t of reviewTags(pr)) top.append(t);
+    const sub = el('div', 'pr-sub');
+    sub.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
+    const tags = el('span', 'pr-tags');
+    if (pr.draft) tags.append(el('span', 'tag draft', 'draft'));
+    if (pr.mine) tags.append(el('span', 'tag mine', 'you'));
+    if (pr.review_decision === 'APPROVED') tags.append(el('span', 'tag approved', 'approved'));
+    if (pr.review_decision === 'CHANGES_REQUESTED') tags.append(el('span', 'tag changes', 'changes'));
+    for (const t of reviewTags(pr)) tags.append(t);
+    sub.append(tags);
 
     const meta = el('div', 'meta');
     meta.append(
@@ -1198,7 +1203,9 @@ function renderPRs() {
       el('span', null, pr.age),
     );
 
-    main.append(top, el('span', 'title', pr.title), meta);
+    const title = el('span', 'title', pr.title);
+    title.title = pr.title;
+    main.append(title, sub, meta);
     row.append(box, main);
     list.append(row);
   }
@@ -1252,7 +1259,7 @@ function updateReviewButton() {
   btn.title = semAgente
     ? 'no agents configured — go to "config" and build the list out of your skills'
     : 'runs the chosen agent over the ticked PRs';
-  btn.textContent = n > 1 ? `run ${n}` : 'run';
+  btn.textContent = n > 1 ? `▶ Review ${n}` : '▶ Review';
 }
 
 // togglePRs collapses the left list down to the hamburger strip and brings it
@@ -1689,10 +1696,14 @@ function wire() {
     e.target.classList.toggle('on', !!state.repoFilter);
     renderPRs();
   });
-  $('#review-filter').addEventListener('change', (e) => {
-    state.reviewFilter = e.target.value;
-    e.target.classList.toggle('on', state.reviewFilter !== 'all');
-    renderPRs();
+  // The review state is a row of chips instead of a selector: it is the filter
+  // used most, and one click beats opening a menu.
+  document.querySelectorAll('#review-filter button').forEach((b) => {
+    b.addEventListener('click', () => {
+      state.reviewFilter = b.dataset.review;
+      document.querySelectorAll('#review-filter button').forEach((x) => x.classList.toggle('on', x === b));
+      renderPRs();
+    });
   });
   $('#toggle-prs').addEventListener('click', () => togglePRs(!state.prsHidden));
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
