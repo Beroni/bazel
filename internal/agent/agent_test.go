@@ -3,12 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 func testPR() gh.PR {
@@ -704,6 +706,22 @@ func TestUsageSomaEFormata(t *testing.T) {
 	}
 }
 
+// A soma dos passos guarda o modelo enquanto ele for um só — é o que deixa o
+// fallback de StringWithCost precificar um total que chegou sem custo. Passos
+// de modelos diferentes não têm uma linha da tabela que os precifique juntos.
+func TestUsageSomaLevaOModelo(t *testing.T) {
+	var u Usage
+	u.add(Usage{InputTokens: 10, Model: "claude-opus-4-5"})
+	u.add(Usage{OutputTokens: 5, Model: "claude-opus-4-5"})
+	u.add(Usage{})
+	if u.Model != "claude-opus-4-5" {
+		t.Errorf("soma de um modelo só perdeu o Model: %q", u.Model)
+	}
+	if got := u.Plus(Usage{InputTokens: 1, Model: "claude-haiku-4-5"}).Model; got != "" {
+		t.Errorf("soma de modelos diferentes devia zerar o Model, ficou %q", got)
+	}
+}
+
 // Sem modelUsage — um agente mais simples, ou uma versão antiga do Claude Code
 // — o `usage` da conversa principal ainda vale.
 func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
@@ -879,5 +897,112 @@ func TestBuiltinPrecisaDoClone(t *testing.T) {
 	}}
 	if usaBuiltin(propria) || builtinSemClone(propria) != "" {
 		t.Error("a skill do usuário não é embarcada — checkout: false nela é escolha dele")
+	}
+}
+
+// Uma rodada do Claude Code mistura modelos. O principal é o que mais gastou
+// — sempre o mesmo, rodada após rodada — e a tabela cobra cada modelo pelo
+// seu preço em vez de cobrar tudo pelo preço do principal.
+func TestCustoPorModeloEModeloPrincipalEstavel(t *testing.T) {
+	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":0.5},` +
+		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":3}}}`
+	for range 20 {
+		var p streamParser
+		p.line(ev)
+		if p.usage.Model != "claude-opus-5-5" {
+			t.Fatalf("modelo principal devia ser o que mais gastou, veio %q", p.usage.Model)
+		}
+		u := priced(p.spend(), p.models(), &pricing.Default)
+		// 2M de Opus 5.5 a $4 + 1M de Haiku 4.5 a $1 — não 3M a $4.
+		if u.CostUSD != 9 {
+			t.Fatalf("custo por modelo = %.2f, queria 9.00", u.CostUSD)
+		}
+	}
+}
+
+// Modelo fora da tabela não zera o custo que o provedor reportou: o Grok traz
+// o próprio total_cost_usd, e apagá-lo deixaria o card em $0.00.
+func TestCustoDoProvedorSobreviveModeloDesconhecido(t *testing.T) {
+	u := priced(Usage{InputTokens: 1000, CostUSD: 0.42, Model: "grok"}, nil, &pricing.Default)
+	if u.CostUSD != 0.42 {
+		t.Errorf("custo do provedor apagado: %.2f", u.CostUSD)
+	}
+	// Num modelo misto, o desconhecido entra com o custo que o provedor deu
+	// para ele e o conhecido com o preço da tabela.
+	u = priced(Usage{CostUSD: 5}, []Usage{
+		{InputTokens: 1_000_000, Model: "claude-haiku-4-5", CostUSD: 3},
+		{InputTokens: 1_000_000, Model: "modelo-local", CostUSD: 0.5},
+	}, &pricing.Default)
+	if u.CostUSD != 1.5 {
+		t.Errorf("custo misto = %.2f, queria 1.50", u.CostUSD)
+	}
+	// Sem tabela, nada muda.
+	if u := priced(Usage{CostUSD: 0.42, Model: "claude-opus-5-5"}, nil, nil); u.CostUSD != 0.42 {
+		t.Errorf("sem tabela o custo mudou: %.2f", u.CostUSD)
+	}
+}
+
+// O custo que já veio pronto não é refeito no rodapé do review: refazer pelo
+// modelo principal desfaria a conta por modelo.
+func TestStringWithCostNaoRefazCustoPronto(t *testing.T) {
+	u := Usage{InputTokens: 1_000_000, CostUSD: 1.23, Model: "claude-opus-5-5"}
+	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$1.23") {
+		t.Errorf("custo pronto refeito: %q", got)
+	}
+	u.CostUSD = 0
+	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$4.00") {
+		t.Errorf("custo ausente devia vir da tabela: %q", got)
+	}
+}
+
+// Each step keeps its unrounded cost: five cheap steps of $0.004 add up to
+// $0.02 at the end of the review, not $0.00.
+func TestCustoDePassosBaratosNaoSomaZero(t *testing.T) {
+	var total Usage
+	for range 5 {
+		// 4k Haiku 4.5 tokens at $1/M = $0.004.
+		total.add(priced(Usage{InputTokens: 4000, Model: "claude-haiku-4-5"}, nil, &pricing.Default))
+	}
+	if math.Abs(total.CostUSD-0.02) > 1e-9 {
+		t.Errorf("soma de 5 passos de $0.004 = %f, queria 0.02", total.CostUSD)
+	}
+	if got := total.String(); !strings.Contains(got, "$0.02") {
+		t.Errorf("a linha de gasto devia mostrar $0.02: %q", got)
+	}
+}
+
+// The whole path (process, stream-json, per-model usage, price table) prices
+// each model at its own rate in Review, instead of keeping the event's
+// total_cost_usd or pricing everything at the main model's rate.
+func TestReviewCobraCadaModeloPelaTabela(t *testing.T) {
+	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
+		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":0.5},` +
+		`"claude-opus-5-5":{"inputTokens":2000000,"outputTokens":0,"costUSD":3}}}`
+
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{
+		Name:    "stream",
+		Command: "sh",
+		Args:    []string{"-c", "cat <<'FIM'\n" + ev + "\nFIM\n", "sh", "--output-format", "stream-json"},
+	}}
+	cfg.Pipelines = nil
+	choice, _ := cfg.ChoiceByName("stream")
+
+	r := New(cfg)
+	r.PricingTable = &pricing.Default
+	res, err := r.Review(context.Background(), testPR(), choice, func(Event) {})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	// 2M Opus 5.5 at $4 + 1M Haiku 4.5 at $1.
+	if res.Usage.CostUSD != 9 {
+		t.Errorf("custo do review = %.2f, queria 9.00", res.Usage.CostUSD)
+	}
+	if len(res.Steps) != 1 || res.Steps[0].Usage.Model != "claude-opus-5-5" || res.Steps[0].Usage.CostUSD != 9 {
+		t.Errorf("passo devia levar o principal e o custo da tabela: %+v", res.Steps)
 	}
 }

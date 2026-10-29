@@ -127,6 +127,16 @@ func serve(ctx context.Context, args []string) error {
 
 	splash.Play()
 
+	// Fora do loopback não há autenticação nenhuma: quem alcança a porta
+	// clona repositórios e roda agentes com o seu `gh`. Não é proibido — há
+	// quem ponha um proxy com autenticação na frente —, mas não pode ser
+	// silencioso.
+	if srv.Exposed() {
+		fmt.Println(styErr.Render(fmt.Sprintf("  ⚠ listening on %s, beyond loopback, with no authentication —", addr)))
+		fmt.Println(styErr.Render("    anyone who reaches this port can clone repos and run agents as you."))
+		fmt.Println(styErr.Render("    Put an authenticating proxy in front, or use --addr 127.0.0.1:7777."))
+	}
+
 	url := srv.URL(addr)
 	fmt.Println(styBold.Render("  BAZEL") + styDim.Render("  ·  web interface"))
 	fmt.Println("  " + styOK.Render(url))

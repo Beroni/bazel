@@ -46,6 +46,13 @@ type Config struct {
 	// para o PR: em vez de escolher um agente que publica sozinho, você roda
 	// a frota, lê o resultado e só então manda publicar.
 	PostAgent AgentDef `yaml:"post_agent"`
+	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
+	// When off, the MCP surface does not offer publishing — neither as a tool
+	// nor by choosing an agent that publishes on its own. "You are the PR
+	// gate": a review no human has read does not go to GitHub by default. It is
+	// a surface gate, not a security boundary: whoever reaches /mcp reaches
+	// /api/jobs/{id}/publish with no authentication (issue #6, token).
+	MCPAllowPublish bool `yaml:"mcp_allow_publish,omitempty"`
 
 	// Warnings are what Load had to drop while migrating an old config, one
 	// line each. They are never written back to the file.
@@ -146,7 +153,67 @@ type Choice struct {
 	// um passo publicável. Numa pipeline, só o corpo desses passos é que sobe
 	// — o resto você lê na tela e fica por aí.
 	Publishable bool
-	Steps       []ResolvedAgent
+	// Bare diz que esta é a escolha única do bloco `agent`, sem lista de
+	// agents: o prompt é todo seu, e o Bazel não tem como saber se ele publica.
+	Bare  bool
+	Steps []ResolvedAgent
+}
+
+// PublishesBy diz por onde esta escolha pode escrever no PR sem passar pela
+// tela, ou "" quando não há caminho nenhum à vista. Vai além de Posts, que é só
+// o que foi declarado: um passo `publish`, uma task com --post, um prompt que
+// autoriza publicar e o bloco `agent`, cujo prompt o Bazel não escreveu. Quem
+// decide recusar (o /mcp) recusa na dúvida.
+func (c Choice) PublishesBy() string {
+	// O bloco `agent` sozinho roda um prompt que o Bazel não escreveu, e ele
+	// nunca declara posts. Só passa se mantiver a proibição do molde padrão.
+	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
+		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
+	}
+	for _, st := range c.Steps {
+		switch {
+		case st.Posts:
+			return fmt.Sprintf("has %q, which publishes to the PR on its own", st.Name)
+		case st.Reserved == StepPublish:
+			return "has a publish step"
+		case taskPosts(st.Task):
+			return fmt.Sprintf("has %q, whose task passes --post", st.Name)
+		case promptAuthorizesPosting(st.Prompt):
+			return fmt.Sprintf("has %q, whose prompt authorizes publishing", st.Name)
+		}
+	}
+	return ""
+}
+
+// taskPosts diz se a task passa --post à skill, a flag com que as skills de
+// review publicam o que acharam.
+func taskPosts(task string) bool {
+	for _, f := range strings.Fields(task) {
+		if f == "--post" || strings.HasPrefix(f, "--post=") {
+			return true
+		}
+	}
+	return false
+}
+
+// noPublishLine é a proibição de escrever no GitHub que o molde padrão carrega.
+const noPublishLine = "do not publish anything to GitHub"
+
+// promptForbidsPosting diz se o prompt traz a proibição do molde padrão, sem
+// ligar para quebra de linha nem caixa.
+func promptForbidsPosting(prompt string) bool {
+	flat := strings.ToLower(strings.Join(strings.Fields(prompt), " "))
+	return strings.Contains(flat, strings.ToLower(noPublishLine))
+}
+
+// promptAuthorizesPosting reconhece os moldes que liberam escrever no PR — o
+// postPrompt, o publishPrompt e qualquer prompt que diga o mesmo com as
+// palavras deles.
+func promptAuthorizesPosting(prompt string) bool {
+	if prompt == postPrompt || prompt == publishPrompt {
+		return true
+	}
+	return strings.Contains(strings.ToLower(prompt), "authorized to publish")
 }
 
 // Agent descreve como invocar o agente de IA que faz o review.
@@ -170,9 +237,10 @@ type Agent struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// Env is merged into every agent process that does not set its own env.
 	Env map[string]string `yaml:"env,omitempty"`
-	// Pricing é a tabela de preços por modelo, em USD por 1M de tokens.
-	// Vazia = usar o default shipped com o código. Os preços mudam, e o
-	// binário não pode precisar de rebuild.
+	// Pricing são os preços que o usuário sobrescreve, por modelo, em USD por
+	// 1M de tokens. Guarda só o que ele escreveu: o default mora no binário e
+	// entra em Prices — gravá-lo aqui congelaria no config.yaml os preços da
+	// versão que salvou, e nenhuma correção de preço chegaria mais.
 	Pricing PricingTable `yaml:"pricing,omitempty"`
 }
 
@@ -321,7 +389,6 @@ func Default() *Config {
 			Checkout:       true,
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
-			Pricing:        defaultPricing(),
 		},
 		// Agents e Pipelines nascem vazios de propósito: quem monta a lista é
 		// você, na página, a partir das skills que estão instaladas na sua
@@ -331,11 +398,37 @@ func Default() *Config {
 	}
 }
 
-// defaultPricing é a tabela de preços shipped com o código. Os preços mudam
-// — um modelo novo sai, uma tarifa muda — e o binário não pode precisar de
-// rebuild. O usuário sobrescreve em config.yaml.
-func defaultPricing() PricingTable {
-	return pricing.Default
+// Prices é a tabela de preços que vale: a do binário, com as entradas do
+// config.yaml por cima. Uma entrada do usuário troca o preço daquele modelo e
+// os demais continuam com o default.
+func (a Agent) Prices() PricingTable {
+	return pricing.Default.With(a.Pricing)
+}
+
+// legacyPricing é a tabela que versões anteriores gravavam inteira no
+// config.yaml a cada Save — com preços errados. Uma entrada idêntica a uma
+// destas linhas não foi escrita pelo usuário: é resto do default antigo, e
+// deixá-la valer sobrescreveria a tabela corrigida.
+var legacyPricing = PricingTable{
+	"claude-opus-5":              {Input: 15, Output: 75, CacheWrite: 1.50, CacheRead: 0.75},
+	"claude-haiku-4-5":           {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
+	"claude-sonnet-4":            {Input: 3, Output: 15, CacheWrite: 0.30, CacheRead: 0.15},
+	"claude-opus-4":              {Input: 15, Output: 75, CacheWrite: 1.875, CacheRead: 0.9375},
+	"claude-sonnet-3-5-20241022": {Input: 3, Output: 15, CacheWrite: 0.30, CacheRead: 0.15},
+}
+
+// dropLegacyPricing tira do que veio do config.yaml as linhas do default
+// antigo, deixando só o que o usuário escreveu de fato.
+func dropLegacyPricing(t PricingTable) PricingTable {
+	for k, v := range t {
+		if old, ok := legacyPricing[k]; ok && old == v {
+			delete(t, k)
+		}
+	}
+	if len(t) == 0 {
+		return nil
+	}
+	return t
 }
 
 // Dir é o diretório de configuração do Bazel.
@@ -380,6 +473,7 @@ func Load() (*Config, error) {
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
 	}
+	cfg.Agent.Pricing = dropLegacyPricing(cfg.Agent.Pricing)
 	if strings.TrimSpace(cfg.Agent.Prompt) == "" {
 		cfg.Agent.Prompt = defaultPrompt
 	}
@@ -1246,7 +1340,7 @@ func (c *Config) baseChoice() Choice {
 		TimeoutSeconds: c.Agent.TimeoutSeconds,
 		Env:            c.Agent.Env,
 	}
-	return Choice{Name: ra.Name, Description: ra.Description, Publishable: true, Steps: []ResolvedAgent{ra}}
+	return Choice{Name: ra.Name, Description: ra.Description, Publishable: true, Bare: true, Steps: []ResolvedAgent{ra}}
 }
 
 // resolve preenche com o bloco `agent` tudo que o AgentDef não sobrescreve.

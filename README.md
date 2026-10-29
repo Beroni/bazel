@@ -365,6 +365,50 @@ mark it with `⇧` and ask before firing — publishing is a write on someone el
 PR. And if you ask to comment over a review the agent already published, Bazel
 warns you first.
 
+## Driving Bazel from another agent (MCP)
+
+The same server answers [MCP](https://modelcontextprotocol.io) on `/mcp`
+(streamable HTTP, same port, same loopback guard). Register it once and any MCP
+client — a Claude Code session, a chat bot, a scheduled routine — can queue
+reviews that outlive the conversation:
+
+```sh
+claude mcp add --transport http bazel http://127.0.0.1:7777/mcp
+```
+
+| Tool | Does |
+| --- | --- |
+| `list_prs` | open PRs, filtered by `repo`, `mine`, `author`, review `status` |
+| `enqueue_review` | queues `refs` with an `agent` → job ids |
+| `list_jobs` / `job_status` | the queue; `job_status` long-polls with `wait_seconds` and carries the review body once done |
+| `job_log` | the agent log from `from` on (pass back `next`) |
+| `list_reviews` / `read_review` | the reviews saved on disk |
+| `list_agents` | the agents and pipelines you can pick |
+
+Every result carries `web_ui`, the page where a human reads the review.
+
+**MCP does not offer publishing.** The tool surface is curated so that you stay
+the gate to the PR: there is no publishing tool, and anything that could
+publish on its own is refused — `posts: true`, a task with `--post`, a prompt
+that authorizes publishing, a pipeline with a publish step or with any of
+those, and the bare `agent` block unless its prompt keeps the default's
+"do not publish anything to GitHub". When in doubt, it refuses. To
+open that door on purpose, set `mcp_allow_publish: true` in the config — that
+also adds a `publish_review` tool.
+
+This is a curated surface, not a security boundary. `/mcp` has no authentication
+of its own, so any process that can reach it can also call the web API
+(`/api/jobs/{id}/publish`) directly. What the gate prevents is a model
+publishing by accident, not a hostile process on the machine; closing that is
+tracked in [issue #6](https://github.com/Beroni/bazel/issues/6) (access token).
+
+Two more limits apply only to `/mcp` (the web page has neither):
+
+- `enqueue_review` only accepts PRs from the repositories you watch (`repos` in
+  the config, compared case-insensitively as `owner/repo`). A ref outside the
+  list is refused, and with no `repos` configured nothing can be queued.
+- at most 20 `refs` per call.
+
 ## Configuration
 
 The interface is two pages, switched from the top right and addressable by URL:
@@ -623,7 +667,8 @@ uses the machine's already-authenticated `gh` — anyone who reaches it can make
 it clone repositories and run an agent with `Bash` enabled. So it listens on
 loopback, rejects a `Host` that isn't local (blocking DNS rebinding) and rejects
 `POST` from another origin (blocking a random tab from firing reviews in your
-name). Don't put this behind a public IP without authentication in front.
+name). `/mcp` sits behind the same checks. Don't put this behind a public IP
+without authentication in front.
 
 ## Development
 
