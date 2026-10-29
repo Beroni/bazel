@@ -396,17 +396,20 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
    and a running review doesn't lose its log when you go look at the config. */
 .page[hidden] { display: none; }
 .page.config { flex: 1; overflow: auto; min-height: 0; }
-.config-body { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
-.config-body h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .1em; color: var(--dim); margin: 24px 0 10px; }
-.config-body h3:first-child { margin-top: 0; }
+.config-body { max-width: 920px; margin: 0 auto; padding: 24px 20px 60px; }
+/* Each section opens with a sentence-case title over a hairline, the way the
+   design separates groups, instead of the old uppercase labels. */
+.config-body h3 { font-size: 14px; font-weight: 600; color: var(--text); margin: 30px 0 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+.config-body h3::first-letter { text-transform: uppercase; }
+.config-body h3:first-child, .config-body .stray + h3 { margin-top: 0; padding-top: 0; border-top: 0; }
 
 /* The config path is a path, not a label: no uppercase. */
 .config-body #config-path { text-transform: none; letter-spacing: 0; word-break: break-all; }
-.config-body pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow: auto; font-size: 12.5px; }
-.config-body #repo-input { flex: 1; padding: 6px 9px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--text); }
+.config-body pre { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; overflow: auto; font-size: 12.5px; }
+.config-body #repo-input { flex: 1; }
 .config-body #repo-input:focus { outline: none; border-color: var(--accent); }
 .repo-list { margin-bottom: 10px; }
-.repo-list .repo-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; margin-bottom: 6px; background: var(--bg); }
+.repo-list .repo-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: 6px; background: var(--panel); font-weight: 500; }
 .repo-list .none { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
@@ -566,21 +569,21 @@ main.no-prs .burger span { background: var(--accent); }
 
 /* --- agents and skills in the config --- */
 .agent-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
-.agent-row { border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; background: var(--panel-2); }
+.agent-row { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 13px; background: var(--panel); }
 .agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.agent-name { color: var(--accent); font-weight: 700; }
+.agent-name { color: var(--text); font-weight: 600; font-size: 14px; }
 .agent-desc { color: var(--dim); font-size: 12px; margin-top: 4px; }
 .agent-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11px; }
-.skill-ref { padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
+.skill-ref { padding: 1px 7px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-family: var(--mono); }
 .skill-ref.ok { color: var(--ok); }
 /* A skill the agent calls that doesn't exist on the machine: you only find out
    at run time, and by then it's too late. */
 .skill-ref.missing { color: var(--err); }
 
-.skill-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
-.skill-row { display: flex; gap: 10px; padding: 5px 10px; font-size: 12px; border-bottom: 1px solid var(--line); }
+.skill-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
+.skill-row { display: flex; gap: 10px; padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
 .skill-row:last-child { border-bottom: 0; }
-.skill-row.on { background: var(--panel-2); }
+.skill-row.on { background: var(--accent-soft); }
 .skill-row.on .skill-name { color: var(--accent); }
 .skill-name { flex: none; width: 170px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-desc { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -601,7 +604,7 @@ main.no-prs .burger span { background: var(--accent); }
 .pipe-builder { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pipe-flow {
   display: flex; flex-wrap: wrap; align-items: stretch; gap: 2px; min-height: 56px;
-  padding: 10px; border: 1px dashed var(--line); border-radius: 8px; background: var(--bg);
+  padding: 10px; border: 1px dashed var(--hover-2); border-radius: var(--radius-md); background: var(--panel);
 }
 .pipe-flow.empty { align-items: center; color: var(--dim); }
 
@@ -610,7 +613,7 @@ main.no-prs .burger span { background: var(--accent); }
 
 .pipe-node {
   display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; min-width: 96px;
-  border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2);
   font-size: 12px; cursor: grab; user-select: none;
 }
 .pipe-node:active { cursor: grabbing; }
@@ -647,8 +650,8 @@ main.no-prs .burger span { background: var(--accent); }
 /* The warning about the template that fires a command on its own. It sits at
    the top of the config, which is where it gets fixed. */
 .stray {
-  border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px;
-  margin-bottom: 20px; font-size: 12.5px; line-height: 1.6; color: var(--fg);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, transparent); background: var(--warn-soft); border-radius: var(--radius-md); padding: 10px 12px;
+  margin-bottom: 20px; font-size: 12.5px; line-height: 1.6; color: var(--text);
 }
 .stray[hidden] { display: none; }
 .stray code { background: var(--bg); border-radius: 4px; padding: 1px 5px; }
