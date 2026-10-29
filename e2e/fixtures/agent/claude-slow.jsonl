@@ -1,0 +1,5 @@
+#!# Starts working, then hangs until Bazel kills it (cancel) or the test releases it.
+{"type":"system","subtype":"init","tools":["Read","Grep"],"model":"claude-opus-5-5"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"tu_1","name":"Read","input":{"file_path":"E2E-SLOW-READ.go"}}],"usage":{"input_tokens":4000,"output_tokens":120,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}},"parent_tool_use_id":null}
+#!wait release-slow
+{"type":"result","subtype":"success","is_error":false,"duration_ms":1000,"result":"# Released E2E-SLOW-REPORT\n\nNothing to report.","usage":{"input_tokens":4000,"output_tokens":200}}
