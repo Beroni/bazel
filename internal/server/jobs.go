@@ -37,6 +37,15 @@ type refused struct {
 
 func refuse(status int, err error) error { return refused{err, status} }
 
+// refusalStatus is the status a refused error carries, or def for any other.
+func refusalStatus(err error, def int) int {
+	var rf refused
+	if errors.As(err, &rf) {
+		return rf.status
+	}
+	return def
+}
+
 var (
 	// errPublishBusy refuses a second publish while one is still in flight.
 	errPublishBusy = errors.New("that review is being published right now")
@@ -733,7 +742,7 @@ func (m *Manager) Cancel(id string) error {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("job %q does not exist", id)
+		return refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	switch job.State {
 	case StateQueued:
@@ -785,7 +794,7 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	// Already publishing: return the card as is, instead of sending the post
 	// agent to the same PR twice.
@@ -1004,7 +1013,7 @@ func (m *Manager) Dismiss(id string) (jobView, error) {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	if job.posting {
 		m.mu.Unlock()

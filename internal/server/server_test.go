@@ -2446,6 +2446,16 @@ func TestPostRecusadoE4xx(t *testing.T) {
 	if code := post("nao-existe"); code != http.StatusNotFound {
 		t.Errorf("unknown job: %d, want 404", code)
 	}
+	// The other actions on a job agree: an unknown id is 404 there too.
+	for _, action := range []string{"publish", "dismiss", "cancel"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/nao-existe/"+action, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s of an unknown job: %d, want 404", action, w.Code)
+		}
+	}
 	running, _ := srv.jobs.Enqueue(testPR(482), false, choice("lento"))
 	waitFor(t, ch, running.ID, StateRunning)
 	if code := post(running.ID); code != http.StatusConflict {

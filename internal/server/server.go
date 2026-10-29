@@ -619,7 +619,7 @@ func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Cancel(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -636,12 +636,8 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 		// 502 is only for gh failing to post. A request Bazel turns down —
 		// unknown job, not finished, not publishable, busy, already posted — is
 		// the client's (BUG-QA-05).
-		status := http.StatusBadGateway
-		var rf refused
-		switch {
-		case errors.As(err, &rf):
-			status = rf.status
-		case errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted):
+		status := refusalStatus(err, http.StatusBadGateway)
+		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
 			status = http.StatusConflict
 		}
 		writeErr(w, status, err)
@@ -655,7 +651,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -673,7 +669,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		// Unknown job is 404, like /post; every other refusal is 409.
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
