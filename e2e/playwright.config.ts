@@ -12,7 +12,9 @@ export default defineConfig({
   workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 6,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  timeout: 30_000,
+  // Generous on purpose: the laptop is shared with other agents, and a
+  // passing test never waits for these.
+  timeout: 60_000,
   expect: { timeout: 10_000 },
   reporter: [['list'], ['html', { outputFolder: './.out/report', open: 'never' }]],
   use: {

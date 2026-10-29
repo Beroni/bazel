@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { tickByFilter, ui } from '../harness/ui';
 
 test.describe('P0 · review', () => {
@@ -46,7 +46,8 @@ test.describe('P0 · review', () => {
 
     // The PR is marked reviewed in the list.
     await ui.filter(app).fill('');
-    await expect(app.getByText(/^✓ reviewed (just now|\d+[mhd])$/)).toBeVisible();
+    // "✓ reviewed just now" on master, "✓ just now" since #25.
+    await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^✓ (reviewed )?(just now|\d+[mhd])/);
   });
 
   test('the live log signs each line with the agent or lens that wrote it', async ({ bazel }) => {
@@ -59,7 +60,8 @@ test.describe('P0 · review', () => {
     expect(by('review-fleet')).toContain('E2E-MAIN-LINE consolidating the findings');
     expect(by('exploit-digger')).toContain('E2E-LENS-LINE nothing exploitable in bucket.go');
     expect(by('exploit-digger')).toContain('→ Grep exec.Command');
-    expect(by('review-fleet').at(-1)).toMatch(/^✓ done in 4s · 1,8M tokens · \$2\.41$/);
+    // The dollar figure is BUG-QA-01's business (see the test below).
+    expect(by('review-fleet').at(-1)).toMatch(/^✓ done in 4s · 1,8M tokens · \$\d+\.\d\d$/);
 
     // Closed tally (modelUsage, sub-agents included), not the partial one.
     expect(job.tokens).toBe(12000 + 84000 + 1700000 + 4000);
@@ -79,9 +81,9 @@ test.describe('P0 · review', () => {
   // BUG-QA-01: the "✓ done" log line prints the stream's total_cost_usd
   // ($2.41) while the card, the report footer and the saved file price the
   // same tokens with Bazel's table ($2.09). README › Token usage promises one
-  // number. Remove test.fail() once fixed.
+  // number. Fixed on fix/qa-bugs (99cef78): the table is the single source.
   test('the done line in the log shows the same cost as the card', async ({ bazel }) => {
-    test.fail(true, 'BUG-QA-01: log cost ≠ card/file cost');
+    knownBug('BUG-QA-01', 'log cost ≠ card/file cost');
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     const job = await bazel.waitJob(id, (j) => j.state === 'done');
     const { json: log } = await bazel.api('GET', `/api/jobs/${id}/log?from=0`);

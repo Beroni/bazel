@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { tickByFilter, ui } from '../harness/ui';
+import { cancelJob, tickByFilter, ui } from '../harness/ui';
 
 test.describe('P0 · cancel', () => {
   test('cancelling a running job from its card kills the agent and saves nothing', async ({ app, bazel }) => {
@@ -14,10 +14,10 @@ test.describe('P0 · cancel', () => {
     const id = (await bazel.api('GET', '/api/jobs')).json.jobs[0].id;
     await bazel.waitJob(id, (j) => j.state === 'running' && j.log_lines >= 2);
 
-    await ui.cancelButton(card).click();
+    await cancelJob(app, 'Dark mode toggle in settings');
     await bazel.waitJob(id, (j) => j.state === 'canceled');
-    await expect(card.getByText(/cancel+ed/)).toBeVisible();
-    await expect(ui.cancelButton(card)).toHaveCount(0);
+    await expect(card.getByText(/cancel+ed/i).first()).toBeVisible();
+    await expect(ui.cancelControl(app, card)).toHaveCount(0);
 
     // Releasing the scenario now must change nothing: the process is dead.
     bazel.release('release-slow');

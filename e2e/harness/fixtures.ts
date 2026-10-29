@@ -1,7 +1,19 @@
 import { test as base, expect, Page } from '@playwright/test';
 import { Bazel, BazelOptions } from './bazel';
+import { ui } from './ui';
 
 export { expect };
+
+/**
+ * knownBug marks a test that reproduces an open bug: it is expected to fail.
+ * When the base under test has the fix, list the id in E2E_FIXED
+ * (E2E_FIXED=BUG-QA-01,BUG-QA-02) and the test must pass instead. Once the fix
+ * is on origin/master, delete the knownBug line from the test.
+ */
+export function knownBug(id: string, what: string): void {
+  const fixed = (process.env.E2E_FIXED ?? '').split(',').map((x) => x.trim());
+  base.fail(!fixed.includes(id), `${id}: ${what}`);
+}
 
 /** What the page's confirm() dialogs get, and what they said. */
 export interface Dialogs {
@@ -61,6 +73,10 @@ export const test = base.extend<Fixtures>({
     // Belt and braces: the page must never leave 127.0.0.1.
     await page.route(/^(?!http:\/\/127\.0\.0\.1:)/, (route) => route.abort());
     await page.goto(bazel.url + '/');
+    // The PR list loads after /api/state, asynchronously. Acting before it is
+    // there (ticking "select all" on an empty list) is a race that only shows
+    // under load: wait for the counter to say how many PRs there are.
+    await expect(ui.prCount(page)).toHaveText(/^\d+( of \d+)? PRs?( · \d+ ticked)?$/, { timeout: 20_000 });
     await use(page);
   },
 });

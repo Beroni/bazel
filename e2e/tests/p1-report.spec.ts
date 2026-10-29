@@ -1,5 +1,5 @@
-import { test, expect } from '../harness/fixtures';
-import { ui } from '../harness/ui';
+import { test, expect, knownBug } from '../harness/fixtures';
+import { openJob, ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
   ({ name, task: `/exploit-digger {{number}}`, command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: scenario }, ...extra });
@@ -30,7 +30,7 @@ test.describe('P1 · report and findings', () => {
     expect(job.html).toContain('&lt;script&gt;');
     expect(job.html).not.toContain('finding id=');
     await app.reload();
-    await ui.jobCard(app, 'Add rate limiter to the public API').click();
+    await openJob(app, 'Add rate limiter to the public API');
     // What you read is the text that would be published.
     await expect(ui.viewer(app).getByText("<script>alert('E2E-XSS')</script>", { exact: false })).toBeVisible();
   });
@@ -39,8 +39,7 @@ test.describe('P1 · report and findings', () => {
     const id = await bazel.enqueue('acme/api-core#101', 'formats');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
-    await ui.jobCard(app, 'Add rate limiter to the public API').click();
-    const viewer = ui.viewer(app);
+    const viewer = await openJob(app, 'Add rate limiter to the public API');
     await expect(ui.findingPicks(viewer)).toHaveCount(5);
     await ui.findingPicks(viewer).nth(1).uncheck(); // E2E-BOLD-2
     await ui.findingPicks(viewer).nth(2).uncheck(); // E2E-HUMAN-1
@@ -56,11 +55,10 @@ test.describe('P1 · report and findings', () => {
     const job = await bazel.waitJob(id, (j) => j.state === 'done');
     expect(job.publishable).toBe(false);
     await app.reload();
-    const card = ui.jobCard(app, 'Add rate limiter to the public API');
-    await expect(card.getByText('stays here')).toBeVisible();
-    await card.click();
-    await expect(ui.viewer(app).getByText(/what "history" produces stays in Bazel/)).toBeVisible();
-    await expect(ui.publishInline(ui.viewer(app))).toHaveCount(0);
+    const viewer = await openJob(app, 'Add rate limiter to the public API');
+    await expect(ui.notAReview(viewer, 'history')).toBeVisible();
+    await expect(ui.publishInline(viewer)).toHaveCount(0);
+    await expect(ui.pasteAsComment(viewer)).toHaveCount(0);
 
     expect((await bazel.api('POST', `/api/jobs/${id}/publish`, {})).status).toBe(409);
     const post = await bazel.api('POST', `/api/jobs/${id}/post`, {});
@@ -71,9 +69,9 @@ test.describe('P1 · report and findings', () => {
   // BUG-QA-05: POST /api/jobs/{id}/post answers 502 Bad Gateway for refusals
   // that are the client's fault ("does not go to the PR", "has not finished"),
   // the same status as a real gh failure. The page shows "failed to publish"
-  // either way. Expected a 4xx (409 like /publish). Remove test.fail() once fixed.
+  // either way. Expected a 4xx (409 like /publish). Remove the knownBug line once fixed.
   test('refusing to post a non-publishable or unfinished review is a 4xx, not 502', async ({ bazel }) => {
-    test.fail(true, 'BUG-QA-05: /post refusals answer 502');
+    knownBug('BUG-QA-05', '/post refusals answer 502');
     const id = await bazel.enqueue('acme/api-core#101', 'history');
     await bazel.waitJob(id, (j) => j.state === 'done');
     expect((await bazel.api('POST', `/api/jobs/${id}/post`, {})).status).toBe(409);

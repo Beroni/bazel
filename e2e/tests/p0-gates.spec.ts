@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { ui } from '../harness/ui';
+import { openJob, ui } from '../harness/ui';
 
 // The gates in front of GitHub. "GitHub" is the fake gh's log; a write is a
 // `gh pr comment` or any `gh api` other than `api user`.
@@ -39,14 +39,11 @@ test.describe('P0 · publish step waits for you', () => {
 
     await app.reload();
     const card = ui.jobCard(app, TITLE);
-    await expect(card.getByRole('button', { name: 'choose what goes' })).toBeVisible();
-    await expect(card.getByRole('button', { name: 'keep it here' })).toBeVisible();
     await expect(ui.publishInline(card)).toHaveCount(0); // no one-click publish from the card
 
-    await card.getByRole('button', { name: 'choose what goes' }).click();
-    const viewer = ui.viewer(app);
+    const viewer = await openJob(app, TITLE);
     await expect(ui.findingPicks(viewer)).toHaveCount(2);
-    await expect(viewer.getByRole('button', { name: 'keep it here' })).toBeVisible();
+    await expect(ui.keepHere(viewer)).toBeVisible();
     await ui.findingPicks(viewer).nth(1).uncheck();
     await ui.publishInline(viewer).click();
 
@@ -65,10 +62,10 @@ test.describe('P0 · publish step waits for you', () => {
     const id = await bazel.enqueue('acme/api-core#101', 'read-before-sending');
     await bazel.waitJob(id, (j) => j.state === 'done' && j.awaits_publish);
     await app.reload();
-    const card = ui.jobCard(app, TITLE);
-    await card.getByRole('button', { name: 'keep it here' }).click();
+    const viewer = await openJob(app, TITLE);
+    await ui.keepHere(viewer).click();
     await bazel.waitJob(id, (j) => !j.awaits_publish);
-    await expect(card.getByRole('button', { name: 'choose what goes' })).toHaveCount(0);
+    await expect(ui.keepHere(viewer)).toHaveCount(0);
 
     await new Promise((r) => setTimeout(r, 300));
     expect(writes(bazel)).toEqual([]);
@@ -87,10 +84,9 @@ test.describe('P0 · publish step waits for you', () => {
     expect(fs.readFileSync(job.saved_to, 'utf8')).toContain('E2E-HISTORY');
 
     await app.reload();
-    await ui.jobCard(app, TITLE).getByRole('button', { name: 'choose what goes' }).click();
-    const viewer = ui.viewer(app);
-    await expect(viewer.getByText('stays in Bazel — not published')).toBeVisible();
-    await expect(viewer.getByText('goes to the PR')).toBeVisible();
+    const viewer = await openJob(app, TITLE);
+    await expect(ui.reviewContext(viewer)).toBeVisible();
+    await expect(viewer).toContainText('E2E-HISTORY');
     await expect(ui.findingPicks(viewer)).toHaveCount(2); // ticks only on the review part
 
     await ui.pasteAsComment(viewer).click();
@@ -229,8 +225,7 @@ test.describe('P0 · the page asks before writing', () => {
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
-    await ui.jobCard(app, TITLE).click();
-    const viewer = ui.viewer(app);
+    const viewer = await openJob(app, TITLE);
     dialogs.accept = false;
     await ui.publishInline(viewer).click();
     await ui.pasteAsComment(viewer).click();

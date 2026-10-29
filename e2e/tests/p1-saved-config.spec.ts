@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 test.describe('P1 · saved reviews', () => {
@@ -8,7 +8,7 @@ test.describe('P1 · saved reviews', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.restart();
     await app.goto(bazel.url + '/');
-    await app.getByRole('button', { name: 'saved' }).click();
+    await ui.savedTab(app).click();
     await expect(app.getByText('Add rate limiter to the public API').first()).toBeVisible();
 
     const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
@@ -62,7 +62,7 @@ test.describe('P1 · config through the API', () => {
   // removed through DELETE /api/repos/{owner}/{name}. Expected: 400 for
   // anything that is not owner/name (or normalize the URL to owner/name).
   test('a repo must be exactly owner/name', async ({ bazel }) => {
-    test.fail(true, 'BUG-QA-03: malformed repos accepted');
+    knownBug('BUG-QA-03', 'malformed repos accepted');
     for (const repo of ['acme/', 'https://github.com/acme/web-app/pull/7', '/web-app', 'a/b/c']) {
       const r = await bazel.api('POST', '/api/repos', { repo });
       const stored = r.json.repos ?? [];

@@ -305,7 +305,7 @@ export class Bazel {
   }
 
   /** Polls a job until pred holds; returns the last view. */
-  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 15_000): Promise<any> {
+  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 25_000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any;
     while (Date.now() < deadline) {

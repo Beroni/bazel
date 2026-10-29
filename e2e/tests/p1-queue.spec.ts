@@ -1,4 +1,4 @@
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
@@ -55,7 +55,7 @@ test.describe('P1 · queue', () => {
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
     await bazel.waitJob(id, (j) => j.state === 'running');
     await app.reload();
-    await ui.jobCard(app, 'Dark mode toggle in settings').getByRole('button', { name: '✕' }).click(); // confirm accepted
+    await ui.removeButton(ui.jobCard(app, 'Dark mode toggle in settings')).click(); // confirm accepted
     await expect.poll(async () => (await bazel.api('GET', `/api/jobs/${id}`)).status).toBe(404);
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
     bazel.release('release-slow');
@@ -70,13 +70,13 @@ test.describe('P1 · queue', () => {
   // the state "prevents it from republishing", but finish never checks.
   // Expected: no "job" event for an id after its job_gone.
   test('a removed job does not come back as a ghost card', async ({ app, bazel }) => {
-    test.fail(true, 'BUG-QA-04: job event after job_gone resurrects the card');
+    knownBug('BUG-QA-04', 'job event after job_gone resurrects the card');
     const sse = bazel.events();
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
     await bazel.waitJob(id, (j) => j.state === 'running');
     await app.reload();
     const card = ui.jobCard(app, 'Dark mode toggle in settings');
-    await card.getByRole('button', { name: '✕' }).click();
+    await ui.removeButton(card).click();
     await sse.next((e) => e.type === 'job_gone' && e.data.id === id);
     await new Promise((r) => setTimeout(r, 500));
     sse.close();

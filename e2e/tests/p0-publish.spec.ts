@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { ui } from '../harness/ui';
+import { openJob, ui } from '../harness/ui';
 
 // Publishing is the one place Bazel writes to GitHub. Here "GitHub" is the
 // fake gh's call log: every assertion is on the exact argv and payload that
@@ -9,8 +9,7 @@ async function openFinishedReview(app: any, bazel: any) {
   const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
   await bazel.waitJob(id, (j: any) => j.state === 'done');
   await app.reload();
-  await ui.jobCard(app, 'Add rate limiter to the public API').click();
-  const viewer = ui.viewer(app);
+  const viewer = await openJob(app, 'Add rate limiter to the public API');
   await expect(viewer.getByText('E2E-FINDING-TWO')).toBeVisible();
   return { id, viewer };
 }
@@ -34,7 +33,7 @@ test.describe('P0 · publish', () => {
     // No agent ran to publish: the comment path is Bazel itself.
     expect(bazel.agentCalls().map((c) => c.scenario)).toEqual(['claude-findings']);
 
-    await expect(viewer.getByText('✓ already on the PR')).toBeVisible();
+    await expect(ui.alreadyPublished(viewer)).toBeVisible();
     // A second post is refused (409), not sent twice.
     const again = await bazel.api('POST', `/api/jobs/${id}/post`, {});
     expect(again.status).toBe(409);
@@ -69,7 +68,7 @@ test.describe('P0 · publish', () => {
 
     // Bazel itself sent nothing: no gh pr comment on this path.
     expect(bazel.ghCalls().some((c) => c.argv[1] === 'comment')).toBe(false);
-    await expect(viewer.getByText('✓ already on the PR')).toBeVisible();
-    await expect(ui.jobCard(app, 'Add rate limiter to the public API').getByText('✓ published')).toBeVisible();
+    await expect(ui.alreadyPublished(viewer)).toBeVisible();
+    await expect(ui.jobPublished(ui.jobCard(app, 'Add rate limiter to the public API'))).toBeVisible();
   });
 });
