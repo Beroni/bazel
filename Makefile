@@ -27,6 +27,12 @@ run: build
 test:
 	go test ./...
 
+## e2e: end-to-end tests with a fake gh and a fake agent (Playwright, no network)
+.PHONY: e2e
+e2e:
+	@test -d e2e/node_modules || (cd e2e && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci --prefer-offline --no-audit --no-fund)
+	cd e2e && npx playwright test $(E2E_ARGS)
+
 ## cover: runs the tests with a coverage report
 .PHONY: cover
 cover:

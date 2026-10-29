@@ -1,0 +1,13 @@
+{
+  "name": "bazel-e2e",
+  "private": true,
+  "description": "End-to-end tests for Bazel: fake gh, fake agent, isolated server, Playwright.",
+  "scripts": {
+    "test": "playwright test",
+    "report": "playwright show-report .out/report"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.58.2",
+    "@types/node": "^22.0.0"
+  }
+}
