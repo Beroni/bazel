@@ -1,3 +1,13 @@
+/* Inter, embedded (SIL OFL 1.1, see fonts/OFL.txt). One variable file covers
+   every weight; only the latin subset ships, which is all the UI writes. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url("/static/fonts/inter-latin.woff2") format("woff2");
+}
+
 :root {
   --bg: #0b0d10;
   --panel: #12151a;
@@ -12,6 +22,22 @@
   --warn: #eab308;
   --blue: #60a5fa;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+
+  /* Derived tones. Every one is mixed from the palette above, so retuning a
+     color there carries through the whole interface. */
+  --sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --accent-soft: color-mix(in srgb, var(--accent) 13%, transparent);
+  --accent-soft-2: color-mix(in srgb, var(--accent) 22%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 55%, transparent);
+  --hover: color-mix(in srgb, var(--text) 6%, transparent);
+  --hover-2: color-mix(in srgb, var(--text) 12%, transparent);
+  --warn-soft: color-mix(in srgb, var(--warn) 10%, var(--panel));
+  --err-soft: color-mix(in srgb, var(--err) 12%, var(--panel));
+  --ok-soft: color-mix(in srgb, var(--ok) 12%, transparent);
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; }
@@ -19,10 +45,54 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font: 14px/1.5 var(--mono);
+  font: 13.5px/1.5 var(--sans);
+  -webkit-font-smoothing: antialiased;
   display: flex;
   flex-direction: column;
 }
+h1, h2, h3, h4 { font-weight: 600; letter-spacing: -0.01em; line-height: 1.25; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+::selection { background: var(--accent-soft-2); }
+code, pre, kbd { font-family: var(--mono); }
+
+button, input, select, textarea { font: inherit; color: inherit; }
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  background: transparent; color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  padding: 5px 11px; font-size: 13px; font-weight: 500; line-height: 1.3;
+  cursor: pointer; white-space: nowrap;
+}
+.btn:hover:not(:disabled) { background: var(--hover); border-color: var(--hover-2); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+/* The primary action is outlined in the accent, the way the design draws it;
+   it fills a little on hover instead of shouting all the time. */
+.btn.primary { color: var(--accent); border-color: var(--accent-line); }
+.btn.primary:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
+.btn.solid { background: var(--accent); border-color: var(--accent); color: #100d08; font-weight: 600; }
+.btn.solid:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent); }
+.btn.ghost { border-color: transparent; color: var(--dim); }
+.btn.ghost:hover:not(:disabled) { color: var(--text); background: var(--hover); border-color: transparent; }
+.btn.small { padding: 3px 8px; font-size: 12px; border-radius: 6px; }
+
+input[type=search], input[type=text] {
+  min-height: 32px; padding: 5px 10px;
+  background: var(--panel-2); caret-color: var(--accent);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+input[type=search]:hover, input[type=text]:hover { border-color: var(--hover-2); }
+input[type=search]:focus, input[type=text]:focus { outline: none; border-color: var(--accent-line); }
+select {
+  font-size: 12.5px; background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+  padding: 5px 8px; min-width: 0; cursor: pointer;
+}
+select:hover { border-color: var(--hover-2); }
+select:focus { outline: none; border-color: var(--accent-line); }
+/* An active filter looks visibly active: otherwise the list disappears and
+   nobody knows why. */
+select.on { border-color: var(--accent-line); color: var(--accent); }
 
 /* --- bar --- */
 .bar {
@@ -47,19 +117,6 @@ body {
 .quota .hot { color: var(--err); }
 .who { color: var(--dim); font-size: 12px; }
 .spacer { flex: 1; }
-
-button, input[type=search], input[type=text] { font: inherit; }
-.btn {
-  background: var(--panel-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 6px;
-  padding: 5px 11px; cursor: pointer;
-}
-.btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-.btn:disabled { opacity: .4; cursor: not-allowed; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #100d08; font-weight: 700; }
-.btn.primary:hover:not(:disabled) { filter: brightness(1.12); color: #100d08; }
-.btn.ghost { background: transparent; color: var(--dim); }
-.btn.small { padding: 3px 8px; font-size: 12px; }
 
 .banner {
   padding: 8px 16px; font-size: 12px;
@@ -359,7 +416,7 @@ main.no-prs .burger span { background: var(--accent); }
 .term-count { margin-left: auto; color: var(--dim); font-size: 10px; }
 .term-body {
   height: 190px; overflow-y: auto; overflow-x: hidden;
-  padding: 6px 9px; font-size: 11.5px; line-height: 1.55;
+  padding: 6px 9px; font: 11.5px/1.55 var(--mono);
 }
 .log-empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 4px 12px 12px; margin: 0; }
 
