@@ -810,7 +810,14 @@ function renderRepoFilters() {
   const sel = $('#repo-filter');
   sel.hidden = doDono.length < 2;
   if (sel.hidden) {
-    if (state.repoFilter) { state.repoFilter = ''; }
+    // An owner with a single repository hides the selector, but a repository
+    // filter of that owner is kept: the hidden selector means the same thing,
+    // and dropping it would bring back, under "any owner", the ticked PRs it
+    // was holding out of view. With no owner selector either there is no
+    // control left to turn the filter off, so then it goes.
+    if (state.repoFilter && (donoSel.hidden || !doDono.some(([k]) => k === state.repoFilter))) {
+      state.repoFilter = '';
+    }
     return;
   }
   if (state.repoFilter && !doDono.some(([k]) => k === state.repoFilter)) state.repoFilter = '';
