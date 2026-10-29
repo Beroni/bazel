@@ -1,0 +1,15 @@
+{
+  "model": "claude-opus-5-5",
+  "rateLimit": { "session": 0.42, "week": 0.10 },
+  "steps": [
+    { "tool": "Bash", "input": { "command": "git diff main...HEAD --stat" } },
+    { "agent": "senior-code-reviewer", "description": "precision review",
+      "steps": [ { "tool": "Read", "input": { "file_path": "internal/limit/bucket.go" } },
+                 { "text": "E2E-SPEC-LENS precision pass done" } ] },
+    { "toolError": "Read", "input": { "file_path": "missing.go" }, "error": "E2E-SPEC-TOOLERR file does not exist" },
+    { "text": "E2E-SPEC-MAIN writing the verdict" }
+  ],
+  "reportFile": "example-skill.md",
+  "usage": { "input": 2000, "output": 500, "cacheRead": 10000, "cacheWrite": 0, "costUSD": 0.3 },
+  "durationMs": 2000
+}

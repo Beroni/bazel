@@ -11,8 +11,8 @@ test.describe('P1 · saved reviews', () => {
     bazelOptions: {
       config: {
         agents: [
-          { name: 'fleet-gated', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings-gated' } },
-          { name: 'plain-gated', task: '/exploit-digger {{number}}', command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-gated' } },
+          { name: 'fleet-gated', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings', FAKE_AGENT_GATE: 'release-gate' } },
+          { name: 'plain-gated', task: '/exploit-digger {{number}}', command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report', FAKE_AGENT_GATE: 'release-gate' } },
         ],
       },
     },

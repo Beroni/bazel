@@ -4,9 +4,10 @@
 //
 // Environment:
 //
-//	FAKE_AGENT_SCENARIOS  directory with the scenario files
+//	FAKE_AGENT_SCENARIOS  directories with the scenario files, ':'-separated
 //	FAKE_AGENT_SCENARIO   which one to play (file name, extension optional)
 //	FAKE_AGENT_STATE      writable directory: calls.jsonl and the release files
+//	FAKE_AGENT_GATE       optional: wait for FAKE_AGENT_STATE/<gate> before playing
 //
 // A scenario is replayed line by line. Lines are copied to stdout verbatim
 // (JSON events for claude-stream/codex-json/grok-stream, Markdown for plain),
@@ -17,6 +18,7 @@
 //	#!exit <code>        stop here with that exit code
 //	#!wait <name>        block until FAKE_AGENT_STATE/<name> exists (max 120s)
 //	#!block              block until killed (max 120s)
+//	#!repeat <n> <text>  print text n times; {i} becomes 1..n
 //	#!gh-review          publish the review file named in the prompt with gh
 //	#!# <comment>        ignored
 package main
@@ -49,6 +51,9 @@ func main() {
 	raw, _ := io.ReadAll(os.Stdin)
 	prompt := string(raw)
 	record(prompt)
+	if gate := os.Getenv("FAKE_AGENT_GATE"); gate != "" {
+		waitFor(filepath.Join(stateDir, gate))
+	}
 
 	path := scenarioPath()
 	f, err := os.Open(path)
@@ -80,6 +85,14 @@ func main() {
 			waitFor(filepath.Join(stateDir, arg))
 		case "block":
 			time.Sleep(120 * time.Second)
+		case "repeat":
+			nStr, text, _ := strings.Cut(arg, " ")
+			n, _ := strconv.Atoi(nStr)
+			w := bufio.NewWriter(os.Stdout)
+			for i := 1; i <= n; i++ {
+				fmt.Fprintln(w, strings.ReplaceAll(text, "{i}", strconv.Itoa(i)))
+			}
+			w.Flush()
 		case "gh-review":
 			publish(prompt)
 		default:
@@ -89,10 +102,12 @@ func main() {
 }
 
 func scenarioPath() string {
-	for _, ext := range []string{"", ".jsonl", ".txt", ".md"} {
-		p := filepath.Join(dir, name+ext)
-		if st, err := os.Stat(p); err == nil && !st.IsDir() {
-			return p
+	for _, d := range filepath.SplitList(dir) {
+		for _, ext := range []string{"", ".jsonl", ".txt", ".md"} {
+			p := filepath.Join(d, name+ext)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
 		}
 	}
 	fail(2, "fake-agent: no scenario named "+name+" in "+dir)
@@ -110,18 +125,38 @@ func waitFor(path string) {
 	fail(3, "fake-agent: gave up waiting for "+path)
 }
 
-// record appends the call to calls.jsonl. builtin_skill says whether Bazel
-// materialized its bazel-post-report skill in the working directory.
+// record appends the call to calls.jsonl: what the agent was given (argv,
+// prompt, cwd), which skills Bazel materialized in the working directory
+// (`skills`, with `builtin_skill` for bazel-post-report), and the GROK_* env
+// Bazel set, with whether $GROK_HOME/config.toml existed.
 func record(prompt string) {
 	cwd, _ := os.Getwd()
 	_, skillErr := os.Stat(filepath.Join(cwd, ".claude", "skills", "bazel-post-report", "SKILL.md"))
+	skills := []string{}
+	if entries, err := os.ReadDir(filepath.Join(cwd, ".claude", "skills")); err == nil {
+		for _, e := range entries {
+			if _, err := os.Stat(filepath.Join(cwd, ".claude", "skills", e.Name(), "SKILL.md")); err == nil {
+				skills = append(skills, e.Name())
+			}
+		}
+	}
+	grok := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GROK_") {
+			grok[k] = v
+		}
+	}
+	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
 	line, _ := json.Marshal(map[string]any{
-		"scenario":      name,
-		"argv":          os.Args[1:],
-		"cwd":           cwd,
-		"prompt":        prompt,
-		"builtin_skill": skillErr == nil,
-		"at":            time.Now().UTC().Format(time.RFC3339Nano),
+		"scenario":         name,
+		"argv":             os.Args[1:],
+		"cwd":              cwd,
+		"prompt":           prompt,
+		"builtin_skill":    skillErr == nil,
+		"skills":           skills,
+		"grok_env":         grok,
+		"grok_home_config": os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
+		"at":               time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(stateDir, 0o755)
 	f, err := os.OpenFile(filepath.Join(stateDir, "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

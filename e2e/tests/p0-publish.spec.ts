@@ -18,8 +18,6 @@ async function openFinishedReview(app: any, bazel: any) {
 test.describe('P0 · publish', () => {
   test('"paste as a comment" sends gh pr comment without the unticked finding', async ({ app, bazel }) => {
     const { id, viewer } = await openFinishedReview(app, bazel);
-    const dialogs: string[] = [];
-    app.on('dialog', (d) => dialogs.push(d.message()));
 
     await ui.findingPicks(viewer).nth(1).uncheck(); // F2 stays out
     await ui.pasteAsComment(viewer).click();
@@ -43,10 +41,12 @@ test.describe('P0 · publish', () => {
     expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment')).toHaveLength(1);
   });
 
-  test('"publish inline review" runs the post agent, which calls gh with the trimmed review', async ({ app, bazel }) => {
+  test('"publish inline review" runs the post agent, which calls gh with the trimmed review', async ({ app, bazel, dialogs }) => {
     const { id, viewer } = await openFinishedReview(app, bazel);
     await ui.findingPicks(viewer).nth(0).uncheck(); // F1 stays out this time
     await ui.publishInline(viewer).click();
+    await expect.poll(() => dialogs.messages.length).toBe(1);
+    expect(dialogs.messages[0]).toContain('Publish this review on acme/api-core#101 with inline comments?');
     const job = await bazel.waitJob(id, (j) => j.posted === true || !!j.post_error, 20_000);
     expect(job.post_error ?? '').toBe('');
 

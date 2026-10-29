@@ -5,7 +5,11 @@ export const REPO = path.resolve(E2E, '..');
 export const OUT = path.join(E2E, '.out');
 export const BIN = path.join(OUT, 'bin');
 export const FIXTURES = path.join(E2E, 'fixtures');
-export const SCENARIOS = path.join(FIXTURES, 'agent');
+export const SCENARIO_FILES = path.join(FIXTURES, 'agent');
+export const SPECS = path.join(SCENARIO_FILES, 'specs');
+export const SYNTH = path.join(OUT, 'scenarios');
+/** Search path of the fake agent: hand-written scenarios, then synthesized specs. */
+export const SCENARIOS = [SCENARIO_FILES, SYNTH].join(':');
 
 // The server's whole PATH: the harness bin first, then the system dirs. No
 // Homebrew, no ~/.local/bin — that is where the real gh and claude live.

@@ -65,6 +65,9 @@ var (
 	state    = os.Getenv("FAKE_GH_STATE")
 	cfg      settings
 	stdin    string
+	// unknown marks a call the fake does not implement; the harness fails
+	// the test when one shows up in the log.
+	unknown bool
 )
 
 func main() {
@@ -88,8 +91,9 @@ func main() {
 		b, _ := io.ReadAll(os.Stdin)
 		stdin = string(b)
 	}
-	record(args)
-	os.Exit(dispatch(args))
+	code := dispatch(args)
+	record(args, code)
+	os.Exit(code)
 }
 
 func wantsStdin(args []string) bool {
@@ -170,6 +174,7 @@ func failed(key string) bool {
 }
 
 func unsupported(args []string) int {
+	unknown = true
 	fmt.Fprintf(os.Stderr, "fake gh: unsupported: gh %s\n", strings.Join(args, " "))
 	return 1
 }
@@ -179,15 +184,17 @@ func die(code int, msg string) {
 	os.Exit(code)
 }
 
-// record appends the call to calls.jsonl under an exclusive lock: reviews run
-// in parallel and two gh processes may write at once.
-func record(args []string) {
+// record appends the call and its exit code to calls.jsonl under an exclusive
+// lock: reviews run in parallel and two gh processes may write at once.
+func record(args []string, code int) {
 	cwd, _ := os.Getwd()
 	line, _ := json.Marshal(map[string]any{
-		"argv":  args,
-		"stdin": stdin,
-		"cwd":   cwd,
-		"at":    time.Now().UTC().Format(time.RFC3339Nano),
+		"argv":        args,
+		"stdin":       stdin,
+		"exit":        code,
+		"unsupported": unknown,
+		"cwd":         cwd,
+		"at":          time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(state, 0o755)
 	f, err := os.OpenFile(filepath.Join(state, "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)

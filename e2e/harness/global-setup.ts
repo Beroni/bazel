@@ -2,13 +2,13 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BIN, OUT, REPO, SAFE_PATH, safeEnv } from './paths';
+import { BIN, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
 // The real gh lives next to node and git in Homebrew, so that directory is
 // never on the server's PATH — git is linked in by itself.
-export default function globalSetup() {
+export default async function globalSetup() {
   fs.rmSync(BIN, { recursive: true, force: true });
   fs.mkdirSync(BIN, { recursive: true });
 
@@ -17,6 +17,11 @@ export default function globalSetup() {
   build('bazel', '.');
   build('gh', './e2e/fakes/gh');
   build('fake-agent', './e2e/fakes/agent');
+
+  // Scenario specs (fixtures/agent/specs/*.json) → claude-stream scenarios.
+  const { synthAll } = await import('../tools/stream.mjs');
+  fs.rmSync(SYNTH, { recursive: true, force: true });
+  synthAll(SPECS, SYNTH);
 
   const git = execFileSync('/bin/sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
   fs.symlinkSync(git, `${BIN}/git`);
