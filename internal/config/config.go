@@ -160,20 +160,22 @@ type Choice struct {
 	// least one publishable step. In a pipeline, only those steps' body goes up
 	// — the rest you read on screen and it stays there.
 	Publishable bool
-	// Bare diz que esta é a escolha única do bloco `agent`, sem lista de
-	// agents: o prompt é todo seu, e o Bazel não tem como saber se ele publica.
+	// Bare says this is the single choice of the `agent` block, with no list
+	// of agents: the prompt is all its own, and Bazel cannot know whether it
+	// publishes.
 	Bare  bool
 	Steps []ResolvedAgent
 }
 
-// PublishesBy diz por onde esta escolha pode escrever no PR sem passar pela
-// tela, ou "" quando não há caminho nenhum à vista. Vai além de Posts, que é só
-// o que foi declarado: um passo `publish`, uma task com --post, um prompt que
-// autoriza publicar e o bloco `agent`, cujo prompt o Bazel não escreveu. Quem
-// decide recusar (o /mcp) recusa na dúvida.
+// PublishesBy says how this choice can write to the PR without going through
+// the screen, or "" when no path is in sight. It goes beyond Posts, which is
+// only what was declared: a `publish` step, a task with --post, a prompt that
+// authorizes publishing and the `agent` block, whose prompt Bazel did not
+// write. Whoever decides to refuse (the /mcp) refuses when in doubt.
 func (c Choice) PublishesBy() string {
-	// O bloco `agent` sozinho roda um prompt que o Bazel não escreveu, e ele
-	// nunca declara posts. Só passa se mantiver a proibição do molde padrão.
+	// The `agent` block alone runs a prompt Bazel did not write, and it never
+	// declares posts. It only passes if it keeps the default template's
+	// prohibition.
 	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
 		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
 	}
@@ -192,8 +194,8 @@ func (c Choice) PublishesBy() string {
 	return ""
 }
 
-// taskPosts diz se a task passa --post à skill, a flag com que as skills de
-// review publicam o que acharam.
+// taskPosts says whether the task passes --post to the skill, the flag with
+// which the review skills publish what they found.
 func taskPosts(task string) bool {
 	for _, f := range strings.Fields(task) {
 		if f == "--post" || strings.HasPrefix(f, "--post=") {
@@ -203,19 +205,20 @@ func taskPosts(task string) bool {
 	return false
 }
 
-// noPublishLine é a proibição de escrever no GitHub que o molde padrão carrega.
+// noPublishLine is the prohibition on writing to GitHub that the default
+// template carries.
 const noPublishLine = "do not publish anything to GitHub"
 
-// promptForbidsPosting diz se o prompt traz a proibição do molde padrão, sem
-// ligar para quebra de linha nem caixa.
+// promptForbidsPosting says whether the prompt carries the default template's
+// prohibition, ignoring line breaks and case.
 func promptForbidsPosting(prompt string) bool {
 	flat := strings.ToLower(strings.Join(strings.Fields(prompt), " "))
 	return strings.Contains(flat, strings.ToLower(noPublishLine))
 }
 
-// promptAuthorizesPosting reconhece os moldes que liberam escrever no PR — o
-// postPrompt, o publishPrompt e qualquer prompt que diga o mesmo com as
-// palavras deles.
+// promptAuthorizesPosting recognizes the templates that allow writing to the
+// PR — the postPrompt, the publishPrompt and any prompt that says the same in
+// its own words.
 func promptAuthorizesPosting(prompt string) bool {
 	if prompt == postPrompt || prompt == publishPrompt {
 		return true
@@ -244,18 +247,19 @@ type Agent struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// Env is merged into every agent process that does not set its own env.
 	Env map[string]string `yaml:"env,omitempty"`
-	// Pricing são os preços que o usuário sobrescreve, por modelo, em USD por
-	// 1M de tokens. Guarda só o que ele escreveu: o default mora no binário e
-	// entra em Prices — gravá-lo aqui congelaria no config.yaml os preços da
-	// versão que salvou, e nenhuma correção de preço chegaria mais.
+	// Pricing holds the prices the user overrides, per model, in USD per 1M
+	// tokens. It keeps only what the user wrote: the default lives in the
+	// binary and enters through Prices — saving it here would freeze the prices
+	// of the saving version into config.yaml, and no price fix would ever
+	// arrive again.
 	Pricing PricingTable `yaml:"pricing,omitempty"`
 }
 
-// Rate é o custo por 1M de tokens, em USD, para uma categoria de uso.
+// Rate is the cost per 1M tokens, in USD, for a usage category.
 type Rate = pricing.Rate
 
-// PricingTable é a tabela de preços por modelo, em USD por 1M de tokens.
-// Chave: nome do modelo (case-insensitive). Valor: rate por categoria.
+// PricingTable is the price table per model, in USD per 1M tokens.
+// Key: model name (case-insensitive). Value: rate per category.
 type PricingTable = pricing.Table
 
 const defaultPrompt = `{{task}}
@@ -405,17 +409,17 @@ func Default() *Config {
 	}
 }
 
-// Prices é a tabela de preços que vale: a do binário, com as entradas do
-// config.yaml por cima. Uma entrada do usuário troca o preço daquele modelo e
-// os demais continuam com o default.
+// Prices is the price table in effect: the binary's, with the config.yaml
+// entries on top. A user entry replaces the price of that model and the others
+// keep the default.
 func (a Agent) Prices() PricingTable {
 	return pricing.Default.With(a.Pricing)
 }
 
-// legacyPricing é a tabela que versões anteriores gravavam inteira no
-// config.yaml a cada Save — com preços errados. Uma entrada idêntica a uma
-// destas linhas não foi escrita pelo usuário: é resto do default antigo, e
-// deixá-la valer sobrescreveria a tabela corrigida.
+// legacyPricing is the table that earlier versions wrote whole into
+// config.yaml on every Save — with wrong prices. An entry identical to one of
+// these lines was not written by the user: it is a leftover of the old
+// default, and letting it stand would override the corrected table.
 var legacyPricing = PricingTable{
 	"claude-opus-5":              {Input: 15, Output: 75, CacheWrite: 1.50, CacheRead: 0.75},
 	"claude-haiku-4-5":           {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
@@ -424,8 +428,8 @@ var legacyPricing = PricingTable{
 	"claude-sonnet-3-5-20241022": {Input: 3, Output: 15, CacheWrite: 0.30, CacheRead: 0.15},
 }
 
-// dropLegacyPricing tira do que veio do config.yaml as linhas do default
-// antigo, deixando só o que o usuário escreveu de fato.
+// dropLegacyPricing removes the old default's lines from what came from
+// config.yaml, leaving only what the user actually wrote.
 func dropLegacyPricing(t PricingTable) PricingTable {
 	for k, v := range t {
 		if old, ok := legacyPricing[k]; ok && old == v {
@@ -438,7 +442,7 @@ func dropLegacyPricing(t PricingTable) PricingTable {
 	return t
 }
 
-// Dir é o diretório de configuração do Bazel.
+// Dir is Bazel's configuration directory.
 func Dir() (string, error) {
 	if d := os.Getenv("BAZEL_HOME"); d != "" {
 		return d, nil
@@ -515,9 +519,9 @@ func Load() (*Config, error) {
 // runs in a terminal, so stderr is where you see it.
 var warnOut io.Writer = os.Stderr
 
-// LoadOrInit lê a configuração e, se ela ainda não existir, escreve a padrão
-// e devolve essa. O Bazel é uma interface web: não há shell para rodar um
-// comando de inicialização antes de abrir a página.
+// LoadOrInit reads the configuration and, if it does not exist yet, writes the
+// default and returns that. Bazel is a web interface: there is no shell to run
+// an init command before the page opens.
 func LoadOrInit() (*Config, bool, error) {
 	path, err := Path()
 	if err != nil {
@@ -822,7 +826,7 @@ func (c *Config) postaAntes(steps []string) (string, bool) {
 	return "", false
 }
 
-// RemovePipeline tira uma pipeline da lista.
+// RemovePipeline removes a pipeline from the list.
 func (c *Config) RemovePipeline(name string) bool {
 	name = strings.TrimSpace(name)
 	for i, p := range c.Pipelines {
@@ -1197,8 +1201,8 @@ func taskShape(task string) string {
 //   - the post agent listed as a regular agent leaves the list, and its steps
 //     in the pipelines become a single `publish` at the end, which is what they
 //     meant;
-//   - o `pause` sai das pipelines. Quem para para você ler agora é o próprio
-//     `publish`, e `pause → publish` vira só `publish`.
+//   - the `pause` leaves the pipelines. What stops for you to read now is
+//     `publish` itself, and `pause → publish` becomes just `publish`.
 //
 // A pipeline that cannot be carried over without losing the human gate, or
 // that is left with no agent, is dropped with a line in Warnings, and

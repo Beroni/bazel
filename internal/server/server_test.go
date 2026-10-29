@@ -1101,7 +1101,7 @@ func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 	if !strings.Contains(string(orig), "false positive") {
 		t.Error("o review salvo não devia perder o achado desmarcado")
 	}
-	// E o review na tela continua inteiro.
+	// And the review on screen stays whole.
 	after, _ := m.View(review.ID, true)
 	if after.Body != full.Body {
 		t.Error("o corpo do review na tela mudou")
@@ -1360,15 +1360,16 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	}
 }
 
-// Fila cheia devolve erro e marca o job como falho — sem travar o Manager.
-// Antes, Enqueue chamava finish segurando o mutex que finish também trava.
+// A full queue returns an error and marks the job as failed — without locking
+// up the Manager. Before, Enqueue called finish while holding the mutex that
+// finish also locks.
 func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
 	cfg := cfgFor(t, "cat")
 	m := &Manager{
 		cfg:   cfg,
 		hub:   NewHub(),
 		ctx:   context.Background(),
-		queue: make(chan queued), // sem worker e sem buffer: sempre cheia
+		queue: make(chan queued), // no worker and no buffer: always full
 		jobs:  map[string]*Job{},
 	}
 
@@ -1394,22 +1395,22 @@ func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
 		t.Fatal("Enqueue travou com a fila cheia")
 	}
 
-	// O Manager continua respondendo depois.
+	// The Manager keeps responding afterwards.
 	if _, ok := m.View("j1", false); !ok {
 		t.Error("job da fila cheia sumiu")
 	}
 }
 
-// Com a fila cheia, ninguém pode ver o job como queued antes de ele falhar:
-// um Enqueue concorrente do mesmo PR que o achasse nessa janela receberia
-// sucesso e um job que nunca entrou na fila.
+// With the queue full, nobody may see the job as queued before it fails: a
+// concurrent Enqueue of the same PR that found it in that window would get
+// success and a job that never entered the queue.
 func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
 	cfg := cfgFor(t, "cat")
 	m := &Manager{
 		cfg:   cfg,
 		hub:   NewHub(),
 		ctx:   context.Background(),
-		queue: make(chan queued), // sem worker e sem buffer: sempre cheia
+		queue: make(chan queued), // no worker and no buffer: always full
 		jobs:  map[string]*Job{},
 	}
 
@@ -1441,8 +1442,8 @@ func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
 	}
 }
 
-// Exposed avisa de qualquer escuta além do loopback — inclusive `:7777`, que
-// abre todas as interfaces mesmo com a checagem de Host ligada.
+// Exposed warns about any listen beyond loopback — including `:7777`, which
+// opens all interfaces even with the Host check on.
 func TestExposedDetectsNonLoopbackListen(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"127.0.0.1:7777":    false,

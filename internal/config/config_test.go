@@ -392,8 +392,8 @@ func TestLoadUpgradesLegacyArgs(t *testing.T) {
 	}
 }
 
-// PublishesBy acha os caminhos de publicar que Posts não declara, sem
-// confundir uma flag parecida com --post.
+// PublishesBy finds the publishing paths that Posts does not declare, without
+// mistaking a flag similar to --post for it.
 func TestChoicePublishesBy(t *testing.T) {
 	for _, c := range []struct {
 		nome string
@@ -1228,8 +1228,8 @@ func TestPassosReservados(t *testing.T) {
 		}
 		// Without review-fleet, publish is left with nothing to publish.
 		cfg.RemoveAgent("review-fleet")
-		// Sobra só o publish, que não tem o que publicar: a pipeline inteira
-		// sai do seletor.
+		// Only publish is left, with nothing to publish: the whole pipeline
+		// leaves the selector.
 		if ch, err := cfg.ChoiceByName("x"); err == nil {
 			t.Errorf("a pipeline só com o publish órfão devia sair do seletor, veio %v", ch.StepNames())
 		}
@@ -1265,12 +1265,13 @@ func TestStrayCommand(t *testing.T) {
 	}
 }
 
-// Um preço no config.yaml troca só aquele modelo: os demais continuam com o
-// default, e o default do pacote não é tocado pelo yaml do usuário.
+// A price in config.yaml replaces only that model: the others keep the
+// default, and the package default is not touched by the user's yaml.
 func TestPricingDoUsuarioSobrescreveSemMexerNoDefault(t *testing.T) {
 	cfg := loadFrom(t, "agent:\n  pricing:\n    Claude-Opus-5-5:\n      input: 99\n    meu-modelo:\n      input: 1\n")
 	prices := cfg.Agent.Prices()
-	// A chave com outra caixa troca o preço em vez de disputar com o default.
+	// A key in a different case replaces the price instead of competing with
+	// the default.
 	for range 50 {
 		if r, _ := prices.Rate("claude-opus-5-5"); r.Input != 99 {
 			t.Fatalf("preço do usuário não entrou: %.2f", r.Input)
@@ -1287,9 +1288,9 @@ func TestPricingDoUsuarioSobrescreveSemMexerNoDefault(t *testing.T) {
 	}
 }
 
-// Versões anteriores gravavam a tabela default inteira no config.yaml, com
-// preços errados. Essas linhas não podem valer por cima da tabela corrigida,
-// e o Save não grava mais o default — só o que o usuário escreveu.
+// Earlier versions wrote the whole default table into config.yaml, with wrong
+// prices. Those lines cannot win over the corrected table, and Save no longer
+// writes the default — only what the user wrote.
 func TestPricingDefaultAntigoNaoVence(t *testing.T) {
 	cfg := loadFrom(t, "agent:\n  pricing:\n"+
 		"    claude-opus-5: {input: 15, output: 75, cache_write: 1.5, cache_read: 0.75}\n"+
@@ -1302,7 +1303,7 @@ func TestPricingDefaultAntigoNaoVence(t *testing.T) {
 	if r, _ := prices.Rate("claude-sonnet-4-5"); r.CacheWrite != 3.75 {
 		t.Errorf("linha antiga do sonnet-4 venceu: %+v", r)
 	}
-	// Uma linha que o usuário mudou não é resto do default: fica.
+	// A line the user changed is not a leftover of the default: it stays.
 	if r, _ := prices.Rate("claude-haiku-4-5"); r.Input != 2 {
 		t.Errorf("preço editado pelo usuário sumiu: %+v", r)
 	}

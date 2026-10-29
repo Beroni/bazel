@@ -34,9 +34,9 @@ func SplitFindings(body string) []Part {
 		finding bool
 		inFence bool
 		fence   string
-		section bool // dentro de um `##` de findings/cuts/human verification
-		human   bool // e é a de human verification, que lista em vez de `###`
-		h3Seen  bool // a seção atual numera os achados com `###`
+		section bool // inside a `##` of findings/cuts/human verification
+		human   bool // and it is the human verification one, which lists instead of `###`
+		h3Seen  bool // the current section numbers findings with `###`
 		bold    bool // the item open in the human section is a `**N. …**`
 		blank   bool // the previous line was blank
 	)
@@ -76,7 +76,7 @@ func SplitFindings(body string) []Part {
 		case level == 0:
 			wasBlank := blank
 			blank = trim == ""
-			// Achado em negrito numerado, nas seções que não usam `###`.
+			// Numbered bold finding, in sections that do not use `###`.
 			if section && !h3Seen && boldNumbered(trim) {
 				flush()
 				finding = true
@@ -92,7 +92,7 @@ func SplitFindings(body string) []Part {
 				switch {
 				case listItem(trim):
 					flush()
-					// "- None." diz que não há dúvida: não é uma para desmarcar.
+					// "- None." says there is no doubt: it is not one to uncheck.
 					finding = !emptyItem(trim)
 					bold = false
 				case !boldNumbered(trim) && finding && !bold && wasBlank:
@@ -116,7 +116,7 @@ func SplitFindings(body string) []Part {
 			h3Seen = true
 			finding = section || strings.HasPrefix(nextNonBlank(i), "<!-- finding")
 		default:
-			// `####` e abaixo ficam dentro do achado em que aparecem.
+			// `####` and below stay inside the finding where they appear.
 			blank = false
 		}
 		cur.WriteString(line)
@@ -261,8 +261,9 @@ func listItem(trim string) bool {
 	return n > 0 && n+1 < len(trim) && (trim[n] == '.' || trim[n] == ')') && trim[n+1] == ' '
 }
 
-// emptyItem diz se o item de lista só avisa que não há nada — "- None.",
-// "- n/a", "- Nenhum" —, o que a seção de dúvidas costuma trazer vazia.
+// emptyItem says whether the list item only warns that there is nothing —
+// "- None.", "- n/a", "- Nenhum" —, which the doubts section often carries
+// when empty.
 func emptyItem(trim string) bool {
 	text := trim
 	if i := strings.IndexByte(trim, ' '); i >= 0 {
@@ -276,13 +277,13 @@ func emptyItem(trim string) bool {
 	return false
 }
 
-// Unwrap tira o review de dentro de um bloco ```markdown, quando o agente
-// colou o relatório inteiro num bloco de código em vez de devolvê-lo solto.
-// Dentro do bloco os headings viram texto: a página mostra tudo como código,
-// o GitHub também, e nenhum achado tem onde receber caixa. Só desembrulha
-// quando o bloco tem heading — um trecho de markdown citado num achado, que
-// não tem, fica como está. As cercas internas do relatório (```go…```)
-// continuam pareadas; o que sai é só a cerca de fora e o seu fecho.
+// Unwrap takes the review out of a ```markdown block, when the agent pasted
+// the whole report into a code block instead of returning it loose. Inside the
+// block the headings become text: the page shows everything as code, GitHub
+// does too, and no finding has anywhere to get a checkbox. It only unwraps
+// when the block has a heading — a markdown snippet quoted in a finding, which
+// has none, stays as is. The report's inner fences (```go…```) stay paired;
+// all that goes is the outer fence and its closing.
 func Unwrap(body string) string {
 	lines := strings.SplitAfter(body, "\n")
 	open := -1

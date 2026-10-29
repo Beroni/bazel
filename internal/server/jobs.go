@@ -33,8 +33,8 @@ var (
 	errAlreadyPosted = errors.New("that review was already published")
 )
 
-// maxJobs limita o histórico em memória. Os reviews que interessam já estão
-// salvos em disco; isto aqui é só a fila da sessão.
+// maxJobs caps the in-memory history. The reviews that matter are already
+// saved to disk; this is just the session's queue.
 const maxJobs = 200
 
 // A review's log is a window, not a file: a chatty agent writes thousands of
@@ -199,7 +199,7 @@ func (j *Job) enqueueLocked() queued {
 	return queued{job: j, gen: j.gen}
 }
 
-// Manager é a fila de reviews e o pool que a consome.
+// Manager is the review queue and the pool that consumes it.
 type Manager struct {
 	cfg        *config.Config
 	runner     *agent.Runner
@@ -214,8 +214,8 @@ type Manager struct {
 	order []string
 	seq   int
 
-	// limits é a última leitura da cota do Claude. Não pertence a job
-	// nenhum: é da máquina, e vale para a página inteira.
+	// limits is the latest reading of Claude's quota. It belongs to no job: it
+	// is the machine's, and holds for the whole page.
 	limitsMu sync.RWMutex
 	limits   agent.Limits
 }
@@ -299,13 +299,14 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	return m.mustView(job.ID), err
 }
 
-// sendLocked manda um job recém-registrado para a fila sem bloquear. Chamar
-// com o lock do Manager seguro: o envio e a falha por fila cheia acontecem na
-// mesma seção crítica que registrou o job como queued, então ninguém vê um
-// queued que nunca entrou na fila — nem um Enqueue concorrente do mesmo PR,
-// nem um Cancel ou Remove que o finish depois atropelaria. O select tem
-// default, então segurar o lock aqui não trava o Manager com a fila cheia; o
-// worker que receber o job só espera o lock para começar.
+// sendLocked sends a freshly registered job to the queue without blocking.
+// Call it holding the Manager lock: the send and the failure on a full queue
+// happen in the same critical section that registered the job as queued, so
+// nobody sees a queued job that never entered the queue — neither a
+// concurrent Enqueue of the same PR, nor a Cancel or Remove that finish would
+// later trample. The select has a default, so holding the lock here does not
+// stall the Manager when the queue is full; the worker that receives the job
+// only waits for the lock to start.
 func (m *Manager) sendLocked(job *Job) error {
 	select {
 	case m.queue <- job.enqueueLocked():
@@ -356,7 +357,7 @@ func (m *Manager) run(q queued) {
 		m.mu.Unlock()
 		return
 	}
-	// Cancelado enquanto esperava na fila.
+	// Canceled while it waited in the queue.
 	// Whoever canceled or removed it already discarded its copy.
 	if job.State != StateQueued {
 		m.mu.Unlock()
@@ -420,8 +421,8 @@ func (m *Manager) run(q queued) {
 	// before the in-place branch below clears job.publish.
 	fresh := job.publish == nil
 
-	// O relatório de uma publicação não vira arquivo: o review já está salvo,
-	// e este job só conta o que foi para o PR.
+	// A publish report does not become a file: the review is already saved, and
+	// this job only records what went to the PR.
 	var (
 		path    string
 		saveErr error
@@ -430,8 +431,8 @@ func (m *Manager) run(q queued) {
 		path, saveErr = store.Save(m.reviewsDir, res, m.runner.PricingTable)
 	}
 
-	// O PR entra no índice: é o ✓ da lista, e é o commit gravado aqui que
-	// depois denuncia mudança no PR depois do review.
+	// The PR enters the index: it is the ✓ in the list, and the commit
+	// recorded here is what later flags a change to the PR after the review.
 	var markErr error
 	if fresh {
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
@@ -476,16 +477,16 @@ func (m *Manager) run(q queued) {
 			job.State = StateFailed
 		}
 	case markErr != nil:
-		// Sem o índice o PR volta a aparecer como não revisado, e o ⟳ de
-		// mudança depois do review deixa de funcionar — melhor avisar.
+		// Without the index the PR shows up again as unreviewed, and the ⟳ for a
+		// change after the review stops working — better to warn.
 		job.Err = "done, but I could not update the reviewed index: " + markErr.Error()
 	}
 	job.FinishedAt = time.Now()
 	job.Cloning = false
 	job.cancel = nil
-	// Passo `publish`: a pipeline não publica sozinha. O card para mostrando
-	// o que vai ao PR, achado por achado, e é você quem manda — pelo mesmo
-	// botão de sempre.
+	// `publish` step: the pipeline does not publish by itself. The card stops
+	// showing what goes to the PR, finding by finding, and you are the one who
+	// sends it — through the same button as always.
 	if awaits {
 		job.AwaitsPublish = true
 	}
@@ -601,7 +602,7 @@ func (m *Manager) finish(job *Job, state State, errMsg string) {
 	m.publish(job)
 }
 
-// finishLocked é o finish para quem já segura o lock do Manager.
+// finishLocked is finish for callers that already hold the Manager lock.
 func (m *Manager) finishLocked(job *Job, state State, errMsg string) {
 	job.State = state
 	job.Err = errMsg
@@ -680,8 +681,8 @@ func (m *Manager) Remove(id string) error {
 		if job.State == StateQueued {
 			job.publish.discard()
 		}
-		// O worker só descobre o cancelamento depois; marcar aqui impede que
-		// ele republique um job que a página já esqueceu.
+		// The worker only finds out about the cancellation later; marking it here
+		// keeps it from republishing a job the page already forgot.
 		job.State = StateCanceled
 		job.FinishedAt = time.Now()
 	}
@@ -994,8 +995,8 @@ func (m *Manager) Dismiss(id string) (jobView, error) {
 	return m.mustView(id), nil
 }
 
-// View serializa um job. Os workers mexem nos jobs o tempo todo, então nada
-// de *Job sai daqui — quem lê, lê uma cópia feita sob o lock.
+// View serializes a job. Workers touch jobs all the time, so no *Job leaves
+// here — whoever reads gets a copy made under the lock.
 //
 // The body is rendered after the lock is released: markdown rendering and
 // sanitizing a large report would otherwise stall every job operation.

@@ -1,11 +1,11 @@
 package server
 
-// O /mcp é o Bazel falado por máquina: um servidor MCP no transporte
-// "streamable HTTP", na mesma porta e atrás do mesmo guard da página. Um
-// agente externo — uma sessão do Claude Code, um bot de mensagens, uma rotina
-// agendada — lista PRs, enfileira review, acompanha o job e lê o resultado. O
-// review continua vivendo aqui, e a página continua sendo a única interface
-// humana: todo resultado aponta para ela.
+// The /mcp is Bazel spoken by machine: an MCP server on the "streamable HTTP"
+// transport, on the same port and behind the same guard as the page. An
+// external agent — a Claude Code session, a messaging bot, a scheduled
+// routine — lists PRs, enqueues reviews, follows the job and reads the result.
+// The review keeps living here, and the page remains the only human
+// interface: every result points to it.
 //
 // The surface is curated, not the whole API: read and enqueue. Publishing to
 // the PR stays out unless the config says `mcp_allow_publish: true` — and that
@@ -16,9 +16,9 @@ package server
 // prevents is a model publishing by accident, not a hostile process on the
 // machine.
 //
-// É sem sessão: cada POST traz uma mensagem JSON-RPC e leva a resposta em
-// JSON. Não há o que o servidor precise empurrar sem ser perguntado, então o
-// GET (o stream de notificações) não é oferecido — o spec permite.
+// It is sessionless: each POST carries one JSON-RPC message and gets the
+// response back as JSON. The server has nothing to push unprompted, so the GET
+// (the notification stream) is not offered — the spec allows that.
 
 import (
 	"context"
@@ -35,21 +35,21 @@ import (
 	"github.com/beroni/bazel/internal/store"
 )
 
-// mcpVersions são as versões do protocolo que este servidor fala, da mais
-// nova para a mais velha. O que muda entre elas não toca o que usamos.
+// mcpVersions are the protocol versions this server speaks, from newest to
+// oldest. What changes between them does not touch what we use.
 var mcpVersions = []string{"2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"}
 
-// mcpMaxWait é o teto do job_status com espera: segura a requisição, mas não
-// a ponto de o cliente desistir dela.
+// mcpMaxWait is the ceiling for job_status with a wait: it holds the request,
+// but not so long that the client gives up on it.
 const mcpMaxWait = 60
 
 // mcpMaxRefs is the most PRs one enqueue_review call may queue.
 const mcpMaxRefs = 20
 
-// mcpMaxBatch é o máximo de mensagens num lote. Sem teto, o limite de refs por
-// chamada não valeria por requisição: um lote de centenas de enqueue_review
-// enfileiraria milhares de PRs, e um de job_status com espera prenderia a
-// conexão por horas.
+// mcpMaxBatch is the most messages in a batch. Without a ceiling, the refs
+// limit per call would not hold per request: a batch of hundreds of
+// enqueue_review would queue thousands of PRs, and one of job_status with a
+// wait would hold the connection for hours.
 const mcpMaxBatch = 10
 
 const (
@@ -95,8 +95,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 	}
 	data = []byte(strings.TrimSpace(string(data)))
 
-	// Lote é coisa da versão 2025-03-26; as seguintes tiraram. Aceitar não
-	// custa nada e não deixa um cliente mais velho na mão.
+	// Batching is a 2025-03-26 feature; later versions dropped it. Accepting it
+	// costs nothing and does not leave an older client stranded.
 	if len(data) > 0 && data[0] == '[' {
 		var batch []json.RawMessage
 		if err := json.Unmarshal(data, &batch); err != nil {
@@ -109,8 +109,8 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(batch) > mcpMaxBatch {
-			// Recusa o lote inteiro: rodar só o começo dele deixaria o cliente
-			// sem saber o que foi feito.
+			// Refuse the whole batch: running only its beginning would leave the
+			// client not knowing what was done.
 			writeRPC(w, http.StatusBadRequest, rpcFail(nil, rpcInvalidRequest,
 				fmt.Sprintf("batch too large: %d messages, at most %d", len(batch), mcpMaxBatch)))
 			return
@@ -131,7 +131,7 @@ func (s *Server) handleMCP(w http.ResponseWriter, r *http.Request) {
 
 	resp, ok := s.mcpMessage(r, data)
 	if !ok {
-		// Notificação ou resposta do cliente: nada a devolver.
+		// Notification or response from the client: nothing to return.
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -161,7 +161,7 @@ func (s *Server) mcpMessage(r *http.Request, raw json.RawMessage) (rpcResponse, 
 		if notification {
 			return rpcFail(nil, rpcInvalidRequest, "missing method"), true
 		}
-		// Resposta a algo que nunca perguntamos: ignora.
+		// Response to something we never asked: ignore it.
 		return rpcResponse{}, false
 	}
 	if req.JSONRPC != "2.0" {
@@ -222,8 +222,8 @@ func (s *Server) mcpDispatch(r *http.Request, req rpcRequest) (any, *rpcError) {
 		}
 		out, err := tool.call(r.Context(), args)
 		if err != nil {
-			// Falha da ferramenta vai no resultado, não como erro de protocolo:
-			// é o que deixa o modelo do outro lado ler e corrigir o pedido.
+			// A tool failure goes in the result, not as a protocol error: that
+			// is what lets the model on the other side read it and fix the request.
 			return map[string]any{
 				"content": []map[string]any{{"type": "text", "text": err.Error()}},
 				"isError": true,
@@ -422,9 +422,10 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 	if err != nil {
 		return nil, err
 	}
-	// Uma escolha que pode publicar sem passar pela tela é publicar por outro
-	// caminho: sem a chave no config, ela não roda a pedido de quem chega pelo
-	// /mcp. Não é só o posts declarado — PublishesBy recusa na dúvida.
+	// A choice that can publish without going through the screen is publishing
+	// by another path: without the key in the config, it does not run at the
+	// request of whoever arrives through /mcp. It is not only the declared
+	// posts — PublishesBy refuses when in doubt.
 	if how := choice.PublishesBy(); how != "" && !s.allowPublish() {
 		return nil, fmt.Errorf("%q %s, and publishing over MCP is disabled "+
 			"(set mcp_allow_publish: true in the Bazel config to allow it)", choice.Name, how)
@@ -485,7 +486,7 @@ func (s *Server) mcpJobStatus(ctx context.Context, raw json.RawMessage) (map[str
 		}
 		live := view.State == StateQueued || view.State == StateRunning
 		if !live || !time.Now().Before(deadline) {
-			// O HTML é para a página; o corpo em markdown já é o review.
+			// The HTML is for the page; the markdown body already is the review.
 			view.HTML = ""
 			return map[string]any{"job": view}, nil
 		}
@@ -553,8 +554,8 @@ func (s *Server) mcpReadReview(_ context.Context, raw json.RawMessage) (map[stri
 }
 
 func (s *Server) mcpPublish(_ context.Context, raw json.RawMessage) (map[string]any, error) {
-	// A lista de ferramentas já esconde esta; a checagem aqui é o que segura
-	// uma chamada feita de memória depois de a chave ser desligada.
+	// The tool list already hides this one; the check here is what stops a
+	// call made from memory after the key is turned off.
 	if !s.allowPublish() {
 		return nil, errors.New("publishing over MCP is disabled")
 	}

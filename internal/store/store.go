@@ -15,8 +15,9 @@ import (
 	"github.com/beroni/bazel/internal/pricing"
 )
 
-// Save grava o review em markdown e devolve o caminho do arquivo.
-// pricing pode ser nil, caso em que o custo vem do campo CostUSD do Usage.
+// Save writes the review as markdown and returns the file path.
+// pricing may be nil, in which case the cost comes from the Usage's CostUSD
+// field.
 func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err

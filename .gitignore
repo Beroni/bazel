@@ -1,10 +1,10 @@
-# binário compilado (make build)
+# compiled binary (make build)
 /bazel
 
-# artefatos de teste
+# test artifacts
 coverage.out
 
-# config local do Claude Code (caminhos desta máquina)
+# local Claude Code config (paths on this machine)
 .claude/settings.local.json
 
 # macOS

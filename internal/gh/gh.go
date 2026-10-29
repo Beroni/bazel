@@ -110,9 +110,9 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 
 	authors := lowerSet(opts.Authors)
 
-	// Se há múltiplos repos, tenta uma busca única com `gh search prs`.
-	// Se falhar, cai de volta para o fan-out por repo (preserva compatibilidade).
-	// O erro da busca é propagado para que o chamador saiba que algo deu errado.
+	// With several repos, try a single search with `gh search prs`. If it
+	// fails, fall back to the per-repo fan-out (keeps compatibility). The
+	// search error is passed on so the caller knows something went wrong.
 	if len(repos) > 1 {
 		prs, err := searchRepoPRs(ctx, repos, opts)
 		if err == nil {
@@ -131,8 +131,9 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 			})
 			return all, nil
 		}
-		// BUG-04: propaga o erro da busca para que repositórios com erro não sumam silenciosamente.
-		// O fan-out abaixo ainda será tentado, mas o erro da busca única vai junto.
+		// BUG-04: pass the search error on so repositories with errors do not
+		// vanish silently. The fan-out below is still tried, but the single
+		// search's error goes along with it.
 		searchErr := err
 		var (
 			mu   sync.Mutex
@@ -169,7 +170,8 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 		}
 		wg.Wait()
 
-		// Adiciona o erro da busca única como erro global (repo vazio = erro geral).
+		// Add the single search's error as a global one (empty repo = general
+		// error).
 		if searchErr != nil {
 			errs = append(errs, RepoError{Repo: "", Err: fmt.Errorf("gh search prs fallback: %w", searchErr)})
 		}

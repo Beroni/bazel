@@ -24,8 +24,8 @@ func TestDefaultTableHasKnownModels(t *testing.T) {
 	}
 }
 
-// A escrita de cache de 5 minutos custa 1,25× o input, em todo modelo — era
-// isso que a tabela antiga errava (escrita mais barata que o input no Opus).
+// The 5-minute cache write costs 1.25× the input, in every model — that is
+// what the old table got wrong (write cheaper than input on Opus).
 func TestDefaultCacheWriteIsOneAndAQuarterInput(t *testing.T) {
 	for name, r := range Default {
 		if want := r.Input * 1.25; r.CacheWrite != want {
@@ -37,7 +37,7 @@ func TestDefaultCacheWriteIsOneAndAQuarterInput(t *testing.T) {
 	}
 }
 
-// Cost calcula o custo a partir de uma rate e contadores de tokens.
+// Cost computes the cost from a rate and token counters.
 func TestCostKnownModel(t *testing.T) {
 	// Opus 5.5: $4/M input, $20/M output, $5/M cache write, $0.20/M cache read
 	cost := Default.Cost("claude-opus-5-5", 1_000_000, 1_000_000, 1_000_000, 1_000_000)
@@ -47,8 +47,8 @@ func TestCostKnownModel(t *testing.T) {
 	}
 }
 
-// Modelo desconhecido devolve zero — o custo é reportado como "unknown" em vez
-// de adivinhar um número que pode enganar.
+// An unknown model returns zero — the cost is reported as "unknown" instead
+// of guessing a number that may mislead.
 func TestCostUnknownModelReturnsZero(t *testing.T) {
 	if cost := Default.Cost("claude-unknown-99", 1_000_000, 1_000_000, 0, 0); cost != 0 {
 		t.Errorf("modelo desconhecido devia custar 0, custou %.2f", cost)
@@ -134,8 +134,8 @@ func TestCostNaoArredondaCentavos(t *testing.T) {
 	}
 }
 
-// Clone devolve uma tabela independente: escrever nela não pode mexer no
-// Default do pacote.
+// Clone returns an independent table: writing to it must not touch the
+// package's Default.
 func TestCloneIsIndependent(t *testing.T) {
 	c := Default.Clone()
 	c["claude-opus-5-5"] = Rate{Input: 99}
@@ -148,14 +148,14 @@ func TestCloneIsIndependent(t *testing.T) {
 	}
 }
 
-// Sem tokens, o custo é zero.
+// Without tokens, the cost is zero.
 func TestCostZeroTokens(t *testing.T) {
 	if cost := Default.Cost("claude-opus-5", 0, 0, 0, 0); cost != 0 {
 		t.Errorf("sem tokens o custo devia ser 0, foi %.2f", cost)
 	}
 }
 
-// FormatUSD formata um valor em dólar, com vírgula decimal e 2 casas.
+// FormatUSD formats a dollar value, with a decimal comma and 2 places.
 func TestFormatUSD(t *testing.T) {
 	cases := map[float64]string{
 		0:       "$0.00",
@@ -171,7 +171,7 @@ func TestFormatUSD(t *testing.T) {
 	}
 }
 
-// FormatTokens abrevia a contagem com sufixo k/M.
+// FormatTokens abbreviates the count with a k/M suffix.
 func TestFormatTokens(t *testing.T) {
 	cases := map[int]string{
 		0:         "0",
@@ -188,12 +188,12 @@ func TestFormatTokens(t *testing.T) {
 	}
 }
 
-// Tabela customizada substitui completamente o default (não cai no default).
+// A custom table fully replaces the default (it does not fall back).
 func TestCustomTableOverridesDefault(t *testing.T) {
 	tbl := Table{
 		"claude-opus-5-5": {Input: 99.0, Output: 99.0, CacheWrite: 99.0, CacheRead: 99.0},
 	}
-	// Modelo que não está na customização devolve zero (não cai no default).
+	// A model not in the customization returns zero (it does not fall back).
 	if cost := tbl.Cost("claude-haiku-4-5", 1_000_000, 0, 0, 0); cost != 0 {
 		t.Errorf("modelo ausente na customização devia custar 0: %.2f", cost)
 	}

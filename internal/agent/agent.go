@@ -102,8 +102,9 @@ type Runner struct {
 	cfg *config.Config
 	// KeepWorkspace keeps the temporary clone after the review.
 	KeepWorkspace bool
-	// PricingTable é a tabela de preços usada para calcular o custo em USD.
-	// Se nil, o custo vem do campo total_cost_usd do stream-json (Claude Code).
+	// PricingTable is the price table used to compute the cost in USD.
+	// If nil, the cost comes from the total_cost_usd field of the stream-json
+	// (Claude Code).
 	PricingTable *pricing.Table
 }
 
@@ -345,8 +346,9 @@ func ContextBody(res Result, choice config.Choice) string {
 	}
 	body, err := joinSteps(kept)
 	if err != nil {
-		// Todos os passos que ficam no Bazel falharam. Sem esta nota a seção
-		// sumiria da tela, e a falha só apareceria na caixa de passos.
+		// Every step that stays in Bazel failed. Without this note the section
+		// would vanish from the screen, and the failure would only show up in the
+		// steps box.
 		notes := make([]string, 0, len(kept))
 		for _, s := range kept {
 			msg := "no output"
@@ -360,8 +362,8 @@ func ContextBody(res Result, choice config.Choice) string {
 	return body
 }
 
-// stepsWhere separa os passos que vão ao PR (publishes=true) dos que ficam no
-// Bazel (publishes=false).
+// stepsWhere splits the steps that go to the PR (publishes=true) from those
+// that stay in Bazel (publishes=false).
 func stepsWhere(res Result, choice config.Choice, publishes bool) []StepResult {
 	kept := make([]StepResult, 0, len(res.Steps))
 	for _, s := range res.Steps {
@@ -526,8 +528,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
 	}
-	// Com pricing table configurada, recalcula o custo a partir dos tokens
-	// e do modelo — é o que permite que o custo mude sem rebuild do binário.
+	// With a pricing table configured, recompute the cost from the tokens and
+	// the model — that is what lets the cost change without rebuilding the
+	// binary.
 	var byModel []Usage
 	if m, ok := adapter.(interface{ models() []Usage }); ok {
 		byModel = m.models()

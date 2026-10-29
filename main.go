@@ -128,10 +128,10 @@ func serve(ctx context.Context, args []string) error {
 
 	splash.Play()
 
-	// Fora do loopback não há autenticação nenhuma: quem alcança a porta
-	// clona repositórios e roda agentes com o seu `gh`. Não é proibido — há
-	// quem ponha um proxy com autenticação na frente —, mas não pode ser
-	// silencioso.
+	// Beyond loopback there is no authentication at all: whoever reaches the
+	// port clones repositories and runs agents with your `gh`. It is not
+	// forbidden — some put an authenticating proxy in front —, but it cannot
+	// be silent.
 	if srv.Exposed() {
 		fmt.Println(styErr.Render(fmt.Sprintf("  ⚠ listening on %s, beyond loopback, with no authentication —", addr)))
 		fmt.Println(styErr.Render("    anyone who reaches this port can clone repos and run agents as you."))

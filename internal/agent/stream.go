@@ -83,17 +83,17 @@ type streamEvent struct {
 	} `json:"message"`
 }
 
-// spent é o gasto do evento final. O detalhe por modelo manda quando existe —
-// é o único que enxerga os sub-agentes; sem ele sobra o `usage`, que é o que um
-// agente mais simples reporta.
+// spent is the spend of the final event. The per-model detail wins when it
+// exists — it is the only one that sees the sub-agents; without it what is
+// left is `usage`, which is what a simpler agent reports.
 //
-// O custo em USD é calculado a partir da tabela de preços, não do campo
-// `total_cost_usd` do evento: esse campo vem do Claude Code e pode não estar
-// presente em todos os provedores. A tabela é configurável em config.yaml.
+// The cost in USD is computed from the price table, not from the event's
+// `total_cost_usd` field: that field comes from Claude Code and may not be
+// present in every provider. The table is configurable in config.yaml.
 //
-// O segundo retorno é o mesmo gasto separado por modelo, para a tabela de
-// preços cobrar cada um pelo seu preço; nil quando os tokens não vieram do
-// modelUsage e não há como dividi-los.
+// The second return value is the same spend split by model, so the price
+// table can charge each one its own price; nil when the tokens did not come
+// from modelUsage and there is no way to split them.
 func (ev streamEvent) spent() (Usage, []Usage) {
 	u := Usage{CostUSD: ev.CostUSD}
 	if len(ev.ModelUsage) == 0 {
@@ -112,7 +112,7 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 		u.CacheRead += m.CacheRead
 		custo += m.CostUSD
 	}
-	// Detalhe por modelo presente mas sem token nenhum: o que vale é o usage.
+	// Per-model detail present but with no tokens at all: usage is what counts.
 	usouModelUsage := u.Total() > 0
 	if !usouModelUsage {
 		u.InputTokens = ev.Usage.InputTokens
@@ -125,9 +125,9 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 	if u.CostUSD == 0 {
 		u.CostUSD = custo
 	}
-	// O modelo principal é o que mais gastou tokens — com empate, o primeiro
-	// em ordem alfabética. Iterar o map direto daria um nome diferente a cada
-	// rodada.
+	// The main model is the one that spent the most tokens — on a tie, the
+	// first in alphabetical order. Iterating the map directly would give a
+	// different name on each run.
 	names := make([]string, 0, len(ev.ModelUsage))
 	for name := range ev.ModelUsage {
 		names = append(names, name)
@@ -152,8 +152,9 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 		}
 		byModel = append(byModel, part)
 	}
-	// O detalhe por modelo só vale se foi ele que contou os tokens; quando a
-	// conta caiu no `usage`, não há como dividi-la entre os modelos.
+	// The per-model detail only counts if it is what counted the tokens; when
+	// the count fell back to `usage`, there is no way to split it between the
+	// models.
 	if !usouModelUsage {
 		byModel = nil
 	}
@@ -190,14 +191,14 @@ type streamParser struct {
 	// usage is the settled spend, from the final event. An agent that doesn't
 	// speak stream-json leaves this zeroed — there's nowhere to get it from.
 	usage Usage
-	// byModel é o gasto fechado separado por modelo, para a tabela de preços.
-	// unsplit diz que algum evento final não trouxe a separação — aí ela não
-	// cobre o total, e quem cobra usa o total.
+	// byModel is the closed spend split by model, for the price table. unsplit
+	// says some final event did not bring the split — then it does not cover the
+	// total, and whoever charges uses the total.
 	byModel []Usage
 	unsplit bool
-	// live é a conta parcial, somada mensagem a mensagem enquanto o agente
-	// trabalha. Fica abaixo do total: só enxerga a conversa principal, e as
-	// lentes que rodam como sub-agente só entram no fechamento.
+	// live is the partial count, summed message by message while the agent
+	// works. It stays below the total: it only sees the main conversation, and
+	// the lenses that run as a sub-agent only come in at closing.
 	live Usage
 	// limits is the latest reading of Claude's quota.
 	limits Limits
@@ -248,12 +249,12 @@ func (p *streamParser) line(raw string) []logEntry {
 	case "result":
 		p.result = ev.Result
 		took := time.Duration(ev.DurationMS) * time.Millisecond
-		// O gasto conta mesmo quando o agente termina mal: os tokens foram
-		// queimados do mesmo jeito.
+		// The spend counts even when the agent ends badly: the tokens were burned
+		// just the same.
 		u, byModel := ev.spent()
 		p.usage.add(u)
-		// add soma tokens e custo, não o nome: o modelo do fechamento é o do
-		// primeiro evento final que o trouxe.
+		// add sums tokens and cost, not the name: the closing model is the one from
+		// the first final event that brought it.
 		if p.usage.Model == "" {
 			p.usage.Model = u.Model
 		}
@@ -496,8 +497,8 @@ func (p *streamParser) spend() Usage {
 	return p.live
 }
 
-// models é o gasto fechado separado por modelo, ou nil quando a separação não
-// cobre o total — a conta parcial, ou um evento final sem modelUsage.
+// models is the closed spend split by model, or nil when the split does not
+// cover the total — the partial count, or a final event without modelUsage.
 func (p *streamParser) models() []Usage {
 	if p.usage.Empty() || p.unsplit {
 		return nil
@@ -505,8 +506,8 @@ func (p *streamParser) models() []Usage {
 	return p.byModel
 }
 
-// report é o relatório do agente: o texto do evento final ou, se ele não
-// veio, o que o assistente escreveu no caminho.
+// report is the agent's report: the text of the final event or, if it did
+// not come, what the assistant wrote along the way.
 func (p *streamParser) report() string {
 	if r := strings.TrimSpace(p.result); r != "" {
 		return r

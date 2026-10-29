@@ -706,9 +706,10 @@ func TestUsageSomaEFormata(t *testing.T) {
 	}
 }
 
-// A soma dos passos guarda o modelo enquanto ele for um só — é o que deixa o
-// fallback de StringWithCost precificar um total que chegou sem custo. Passos
-// de modelos diferentes não têm uma linha da tabela que os precifique juntos.
+// The sum of the steps keeps the model as long as there is only one — that
+// is what lets the StringWithCost fallback price a total that arrived without
+// a cost. Steps from different models have no table row that prices them
+// together.
 func TestUsageSomaLevaOModelo(t *testing.T) {
 	var u Usage
 	u.add(Usage{InputTokens: 10, Model: "claude-opus-4-5"})
@@ -722,8 +723,8 @@ func TestUsageSomaLevaOModelo(t *testing.T) {
 	}
 }
 
-// Sem modelUsage — um agente mais simples, ou uma versão antiga do Claude Code
-// — o `usage` da conversa principal ainda vale.
+// Without modelUsage — a simpler agent, or an old version of Claude Code —
+// the main conversation's `usage` still counts.
 func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
 	var p streamParser
 	p.line(`{"type":"result","subtype":"success","result":"ok","duration_ms":1000,` +
@@ -788,8 +789,8 @@ func TestUsageParcialChegaDuranteOReview(t *testing.T) {
 	}
 }
 
-// Um passo que fica no Bazel e falhou não some da tela: a seção dele mostra a
-// falha, como o relatório de pipeline sempre mostrou.
+// A step that stays in Bazel and failed does not vanish from the screen:
+// its section shows the failure, as the pipeline report always did.
 func TestContextBodyMostraPassoQueFalhou(t *testing.T) {
 	choice := config.Choice{Name: "p", Pipeline: true, Publishable: true, Steps: []config.ResolvedAgent{
 		{Name: "history-pr", Publishable: false},
@@ -808,8 +809,9 @@ func TestContextBodyMostraPassoQueFalhou(t *testing.T) {
 	}
 }
 
-// Numa pipeline que junta história e review, a tela mostra as duas e o PR
-// recebe só o review. É o ponto inteiro de marcar um agente como não-publicável.
+// In a pipeline that joins a story and a review, the screen shows both and
+// the PR gets only the review. That is the whole point of marking an agent as
+// non-publishable.
 func TestPublishableBody(t *testing.T) {
 	steps := []StepResult{
 		{Name: "history-pr", Body: "48 commits, 3 rodadas de review"},
@@ -900,9 +902,10 @@ func TestBuiltinPrecisaDoClone(t *testing.T) {
 	}
 }
 
-// Uma rodada do Claude Code mistura modelos. O principal é o que mais gastou
-// — sempre o mesmo, rodada após rodada — e a tabela cobra cada modelo pelo
-// seu preço em vez de cobrar tudo pelo preço do principal.
+// A Claude Code run mixes models. The main one is the one that spent the
+// most — always the same one, run after run — and the table charges each
+// model its own price instead of charging everything at the main model's
+// price.
 func TestCustoPorModeloEModeloPrincipalEstavel(t *testing.T) {
 	ev := `{"type":"result","subtype":"success","result":"ok","total_cost_usd":9.99,` +
 		`"modelUsage":{"claude-haiku-4-5-20251001":{"inputTokens":1000000,"outputTokens":0,"costUSD":0.5},` +
@@ -914,22 +917,23 @@ func TestCustoPorModeloEModeloPrincipalEstavel(t *testing.T) {
 			t.Fatalf("modelo principal devia ser o que mais gastou, veio %q", p.usage.Model)
 		}
 		u := priced(p.spend(), p.models(), &pricing.Default)
-		// 2M de Opus 5.5 a $4 + 1M de Haiku 4.5 a $1 — não 3M a $4.
+		// 2M of Opus 5.5 at $4 + 1M of Haiku 4.5 at $1 — not 3M at $4.
 		if u.CostUSD != 9 {
 			t.Fatalf("custo por modelo = %.2f, queria 9.00", u.CostUSD)
 		}
 	}
 }
 
-// Modelo fora da tabela não zera o custo que o provedor reportou: o Grok traz
-// o próprio total_cost_usd, e apagá-lo deixaria o card em $0.00.
+// A model outside the table does not zero the cost the provider reported:
+// Grok brings its own total_cost_usd, and erasing it would leave the card at
+// $0.00.
 func TestCustoDoProvedorSobreviveModeloDesconhecido(t *testing.T) {
 	u := priced(Usage{InputTokens: 1000, CostUSD: 0.42, Model: "grok"}, nil, &pricing.Default)
 	if u.CostUSD != 0.42 {
 		t.Errorf("custo do provedor apagado: %.2f", u.CostUSD)
 	}
-	// Num modelo misto, o desconhecido entra com o custo que o provedor deu
-	// para ele e o conhecido com o preço da tabela.
+	// In a mixed model, the unknown one comes in with the cost the provider
+	// gave for it and the known one with the table price.
 	u = priced(Usage{CostUSD: 5}, []Usage{
 		{InputTokens: 1_000_000, Model: "claude-haiku-4-5", CostUSD: 3},
 		{InputTokens: 1_000_000, Model: "modelo-local", CostUSD: 0.5},
@@ -937,14 +941,14 @@ func TestCustoDoProvedorSobreviveModeloDesconhecido(t *testing.T) {
 	if u.CostUSD != 1.5 {
 		t.Errorf("custo misto = %.2f, queria 1.50", u.CostUSD)
 	}
-	// Sem tabela, nada muda.
+	// Without a table, nothing changes.
 	if u := priced(Usage{CostUSD: 0.42, Model: "claude-opus-5-5"}, nil, nil); u.CostUSD != 0.42 {
 		t.Errorf("sem tabela o custo mudou: %.2f", u.CostUSD)
 	}
 }
 
-// O custo que já veio pronto não é refeito no rodapé do review: refazer pelo
-// modelo principal desfaria a conta por modelo.
+// A cost that already came ready is not redone in the review footer:
+// redoing it from the main model would undo the per-model accounting.
 func TestStringWithCostNaoRefazCustoPronto(t *testing.T) {
 	u := Usage{InputTokens: 1_000_000, CostUSD: 1.23, Model: "claude-opus-5-5"}
 	if got := u.StringWithCost(&pricing.Default); !strings.Contains(got, "$1.23") {

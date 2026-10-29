@@ -109,7 +109,7 @@ func isFindingMeta(blk *ast.HTMLBlock, text string) bool {
 
 var findingMetaRe = regexp.MustCompile(`^<!-- finding(?: [a-z_]+=[^\s<>]+)* -->$`)
 
-// policy limpa o HTML depois de convertido.
+// policy cleans the HTML after it is converted.
 //
 // The markdown does not come only from the agent: the PR description is
 // written by whoever opened the PR. goldmark escapes raw HTML, but still emits

@@ -69,14 +69,14 @@ type Server struct {
 	// connection and to forget what it cached under the old ids.
 	instance string
 
-	// cfgMu protege os campos do config que a interface edita (repos).
+	// cfgMu protects the config fields the interface edits (repos).
 	cfgMu sync.Mutex
 
-	// bound é o endereço em que o Run de fato escuta — difere de opts.Addr
-	// quando a porta pedida é 0.
+	// bound is the address Run actually listens on — it differs from opts.Addr
+	// when the requested port is 0.
 	bound atomic.Pointer[string]
 
-	// fetchMu serializa as consultas ao gh; prMu protege o cache.
+	// fetchMu serializes the gh queries; prMu guards the cache.
 	fetchMu sync.Mutex
 	prMu    sync.RWMutex
 	prs     []gh.PR
@@ -122,7 +122,7 @@ func newInstanceID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// Handler devolve as rotas já embrulhadas na checagem de origem.
+// Handler returns the routes already wrapped in the origin check.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
@@ -165,8 +165,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
 	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
 
-	// O /mcp passa pelo mesmo guard: é a mesma porta para clonar e rodar
-	// agente, só que falada por máquina.
+	// /mcp goes through the same guard: it is the same port for cloning and
+	// running an agent, just spoken by machine.
 	mux.HandleFunc("/mcp", s.handleMCP)
 
 	return s.guard(mux)
@@ -227,9 +227,9 @@ func (s *Server) URL(addr string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
-// webUI é o endereço da página, montado do que o servidor escuta e não do
-// Host da requisição: fora do loopback o Host não passa pelo guard, e quem
-// pergunta escolheria o link que recebe.
+// webUI is the page address, built from what the server listens on and not
+// from the request's Host: outside loopback the Host does not pass through
+// the guard, and whoever asks would pick the link they receive.
 func (s *Server) webUI() string {
 	addr := s.opts.Addr
 	if b := s.bound.Load(); b != nil {
@@ -262,10 +262,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 	})
 }
 
-// Exposed diz que o servidor escuta além do loopback: um IP de rede, o
-// 0.0.0.0, ou um endereço sem host (`:7777`), que o net.Listen abre em todas
-// as interfaces. É diferente de loopback(), que decide a checagem de Host —
-// `:7777` continua só aceitando Host local, mas a porta está na rede.
+// Exposed says the server listens beyond loopback: a network IP, 0.0.0.0,
+// or an address without a host (`:7777`), which net.Listen opens on all
+// interfaces. It differs from loopback(), which decides the Host check —
+// `:7777` still only accepts a local Host, but the port is on the network.
 func (s *Server) Exposed() bool {
 	host, _, err := net.SplitHostPort(s.opts.Addr)
 	if err != nil {
@@ -365,15 +365,15 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// prFilter é o recorte da lista de PRs. A página e o /mcp pedem a mesma
-// lista; só o MCP filtra por repositório e por estado do review, e só a
-// página precisa da descrição em HTML.
+// prFilter is the cut of the PR list. The page and /mcp ask for the same
+// list; only the MCP filters by repository and review state, and only the
+// page needs the description as HTML.
 type prFilter struct {
 	Refresh bool
 	Mine    bool
 	Author  string
 	Repo    string
-	// Status é "" (todos), "unreviewed", "reviewed", "changed" ou "posted".
+	// Status is "" (all), "unreviewed", "reviewed", "changed" or "posted".
 	Status string
 	HTML   bool
 }
@@ -522,7 +522,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
 }
 
-// resolveChoice acha o agente ou pipeline pelo nome. Vazio = o padrão.
+// resolveChoice finds the agent or pipeline by name. Empty = the default.
 func (s *Server) resolveChoice(name string) (config.Choice, error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -536,10 +536,10 @@ func (s *Server) resolveChoice(name string) (config.Choice, error) {
 	return choice, nil
 }
 
-// enqueueRefs põe na fila um review por referência. O que não deu certo volta
-// em errs, um por item — um ref ruim não derruba os outros.
+// enqueueRefs queues one review per reference. What went wrong comes back
+// in errs, one per item — a bad ref does not take down the others.
 func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
-	// Os PRs em cache evitam um `gh pr view` por item quando vieram da lista.
+	// Cached PRs avoid a `gh pr view` per item when they came from the list.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
 	for _, pr := range s.prs {

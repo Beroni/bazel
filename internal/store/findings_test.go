@@ -301,7 +301,8 @@ func TestSplitFindingsDuvidaNegritoNumerado(t *testing.T) {
 	}
 }
 
-// A seção de dúvidas vazia ("- None.") não ganha caixa: não há o que desmarcar.
+// The empty doubts section ("- None.") gets no checkbox: there is nothing to
+// uncheck.
 func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 	for _, item := range []string{"- None.", "- **None**", "* n/a", "- Nenhuma.", "1. Nothing"} {
 		body := "## Needs human verification\n\n" + item + "\n"
@@ -312,7 +313,7 @@ func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 			t.Errorf("%q: nada devia sair, veio %q", item, got)
 		}
 	}
-	// Uma dúvida de verdade que começa com a palavra continua sendo uma.
+	// A real doubt that starts with the word is still one.
 	if n := Findings("## Needs human verification\n\n- None of the callers check the error\n"); n != 1 {
 		t.Errorf("dúvida que começa com None devia contar, veio %d", n)
 	}

@@ -28,11 +28,11 @@ const state = {
   tab: 'queue',
   activeJob: null,
   activeSaved: null,
-  activePR: null,      // chave do PR aberto no painel da direita
-  bodies: {},        // id do job -> html do review
-  splits: {},        // id do job -> {pub, ctx} quando só parte vai ao PR
-  picks: {},         // 'job:<id>' | 'saved:<name>' -> Set dos achados desmarcados
-  logs: {},          // id do job -> {next, lines, dropped, live, busy}
+  activePR: null,      // key of the PR open in the right-hand pane
+  bodies: {},        // job id -> review html
+  splits: {},        // job id -> {pub, ctx} when only part goes to the PR
+  picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
+  logs: {},          // job id -> {next, lines, dropped, live, busy}
   instance: null,    // id of the server process; changes when it restarts
 };
 
@@ -78,8 +78,8 @@ function waiting(job) {
     && !job.posted && !job.publishing;
 }
 
-// fmtTokens abrevia a contagem do jeito que o servidor abrevia: um review da
-// frota queima milhões de tokens, e "1,8M" se lê melhor que sete dígitos.
+// fmtTokens abbreviates the count the way the server does: a fleet review
+// burns millions of tokens, and "1,8M" reads better than seven digits.
 function fmtTokens(n) {
   if (!n || n < 0) return '0';
   if (n < 1000) return String(n);
@@ -1275,8 +1275,9 @@ function renderJobs() {
       t.title = `what "${job.agent}" produces does not go to the PR`;
       actions.append(t);
     } else if (waiting(job)) {
-      // Terminou num `publish`: publicar daqui mandaria tudo sem você ver o
-      // que vai. O card só chama para o review, onde estão os tiques.
+      // It ended on a `publish`: publishing from here would send everything
+      // without you seeing what goes. The card only points to the review,
+      // where the ticks are.
       const r = el('button', 'btn small', 'choose what goes');
       r.title = 'opens the review with what goes to the PR, finding by finding';
       r.addEventListener('click', (e) => { e.stopPropagation(); openJob(job.id); });
@@ -1338,8 +1339,8 @@ function label(job) {
 // uppercase. It doesn't clear the element: the card's colored dot is already there.
 function fillState(span, job) {
   const [texto, tempo] = labelParts(job);
-  // Esperando você publicar é um fim só pela metade: a cor de aviso é o que
-  // separa o card dos reviews que não pedem mais nada.
+  // Waiting for you to publish is only half an ending: the warning color is
+  // what sets the card apart from reviews that ask for nothing more.
   if (waiting(job)) span.classList.add('awaits');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
@@ -1466,9 +1467,9 @@ function renderViewer() {
     v.append(el('p', 'dim', 'loading review…'));
     return;
   }
-  // Terminou num `publish`: a pipeline não mandou nada, e é aqui que você
-  // escolhe o que vai. Dizer isso antes do review é o que faz a leitura ser
-  // a de quem decide, e não a de quem só confere.
+  // It ended on a `publish`: the pipeline sent nothing, and this is where you
+  // choose what goes. Saying so before the review is what makes you read it
+  // as the one who decides, not as someone who only checks.
   if (waiting(job)) {
     v.append(el('p', 'awaits-note', 'Nothing has gone to the PR yet. Untick the findings that should not go,'
       + ' then publish at the end, or keep it here.'));

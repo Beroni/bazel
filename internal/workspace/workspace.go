@@ -23,18 +23,19 @@ type Workspace struct {
 	Keep bool
 }
 
-// cloneTimeout limita o clone e o checkout. O timeout_seconds do agente só
-// começa a contar no passo, depois do clone; sem este limite um `gh repo
-// clone` pendurado na rede segura o worker até alguém cancelar na mão.
+// cloneTimeout limits the clone and the checkout. The agent's timeout_seconds
+// only starts counting at the step, after the clone; without this limit a `gh
+// repo clone` hanging on the network holds the worker until someone cancels
+// by hand.
 var cloneTimeout = 15 * time.Minute
 
-// waitDelay é quanto o Run espera os pipes depois de matar o processo.
+// waitDelay is how long Run waits for the pipes after killing the process.
 const waitDelay = 10 * time.Second
 
-// Prepare clona o repositório do PR numa pasta temporária e faz o checkout da
-// branch do PR. O clone é blobless (--filter=blob:none) em vez de raso: baixa
-// pouco, mas mantém o histórico inteiro — sem ele o `git diff base...HEAD` do
-// agente não acha o merge-base.
+// Prepare clones the PR's repository into a temporary folder and checks out
+// the PR branch. The clone is blobless (--filter=blob:none) instead of
+// shallow: it downloads little but keeps the whole history — without it the
+// agent's `git diff base...HEAD` cannot find the merge-base.
 func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 	dir, err := os.MkdirTemp("", fmt.Sprintf("bazel-%s-%d-", sanitize(pr.Slug()), pr.Number))
 	if err != nil {
@@ -45,7 +46,7 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
-	// git clone aceita um diretório existente desde que esteja vazio.
+	// git clone accepts an existing directory as long as it is empty.
 	if err := run(ctx, "", "gh", "repo", "clone", pr.Repo, dir, "--", "--filter=blob:none"); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("clonando %s: %w", pr.Repo, err)
@@ -96,8 +97,8 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	// O git que o gh dispara herda o stderr: sem WaitDelay, matar o gh no
-	// timeout não solta o Run enquanto o neto pendurado segura o pipe.
+	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
+	// timeout does not release Run while the hung grandchild holds the pipe.
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
@@ -129,8 +130,8 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	// O git que o gh dispara herda o stderr: sem WaitDelay, matar o gh no
-	// timeout não solta o Run enquanto o neto pendurado segura o pipe.
+	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
+	// timeout does not release Run while the hung grandchild holds the pipe.
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
