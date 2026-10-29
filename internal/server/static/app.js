@@ -33,6 +33,7 @@ const state = {
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
+  views: {},         // job id -> tab open in its detail (see jobView)
   instance: null,    // id of the server process; changes when it restarts
 };
 
@@ -1343,78 +1344,56 @@ function renderJobs() {
   const rail = $('#rail');
   const scroll = rail.scrollLeft;
   rail.innerHTML = '';
+  // A card is a summary: which PR, what runs over it, how far it got. The
+  // actions (cancel, publish, comment, keep it here) live in the job's detail,
+  // next to what they act on.
   for (const job of state.jobs) {
-    const card = el('div', 'card' + (state.activeJob === job.id ? ' on' : ''));
+    const card = el('div', 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : ''));
     card.addEventListener('click', () => openJob(job.id));
 
     const top = el('div', 'card-top');
-    const st = el('span', 'state ' + job.state);
-    st.append(el('span', 'dot'), document.createTextNode(' '));
-    fillState(st, job);
-    top.append(el('span', 'num', '#' + job.pr.number), el('span', 'repo', job.pr.slug));
-    const sp = el('div', 'spacer'); sp.style.flex = '1';
+    top.append(el('span', 'dot'), el('span', 'card-ref', `${job.pr.slug} #${job.pr.number}`));
+    const sp = el('div', 'spacer');
     const x = el('button', 'card-x', '✕');
     x.title = 'drop from the queue';
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
-    top.append(sp, st, x);
-    card.append(top, el('div', 'title', job.pr.title));
-    if (job.agent) {
-      const who = el('div', 'meta');
-      who.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
-      if (job.publishing) who.append(el('span', 'tag posts', '⇧ publishing'));
-      else if (job.posts) who.append(el('span', 'tag posts', '⇧ publishes'));
-      const custo = gasto(job);
-      if (custo) {
-        const g = el('span', 'tokens', custo);
-        g.title = gastoTitle(job);
-        who.append(g);
-      }
-      card.append(who);
-    }
-    if (job.cloning || (job.steps && job.steps.length > 1)) card.append(stepsBox(job));
+    top.append(sp, x);
+    const title = el('div', 'title', job.pr.title);
+    title.title = job.pr.title;
+    card.append(top, title);
 
-    const actions = el('div', 'card-actions');
-    if (job.state === 'queued' || job.state === 'running') {
-      const b = el('button', 'btn small ghost', 'cancel');
-      b.addEventListener('click', (e) => { e.stopPropagation(); cancelJob(job.id); });
-      actions.append(b);
+    const meta = el('div', 'card-meta');
+    meta.append(fillState(el('span', 'state ' + job.state), job));
+    if (job.agent) meta.append(el('span', 'card-agent', job.agent + (job.pipeline ? ' ⛓' : '')));
+    if (job.publishing) meta.append(el('span', 'tag posts', '⇧ publishing'));
+    else if (job.posts) meta.append(el('span', 'tag posts', '⇧ publishes'));
+    else if (job.posted) meta.append(el('span', 'tag reviewed', 'published'));
+    const custo = gasto(job);
+    if (custo) {
+      const g = el('span', 'tokens', custo);
+      g.title = gastoTitle(job);
+      meta.append(g);
     }
-    if (job.state === 'done' && !job.publishing && job.publishable === false) {
-      const t = el('span', 'dim', 'stays here');
-      t.title = `what "${job.agent}" produces does not go to the PR`;
-      actions.append(t);
-    } else if (waiting(job)) {
-      // It ended on a `publish`: publishing from here would send everything
-      // without you seeing what goes. The card only points to the review,
-      // where the ticks are.
-      const r = el('button', 'btn small', 'choose what goes');
-      r.title = 'opens the review with what goes to the PR, finding by finding';
-      r.addEventListener('click', (e) => { e.stopPropagation(); openJob(job.id); });
-      actions.append(r);
-      const k = el('button', 'btn small ghost', 'keep it here');
-      k.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
-      k.addEventListener('click', (e) => { e.stopPropagation(); dismissJob(job.id, k); });
-      actions.append(k);
-    } else if (job.state === 'done' && !job.publishing) {
-      if (!job.posted) {
-        const p = el('button', 'btn small', 'publish inline review');
-        p.title = 'runs the post skill and publishes with inline comments';
-        p.addEventListener('click', (e) => { e.stopPropagation(); publishJob(job.id, p); });
-        actions.append(p);
-      }
-      if (job.posted) {
-        actions.append(el('span', 'state done', '✓ published'));
-      } else {
-        const b = el('button', 'btn small ghost', 'comment');
-        b.title = 'pastes the review as a single comment, no agent';
-        b.addEventListener('click', (e) => { e.stopPropagation(); postJob(job.id, b); });
-        actions.append(b);
-      }
-    }
-    if (actions.childNodes.length) card.append(actions);
+    card.append(meta, progressBar(job));
     rail.append(card);
   }
   rail.scrollLeft = scroll;
+}
+
+// progressBar is the card's bar: the share of steps already finished, a moving
+// stripe while a lone step runs, and full once the job is over.
+function progressBar(job) {
+  const bar = el('div', 'progress');
+  const fill = el('span');
+  const steps = job.steps || [];
+  const finished = steps.filter((s) => s.state === 'done' || s.state === 'failed').length;
+  let pct = 0;
+  if (job.state === 'done' || job.state === 'failed' || job.state === 'canceled') pct = 100;
+  else if (job.state === 'running' && steps.length > 1) pct = Math.max(6, Math.round((100 * finished) / steps.length));
+  else if (job.state === 'running') bar.classList.add('indeterminate');
+  fill.style.width = pct + '%';
+  bar.append(fill);
+  return bar;
 }
 
 // jobSeconds counts from started_at while the job runs, so the clock doesn't
@@ -1488,6 +1467,7 @@ function viewerSignature(job) {
     // here" has to redraw the viewer even though state is still done.
     waiting(job) ? 'w' : '', job.publishable === false ? 'n' : '',
     state.bodies[job.id] ? 'b' : '',
+    jobView(job), jobView(job) === 'history' ? state.saved.length : '',
   ].join('|');
 }
 
@@ -1504,11 +1484,22 @@ function tickViewer(job) {
     if (time) time.textContent = secs + 's';
     else if (secs) row.append(el('span', 'step-time', secs + 's'));
   });
-  const label_ = document.querySelector('#viewer .viewer-head .state');
+  const label_ = document.querySelector('#viewer .job-head .state');
   if (label_) {
     label_.textContent = '';
     fillState(label_, job);
   }
+}
+
+// jobView is the tab open in a job's detail. Each job remembers the one you
+// picked; until then it follows the job: the log while it runs or after it
+// failed, the report once there is one, the overview while it waits in line.
+function jobView(job) {
+  const picked = state.views[job.id];
+  if (picked && (picked !== 'report' || job.state === 'done')) return picked;
+  if (job.state === 'done') return 'report';
+  if (job.state === 'running' || job.state === 'failed') return 'log';
+  return 'overview';
 }
 
 function renderViewer() {
@@ -1524,53 +1515,163 @@ function renderViewer() {
   }
   v.innerHTML = '';
   v.dataset.sig = sig;
-  const head = el('div', 'viewer-head');
+  const view = jobView(job);
+  const box = el('div', 'job');
+  box.append(jobHead(job), jobTabs(job, view));
+  const body = el('div', 'job-body ' + view);
+  if (view === 'log') renderLogView(body, job);
+  else if (view === 'report') renderReportView(body, job);
+  else if (view === 'history') renderHistoryView(body, job);
+  else renderOverview(body, job);
+  box.append(body);
+  v.append(box);
+  if (view !== 'log') body.scrollTop = 0;
+}
+
+// jobHead names the PR (repo#n · author), its title, the state and the one
+// action that makes sense while the job is alive: cancel.
+function jobHead(job) {
+  const head = el('div', 'job-head');
   const grow = el('div', 'grow');
-  const h = el('h2');
-  h.append(el('span', 'num', '#' + job.pr.number), document.createTextNode(' ' + job.pr.title));
-  const sub = el('div', 'meta');
+  const kicker = el('div', 'kicker');
   const link = el('a', null, job.pr.key);
   link.href = job.pr.url;
   link.target = '_blank';
   link.rel = 'noreferrer';
-  sub.append(link, el('span', null, '@' + job.pr.author), el('span', null, `${job.pr.branch} → ${job.pr.base}`), fillState(el('span', 'state ' + job.state), job));
-  if (job.agent) sub.append(el('span', null, job.agent + (job.pipeline ? ' ⛓' : '')));
-  if (job.posts) sub.append(el('span', 'tag posts', '⇧ publishes to the PR'));
-  grow.append(h, sub);
-  head.append(grow);
-  v.append(head);
-
-  if (job.state === 'queued') {
-    v.append(el('p', 'dim', 'queued — starts as soon as a worker frees up.'));
-    if (job.steps && job.steps.length) v.append(stepsBox(job));
-    return;
+  kicker.append(link, document.createTextNode(' · ' + job.pr.author));
+  grow.append(kicker, el('h2', null, job.pr.title));
+  head.append(grow, fillState(el('span', 'state state-pill ' + job.state), job));
+  if (job.state === 'queued' || job.state === 'running') {
+    const b = el('button', 'btn small', 'Cancel');
+    b.addEventListener('click', () => cancelJob(job.id));
+    head.append(b);
   }
-  if (job.state === 'running') {
-    v.append(el('p', 'dim', job.publishing
-      ? 'publishing the review you read — cloning the PR and commenting line by line. The review comes back to this card when it is done.'
-      : 'running inside the PR clone. You can close the tab, the review keeps going.'));
-    v.append(stepsBox(job));
-    const custo = gasto(job);
-    if (custo) {
-      const g = el('p', 'dim tokens-foot', custo);
-      g.title = gastoTitle(job);
-      v.append(g);
+  return head;
+}
+
+function jobTabs(job, view) {
+  const bar = el('div', 'vtabs');
+  const tabs = [['overview', 'Overview'], ['history', 'History'], ['log', 'Live log'], ['report', 'Report']];
+  for (const [key, name] of tabs) {
+    const b = el('button', 'vtab' + (key === view ? ' on' : ''), name);
+    b.dataset.view = key;
+    if (key === 'report' && job.state !== 'done') {
+      b.disabled = true;
+      b.title = 'the report shows up when the review is done';
     }
-    v.append(logPanel(job, true));
-    pollLog(job.id);
-    return;
+    b.addEventListener('click', () => {
+      state.views[job.id] = key;
+      if (key === 'log') pollLog(job.id);
+      if (key === 'history') refreshSavedList();
+      renderViewer();
+    });
+    bar.append(b);
   }
-  if (job.state === 'canceled') {
-    v.append(el('p', 'dim', 'canceled.'));
-    return;
-  }
-  if (job.state === 'failed') {
-    v.append(el('div', 'error-box', job.error || 'failed'));
-    if (job.log_lines) v.append(logPanel(job, true));
-    pollLog(job.id);
-    return;
-  }
+  return bar;
+}
 
+// renderOverview is everything about the job that is not the report or the
+// log: where it runs, with what, its steps, what it cost and where it landed.
+function renderOverview(body, job) {
+  const msg = {
+    queued: 'Queued — starts as soon as a worker frees up.',
+    running: job.publishing
+      ? 'Publishing the review you read — cloning the PR and commenting line by line. The review comes back to this card when it is done.'
+      : 'Running inside the PR clone. You can close the tab, the review keeps going.',
+    canceled: 'Canceled.',
+  }[job.state];
+  if (msg) body.append(el('p', 'dim', msg));
+  if (job.state === 'failed') body.append(el('div', 'error-box', job.error || 'failed'));
+  if (job.post_error) body.append(el('div', 'error-box', 'failed to publish: ' + job.post_error));
+
+  const facts = el('dl', 'facts');
+  const fact = (k, ...vals) => {
+    const dd = el('dd');
+    dd.append(...vals);
+    facts.append(el('dt', null, k), dd);
+  };
+  const link = el('a', null, job.pr.key);
+  link.href = job.pr.url;
+  link.target = '_blank';
+  link.rel = 'noreferrer';
+  fact('PR', link);
+  fact('Author', '@' + job.pr.author);
+  fact('Branch', `${job.pr.branch} → ${job.pr.base}`);
+  if (job.agent) {
+    const a = el('span', null, job.agent + (job.pipeline ? ' ⛓' : ''));
+    a.title = agentTitle(job.agent);
+    fact('Agent', a);
+  }
+  if (job.posts) fact('Publishing', el('span', 'tag posts', '⇧ publishes to the PR on its own'));
+  else if (job.posted) fact('Publishing', el('span', 'tag reviewed', 'published on the PR'));
+  const custo = gasto(job);
+  if (custo) {
+    const g = el('span', 'tokens', custo + (job.state === 'done' ? ' · ' + jobSeconds(job) + 's' : ''));
+    g.title = gastoTitle(job);
+    fact('Spend', g);
+  }
+  if (job.saved_to) fact('Saved to', el('code', null, job.saved_to));
+  if (job.workdir) fact('Clone kept at', el('code', null, job.workdir));
+  if (job.truncated) fact('Diff', 'truncated');
+  body.append(facts);
+
+  if (job.cloning || (job.steps && job.steps.length)) {
+    body.append(el('p', 'section-label', 'steps'));
+    body.append(stepsBox(job));
+  }
+}
+
+function renderLogView(body, job) {
+  if (job.state === 'failed') body.append(el('div', 'error-box', job.error || 'failed'));
+  body.append(logPanel(job, true));
+  pollLog(job.id);
+}
+
+// renderHistoryView lists the other reviews of the same PR: the ones in this
+// session's queue and the ones saved on disk. Nothing new on the server — it is
+// the queue and the Saved list, narrowed to this PR.
+function renderHistoryView(body, job) {
+  const mesmo = (repo, n) => repo && repo.toLowerCase() === job.pr.repo.toLowerCase() && n === job.pr.number;
+  const sessao = state.jobs.filter((j) => j.id !== job.id && mesmo(j.pr.repo, j.pr.number));
+  const salvos = state.saved.filter((s) => mesmo(s.repo, s.number));
+
+  body.append(el('p', 'section-label', 'this session'));
+  if (!sessao.length) body.append(el('p', 'dim', 'No other review of this PR in the queue.'));
+  for (const j of sessao) {
+    const row = el('button', 'history-row');
+    row.append(fillState(el('span', 'state ' + j.state), j), el('span', null, j.agent || 'agent'), el('span', 'dim', j.id));
+    row.addEventListener('click', () => openJob(j.id));
+    body.append(row);
+  }
+  body.append(el('p', 'section-label', 'saved on disk'));
+  if (!salvos.length) body.append(el('p', 'dim', 'No saved review of this PR yet.'));
+  for (const s of salvos) {
+    const row = el('button', 'history-row');
+    row.append(el('span', null, s.agent || 'review'), el('span', 'dim', new Date(s.mod_time).toLocaleString()), el('span', 'dim', s.name));
+    row.addEventListener('click', () => {
+      state.tab = 'saved';
+      state.activeSaved = s.name;
+      renderTabs();
+      openSaved(s.name);
+    });
+    body.append(row);
+  }
+}
+
+// refreshSavedList fetches the saved reviews without touching the Saved tab's
+// screen — the History tab only needs the list.
+async function refreshSavedList() {
+  try {
+    const data = await api('/api/reviews');
+    state.saved = data.reviews || [];
+    if (state.tab === 'queue') renderViewer();
+  } catch {
+    // The history is a convenience: without the list it shows the session only.
+  }
+}
+
+function renderReportView(body, job) {
+  const v = body;
   const html = state.bodies[job.id];
   if (!html) {
     v.append(el('p', 'dim', 'loading review…'));
@@ -1608,28 +1709,22 @@ function renderViewer() {
     total = decorateFindings(md, key);
   }
 
-  if (job.steps && job.steps.length > 1) v.append(stepsBox(job));
-  if (job.log_lines) v.append(logPanel(job, false));
-
   // The actions come after the review, not before: this is where you arrive
   // when you're done reading — the moment to decide whether this goes to the PR.
   if (!job.publishing && job.publishable === false) {
     // An agent that produces no review has nowhere to publish. Saying so here
     // beats showing nothing: you have just read the report and the next
     // question is always "so, does this go to the PR?".
-    const nota = el('p', 'dim');
-    nota.style.marginTop = '28px';
-    nota.textContent = `This is not a review — what "${job.agent}" produces stays in Bazel.`
-      + ' Run a reviewing agent over this PR when you want something to publish.';
-    v.append(nota);
+    v.append(el('p', 'dim end-note', `This is not a review — what "${job.agent}" produces stays in Bazel.`
+      + ' Run a reviewing agent over this PR when you want something to publish.'));
   } else if (!job.publishing) {
     const bar = el('div', 'viewer-actions');
-    const pub = el('button', 'btn primary', 'publish inline review');
+    const pub = el('button', 'btn solid', 'Publish inline review');
     pub.title = 'runs the post skill and publishes to the PR with inline comments';
     pub.addEventListener('click', () => publishJob(job.id, pub));
     bar.append(pub);
     if (waiting(job)) {
-      const keep = el('button', 'btn ghost', 'keep it here');
+      const keep = el('button', 'btn', 'Keep it here');
       keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
       keep.addEventListener('click', () => dismissJob(job.id, keep));
       bar.append(keep);
@@ -1644,23 +1739,15 @@ function renderViewer() {
     if (total) bar.append(pickSummary(key, total));
     v.append(bar);
   }
-
-  const foot = el('p', 'dim');
-  foot.style.marginTop = '32px';
-  foot.textContent = job.saved_to ? 'saved to ' + job.saved_to : '';
-  if (job.workdir) foot.textContent += (foot.textContent ? ' · ' : '') + 'clone kept at ' + job.workdir;
-  if (job.truncated) foot.textContent += ' · diff truncated';
   if (job.post_error) v.append(el('div', 'error-box', 'failed to publish: ' + job.post_error));
-  v.append(foot);
 
   // What the review cost, at its end — which is where you arrive after reading.
   const custo = gasto(job);
-  if (custo) {
-    const linha = el('p', 'dim tokens-foot', custo + ' · ' + jobSeconds(job) + 's');
-    linha.title = gastoTitle(job);
-    v.append(linha);
-  }
-  v.scrollTop = 0;
+  const foot = el('p', 'dim tokens-foot');
+  foot.textContent = [custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to]
+    .filter(Boolean).join(' · ');
+  if (custo) foot.title = gastoTitle(job);
+  v.append(foot);
 }
 
 // --- bindings ---
