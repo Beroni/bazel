@@ -3,8 +3,8 @@ name: bazel-e2e
 description: Runs, debugs and extends Bazel's end-to-end suite (e2e/) — a fake gh, a fake agent
   that replays recorded claude-stream/codex-json/grok-stream/plain output, an isolated server per
   test and Playwright on the cached Chromium. Use for "run the e2e tests", "make e2e is failing",
-  "add an e2e scenario for X", "record a new agent stream", "why did this e2e test flake", or
-  before calling a UI or server change done. Never touches ~/.bazel, the real gh, GitHub or a model.
+  "add an e2e scenario for X", "record a new agent stream", "test my new built-in skill with the
+  fake agent", "why did this e2e test flake", or before calling a UI or server change done. Never touches ~/.bazel, the real gh, GitHub or a model.
 allowed-tools: Read Grep Glob Bash Edit Write
 ---
 
@@ -18,7 +18,7 @@ reached GitHub by reading the fake gh's call log. No network, no real reviews.
 ## Run
 
 ```sh
-make e2e                                   # whole suite, ~10s, 4 workers
+make e2e                                   # whole suite, ~25s, 6 workers
 make e2e E2E_ARGS="tests/p0-publish.spec.ts"
 make e2e E2E_ARGS="-g 'cancel' --headed"   # watch it
 make e2e E2E_ARGS="--repeat-each 5 --workers 8"   # hunt flakes
@@ -28,7 +28,9 @@ cd e2e && npx playwright show-report .out/report
 First run installs `@playwright/test` (pinned to 1.58.2, which matches the
 Chromium build 1208 already in `~/Library/Caches/ms-playwright`) from the npm
 cache with `--prefer-offline`; no browser download happens. `globalSetup`
-builds `bazel`, `gh` and `fake-agent` into `e2e/.out/bin` every run.
+builds `bazel`, `gh` and `fake-agent` into `e2e/.out/bin` every run (in
+parallel, on Go's build cache) and synthesizes `fixtures/agent/specs/*.json`
+into `e2e/.out/scenarios/`.
 
 Expected output: all tests pass. Tests marked `test.fail(true, 'BUG-QA-…')`
 show as `✘` in the list reporter but count as passed — they reproduce known
@@ -45,6 +47,8 @@ bugs and flip to a real failure the day the bug is fixed (then delete the
   the server env. Need a new tool? Symlink it into `BIN` in `global-setup.ts`.
 - Never point a test at a real repo, a real skill or a real model.
 - The page is routed: any request not to `http://127.0.0.1:*` is aborted.
+- A gh call the fake does not implement fails the test that made it (the
+  `bazel` fixture checks the call log at teardown): teach the fake, then test it.
 
 ## Debug a failure
 
@@ -68,13 +72,19 @@ expected, and report it with steps, expected vs. actual and the test name.
 1. Pick the area file in `e2e/tests/` (`p0-*.spec.ts`, `p1-*.spec.ts` …) or
    add one. Import `test`, `expect` from `../harness/fixtures` and `ui` from
    `../harness/ui`.
-2. Use the fixtures: `bazel` (a started server; API helpers, call logs) and
-   `app` (a page on the dashboard that accepts every `confirm()`).
+2. Use the fixtures: `bazel` (a started server; API/MCP/SSE helpers, call
+   logs, `restart()`, `updatePR()`, `setGh()`), `app` (a page on the
+   dashboard) and `dialogs` (`dialogs.accept = false` to say no to the next
+   `confirm()`; `dialogs.messages` has what each one asked).
 3. Need a different config, fixtures or flags?
-   `test.use({ bazelOptions: { config: {…}, fixtures: 'name', flags: ['--jobs', '1'] } })`.
+   `test.use({ bazelOptions: { config: {…}, gh: { fail: {…} }, flags: ['--jobs', '1'] } })`.
    `config` replaces top-level keys of `defaultConfig()` in `e2e/harness/bazel.ts`.
+   Each test gets its own copy of the gh fixtures, so mutating them mid-test
+   (`bazel.updatePR('acme/api-core#101', { headRefOid: 'new' })`) is safe.
 4. Need different agent output? Add a scenario file to `e2e/fixtures/agent/`
-   and point an agent at it with `env: { FAKE_AGENT_SCENARIO: 'name' }`.
+   (or a spec, below) and point an agent at it with
+   `env: { FAKE_AGENT_SCENARIO: 'name' }`. Hold it mid-run with
+   `FAKE_AGENT_GATE: 'gate-name'` in the same env and `bazel.release('gate-name')`.
 5. Selectors go through `e2e/harness/ui.ts` only — role/text today, the
    `data-testid` from [references/selectors.md](references/selectors.md) once
    the UI ships it. Never select by CSS class: the redesign renames them.
@@ -82,6 +92,28 @@ expected, and report it with steps, expected vs. actual and the test name.
    the API returns, and what reached the fakes (`bazel.ghCalls()`,
    `bazel.agentCalls()`, files under `bazel.reviewsDir`).
 7. Run it 5× in parallel (`--repeat-each 5 --workers 8`) before committing.
+
+## Test a new skill with the fake agent
+
+For a skill that ships inside Bazel (`internal/skills/builtin/<name>/`) or any
+skill an agent calls. The real model never runs: the fake agent plays what the
+skill would print, and the test checks what Bazel does with it.
+
+1. Write the skill's output as a spec, `e2e/fixtures/agent/specs/<name>.json`
+   (steps: tool calls, sub-agents/lenses, errors; the report in
+   `<name>.md` next to it; usage). Format in
+   [references/fixtures.md](references/fixtures.md#scenario-specs). Preview it:
+   `node e2e/tools/stream.mjs synth e2e/fixtures/agent/specs/<name>.json`.
+   Or capture a real run once, by hand, outside the suite, and scrub it:
+   `node e2e/tools/stream.mjs scrub raw.jsonl > e2e/fixtures/agent/<name>.jsonl`.
+2. Add an agent that calls the skill:
+   `{ name: '<name>', task: '/<name> {{number}}', env: { FAKE_AGENT_SCENARIO: '<name>' } }`.
+3. Assert, at least: the task reached the prompt (`agentCalls()[0].prompt`),
+   the skill was materialized in the clone when it is built in
+   (`agentCalls()[0].skills` contains `<name>`), the log lines per lens, the
+   report and findings (`job.html`, `findingPicks`), the token tally, and
+   whether it may publish (`job.publishable`, MCP refusal if it posts).
+   `tests/p1-formats.spec.ts` › "a synthesized spec…" is the template.
 
 Details: [references/harness.md](references/harness.md) (architecture, env,
 API helpers), [references/fixtures.md](references/fixtures.md) (prs.json,

@@ -66,10 +66,17 @@ for repo errors in the list, publish failures, clone failures.
 ## Fake agent (`e2e/fakes/agent`)
 
 Reads the whole prompt from stdin, appends `{scenario, argv, cwd, prompt,
-builtin_skill, at}` to `$FAKE_AGENT_STATE/calls.jsonl`, then plays
-`$FAKE_AGENT_SCENARIOS/$FAKE_AGENT_SCENARIO[.jsonl|.txt|.md]` line by line.
-`builtin_skill` is true when `<cwd>/.claude/skills/bazel-post-report/SKILL.md`
-exists (Bazel materializes it in the clone for the post agent).
+builtin_skill, skills, grok_env, grok_home_config, at}` to
+`$FAKE_AGENT_STATE/calls.jsonl`, waits for `$FAKE_AGENT_STATE/$FAKE_AGENT_GATE`
+if that env is set, then plays `$FAKE_AGENT_SCENARIO[.jsonl|.txt|.md]` from
+the first directory of `$FAKE_AGENT_SCENARIOS` (`fixtures/agent`, then the
+synthesized `.out/scenarios`) that has it, line by line.
+
+- `skills`: the skills present in `<cwd>/.claude/skills/*/SKILL.md` — what
+  Bazel materialized in the clone; `builtin_skill` is the same check for
+  `bazel-post-report` alone.
+- `grok_env` / `grok_home_config`: the `GROK_*` env Bazel set for a
+  `grok-stream` step and whether `$GROK_HOME/config.toml` existed.
 
 Lines go to stdout verbatim, except directives:
 
@@ -80,6 +87,7 @@ Lines go to stdout verbatim, except directives:
 | `#!exit 2` | exit now with code 2 |
 | `#!wait name` | block until `$FAKE_AGENT_STATE/name` exists (the test calls `bazel.release('name')`); 120 s cap |
 | `#!block` | sleep 120 s (to be killed: cancel, timeout) |
+| `#!repeat 650 line {i}` | print the line 650 times, `{i}` = 1..650 |
 | `#!gh-review` | read the review file from `/bazel-post-report <path>` in the prompt and the PR from "The repository R is cloned … PR #N"; run `gh api --method POST repos/R/pulls/N/reviews --input -` with `{"event":"COMMENT","body":<file>}` |
 | `#!# text` | comment |
 
@@ -94,14 +102,56 @@ The format of the rest is whatever the agent's `format` expects:
   their tests for the event shapes.
 - `plain`: the Markdown report itself.
 
-### Recording a new stream
+### Scenario specs
 
-Take a real run's stdout **on your own machine, outside the test suite**
-(e.g. `claude -p --output-format stream-json --verbose < prompt.txt > raw.jsonl`
-on a public toy repo), then scrub it: drop session ids, paths, emails and
-anything private; shorten tool results; replace the report with a small one
-that carries unique markers (`E2E-…`) the test can assert on. Keep files under
-~50 lines. Never commit a stream from a private repo.
+The easy way to a claude-stream scenario: describe it, do not record it.
+`fixtures/agent/specs/<name>.json` is synthesized before every run into
+`.out/scenarios/<name>.jsonl` and used as `FAKE_AGENT_SCENARIO=<name>`.
+
+```json
+{
+  "model": "claude-opus-5-5",
+  "tools": ["Read", "Grep", "Glob", "Bash", "Agent"],
+  "rateLimit": { "session": 0.42, "week": 0.10 },
+  "steps": [
+    { "tool": "Bash", "input": { "command": "git diff main...HEAD --stat" } },
+    { "agent": "senior-code-reviewer", "description": "precision review", "prompt": "optional first line",
+      "steps": [ { "tool": "Read", "input": { "file_path": "a.go" } }, { "text": "E2E-… lens line" } ] },
+    { "toolError": "Read", "input": { "file_path": "gone.go" }, "error": "E2E-… file does not exist" },
+    { "text": "E2E-… main agent line" },
+    { "directive": "#!wait release-me" }
+  ],
+  "reportFile": "<name>.md",
+  "usage": { "input": 2000, "output": 500, "cacheRead": 10000, "cacheWrite": 0, "costUSD": 0.3 },
+  "durationMs": 2000,
+  "error": "error_max_turns"
+}
+```
+
+- `report` (inline string) or `reportFile` (relative to the spec) is required.
+- `agent` steps become an `Agent` tool call plus the lens's own events
+  (`parent_tool_use_id`), so the log shows one terminal per lens.
+- `usage` becomes both the plain `usage` and a `modelUsage` entry for `model`
+  (that is what Bazel tallies); `costUSD` becomes `total_cost_usd`.
+- `error` ends with `is_error: true` and that subtype instead of `success`.
+- Examples: `specs/example-skill.json`, `specs/dup-lenses.json`.
+
+### Recording a real stream
+
+Only when the exact shape of a real CLI matters (a new event type, a new
+version). Capture **by hand, on your own machine, outside the test suite**,
+against a public toy repo — tests never run a model:
+
+```sh
+claude -p --output-format stream-json --verbose < prompt.txt > /tmp/raw.jsonl
+node e2e/tools/stream.mjs scrub /tmp/raw.jsonl > e2e/fixtures/agent/<name>.jsonl
+```
+
+`scrub` drops session ids, uuids, cwd, MCP/plugin lists and `mcp__*` tools,
+rewrites home and temp paths, emails and token-looking strings, and replaces
+tool results with `(scrubbed)` (errors keep 200 chars). Then read the file:
+shorten it, replace the report with a small one carrying `E2E-…` markers, keep
+it under ~50 lines. Never commit a stream from a private repo.
 
 ### Markers
 

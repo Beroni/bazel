@@ -10,7 +10,7 @@
 | `bazel exited … before serving` | config the server rejected — read `server.log` (yaml, `format`) |
 | `preflight: gh resolves to …` | your bin dir or PATH changed — never "fix" by widening PATH |
 | `isolation broken: ~/.bazel changed` | something ran without `BAZEL_HOME` — stop and find it |
-| `fake gh: unsupported: gh …` in server.log or a job error | Bazel started a new gh call: teach the fake (and a test) |
+| `gh calls the fake does not implement` at teardown, or `fake gh: unsupported` in a job error | Bazel started a new gh call: teach the fake (and a test) |
 | `fake-agent: no scenario named …` | `FAKE_AGENT_SCENARIO` typo, or a new agent without `env` |
 
 ## Useful commands

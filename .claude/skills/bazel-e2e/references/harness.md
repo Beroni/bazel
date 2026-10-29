@@ -12,9 +12,11 @@ e2e/
   fakes/gh/main.go         fake GitHub CLI
   fakes/agent/main.go      fake agent CLI (scenario player)
   fixtures/default/        prs.json, gh.json
-  fixtures/agent/          recorded scenarios
+  fixtures/agent/          hand-written scenarios
+  fixtures/agent/specs/    scenario specs → .out/scenarios/*.jsonl
+  tools/stream.mjs         synth (spec → claude-stream) and scrub (real stream → fixture)
   tests/                   p0-*.spec.ts, p1-*.spec.ts
-  .out/                    bin/, runs/, results/, report/ (git-ignored)
+  .out/                    bin/, scenarios/, runs/, results/, report/ (git-ignored)
 ```
 
 ## One test, one server
@@ -22,7 +24,8 @@ e2e/
 `new Bazel(opts).start()`:
 
 1. `mkdtemp e2e/.out/runs/bz-XXXX` with `home/`, `bazel-home/`, `tmp/`,
-   `gh/`, `agent/`.
+   `gh/`, `agent/`, and `fixtures/` (this test's copy of the gh fixtures,
+   plus `gh.json` from `opts.gh`).
 2. Writes `bazel-home/config.yaml` as JSON (yaml.v3 reads it) from
    `defaultConfig()` + `opts.config`, and fake skills under `home/skills/`
    (`skills_dir` points there).
@@ -62,7 +65,13 @@ Nothing else from the developer's shell is inherited.
 | `mcp(method, params?, id?)` | one JSON-RPC call to `/mcp` |
 | `ghCalls()` | `[{ argv, stdin, cwd, at }]` from the fake gh |
 | `agentCalls()` | `[{ scenario, argv, cwd, prompt, builtin_skill, at }]` |
-| `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` |
+| `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` and `FAKE_AGENT_GATE=<name>` |
+| `tool(name, args)` | MCP `tools/call` → `{ isError, text, out }` |
+| `events()` | opens `/api/events`: `{ list, next(pred), close() }` (first event is `hello`) |
+| `restart()` | new process, same BAZEL_HOME (config, reviews, index survive; queue does not) |
+| `updatePR(key, patch)` / `setGh(settings)` | mutate this test's gh fixtures mid-test |
+| `rawRequest(method, path, headers)` | raw HTTP with a chosen `Host` header |
+| `configText()` | config.yaml as Bazel wrote it |
 | `savedReviews()` | `*.md` in `reviewsDir` |
 | `clones()` | `bazel-*` dirs left in `TMPDIR` (should be `[]` without `--keep`) |
 | `serverLog()` | the server's stdout+stderr |
@@ -93,6 +102,8 @@ Repos `acme/api-core`, `acme/web-app`; `include_drafts: true`; base agent
 - Poll the API (`waitJob`) or use `expect.poll` / web-first assertions; do
   not read the DOM in a loop.
 - `updatedAgo` in prs.json keeps relative ages stable (`2h` stays `2h`).
+- Never assert the relative order of stdout and stderr lines: Bazel reads
+  them in two goroutines.
 - Things that depend on wall-clock seconds (saved file names) need the
   release to happen right after a second boundary — see
   `tests/p1-saved-collision.spec.ts`.
