@@ -25,6 +25,22 @@ make e2e E2E_ARGS="--repeat-each 5 --workers 8"   # hunt flakes
 cd e2e && npx playwright show-report .out/report
 ```
 
+### Against another base
+
+The suite in this checkout can test any Bazel source tree — the fakes and
+specs stay the same, only the binary under test changes:
+
+```sh
+git worktree add --detach ../bases/redesign <branch-or-commit>
+make e2e E2E_BAZEL_SRC=../bases/redesign
+make e2e E2E_BAZEL_SRC=../bases/fixes E2E_FIXED=BUG-QA-01,BUG-QA-02
+```
+
+`E2E_FIXED` lists the known bugs that base has fixed: their `knownBug(...)`
+tests must then pass instead of fail. The selectors in `harness/ui.ts` work on
+both UIs (testids first, master's role/text second), so a UI difference shows
+up as a helper to adjust there, not as an edit in every test.
+
 First run installs `@playwright/test` (pinned to 1.58.2, which matches the
 Chromium build 1208 already in `~/Library/Caches/ms-playwright`) from the npm
 cache with `--prefer-offline`; no browser download happens. `globalSetup`
@@ -32,10 +48,10 @@ builds `bazel`, `gh` and `fake-agent` into `e2e/.out/bin` every run (in
 parallel, on Go's build cache) and synthesizes `fixtures/agent/specs/*.json`
 into `e2e/.out/scenarios/`.
 
-Expected output: all tests pass. Tests marked `test.fail(true, 'BUG-QA-…')`
-show as `✘` in the list reporter but count as passed — they reproduce known
-bugs and flip to a real failure the day the bug is fixed (then delete the
-`test.fail` line).
+Expected output: all tests pass. Tests that call `knownBug('BUG-QA-…', …)`
+show as `✘` in the list reporter but count as passed — they reproduce open
+bugs and flip to "Expected to fail, but passed" the day the bug is fixed (then
+delete the `knownBug` line, or list the id in `E2E_FIXED` for that base).
 
 ## Hard rules
 
@@ -64,8 +80,9 @@ bugs and flip to a real failure the day the bug is fixed (then delete the
    [references/debugging.md](references/debugging.md).
 
 Product bug → do not fix production code from here. Write the failing test,
-mark it `test.fail(true, 'BUG-QA-NN: …')` with a comment saying what is
-expected, and report it with steps, expected vs. actual and the test name.
+call `knownBug('BUG-QA-NN', 'one line')` at its top (from `harness/fixtures`)
+with a comment saying what is expected, and report it with steps, expected
+vs. actual and the test name.
 
 ## Add a scenario
 
@@ -85,9 +102,12 @@ expected, and report it with steps, expected vs. actual and the test name.
    (or a spec, below) and point an agent at it with
    `env: { FAKE_AGENT_SCENARIO: 'name' }`. Hold it mid-run with
    `FAKE_AGENT_GATE: 'gate-name'` in the same env and `bazel.release('gate-name')`.
-5. Selectors go through `e2e/harness/ui.ts` only — role/text today, the
-   `data-testid` from [references/selectors.md](references/selectors.md) once
-   the UI ships it. Never select by CSS class: the redesign renames them.
+5. Selectors and UI actions go through `e2e/harness/ui.ts` only: the
+   `data-testid` of [references/selectors.md](references/selectors.md) first,
+   master's role/text as fallback. Use the action helpers (`openJob`,
+   `cancelJob`, `filterByReview`, `selectByLabel`) where the two UIs differ —
+   on the redesign, cancel/publish/keep live in the job's detail, not on the
+   card. Never select by CSS class.
 6. Assert outcomes at three levels when they exist: what the page shows, what
    the API returns, and what reached the fakes (`bazel.ghCalls()`,
    `bazel.agentCalls()`, files under `bazel.reviewsDir`).

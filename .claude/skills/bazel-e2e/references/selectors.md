@@ -14,8 +14,24 @@ Rules for the UI side:
 
 ## Contract
 
-Status: **proposed** — none is in the page yet (origin/master 3ca50d7).
-P0 = used by the phase-1 tests today through a fallback.
+Status: **implemented on feat/redesign (459ef21)**, not on origin/master yet.
+`harness/ui.ts` uses the testid when the page has it and master's role/text
+otherwise; the whole suite passes on both. P0 = used by the P0 tests.
+
+Differences on the redesign, already handled by the helpers:
+
+- No `job-publish`, `job-comment`, `job-choose`, `job-keep`: those actions live
+  in the review pane (`publish-inline`, `paste-comment`, `keep-here`).
+- `job-cancel` is in the job's detail header, not on the card (`cancelJob()`).
+- `job-card` has `role="group"`, an `aria-label` with PR, title and state,
+  `tabindex=0`; Enter/Space open it.
+- `pr-review-filter` is a group of chips (`data-review=all|none|reviewed|changed`),
+  not a `<select>` (`filterByReview()`).
+- `pr-row-check` has `aria-label="tick owner/repo#n"`; `pr-owner-filter` (#25)
+  and `conn-status` (`data-state=open|closed`) exist; `quota` has `data-level`.
+- `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
+- Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
+  just now", "⟳ changed since review"); tests match both.
 
 ### Header
 
