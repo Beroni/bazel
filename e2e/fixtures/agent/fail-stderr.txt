@@ -1,0 +1,4 @@
+#!# Writes a bit, then dies with a message on stderr.
+partial output E2E-PARTIAL
+#!stderr E2E-STDERR boom: model overloaded
+#!exit 3
