@@ -1125,7 +1125,10 @@ function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
     const t = el('span', 'tag stale', '⟳ changed');
-    t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}, and the PR got new commits afterwards`;
+    // A stale review that already went to the PR is the case worth flagging.
+    t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
+      + (pr.review_posted ? ', published on the PR' : '')
+      + ', and the PR got new commits afterwards';
     return [t];
   }
   const t = el('span', 'tag reviewed', '✓ ' + pr.reviewed_at + (pr.review_posted ? ' ↑' : ''));
