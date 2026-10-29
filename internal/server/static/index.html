@@ -10,17 +10,17 @@
 <body>
 
 <header class="bar">
-  <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> BAZEL</div>
+  <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
+  <nav class="nav" id="nav">
+    <a href="#/" data-page="dashboard" class="on">Dashboard</a>
+    <a href="#/config" data-page="config">Config</a>
+  </nav>
+  <div class="spacer"></div>
   <div class="stats" id="stats">loading…</div>
   <div class="stats spend" id="spend" hidden></div>
   <div class="stats quota" id="quota" hidden></div>
-  <div class="spacer"></div>
   <div class="who" id="who"></div>
-  <button class="btn" id="refresh" title="refresh the list from GitHub">refresh</button>
-  <nav class="nav" id="nav">
-    <a href="#/" data-page="dashboard" class="on">dashboard</a>
-    <a href="#/config" data-page="config">config</a>
-  </nav>
+  <button class="btn small ghost" id="refresh" title="refresh the list from GitHub">↻ refresh</button>
 </header>
 
 <div id="banner" class="banner" hidden></div>
