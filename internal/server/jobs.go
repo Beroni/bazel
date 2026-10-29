@@ -196,7 +196,8 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 	}
 	runner := agent.New(cfg)
 	runner.KeepWorkspace = keep
-	runner.PricingTable = &cfg.Agent.Pricing
+	prices := cfg.Agent.Prices()
+	runner.PricingTable = &prices
 
 	m := &Manager{
 		cfg:        cfg,
@@ -259,19 +260,27 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
 	m.trimLocked()
+	err := m.sendLocked(job)
+	m.mu.Unlock()
+	m.publish(job)
+	return m.mustView(job.ID), err
+}
 
-	// Hold the lock until the job is safely enqueued to prevent
-	// duplicate jobs from concurrent requests (BUG-01).
+// sendLocked manda um job recém-registrado para a fila sem bloquear. Chamar
+// com o lock do Manager seguro: o envio e a falha por fila cheia acontecem na
+// mesma seção crítica que registrou o job como queued, então ninguém vê um
+// queued que nunca entrou na fila — nem um Enqueue concorrente do mesmo PR,
+// nem um Cancel ou Remove que o finish depois atropelaria. O select tem
+// default, então segurar o lock aqui não trava o Manager com a fila cheia; o
+// worker que receber o job só espera o lock para começar.
+func (m *Manager) sendLocked(job *Job) error {
 	select {
 	case m.queue <- job:
-		m.mu.Unlock()
+		return nil
 	default:
-		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
-		m.mu.Unlock()
-		return m.mustView(job.ID), fmt.Errorf("queue is full")
+		m.finishLocked(job, StateFailed, "queue is full — wait for the reviews in flight")
+		return errors.New("queue is full")
 	}
-	m.publish(job)
-	return m.mustView(job.ID), nil
 }
 
 // trimLocked descarta os jobs terminados mais antigos. Chamar com o lock.
@@ -377,15 +386,16 @@ func (m *Manager) run(job *Job) {
 		saveErr error
 	)
 	if job.publish == nil {
-		path, saveErr = store.Save(m.reviewsDir, res, &m.cfg.Agent.Pricing)
+		path, saveErr = store.Save(m.reviewsDir, res, m.runner.PricingTable)
 	}
 
 	// O PR entra no índice: é o ✓ da lista, e é o commit gravado aqui que
 	// depois denuncia mudança no PR depois do review.
+	var markErr error
 	if job.publish == nil {
-		_ = store.MarkReviewed(m.reviewsDir, res, path)
+		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	} else {
-		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
+		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
 	}
 
 	m.mu.Lock()
@@ -402,8 +412,13 @@ func (m *Manager) run(job *Job) {
 		job.Result = res
 		job.SavedTo = path
 	}
-	if saveErr != nil {
+	switch {
+	case saveErr != nil:
 		job.Err = "review done, but I could not save it to disk: " + saveErr.Error()
+	case markErr != nil:
+		// Sem o índice o PR volta a aparecer como não revisado, e o ⟳ de
+		// mudança depois do review deixa de funcionar — melhor avisar.
+		job.Err = "done, but I could not update the reviewed index: " + markErr.Error()
 	}
 	job.State = StateDone
 	job.FinishedAt = time.Now()
@@ -603,6 +618,13 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 
 func (m *Manager) finish(job *Job, state State, errMsg string) {
 	m.mu.Lock()
+	m.finishLocked(job, state, errMsg)
+	m.mu.Unlock()
+	m.publish(job)
+}
+
+// finishLocked é o finish para quem já segura o lock do Manager.
+func (m *Manager) finishLocked(job *Job, state State, errMsg string) {
 	job.State = state
 	job.Err = errMsg
 	job.FinishedAt = time.Now()
@@ -612,8 +634,6 @@ func (m *Manager) finish(job *Job, state State, errMsg string) {
 	// Falhou ou foi cancelado: o clone que a parada segurava não espera mais
 	// ninguém.
 	m.discardCloneLocked(job)
-	m.mu.Unlock()
-	m.publish(job)
 }
 
 // appendLog guarda uma linha, jogando fora a mais velha quando a janela enche.
@@ -880,16 +900,10 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
 	m.trimLocked()
+	err = m.sendLocked(job)
 	m.mu.Unlock()
-
-	select {
-	case m.queue <- job:
-	default:
-		m.finish(job, StateFailed, "queue is full — wait for the reviews in flight")
-		return m.mustView(job.ID), errors.New("queue is full")
-	}
 	m.publish(job)
-	return m.mustView(job.ID), nil
+	return m.mustView(job.ID), err
 }
 
 // CommentSaved cola no PR um review que está em disco, sem agente nenhum. É o

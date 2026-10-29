@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1429,5 +1430,105 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	}
 	if !strings.Contains(fim.HTML, "<h1>") || !strings.Contains(fim.Body, "segundo passo") {
 		t.Errorf("o relatório final devia ter os dois passos, renderizados:\n%s", fim.Body)
+	}
+}
+
+// Fila cheia devolve erro e marca o job como falho — sem travar o Manager.
+// Antes, Enqueue chamava finish segurando o mutex que finish também trava.
+func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
+	cfg := cfgFor(t, "cat")
+	m := &Manager{
+		cfg:   cfg,
+		hub:   NewHub(),
+		ctx:   context.Background(),
+		queue: make(chan *Job), // sem worker e sem buffer: sempre cheia
+		jobs:  map[string]*Job{},
+	}
+
+	type result struct {
+		v   jobView
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		v, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+		done <- result{v, err}
+	}()
+
+	select {
+	case r := <-done:
+		if r.err == nil {
+			t.Fatal("fila cheia devia devolver erro")
+		}
+		if r.v.State != StateFailed {
+			t.Errorf("job devia sair como failed, saiu %q", r.v.State)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Enqueue travou com a fila cheia")
+	}
+
+	// O Manager continua respondendo depois.
+	if _, ok := m.View("j1", false); !ok {
+		t.Error("job da fila cheia sumiu")
+	}
+}
+
+// Com a fila cheia, ninguém pode ver o job como queued antes de ele falhar:
+// um Enqueue concorrente do mesmo PR que o achasse nessa janela receberia
+// sucesso e um job que nunca entrou na fila.
+func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
+	cfg := cfgFor(t, "cat")
+	m := &Manager{
+		cfg:   cfg,
+		hub:   NewHub(),
+		ctx:   context.Background(),
+		queue: make(chan *Job), // sem worker e sem buffer: sempre cheia
+		jobs:  map[string]*Job{},
+	}
+
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for range n {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			v, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+			if err == nil {
+				errs <- fmt.Errorf("Enqueue com a fila cheia devolveu sucesso (job %s, %s)", v.ID, v.State)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, j := range m.jobs {
+		if j.State != StateFailed {
+			t.Errorf("job %s ficou %q com a fila cheia", j.ID, j.State)
+		}
+	}
+}
+
+// Exposed avisa de qualquer escuta além do loopback — inclusive `:7777`, que
+// abre todas as interfaces mesmo com a checagem de Host ligada.
+func TestExposedDetectsNonLoopbackListen(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"127.0.0.1:7777":    false,
+		"localhost:7777":    false,
+		"[::1]:7777":        false,
+		":7777":             true,
+		"0.0.0.0:7777":      true,
+		"[::]:7777":         true,
+		"192.168.0.10:7777": true,
+	} {
+		s := &Server{opts: Options{Addr: addr}}
+		if got := s.Exposed(); got != want {
+			t.Errorf("Exposed(%q) = %v, queria %v", addr, got, want)
+		}
 	}
 }

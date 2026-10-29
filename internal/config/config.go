@@ -169,9 +169,10 @@ type Agent struct {
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// Env is merged into every agent process that does not set its own env.
 	Env map[string]string `yaml:"env,omitempty"`
-	// Pricing é a tabela de preços por modelo, em USD por 1M de tokens.
-	// Vazia = usar o default shipped com o código. Os preços mudam, e o
-	// binário não pode precisar de rebuild.
+	// Pricing são os preços que o usuário sobrescreve, por modelo, em USD por
+	// 1M de tokens. Guarda só o que ele escreveu: o default mora no binário e
+	// entra em Prices — gravá-lo aqui congelaria no config.yaml os preços da
+	// versão que salvou, e nenhuma correção de preço chegaria mais.
 	Pricing PricingTable `yaml:"pricing,omitempty"`
 }
 
@@ -320,7 +321,6 @@ func Default() *Config {
 			Checkout:       true,
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
-			Pricing:        defaultPricing(),
 		},
 		// Agents e Pipelines nascem vazios de propósito: quem monta a lista é
 		// você, na página, a partir das skills que estão instaladas na sua
@@ -330,11 +330,37 @@ func Default() *Config {
 	}
 }
 
-// defaultPricing é a tabela de preços shipped com o código. Os preços mudam
-// — um modelo novo sai, uma tarifa muda — e o binário não pode precisar de
-// rebuild. O usuário sobrescreve em config.yaml.
-func defaultPricing() PricingTable {
-	return pricing.Default
+// Prices é a tabela de preços que vale: a do binário, com as entradas do
+// config.yaml por cima. Uma entrada do usuário troca o preço daquele modelo e
+// os demais continuam com o default.
+func (a Agent) Prices() PricingTable {
+	return pricing.Default.With(a.Pricing)
+}
+
+// legacyPricing é a tabela que versões anteriores gravavam inteira no
+// config.yaml a cada Save — com preços errados. Uma entrada idêntica a uma
+// destas linhas não foi escrita pelo usuário: é resto do default antigo, e
+// deixá-la valer sobrescreveria a tabela corrigida.
+var legacyPricing = PricingTable{
+	"claude-opus-5":              {Input: 15, Output: 75, CacheWrite: 1.50, CacheRead: 0.75},
+	"claude-haiku-4-5":           {Input: 1, Output: 5, CacheWrite: 1.25, CacheRead: 0.10},
+	"claude-sonnet-4":            {Input: 3, Output: 15, CacheWrite: 0.30, CacheRead: 0.15},
+	"claude-opus-4":              {Input: 15, Output: 75, CacheWrite: 1.875, CacheRead: 0.9375},
+	"claude-sonnet-3-5-20241022": {Input: 3, Output: 15, CacheWrite: 0.30, CacheRead: 0.15},
+}
+
+// dropLegacyPricing tira do que veio do config.yaml as linhas do default
+// antigo, deixando só o que o usuário escreveu de fato.
+func dropLegacyPricing(t PricingTable) PricingTable {
+	for k, v := range t {
+		if old, ok := legacyPricing[k]; ok && old == v {
+			delete(t, k)
+		}
+	}
+	if len(t) == 0 {
+		return nil
+	}
+	return t
 }
 
 // Dir é o diretório de configuração do Bazel.
@@ -379,6 +405,7 @@ func Load() (*Config, error) {
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
 	}
+	cfg.Agent.Pricing = dropLegacyPricing(cfg.Agent.Pricing)
 	if strings.TrimSpace(cfg.Agent.Prompt) == "" {
 		cfg.Agent.Prompt = defaultPrompt
 	}

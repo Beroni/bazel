@@ -548,13 +548,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
 	}
-	u := adapter.usage()
 	// Com pricing table configurada, recalcula o custo a partir dos tokens
 	// e do modelo — é o que permite que o custo mude sem rebuild do binário.
-	if r.PricingTable != nil && u.Model != "" {
-		u.CostUSD = r.PricingTable.Cost(u.Model, u.InputTokens, u.OutputTokens, u.CacheWrite, u.CacheRead)
+	var byModel []Usage
+	if m, ok := adapter.(interface{ models() []Usage }); ok {
+		byModel = m.models()
 	}
-	return adapter.report(), u, nil
+	return adapter.report(), priced(adapter.usage(), byModel, r.PricingTable), nil
 }
 
 func agentFailure(step config.ResolvedAgent, message string) error {
