@@ -1,0 +1,8 @@
+{
+  "steps": [
+    { "agent": "exploit-digger", "description": "sweep A", "steps": [ { "text": "E2E-DUP-A" } ] },
+    { "agent": "exploit-digger", "description": "sweep B", "steps": [ { "text": "E2E-DUP-B" } ] },
+    { "text": "E2E-DUP-MAIN" }
+  ],
+  "report": "# Two lenses E2E-DUP-REPORT\n\nNothing found."
+}

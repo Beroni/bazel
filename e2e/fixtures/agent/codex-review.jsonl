@@ -1,0 +1,10 @@
+#!# codex exec --json: two commands (one fails), the final agent message, usage with cached input.
+{"type":"thread.started","thread_id":"th_e2e"}
+{"type":"turn.started"}
+{"type":"item.started","item":{"id":"i1","type":"command_execution","command":"git diff main...HEAD E2E-CODEX-CMD","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"i1","type":"command_execution","command":"git diff main...HEAD E2E-CODEX-CMD","aggregated_output":"diff --git a/x b/x","status":"completed"}}
+{"type":"item.started","item":{"id":"i2","type":"command_execution","command":"cat missing.go","status":"in_progress"}}
+{"type":"item.completed","item":{"id":"i2","type":"command_execution","command":"cat missing.go","aggregated_output":"E2E-CODEX-CMDERR No such file or directory","status":"failed"}}
+{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"# Codex review E2E-CODEX-REPORT\n\n## Findings\n\n### C1 · major · Unchecked error\n\n`internal/limit/bucket.go:9` E2E-CODEX-FINDING the error from Take is dropped."}}
+{"type":"item.completed","item":{"id":"i3","type":"agent_message","text":"duplicate delivery of i3 must be ignored"}}
+{"type":"turn.completed","usage":{"input_tokens":50000,"cached_input_tokens":30000,"output_tokens":2000,"reasoning_output_tokens":500}}
