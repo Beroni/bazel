@@ -495,13 +495,18 @@ async function postJob(id, btn) {
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
   if (!confirm(aviso + skipNote(skip))) return;
+  const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
   } catch (err) {
-    banner(err.status === 409 ? conflictNote(err) : 'failed to publish: ' + err.message);
-    if (err.status === 409) refreshJob(id);
-    if (btn) { btn.disabled = false; btn.textContent = 'publish to the PR'; }
+    // 409 and 404 are Bazel turning the request down (busy, already posted,
+    // not finished, not publishable, gone): the card on screen is stale. Only
+    // a 502 is GitHub failing to take the comment.
+    const recusa = err.status === 409 || err.status === 404;
+    banner(recusa ? conflictNote(err) : 'failed to publish: ' + err.message);
+    if (recusa) refreshJob(id);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 

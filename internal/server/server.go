@@ -633,8 +633,15 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
 	if err != nil {
+		// 502 is only for gh failing to post. A request Bazel turns down —
+		// unknown job, not finished, not publishable, busy, already posted — is
+		// the client's (BUG-QA-05).
 		status := http.StatusBadGateway
-		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
+		var rf refused
+		switch {
+		case errors.As(err, &rf):
+			status = rf.status
+		case errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted):
 			status = http.StatusConflict
 		}
 		writeErr(w, status, err)

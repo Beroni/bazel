@@ -2407,3 +2407,53 @@ func TestRepoAddExigeOwnerName(t *testing.T) {
 		t.Errorf("a repository URL should go in as acme/web-app: %d %s", code, body)
 	}
 }
+
+// POST /api/jobs/{id}/post turned down by Bazel is a 4xx, not 502 (BUG-QA-05):
+// unknown job 404, a job still running or one whose output stays in Bazel 409.
+// 502 is left for gh failing to post.
+func TestPostRecusadoE4xx(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo '# report'; sleep ${SLEEP:-0}")
+	nao := false
+	cfg.Agents = []config.AgentDef{
+		{Name: "lento", Task: "revise", Env: map[string]string{"SLEEP": "30"}},
+		{Name: "historia", Task: "history", Publishable: &nao},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 2})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h := srv.Handler()
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	post := func(id string) int {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/"+id+"/post", strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	choice := func(name string) config.Choice {
+		c, err := cfg.ChoiceByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	if code := post("nao-existe"); code != http.StatusNotFound {
+		t.Errorf("unknown job: %d, want 404", code)
+	}
+	running, _ := srv.jobs.Enqueue(testPR(482), false, choice("lento"))
+	waitFor(t, ch, running.ID, StateRunning)
+	if code := post(running.ID); code != http.StatusConflict {
+		t.Errorf("job still running: %d, want 409", code)
+	}
+	hist, _ := srv.jobs.Enqueue(testPR(483), false, choice("historia"))
+	waitFor(t, ch, hist.ID, StateDone)
+	if code := post(hist.ID); code != http.StatusConflict {
+		t.Errorf("output that stays in Bazel: %d, want 409", code)
+	}
+}

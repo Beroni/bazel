@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -25,6 +26,16 @@ const (
 	StateFailed   State = "failed"
 	StateCanceled State = "canceled"
 )
+
+// refused is a publish request turned down for something on Bazel's side — the
+// job is unknown, not finished, or not publishable — rather than a GitHub
+// failure. The handler answers it with its status instead of 502.
+type refused struct {
+	error
+	status int
+}
+
+func refuse(status int, err error) error { return refused{err, status} }
 
 var (
 	// errPublishBusy refuses a second publish while one is still in flight.
@@ -934,11 +945,11 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	if job.State != StateDone {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("that review has not finished")
+		return jobView{}, refuse(http.StatusConflict, errors.New("that review has not finished"))
 	}
 	if job.posting {
 		m.mu.Unlock()
@@ -950,7 +961,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	}
 	if !job.Choice.Publishable {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name)
+		return jobView{}, refuse(http.StatusConflict, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name))
 	}
 	res := job.Result
 	// Pasting as a comment is the same destination through another door: from
@@ -958,7 +969,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	body, _, err := agent.PublishableBody(res, job.Choice)
 	if err != nil {
 		m.mu.Unlock()
-		return jobView{}, err
+		return jobView{}, refuse(http.StatusConflict, err)
 	}
 	res.Body = store.DropFindings(body, skip)
 	// The lock is released around gh.Comment; posting keeps a second click
