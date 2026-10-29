@@ -29,7 +29,7 @@ publishable, and its report shows up apart from the review.
 
 The PR number is the task argument; the repository is the clone's
 (`gh repo view --json nameWithOwner --jq .nameWithOwner`) and must match the one the prompt
-names. Missing or different → print a short report that says so, in the format of
+names, ignoring case (the prompt carries the spelling from Bazel's config). Missing or different → print a short report that says so, in the format of
 `references/report-format.md` with whatever header values you have, and stop.
 
 ## Step 2 — Collect the raw material

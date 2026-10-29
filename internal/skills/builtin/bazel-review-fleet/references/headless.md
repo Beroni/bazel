@@ -23,7 +23,7 @@ working directory is already the clone with the PR checked out. Use exactly that
 
 | What | Where it comes from |
 |---|---|
-| Repository | the prompt (`owner/name`), confirmed with `gh repo view --json nameWithOwner` |
+| Repository | the prompt (`owner/name`), confirmed with `gh repo view --json nameWithOwner`; compare ignoring case, since Bazel keeps the spelling typed in its config |
 | PR number | the task argument (`/bazel-review-fleet 123`) or the prompt |
 | Base branch | the prompt (`over base \`develop\``), confirmed with `gh pr view <N> --json baseRefName` |
 | Head sha | `git rev-parse HEAD` (it equals the PR's `headRefOid` right after checkout) |

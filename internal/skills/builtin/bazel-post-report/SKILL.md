@@ -69,7 +69,9 @@ stdout which one and why, and publish nothing.
 
 - **No `# owner/repo#N` on the first line** → you do not know where to publish.
 - **Repo different from the clone's** (`gh repo view --json nameWithOwner --jq .nameWithOwner`)
-  → you are about to comment on another project.
+  → you are about to comment on another project. Compare ignoring case: Bazel writes the repo
+  as it was typed in its config (`beroni/bazel`), GitHub answers with its own spelling
+  (`Beroni/bazel`), and both name the same repository.
 - **`files: 0`** in the report's header → the review never resolved a scope. Publishing it, or
   an all-clear on top of it, would tell the team code was reviewed when none was.
 
