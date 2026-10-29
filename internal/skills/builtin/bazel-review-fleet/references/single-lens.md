@@ -28,7 +28,7 @@ of the repo, or of the user's request.
 ```
 
 - **With the `Agent` tool**: one `Agent` call with the lens's `subagent_type`
-  (`bazel-<lens>`).
+  (`bazel-<lens>`) and `run_in_background: false`, and wait for it in the same turn.
 - **Without it**, or if the agent type is unknown: read the lens's agent file
   (`.claude/agents/bazel-<lens>.md`, also at `.claude/skills/bazel-<lens>/agents/`) and do the
   pass yourself, following it to the letter, down to the JSON.

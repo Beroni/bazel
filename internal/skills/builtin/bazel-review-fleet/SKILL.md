@@ -72,7 +72,10 @@ of the repo, or of the user's request.
 The language line is mandatory and goes in literally.
 
 **With the `Agent` tool** (Claude Code): one message, one `Agent` call per lens with its
-`subagent_type`, so they run in parallel.
+`subagent_type` and **`run_in_background: false`**, so the three run in parallel and you wait
+for all of them in the same turn. Do not let them run in the background and end your turn
+with "still waiting": every turn you end is a result Bazel records, and if the run stops there
+the saved review is that sentence.
 
 **Without it** (another CLI, or the agent type is unknown): run the lenses yourself as
 **sequential passes**. For each lens, read its agent file, apply its instructions to the scope

@@ -59,14 +59,17 @@ ARGS=(-p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bas
 START=$(date +%s)
 (cd "$CLONE" && claude "${ARGS[@]}" < "$WORK/prompt.md" > "$WORK/stream.jsonl" 2> "$WORK/stderr.log")
 echo "agent exit: $? in $(( $(date +%s) - START ))s"
-jq -r 'select(.type=="result") | .result' "$WORK/stream.jsonl" > "$WORK/report.md"
-jq -r 'select(.type=="result") | "cost: $\(.total_cost_usd) · turns: \(.num_turns)"' "$WORK/stream.jsonl"
+# Bazel keeps the last result event (internal/agent/stream.go); so does this.
+jq -rs 'map(select(.type=="result")) | last | .result // ""' "$WORK/stream.jsonl" > "$WORK/report.md"
+RESULTS=$(jq -s 'map(select(.type=="result")) | length' "$WORK/stream.jsonl")
+jq -rs 'map(select(.type=="result")) | last | "cost: $\(.total_cost_usd) · turns: \(.num_turns)"' "$WORK/stream.jsonl"
 
 # 5. The checks.
 FAIL=0
 check() { if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1"; FAIL=1; fi; }
 echo "checks:"
 check "report is not empty" '[ -s "$WORK/report.md" ]'
+check "one turn, no progress notes before the report ($RESULTS results)" '[ "$RESULTS" = 1 ]'
 check "skill never asked a question" '! grep -q "\"name\":\"AskUserQuestion\"" "$WORK/stream.jsonl"'
 check "report starts with its header, no preamble" 'head -1 "$WORK/report.md" | grep -qE "^(<!-- (review-fleet|history-pr):v1|# )"'
 check "no trailing file path or chat line" '! tail -3 "$WORK/report.md" | grep -qE "(→|\.reviews/|\.pr-history/)"'
