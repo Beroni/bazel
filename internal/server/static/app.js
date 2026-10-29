@@ -429,7 +429,10 @@ async function openJob(id) {
 
 async function cancelJob(id) {
   try { await api(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); }
-  catch (err) { banner(err.message); }
+  catch (err) {
+    banner(err.message);
+    if (err.status === 404) dropJob(id);
+  }
 }
 
 // publishJob tells the agent to publish the review on screen. It is the "I read
@@ -452,8 +455,9 @@ async function publishJob(id, btn) {
     renderJobs();
     renderViewer();
   } catch (err) {
-    banner(err.status === 409 ? conflictNote(err) : err.message);
-    if (err.status === 409) refreshJob(id);
+    const recusa = err.status === 409 || err.status === 404;
+    banner(recusa ? conflictNote(err) : err.message);
+    if (recusa) refreshJob(id);
     if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
   }
 }
@@ -471,7 +475,10 @@ async function refreshJob(id) {
   try {
     upsertJob(await api('/api/jobs/' + encodeURIComponent(id)));
   } catch (err) {
-    // The job may have gone with the server; the banner already said what matters.
+    // A 404 means the server no longer has the job (removed in another tab,
+    // or a restart): the card goes, the same way job_gone takes it. Any other
+    // failure leaves it; the banner already said what matters.
+    if (err.status === 404) dropJob(id);
   }
 }
 
@@ -482,8 +489,9 @@ async function dismissJob(id, btn) {
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }));
   } catch (err) {
-    banner(err.status === 409 ? `Could not keep it here: ${err.message}.` : err.message);
-    if (err.status === 409) refreshJob(id);
+    const recusa = err.status === 409 || err.status === 404;
+    banner(recusa ? `Could not keep it here: ${err.message}.` : err.message);
+    if (recusa) refreshJob(id);
     if (btn) btn.disabled = false;
   }
 }
