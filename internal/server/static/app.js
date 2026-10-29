@@ -163,6 +163,7 @@ async function loadPRs(force) {
   try {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
     state.prs = data.prs || [];
+    state.prsLoaded = true;
     state.repoErrors = data.repo_errors || [];
     // With no repository error the banner goes back to the config warning, if
     // there is one: clearing here wiped exactly what startup had to say.
@@ -1065,6 +1066,7 @@ function logPanel(job, open) {
 }
 
 function renderStats() {
+  syncSelectAll();
   const total = state.prs.length;
   const shown = visiblePRs().length;
   const marked = markedPRs().length;
@@ -1074,6 +1076,21 @@ function renderStats() {
     ? `${total} PR${total === 1 ? '' : 's'}`
     : `${shown} of ${total} PRs`;
   $('#stats').textContent = conta + (marked ? ` · ${marked} ticked` : '');
+}
+
+// syncSelectAll makes the "select all" box say what is true: checked only when
+// there are visible PRs and every one of them is ticked, half-checked when some
+// are. It runs on every render of the list once the list has arrived, so a box
+// ticked while it was still loading (it selected nothing) clears itself when
+// the PRs come in, instead of staying checked over an empty selection
+// (BUG-QA-06). Before the first answer there is no list to derive it from.
+function syncSelectAll() {
+  if (!state.prsLoaded) return;
+  const box = $('#select-all');
+  const shown = visiblePRs();
+  const ticked = shown.filter((pr) => state.selected.has(pr.key)).length;
+  box.checked = shown.length > 0 && ticked === shown.length;
+  box.indeterminate = ticked > 0 && ticked < shown.length;
 }
 
 function renderPRs() {
