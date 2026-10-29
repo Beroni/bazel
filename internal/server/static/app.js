@@ -20,8 +20,8 @@ const state = {
   selected: new Set(),
   scope: 'all',
   filter: '',
-  ownerFilter: '',    // '' = every owner
-  repoFilter: '',     // '' = every repository (of the chosen owner)
+  ownerFilter: '',    // '' = every owner; else the owner, lower case
+  repoFilter: '',     // '' = every repo (of that owner); else its repoKey
   reviewFilter: 'all', // all | none | reviewed | changed
   hideDrafts: false,
   prsHidden: false,   // lista de PRs recolhida, para ler o review em tela cheia
@@ -695,8 +695,8 @@ function visiblePRs() {
   const q = state.filter.toLowerCase();
   return state.prs.filter((pr) => {
     if (state.scope === 'mine' && !pr.mine) return false;
-    if (state.ownerFilter && repoOwner(pr.repo) !== state.ownerFilter) return false;
-    if (state.repoFilter && pr.repo !== state.repoFilter) return false;
+    if (state.ownerFilter && repoOwner(pr.repo).toLowerCase() !== state.ownerFilter) return false;
+    if (state.repoFilter && repoKey(pr.repo) !== state.repoFilter) return false;
     if (!matchesReview(pr)) return false;
     if (state.hideDrafts && pr.draft) return false;
     if (!q) return true;
@@ -736,67 +736,88 @@ function repoName(repo) {
   return i > 0 ? repo.slice(i + 1) : repo;
 }
 
+// repoKey is how two spellings of one repository meet: the config keeps what
+// was typed ("beroni/bazel"), and GitHub's search answers with the canonical
+// one ("Beroni/bazel"). Owners and repositories are compared by it, and the
+// filters keep it as their value.
+const repoKey = (repo) => repo.toLowerCase();
+
+// fillSelect rebuilds a filter selector: the "any" option, then one option per
+// [value, label] pair, keeping the current choice and the "on" highlight.
+function fillSelect(sel, anyLabel, options, current) {
+  sel.innerHTML = '';
+  const any = el('option', null, anyLabel);
+  any.value = '';
+  sel.append(any);
+  for (const [value, label] of options) {
+    const o = el('option', null, label);
+    o.value = value;
+    sel.append(o);
+  }
+  sel.value = current;
+  sel.classList.toggle('on', !!current);
+}
+
 // renderRepoFilters builds the two selectors — owner and repository — from
 // what is watched and how many PRs each one has right now. The repository one
 // only lists the chosen owner's repositories, and each selector hides when a
 // single option is left: there is nothing to choose.
 function renderRepoFilters() {
-  const contagem = new Map();
-  for (const pr of state.prs) contagem.set(pr.repo, (contagem.get(pr.repo) || 0) + 1);
-  // Os monitorados mandam na ordem; um PR de repositório que saiu da lista
-  // ainda aparece, senão ele viraria um filtro impossível de desfazer.
-  const repos = [...new Set([...state.repos, ...contagem.keys()])];
-  const conta = (lista) => lista.reduce((n, r) => n + (contagem.get(r) || 0), 0);
+  // One entry per repository, whatever its case. The watched ones set the
+  // order; a PR from a repository that left the list still shows up, or it
+  // would become a filter impossible to undo. The label is the spelling a PR
+  // came with (GitHub's), and the config's only while no PR has.
+  const repos = new Map(); // key -> {label, count, seen}
+  for (const repo of state.repos) {
+    if (!repos.has(repoKey(repo))) repos.set(repoKey(repo), { label: repo, count: 0, seen: false });
+  }
+  for (const pr of state.prs) {
+    const r = repos.get(repoKey(pr.repo)) || { count: 0 };
+    Object.assign(r, { label: pr.repo, count: r.count + 1, seen: true });
+    repos.set(repoKey(pr.repo), r);
+  }
 
-  const owners = [...new Set(repos.map(repoOwner).filter(Boolean))];
+  // Owners the same way: one per owner, labelled as GitHub spells it when any
+  // of its repositories brought a PR.
+  const owners = new Map(); // key -> {label, count, seen}
+  for (const r of repos.values()) {
+    const owner = repoOwner(r.label);
+    if (!owner) continue;
+    const o = owners.get(owner.toLowerCase()) || { label: owner, count: 0, seen: false };
+    if (r.seen && !o.seen) Object.assign(o, { label: owner, seen: true });
+    o.count += r.count;
+    owners.set(owner.toLowerCase(), o);
+  }
+
   const donoSel = $('#owner-filter');
-  donoSel.hidden = owners.length < 2;
+  donoSel.hidden = owners.size < 2;
   // The chosen owner stays chosen even with no open PR left; it only drops
   // when its repositories are no longer watched.
-  if (donoSel.hidden || (state.ownerFilter && !owners.includes(state.ownerFilter))) {
+  if (donoSel.hidden || (state.ownerFilter && !owners.has(state.ownerFilter))) {
     state.ownerFilter = '';
   }
   if (!donoSel.hidden) {
-    donoSel.innerHTML = '';
-    const todos = el('option', null, `any owner (${conta(repos)})`);
-    todos.value = '';
-    donoSel.append(todos);
-    for (const owner of owners) {
-      const o = el('option', null, `${owner} (${conta(repos.filter((r) => repoOwner(r) === owner))})`);
-      o.value = owner;
-      donoSel.append(o);
-    }
-    donoSel.value = state.ownerFilter;
-    donoSel.classList.toggle('on', !!state.ownerFilter);
+    fillSelect(donoSel, `any owner (${state.prs.length})`,
+      [...owners].map(([k, o]) => [k, `${o.label} (${o.count})`]), state.ownerFilter);
   }
 
   // With a single owner in play — chosen, or because it is the only one — the
   // repository name is enough: repeating the owner in every option only eats
   // width.
-  const doDono = state.ownerFilter
-    ? repos.filter((r) => repoOwner(r) === state.ownerFilter)
-    : repos;
-  const soNome = !!state.ownerFilter || owners.length < 2;
+  const doDono = [...repos].filter(([, r]) =>
+    !state.ownerFilter || repoOwner(r.label).toLowerCase() === state.ownerFilter);
+  const soNome = !!state.ownerFilter || owners.size < 2;
   const sel = $('#repo-filter');
   sel.hidden = doDono.length < 2;
   if (sel.hidden) {
     if (state.repoFilter) { state.repoFilter = ''; }
     return;
   }
-  if (state.repoFilter && !doDono.includes(state.repoFilter)) state.repoFilter = '';
+  if (state.repoFilter && !doDono.some(([k]) => k === state.repoFilter)) state.repoFilter = '';
 
-  sel.innerHTML = '';
-  const todos = el('option', null, `any repo (${conta(doDono)})`);
-  todos.value = '';
-  sel.append(todos);
-  for (const repo of doDono) {
-    const rotulo = soNome ? repoName(repo) : repo;
-    const o = el('option', null, `${rotulo} (${contagem.get(repo) || 0})`);
-    o.value = repo;
-    sel.append(o);
-  }
-  sel.value = state.repoFilter;
-  sel.classList.toggle('on', !!state.repoFilter);
+  const total = doDono.reduce((n, [, r]) => n + r.count, 0);
+  fillSelect(sel, `any repo (${total})`,
+    doDono.map(([k, r]) => [k, `${soNome ? repoName(r.label) : r.label} (${r.count})`]), state.repoFilter);
 }
 
 // renderAgents monta o seletor com os agents e pipelines do config.yaml.
