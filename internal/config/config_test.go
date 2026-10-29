@@ -14,9 +14,9 @@ import (
 	"github.com/beroni/bazel/internal/pricing"
 )
 
-// A new config is born with no agent at all: the list is built on the page,
-// from the installed skills — there is no factory list guessing what this
-// computer has.
+// Default carries no agent at all: it is also the base Load decodes a
+// config.yaml over, and a list here would creep into a config that has none.
+// The starter list a new config gets is LoadOrInit's (starter_test.go).
 func TestDefaultComecaSemAgentes(t *testing.T) {
 	cfg := Default()
 	if len(cfg.Agents) != 0 || len(cfg.Pipelines) != 0 {

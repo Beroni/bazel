@@ -363,6 +363,37 @@ func defaultPostAgent() AgentDef {
 	}
 }
 
+// seedStarter fills a brand-new config with agents and pipelines built from
+// the skills that ship inside Bazel, so the first review works right after
+// install. It only runs when config.yaml is created: a config you already have
+// is never touched, even if its list is empty — empty may be what you chose.
+func (c *Config) seedStarter() {
+	off := false
+	c.Agents = []AgentDef{
+		{Name: "bazel-review-fleet", Description: "three review lenses over one diff, deduplicated into one verdict",
+			Task: "/bazel-review-fleet {{number}}"},
+		{Name: "bazel-senior-code-reviewer", Description: "precision lens: a few findings it can defend",
+			Task: "/bazel-senior-code-reviewer {{number}}"},
+		{Name: "bazel-exploit-digger", Description: "adversarial recall lens, class by class",
+			Task: "/bazel-exploit-digger {{number}}"},
+		{Name: "bazel-lazy-senior-dev", Description: "subtraction lens: code that should not exist",
+			Task: "/bazel-lazy-senior-dev {{number}}"},
+		// A PR's history is not a review: publishing it would tell the team the
+		// code was reviewed.
+		{Name: "bazel-history-pr", Description: "the PR's story: commits, reviews and the review→fix loop",
+			Task: "/bazel-history-pr {{number}}", Publishable: &off},
+	}
+	c.Pipelines = []Pipeline{
+		// The lenses in separate processes: what keeps them independent on an
+		// agent CLI that cannot spawn subagents.
+		{Name: "serial-fleet", Description: "the three lenses one at a time, each in its own process",
+			Steps: []string{"bazel-senior-code-reviewer", "bazel-exploit-digger", "bazel-lazy-senior-dev"}},
+		{Name: "review-then-publish", Description: "the fleet, then you choose what goes to the PR",
+			Steps: []string{"bazel-review-fleet", StepPublish}},
+	}
+	c.Default = "bazel-review-fleet"
+}
+
 // legacyPostAgent is the publishing agent Bazel saved before the embedded skill
 // — it called the `/post-report` from ~/.claude/skills, which only existed for
 // whoever had installed it.
@@ -413,10 +444,9 @@ func Default() *Config {
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
 		},
-		// Agents and Pipelines start empty on purpose: the one who builds the
-		// list is you, on the page, from the skills installed on your machine.
-		// A factory list would only be right by coincidence — it would point to
-		// skills this computer may never have had.
+		// Agents and Pipelines start empty here: this is also the base Load
+		// decodes a config.yaml over, and a list here would creep into a config
+		// that has none. A new config gets the starter list in LoadOrInit.
 		PostAgent: defaultPostAgent(),
 	}
 }
@@ -547,6 +577,7 @@ func LoadOrInit() (*Config, bool, error) {
 	}
 
 	cfg := Default()
+	cfg.seedStarter()
 	if err := cfg.Save(); err != nil {
 		return nil, false, fmt.Errorf("criando %s: %w", path, err)
 	}
