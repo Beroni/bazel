@@ -1,14 +1,15 @@
 import { defineConfig, devices } from '@playwright/test';
 
 // Every test boots its own Bazel (own BAZEL_HOME, HOME, PATH and port), so the
-// suite runs fully parallel. Nothing here talks to the network: the browser
-// only ever opens 127.0.0.1.
+// suite runs fully parallel; 6 workers keep `make e2e` under ~30s on an
+// 8-core laptop. Nothing here talks to the network: the browser only ever
+// opens 127.0.0.1.
 export default defineConfig({
   testDir: './tests',
   outputDir: './.out/results',
   globalSetup: './harness/global-setup.ts',
   fullyParallel: true,
-  workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 4,
+  workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 6,
   forbidOnly: !!process.env.CI,
   retries: 0,
   timeout: 30_000,

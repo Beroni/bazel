@@ -221,7 +221,9 @@ export class Bazel {
 
   /** Removes the temp root. Called only when the test passed. */
   cleanup(): void {
-    fs.rmSync(this.root, { recursive: true, force: true });
+    // Jobs still in flight at stop time (a clone being written) can race the
+    // removal for a moment after the server exits.
+    fs.rmSync(this.root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 
   // --- fixtures, mid-test ---

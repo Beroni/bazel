@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,11 +12,12 @@ export default async function globalSetup() {
   fs.rmSync(BIN, { recursive: true, force: true });
   fs.mkdirSync(BIN, { recursive: true });
 
+  // The three builds run in parallel; Go's build cache makes a warm run cheap.
   const build = (out: string, pkg: string) =>
-    execFileSync('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd: REPO, stdio: 'inherit' });
-  build('bazel', '.');
-  build('gh', './e2e/fakes/gh');
-  build('fake-agent', './e2e/fakes/agent');
+    new Promise<void>((resolve, reject) =>
+      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd: REPO }, (err, _stdout, stderr) =>
+        err ? reject(new Error(`go build ${pkg}: ${stderr || err.message}`)) : resolve()));
+  await Promise.all([build('bazel', '.'), build('gh', './e2e/fakes/gh'), build('fake-agent', './e2e/fakes/agent')]);
 
   // Scenario specs (fixtures/agent/specs/*.json) → claude-stream scenarios.
   const { synthAll } = await import('../tools/stream.mjs');
