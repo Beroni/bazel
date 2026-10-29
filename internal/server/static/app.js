@@ -375,7 +375,7 @@ function openPR(key) {
 
   if (pr.changed_since_review) {
     const aviso = el('div', 'stale-box');
-    aviso.textContent = `This PR changed after the review from ${pr.reviewed_at} ago`
+    aviso.textContent = `This PR changed after the review from ${ago(pr.reviewed_at)}`
       + (pr.review_agent ? ` (${pr.review_agent})` : '')
       + ' — what is here is no longer what the agent read.';
     v.append(aviso);
@@ -1046,6 +1046,10 @@ function renderPRs() {
   updateReviewButton();
 }
 
+// ago turns "2h" into "2h ago"; "just now" is already a phrase and would get
+// a crooked "ago".
+const ago = (age) => (age === 'just now' ? age : age + ' ago');
+
 // reviewTags é o histórico do PR na lista: se já foi revisado, quando, e —
 // o que mais importa — se ele ganhou commit novo depois disso. Um PR revisado
 // que mudou vale um aviso, não um ✓: o que está no GitHub não é mais o que
@@ -1053,12 +1057,13 @@ function renderPRs() {
 function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
-    const t = el('span', 'tag stale', '⟳ changed since review');
-    t.title = `reviewed ${pr.reviewed_at} ago by ${pr.review_agent || 'an agent'}, and the PR got new commits afterwards`;
+    const t = el('span', 'tag stale', '⟳ changed');
+    t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}, and the PR got new commits afterwards`;
     return [t];
   }
-  const t = el('span', 'tag reviewed', '✓ reviewed ' + pr.reviewed_at + (pr.review_posted ? ' · published' : ''));
-  t.title = `reviewed by ${pr.review_agent || 'an agent'}`;
+  const t = el('span', 'tag reviewed', '✓ ' + pr.reviewed_at + (pr.review_posted ? ' ↑' : ''));
+  t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
+    + (pr.review_posted ? ', and published on the PR' : '');
   return [t];
 }
 
