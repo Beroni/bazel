@@ -34,6 +34,7 @@ const state = {
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
   views: {},         // job id -> tab open in its detail (see jobView)
+  logFilter: {},     // job id -> agent picked in the live log, '' = all
   instance: null,    // id of the server process; changes when it restarts
 };
 
@@ -1029,63 +1030,56 @@ async function pollLog(id) {
   }
 }
 
-// logLineEl builds a line with the signature of whoever wrote it. The label's
-// color comes from the order of appearance, so the fleet's lenses can be told
-// apart at a glance even when interleaved.
-// --- one terminal per agent ---
+// --- the live log: one column of agents, one stream of lines ---
 //
-// The fleet starts the three lenses inside the same process, in parallel: in a
-// single stream the lines arrive interleaved and you can't follow any line of
-// reasoning. Each agent writes to its own terminal, with its own scroll.
+// The fleet starts its lenses inside the same process, in parallel. The log
+// keeps one stream, every line signed and colored by whoever wrote it, and a
+// column on the left with "All" and each agent: picking one shows only its
+// lines, so a line of reasoning can be followed without the others.
 
-const maxTermLines = 300;
+const maxTermLines = 500;
 
-// agentName is the name that goes in the terminal header. An unsigned line
-// belongs to the step's agent — the server already sends that name filled in.
+// agentName is the name a line is signed with. An unsigned line belongs to the
+// step's agent — the server already sends that name filled in.
 function agentName(l) {
   return l.agent || 'agent';
 }
 
-function logLineEl(l) {
-  return el('div', 'log-line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout'), l.text);
+// agentColor gives each agent its color from the order it first spoke in.
+function agentColor(id, who) {
+  return 'c' + (Math.max(0, logState(id).agents.indexOf(who)) % 6);
 }
 
-// termFor returns the body of an agent's terminal, creating the terminal on the
-// first line it writes. The order on screen is the order in which they spoke.
-function termFor(wrap, id, who) {
-  if (!wrap._terms) wrap._terms = new Map();
-  let body = wrap._terms.get(who);
-  if (body) return body;
-
-  const st = logState(id);
-  const cor = 'c' + (Math.max(0, st.agents.indexOf(who)) % 6);
-  const term = el('div', 'term');
-  const head = el('div', 'term-head ' + cor);
-  head.append(el('span', 'dot'), el('span', 'term-name', who));
-  const count = el('span', 'term-count', '0');
-  head.append(count);
-  body = el('div', 'term-body');
-  term.append(head, body);
-  wrap.append(term);
-
-  body._count = count;
-  wrap._terms.set(who, body);
-  return body;
+function logLineEl(id, l) {
+  const who = agentName(l);
+  const line = el('div', 'log-line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout'));
+  line.dataset.agent = who;
+  const name = el('span', 'who ' + agentColor(id, who), who);
+  name.title = who;
+  line.append(name, el('span', 'txt', l.text));
+  return line;
 }
 
-// pushLine writes to the agent's terminal and scrolls if the reader was already at the end.
+// logFilter is the agent picked in the column, or '' for all of them.
+function logFilter(id) {
+  return (state.logFilter || {})[id] || '';
+}
+
+// pushLine writes a line to the stream and keeps the reader at the end if they
+// were already there.
 function pushLine(wrap, id, l) {
-  const body = termFor(wrap, id, agentName(l));
-  const noFim = body.scrollHeight - body.scrollTop - body.clientHeight < 30;
-  body.append(logLineEl(l));
-  while (body.childElementCount > maxTermLines) body.firstElementChild.remove();
-  if (body._count) body._count.textContent = String(body.childElementCount);
-  if (noFim) body.scrollTop = body.scrollHeight;
+  const atEnd = wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight < 30;
+  const line = logLineEl(id, l);
+  const f = logFilter(id);
+  if (f && f !== agentName(l)) line.hidden = true;
+  wrap.append(line);
+  while (wrap.childElementCount > maxTermLines) wrap.firstElementChild.remove();
+  if (atEnd) wrap.scrollTop = wrap.scrollHeight;
 }
 
-// logTerminals builds the grid with what the page already has on hand.
+// logTerminals builds the stream with what the page already has on hand.
 function logTerminals(id) {
-  const wrap = el('div', 'terms');
+  const wrap = el('div', 'log-stream');
   wrap.id = 'log-terms';
   wrap.dataset.job = id;
   const st = logState(id);
@@ -1094,39 +1088,70 @@ function logTerminals(id) {
   return wrap;
 }
 
-// appendLog sends each new line to the terminal of whoever wrote it.
+// logAgents is the left column: All, then each agent with its line count.
+function logAgents(id) {
+  const col = el('div', 'log-agents');
+  col.id = 'log-agents';
+  col.dataset.job = id;
+  fillLogAgents(col, id);
+  return col;
+}
+
+function fillLogAgents(col, id) {
+  const st = logState(id);
+  const count = new Map();
+  for (const l of st.lines) count.set(agentName(l), (count.get(agentName(l)) || 0) + 1);
+  col.innerHTML = '';
+  const pick = (who) => {
+    state.logFilter = state.logFilter || {};
+    state.logFilter[id] = who;
+    const wrap = $('#log-terms');
+    if (wrap) {
+      for (const line of wrap.querySelectorAll('.log-line')) line.hidden = !!who && line.dataset.agent !== who;
+      wrap.classList.toggle('one', !!who);
+      wrap.scrollTop = wrap.scrollHeight;
+    }
+    fillLogAgents(col, id);
+  };
+  const item = (who, name, n, cor) => {
+    const b = el('button', 'log-agent' + (logFilter(id) === who ? ' on' : ''));
+    b.append(el('span', 'dot ' + cor), el('span', 'log-agent-name', name), el('span', 'log-agent-n', String(n)));
+    b.title = name;
+    b.addEventListener('click', () => pick(who));
+    col.append(b);
+  };
+  item('', 'All', st.lines.length, 'all');
+  for (const who of st.agents) item(who, who, count.get(who) || 0, agentColor(id, who));
+  const foot = el('p', 'log-count dim', logCountLabel(id));
+  foot.id = 'log-count';
+  col.append(foot);
+}
+
+// appendLog sends the new lines to the stream and refreshes the column.
 function appendLog(id, lines) {
   const wrap = $('#log-terms');
   if (!wrap || wrap.dataset.job !== id) return;
   const vazio = wrap.querySelector('.log-empty');
   if (vazio) vazio.remove();
   for (const l of lines) pushLine(wrap, id, l);
-  const count = $('#log-count');
-  if (count) count.textContent = logCountLabel(id);
+  const col = $('#log-agents');
+  if (col && col.dataset.job === id) fillLogAgents(col, id);
 }
 
-// total is what the server says it has — the panel of a finished review only
-// fetches the lines when someone opens it, and until then "0 lines" would be a lie.
+// total is what the server says it has — the log of a finished review is only
+// fetched when someone opens it, and until then "0 lines" would be a lie.
 function logCountLabel(id, total) {
   const st = logState(id);
   const n = Math.max(st.next, total || 0);
-  const agentes = st.agents.length;
-  return `${n} line${n === 1 ? '' : 's'}`
-    + (agentes > 1 ? ` · ${agentes} agents` : '')
-    + (st.dropped ? ` · ${st.dropped} older dropped` : '');
+  return `${n} line${n === 1 ? '' : 's'}` + (st.dropped ? ` · ${st.dropped} older dropped` : '');
 }
 
-function logPanel(job, open) {
-  const wrap = el('details', 'log-panel');
-  wrap.open = open;
-  const sum = el('summary');
-  const count = el('span', 'dim', logCountLabel(job.id, job.log_lines));
-  count.id = 'log-count';
-  sum.append(el('span', null, 'agent log'), document.createTextNode(' · '), count);
-
-  wrap.append(sum, logTerminals(job.id));
-  // The log of an already finished review is only fetched when someone opens it.
-  wrap.addEventListener('toggle', () => { if (wrap.open) pollLog(job.id); });
+function logPanel(job) {
+  const wrap = el('div', 'logview');
+  const stream = logTerminals(job.id);
+  if (logFilter(job.id)) stream.classList.add('one');
+  wrap.append(logAgents(job.id), stream);
+  requestAnimationFrame(() => { stream.scrollTop = stream.scrollHeight; });
   return wrap;
 }
 
@@ -1622,8 +1647,8 @@ function renderOverview(body, job) {
 }
 
 function renderLogView(body, job) {
-  if (job.state === 'failed') body.append(el('div', 'error-box', job.error || 'failed'));
-  body.append(logPanel(job, true));
+  if (job.state === 'failed') body.append(el('div', 'error-box log-error', job.error || 'failed'));
+  body.append(logPanel(job));
   pollLog(job.id);
 }
 
