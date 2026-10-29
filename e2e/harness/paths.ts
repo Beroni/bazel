@@ -3,6 +3,12 @@ import path from 'node:path';
 export const E2E = path.resolve(__dirname, '..');
 export const REPO = path.resolve(E2E, '..');
 export const OUT = path.join(E2E, '.out');
+/**
+ * The Bazel source tree under test. Defaults to this repo; point it at another
+ * checkout (E2E_BAZEL_SRC=../bases/redesign) to run this suite against another
+ * base without copying e2e/ there. The fakes always come from this repo.
+ */
+export const BAZEL_SRC = process.env.E2E_BAZEL_SRC ? path.resolve(process.env.E2E_BAZEL_SRC) : REPO;
 export const BIN = path.join(OUT, 'bin');
 export const FIXTURES = path.join(E2E, 'fixtures');
 export const SCENARIO_FILES = path.join(FIXTURES, 'agent');

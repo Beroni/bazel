@@ -2,7 +2,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BIN, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
+import { BAZEL_SRC, BIN, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
@@ -13,11 +13,12 @@ export default async function globalSetup() {
   fs.mkdirSync(BIN, { recursive: true });
 
   // The three builds run in parallel; Go's build cache makes a warm run cheap.
-  const build = (out: string, pkg: string) =>
+  const build = (out: string, pkg: string, cwd = REPO) =>
     new Promise<void>((resolve, reject) =>
-      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd: REPO }, (err, _stdout, stderr) =>
-        err ? reject(new Error(`go build ${pkg}: ${stderr || err.message}`)) : resolve()));
-  await Promise.all([build('bazel', '.'), build('gh', './e2e/fakes/gh'), build('fake-agent', './e2e/fakes/agent')]);
+      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd }, (err, _stdout, stderr) =>
+        err ? reject(new Error(`go build ${pkg} in ${cwd}: ${stderr || err.message}`)) : resolve()));
+  await Promise.all([build('bazel', '.', BAZEL_SRC), build('gh', './e2e/fakes/gh'), build('fake-agent', './e2e/fakes/agent')]);
+  if (BAZEL_SRC !== REPO) console.log(`e2e: Bazel under test built from ${BAZEL_SRC}`);
 
   // Scenario specs (fixtures/agent/specs/*.json) → claude-stream scenarios.
   const { synthAll } = await import('../tools/stream.mjs');
