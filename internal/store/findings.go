@@ -13,8 +13,10 @@ import (
 // comentário `<!-- finding ... -->` que o review-fleet grava. Seção que não
 // usa `###` e numera os achados em negrito (`**1. major · …**`, o formato dos
 // reviews mais antigos) tem cada parágrafo numerado como um achado, até o
-// próximo número ou heading. É a unidade que a página deixa marcar: um falso
-// positivo sai do que vai ao PR sem que o resto do review mude.
+// próximo número ou heading. Em `## Needs human verification` cada item da
+// lista também é um: a dúvida que você já resolveu não precisa ir ao PR. É a
+// unidade que a página deixa marcar: um falso positivo sai do que vai ao PR
+// sem que o resto do review mude.
 type Part struct {
 	Text    string
 	Finding bool
@@ -32,8 +34,11 @@ func SplitFindings(body string) []Part {
 		finding bool
 		inFence bool
 		fence   string
-		section bool // dentro de um `##` de findings/cuts
+		section bool // dentro de um `##` de findings/cuts/human verification
+		human   bool // e é a de human verification, que lista em vez de `###`
 		h3Seen  bool // a seção atual numera os achados com `###`
+		bold    bool // the item open in the human section is a `**N. …**`
+		blank   bool // the previous line was blank
 	)
 	flush := func() {
 		if cur.Len() == 0 {
@@ -56,21 +61,44 @@ func SplitFindings(body string) []Part {
 			if strings.HasPrefix(trim, fence) {
 				inFence = false
 			}
+			blank = false
 			cur.WriteString(line)
 			continue
 		}
 		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
 			inFence, fence = true, trim[:3]
+			blank = false
 			cur.WriteString(line)
 			continue
 		}
 		level, title := headingOf(trim)
 		switch {
 		case level == 0:
+			wasBlank := blank
+			blank = trim == ""
 			// Achado em negrito numerado, nas seções que não usam `###`.
 			if section && !h3Seen && boldNumbered(trim) {
 				flush()
 				finding = true
+				bold = human
+			}
+			// A list item at the start of the line opens another one. An
+			// indented or blank line stays in the item it shows up in, and a
+			// bold item runs to the next number, item or heading, with its
+			// paragraphs. In a list item, a line that continues the text with
+			// no blank line in between (lazy continuation) stays too; only a
+			// paragraph after a blank line closes the item.
+			if human && !h3Seen && trim != "" && line[0] != ' ' && line[0] != '\t' {
+				switch {
+				case listItem(trim):
+					flush()
+					// "- None." diz que não há dúvida: não é uma para desmarcar.
+					finding = !emptyItem(trim)
+					bold = false
+				case !boldNumbered(trim) && finding && !bold && wasBlank:
+					flush()
+					finding = false
+				}
 			}
 			cur.WriteString(line)
 			continue
@@ -78,15 +106,18 @@ func SplitFindings(body string) []Part {
 			// Um heading maior fecha o achado que estava aberto, e um `##`
 			// diz se o que vem agora é uma seção de achados.
 			flush()
-			finding = false
-			section = level == 2 && isFindingsSection(title)
+			finding, bold, blank = false, false, false
+			human = level == 2 && isHumanSection(title)
+			section = level == 2 && (isFindingsSection(title) || human)
 			h3Seen = false
 		case level == 3:
 			flush()
+			bold, blank = false, false
 			h3Seen = true
 			finding = section || strings.HasPrefix(nextNonBlank(i), "<!-- finding")
 		default:
 			// `####` e abaixo ficam dentro do achado em que aparecem.
+			blank = false
 		}
 		cur.WriteString(line)
 	}
@@ -146,8 +177,25 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 			header = head + "\n---\n\n"
 		}
 	}
-	path := filepath.Join(pubDir, filepath.Base(original))
-	if err := os.WriteFile(path, []byte(header+strings.TrimSpace(body)+"\n"), 0o644); err != nil {
+	// One file per publish, never shared: two publishes of the same review with
+	// different selections must not overwrite each other's copy before the post
+	// agent reads it. CreateTemp picks a name nobody else has (O_EXCL).
+	base := filepath.Base(original)
+	ext := filepath.Ext(base)
+	f, err := os.CreateTemp(pubDir, strings.TrimSuffix(base, ext)+"-*"+ext)
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	_, err = f.WriteString(header + strings.TrimSpace(body) + "\n")
+	if err == nil {
+		err = f.Chmod(0o644)
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		_ = os.Remove(path)
 		return "", err
 	}
 	return path, nil
@@ -192,6 +240,40 @@ func headingOf(trim string) (int, string) {
 func isFindingsSection(title string) bool {
 	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
 	return strings.HasPrefix(t, "finding") || strings.HasPrefix(t, "cut")
+}
+
+// isHumanSection reconhece o `## Needs human verification` que a frota grava
+// com o que as lentes não conseguiram confirmar.
+func isHumanSection(title string) bool {
+	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
+	return strings.HasPrefix(t, "needs human")
+}
+
+// listItem diz se a linha abre um item de lista: `- `, `* `, `+ ` ou `1. `.
+func listItem(trim string) bool {
+	if strings.HasPrefix(trim, "- ") || strings.HasPrefix(trim, "* ") || strings.HasPrefix(trim, "+ ") {
+		return true
+	}
+	n := 0
+	for n < len(trim) && trim[n] >= '0' && trim[n] <= '9' {
+		n++
+	}
+	return n > 0 && n+1 < len(trim) && (trim[n] == '.' || trim[n] == ')') && trim[n+1] == ' '
+}
+
+// emptyItem diz se o item de lista só avisa que não há nada — "- None.",
+// "- n/a", "- Nenhum" —, o que a seção de dúvidas costuma trazer vazia.
+func emptyItem(trim string) bool {
+	text := trim
+	if i := strings.IndexByte(trim, ' '); i >= 0 {
+		text = trim[i+1:]
+	}
+	text = strings.ToLower(strings.Trim(text, " .*_!"))
+	switch text {
+	case "none", "nothing", "n/a", "na", "nenhum", "nenhuma", "nada", "-", "—":
+		return true
+	}
+	return false
 }
 
 // Unwrap tira o review de dentro de um bloco ```markdown, quando o agente

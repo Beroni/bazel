@@ -13,7 +13,9 @@ package server
 
 import (
 	"context"
+	"crypto/rand"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,11 @@ type Server struct {
 	jobs       *Manager
 	done       chan struct{}
 
+	// instance is random per server process. Job ids restart at j1 on every
+	// boot, so the page uses it to tell a restarted server from a dropped
+	// connection and to forget what it cached under the old ids.
+	instance string
+
 	// cfgMu protege os campos do config que a interface edita (repos).
 	cfgMu sync.Mutex
 
@@ -88,7 +95,12 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		return nil, err
 	}
 	hub := NewHub()
+	instance, err := newInstanceID()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
+		instance:   instance,
 		cfg:        cfg,
 		me:         me,
 		reviewsDir: reviewsDir,
@@ -98,6 +110,15 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs:       NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub),
 		done:       make(chan struct{}),
 	}, nil
+}
+
+// newInstanceID makes the id that tells one server process from the next.
+func newInstanceID() (string, error) {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", fmt.Errorf("could not generate the server instance id: %w", err)
+	}
+	return hex.EncodeToString(b[:]), nil
 }
 
 // Handler devolve as rotas já embrulhadas na checagem de origem.
@@ -122,7 +143,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
-	mux.HandleFunc("POST /api/jobs/{id}/continue", s.handleContinue)
+	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -300,6 +321,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Unlock()
 
 	writeJSON(w, http.StatusOK, map[string]any{
+		"instance":       s.instance,
 		"me":             s.me,
 		"version":        s.opts.Version,
 		"repos":          repos,
@@ -607,7 +629,22 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
 	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+		status := http.StatusBadGateway
+		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
+			status = http.StatusConflict
+		}
+		writeErr(w, status, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleDismiss is "keep it here": the card stops waiting for you to publish,
+// and nothing goes to the PR.
+func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.Dismiss(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -631,17 +668,6 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, view)
 }
 
-// handleContinue solta uma pipeline que parou para você ler: ela volta para a
-// fila e recomeça do passo seguinte, dentro do mesmo clone.
-func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request) {
-	view, err := s.jobs.Continue(r.PathValue("id"))
-	if err != nil {
-		writeErr(w, http.StatusConflict, err)
-		return
-	}
-	writeJSON(w, http.StatusAccepted, view)
-}
-
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -656,6 +682,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 
 	ch := s.hub.Subscribe()
 	defer s.hub.Unsubscribe(ch)
+
+	// The stream opens with the instance id. EventSource reconnects by itself
+	// after a restart, and this first event is how the page learns the job ids
+	// it holds belong to a process that is gone.
+	if hello, err := json.Marshal(event{Type: "hello", Data: map[string]string{"instance": s.instance}}); err == nil {
+		fmt.Fprintf(w, "data: %s\n\n", hello)
+		flusher.Flush()
+	}
 
 	ping := time.NewTicker(25 * time.Second)
 	defer ping.Stop()
@@ -1158,7 +1192,12 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 // agente. É a lista de onde a configuração monta a sua.
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	dir, list := s.installedSkills()
-	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list})
+	s.cfgMu.Lock()
+	post := s.cfg.PostSkill()
+	s.cfgMu.Unlock()
+	// post_skill vai junto para a página não oferecê-la como agente: ela só
+	// publica quando roda como o passo publish.
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
 }
 
 // installedSkills lê as skills do disco a cada chamada: instalar uma skill não

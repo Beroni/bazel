@@ -3,6 +3,7 @@ package server
 import (
 	"time"
 
+	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
@@ -103,11 +104,9 @@ type jobView struct {
 	// sem omitempty: é justamente o false que a página precisa ler para
 	// esconder os botões de publicar.
 	Publishable bool `json:"publishable"`
-	// Paused marca a pipeline que parou num passo `pause` e espera você ler o
-	// que saiu e mandar continuar. NextStep é o que vem quando você mandar —
-	// é o que o botão de continuar diz.
-	Paused   bool   `json:"paused,omitempty"`
-	NextStep string `json:"next_step,omitempty"`
+	// AwaitsPublish marca a pipeline que terminou num passo `publish` e
+	// espera você escolher o que vai ao PR.
+	AwaitsPublish bool `json:"awaits_publish,omitempty"`
 	// Publishing marca o job que está levando ao PR um review já lido — o
 	// card do próprio review enquanto o agente de post roda, ou o card de uma
 	// publicação vinda do disco.
@@ -136,10 +135,17 @@ type jobView struct {
 	HasBody bool    `json:"has_body"`
 	Body    string  `json:"body,omitempty"`
 	HTML    string  `json:"html,omitempty"`
+	// PublishHTML e ContextHTML separam o relatório quando só parte dos
+	// passos vai ao PR: o primeiro é exatamente o que sobe — é nele que ficam
+	// os tiques dos achados, na mesma numeração que o servidor usa para
+	// tirá-los — e o segundo é o que fica no Bazel. Vazios quando o
+	// relatório inteiro é publicável, ou nada dele é.
+	PublishHTML string `json:"publish_html,omitempty"`
+	ContextHTML string `json:"context_html,omitempty"`
 }
 
-// view serializa o job. Chamar com o lock do Manager seguro.
-func (j *Job) view(withBody bool) jobView {
+// view serializes the job, without the body. Call with the Manager lock held.
+func (j *Job) view() jobView {
 	v := jobView{
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
@@ -177,20 +183,7 @@ func (j *Job) view(withBody bool) jobView {
 	if j.publish != nil {
 		v.Publishing = true
 	}
-	if j.State == StatePaused && j.cont != nil {
-		v.Paused = true
-		if i := j.cont.From; i >= 0 && i < len(j.Choice.Steps) {
-			st := j.Choice.Steps[i]
-			if st.Reserved == config.StepPublish {
-				// O passo de publicar não tem linha na lista, então o botão é
-				// o único lugar onde dá para dizer o que vem a seguir — e é
-				// escrita no PR de outra pessoa.
-				v.NextStep = "publish to the PR"
-			} else {
-				v.NextStep = st.Name
-			}
-		}
-	}
+	v.AwaitsPublish = j.AwaitsPublish
 	if !j.StartedAt.IsZero() {
 		t := j.StartedAt
 		v.StartedAt = &t
@@ -199,11 +192,36 @@ func (j *Job) view(withBody bool) jobView {
 		t := j.FinishedAt
 		v.FinishedAt = &t
 	}
-	if withBody && j.Result.Body != "" {
-		v.Body = j.Result.Body
-		v.HTML = renderReview(j.Result.Body)
-	}
 	return v
+}
+
+// bodySource is what renderBody needs from a job, copied under the lock so
+// the rendering can run without it.
+type bodySource struct {
+	res    agent.Result
+	choice config.Choice
+}
+
+// bodySource copies the result and the choice. Call with the Manager lock held.
+func (j *Job) bodySource() bodySource {
+	res := j.Result
+	res.Steps = append([]agent.StepResult(nil), j.Result.Steps...)
+	return bodySource{res: res, choice: j.Choice}
+}
+
+// renderBody fills the body fields of v. Runs without the Manager lock.
+func (v *jobView) renderBody(src bodySource) {
+	if src.res.Body == "" {
+		return
+	}
+	v.Body = src.res.Body
+	v.HTML = renderReview(src.res.Body)
+	if src.choice.Publishable {
+		if pub, trimmed, err := agent.PublishableBody(src.res, src.choice); err == nil && trimmed {
+			v.PublishHTML = renderReview(pub)
+			v.ContextHTML = renderReview(agent.ContextBody(src.res, src.choice))
+		}
+	}
 }
 
 // stepViews serializa os passos. Chamar com o lock do Manager seguro.

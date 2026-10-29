@@ -1,7 +1,9 @@
 package config
 
 import (
+	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -497,6 +499,315 @@ func TestPostChoice(t *testing.T) {
 	}
 }
 
+// A skill de publicação não vira agente: num passo comum ela roda sem o review
+// nem o prompt de publicar, e não posta nada. Quem publica é o passo publish —
+// e é ele que para para você escolher o que vai, por isso o pause saiu.
+func TestMigraPipelines(t *testing.T) {
+	cfg := Default()
+	for _, posts := range []bool{false, true} {
+		if _, err := cfg.AddAgentFromSkill("bazel-post-report", "", posts); err == nil {
+			t.Errorf("a skill de publicação não podia virar agente (posts=%v)", posts)
+		}
+	}
+
+	// Config gravada antes disso: o agente sai e o passo vira publish.
+	old := loadFrom(t, `repos: [acme/api]
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: bazel-post-report
+    task: /bazel-post-report {{number}}
+pipelines:
+  - name: gravada
+    steps: [review-fleet, pause, bazel-post-report]
+  - name: pausada
+    steps: [review-fleet, pause, publish]
+  - name: dupla
+    steps: [review-fleet, bazel-post-report, publish]
+default: bazel-post-report
+`)
+	if len(old.Agents) != 1 || old.Agents[0].Name != "review-fleet" {
+		t.Errorf("o agente de publicação devia sair da lista: %+v", old.Agents)
+	}
+	if got := strings.Join(old.Pipelines[0].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("o passo devia virar publish, e a pausa sair: %s", got)
+	}
+	if got := strings.Join(old.Pipelines[1].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("a pausa devia sair: %s", got)
+	}
+	if got := strings.Join(old.Pipelines[2].Steps, ","); got != "review-fleet,publish" {
+		t.Errorf("publicar uma vez só: %s", got)
+	}
+	if old.Default != "" {
+		t.Errorf("o padrão apontava para o agente removido: %q", old.Default)
+	}
+
+	var avisos bytes.Buffer
+	warnOut = &avisos
+	t.Cleanup(func() { warnOut = os.Stderr })
+
+	t.Run("pausa antes de quem posta sozinho", func(t *testing.T) {
+		avisos.Reset()
+		cfg := loadFrom(t, migraPortao)
+		if !strings.Contains(avisos.String(), "sem-portao-antes") {
+			t.Errorf("o Load devia avisar no terminal o que descartou: %q", avisos.String())
+		}
+		if len(cfg.Agents) != 3 {
+			t.Errorf("quem posta sozinho continua na lista: %+v", cfg.Agents)
+		}
+		want := map[string]string{
+			"portao":    "review-fleet,publish",
+			"longe":     "review-fleet,history-pr,publish",
+			"sem-pausa": "review-fleet,security-audit-post",
+			// An agent that posts on its own before publish was already posting
+			// with no gate before the upgrade: publish goes, instead of becoming
+			// a second post.
+			"posta-e-publica":      "review-fleet,security-audit-post",
+			"posta-antes-da-pausa": "security-audit-post,review-fleet",
+		}
+		if got := passosPorNome(cfg); !sameMap(got, want) {
+			t.Errorf("a pausa antes de quem posta devia virar publish:\n got %v\nwant %v", got, want)
+		}
+		if cfg.Default != "" {
+			t.Errorf("o padrão apontava para a pipeline descartada: %q", cfg.Default)
+		}
+		// The pipeline that was dropped, the two that lost their publish step
+		// because an agent already posts before it, and the two whose posting
+		// agent after a pause became the publish step.
+		avisados := map[string]bool{}
+		for _, w := range cfg.Warnings {
+			for _, nome := range []string{"sem-portao-antes", "posta-e-publica", "posta-antes-da-pausa", "portao", "longe"} {
+				if strings.Contains(w, `"`+nome+`"`) {
+					avisados[nome] = true
+				}
+			}
+		}
+		if len(cfg.Warnings) != 5 || len(avisados) != 5 {
+			t.Errorf("descartar uma pipeline, ou o publish dela, ou trocar quem postava pelo publish tem de avisar: %q", cfg.Warnings)
+		}
+		virou := `pipeline "portao": "security-audit-post" (after a pause) became the publish step and no longer runs`
+		if !strings.Contains(strings.Join(cfg.Warnings, "\n"), virou) {
+			t.Errorf("faltou o aviso %q: %q", virou, cfg.Warnings)
+		}
+	})
+
+	t.Run("publish descartado porque alguém já posta", func(t *testing.T) {
+		avisos.Reset()
+		cfg := loadFrom(t, `repos: [acme/api]
+agents:
+  - name: x-post
+    task: /x {{number}} --post
+    posts: true
+  - name: y-post
+    task: /y {{number}} --post
+    posts: true
+pipelines:
+  - name: duas-postagens
+    steps: [x-post, pause, y-post]
+`)
+		if got := passosPorNome(cfg)["duas-postagens"]; got != "x-post" {
+			t.Fatalf("o passo que postava depois da pausa devia sair sem virar publish: %q", got)
+		}
+		// One line for y-post turning into the publish step, one for that
+		// publish being dropped because x-post already posts.
+		if len(cfg.Warnings) != 2 {
+			t.Fatalf("queria dois avisos: %q", cfg.Warnings)
+		}
+		if w := cfg.Warnings[0]; !strings.Contains(w, `"duas-postagens"`) || !strings.Contains(w, `"y-post" (after a pause) became the publish step`) {
+			t.Errorf("trocar quem postava depois da pausa tem de avisar: %q", w)
+		}
+		if w := cfg.Warnings[1]; !strings.Contains(w, `"duas-postagens"`) || !strings.Contains(w, "x-post") {
+			t.Errorf("descartar o publish tem de avisar, com o nome da pipeline e de quem posta: %q", w)
+		}
+		if !strings.Contains(avisos.String(), "duas-postagens") {
+			t.Errorf("o Load devia avisar no terminal: %q", avisos.String())
+		}
+	})
+
+	t.Run("publicação fora do fim", func(t *testing.T) {
+		cfg := loadFrom(t, migraForaDoFim)
+		want := map[string]string{
+			"meio":             "review-fleet,history-pr,publish",
+			"primeiro":         "review-fleet,publish",
+			"publish-solto":    "review-fleet,history-pr,publish",
+			"so-historia":      "history-pr",
+			"historia-publish": "history-pr",
+		}
+		if got := passosPorNome(cfg); !sameMap(got, want) {
+			t.Errorf("o publish vai uma vez, no fim, e só com review antes:\n got %v\nwant %v", got, want)
+		}
+		if cfg.Default != "" {
+			t.Errorf("o padrão apontava para a pipeline que ficou vazia: %q", cfg.Default)
+		}
+		if len(cfg.Warnings) != 2 {
+			t.Errorf("as duas pipelines vazias deviam avisar: %q", cfg.Warnings)
+		}
+	})
+
+	t.Run("revisor com a skill do post_agent fica", func(t *testing.T) {
+		cfg := loadFrom(t, `repos: [acme/api]
+post_agent:
+  name: frota-publica
+  task: /review-fleet {{review_file}} --post
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: lazy
+    task: /lazy {{number}}
+  - name: frota-copia
+    task: "/review-fleet   {{number}} --post"
+    posts: true
+pipelines:
+  - name: dupla
+    steps: [review-fleet, lazy]
+  - name: copia
+    steps: [review-fleet, frota-copia]
+`)
+		var nomes []string
+		for _, a := range cfg.Agents {
+			nomes = append(nomes, a.Name)
+		}
+		if got := strings.Join(nomes, ","); got != "review-fleet,lazy" {
+			t.Errorf("só sai quem tem a task do post_agent, não quem divide a skill: %s", got)
+		}
+		want := map[string]string{"dupla": "review-fleet,lazy", "copia": "review-fleet,publish"}
+		if got := passosPorNome(cfg); !sameMap(got, want) {
+			t.Errorf("\n got %v\nwant %v", got, want)
+		}
+	})
+
+	t.Run("agente da skill embarcada sai mesmo sem posts", func(t *testing.T) {
+		cfg := loadFrom(t, `repos: [acme/api]
+post_agent:
+  name: frota-publica
+  task: /review-fleet {{review_file}} --post
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: publica-embarcada
+    task: /bazel-post-report {{review_file}}
+pipelines:
+  - name: gravada
+    steps: [review-fleet, publica-embarcada]
+`)
+		if len(cfg.Agents) != 1 || cfg.Agents[0].Name != "review-fleet" {
+			t.Errorf("quem chama a skill de publicação embarcada é agente de publicação: %+v", cfg.Agents)
+		}
+		if got := passosPorNome(cfg)["gravada"]; got != "review-fleet,publish" {
+			t.Errorf("o passo devia virar publish: %q", got)
+		}
+	})
+
+	t.Run("ida e volta", func(t *testing.T) {
+		for _, src := range []string{migraPortao, migraForaDoFim} {
+			first := loadFrom(t, src)
+			if err := first.Save(); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
+			second, err := Load()
+			if err != nil {
+				t.Fatalf("Load depois do Save: %v", err)
+			}
+			if a, b := passosPorNome(first), passosPorNome(second); !sameMap(a, b) {
+				t.Errorf("a segunda carga mudou as pipelines:\n 1ª %v\n 2ª %v", a, b)
+			}
+			if first.Default != second.Default || len(first.Agents) != len(second.Agents) {
+				t.Errorf("a segunda carga mudou o resto: %q/%q, %d/%d agents",
+					first.Default, second.Default, len(first.Agents), len(second.Agents))
+			}
+			if len(second.Warnings) != 0 {
+				t.Errorf("o que já foi migrado não avisa de novo: %q", second.Warnings)
+			}
+			for _, p := range second.Pipelines {
+				if _, err := second.resolveSteps(p.Steps); err != nil {
+					t.Errorf("%s gravada num formato que a página recusa (%v): %v", p.Name, p.Steps, err)
+				}
+				ch, err := second.ChoiceByName(p.Name)
+				if err != nil {
+					t.Errorf("%s sumiu do seletor: %v", p.Name, err)
+					continue
+				}
+				if got, want := strings.Join(ch.StepNames(), ","), strings.Join(p.Steps, ","); got != want {
+					t.Errorf("%s roda %s, mas está gravada como %s", p.Name, got, want)
+				}
+			}
+		}
+	})
+}
+
+const migraPortao = `repos: [acme/api]
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: history-pr
+    task: /history-pr {{number}}
+    publishable: false
+  - name: security-audit-post
+    task: /security-audit {{number}} --post
+    posts: true
+pipelines:
+  - name: portao
+    steps: [review-fleet, pause, security-audit-post]
+  - name: longe
+    steps: [review-fleet, pause, history-pr, security-audit-post]
+  - name: sem-portao-antes
+    steps: [history-pr, pause, security-audit-post]
+  - name: sem-pausa
+    steps: [review-fleet, security-audit-post]
+  - name: posta-e-publica
+    steps: [review-fleet, security-audit-post, publish]
+  - name: posta-antes-da-pausa
+    steps: [security-audit-post, review-fleet, pause, publish]
+default: sem-portao-antes
+`
+
+const migraForaDoFim = `repos: [acme/api]
+agents:
+  - name: review-fleet
+    task: /review-fleet {{number}}
+  - name: history-pr
+    task: /history-pr {{number}}
+    publishable: false
+  - name: bazel-post-report
+    task: /bazel-post-report {{number}}
+pipelines:
+  - name: meio
+    steps: [review-fleet, bazel-post-report, history-pr]
+  - name: primeiro
+    steps: [bazel-post-report, review-fleet]
+  - name: publish-solto
+    steps: [review-fleet, publish, history-pr]
+  - name: so-historia
+    steps: [history-pr, bazel-post-report]
+  - name: historia-publish
+    steps: [history-pr, publish]
+  - name: vazia
+    steps: [bazel-post-report, pause]
+  - name: so-publish
+    steps: [publish]
+default: vazia
+`
+
+func passosPorNome(cfg *Config) map[string]string {
+	out := make(map[string]string, len(cfg.Pipelines))
+	for _, p := range cfg.Pipelines {
+		out[p.Name] = strings.Join(p.Steps, ",")
+	}
+	return out
+}
+
+func sameMap(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if w, ok := b[k]; !ok || w != v {
+			return false
+		}
+	}
+	return true
+}
+
 func loadFrom(t *testing.T, yaml string) *Config {
 	t.Helper()
 	dir := t.TempDir()
@@ -795,8 +1106,8 @@ func TestPipelinePodeSerOPadrao(t *testing.T) {
 	}
 }
 
-// `pause` e `publish` são passos que o Bazel executa, não agentes. As regras
-// existem porque cada uma delas produz, em runtime, algo que parece bug.
+// `publish` é um passo que o Bazel executa, não um agente. As regras existem
+// porque cada uma delas produz, em runtime, algo que parece bug.
 func TestPassosReservados(t *testing.T) {
 	novo := func(t *testing.T) *Config {
 		t.Helper()
@@ -811,53 +1122,41 @@ func TestPassosReservados(t *testing.T) {
 
 	t.Run("a sequência que o usuário pediu", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("read before sending", "", []string{"review-fleet", "pause", "publish"}); err != nil {
+		if _, err := cfg.AddPipeline("read before sending", "", []string{"review-fleet", "publish"}); err != nil {
 			t.Fatalf("AddPipeline: %v", err)
 		}
 		ch, err := cfg.ChoiceByName("read before sending")
 		if err != nil {
 			t.Fatalf("ChoiceByName: %v", err)
 		}
-		if len(ch.Steps) != 3 {
-			t.Fatalf("os três passos deviam estar lá: %v", ch.StepNames())
-		}
-		if !ch.HasPause() {
-			t.Error("a escolha devia anunciar que para no meio")
+		if len(ch.Steps) != 2 {
+			t.Fatalf("os dois passos deviam estar lá: %v", ch.StepNames())
 		}
 		if len(ch.Agents()) != 1 {
 			t.Errorf("só um passo é agente de verdade: %d", len(ch.Agents()))
 		}
-		if !ch.Posts {
-			t.Error("uma pipeline que publica escreve no PR sozinha — a página avisa antes de rodar")
+		if ch.Posts {
+			t.Error("o publish espera você mandar — a pipeline não escreve no PR sozinha")
 		}
-		if ch.Steps[1].Reserved != StepPause || ch.Steps[2].Reserved != StepPublish {
-			t.Errorf("os reservados deviam vir marcados: %+v", ch.Steps)
+		if ch.Steps[1].Reserved != StepPublish {
+			t.Errorf("o reservado devia vir marcado: %+v", ch.Steps)
 		}
-		if ch.StepPublishes("pause") || ch.StepPublishes("publish") {
+		if ch.StepPublishes("publish") {
 			t.Error("passo reservado não tem corpo para publicar")
 		}
 	})
 
-	t.Run("reservado não pode abrir a pipeline", func(t *testing.T) {
+	t.Run("publish não pode abrir a pipeline", func(t *testing.T) {
 		cfg := novo(t)
-		for _, step := range []string{"pause", "publish"} {
-			if _, err := cfg.AddPipeline("x", "", []string{step, "review-fleet"}); err == nil {
-				t.Errorf("%q no começo não teria o que mostrar", step)
-			}
+		if _, err := cfg.AddPipeline("x", "", []string{"publish", "review-fleet"}); err == nil {
+			t.Error("publish no começo não teria o que mostrar")
 		}
 	})
 
-	t.Run("dois reservados seguidos", func(t *testing.T) {
+	t.Run("pause não existe mais", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause", "pause"}); err == nil {
-			t.Error("duas pausas seguidas pedem dois cliques para nada")
-		}
-	})
-
-	t.Run("pausa no fim", func(t *testing.T) {
-		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause"}); err == nil {
-			t.Error("pausa no fim não tem para onde continuar")
+		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "pause", "publish"}); err == nil {
+			t.Error("pause não é agente da lista nem passo reservado")
 		}
 	})
 
@@ -866,8 +1165,8 @@ func TestPassosReservados(t *testing.T) {
 		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "publish", "history-pr"}); err == nil {
 			t.Error("revisar depois de publicar deixaria em disco um review diferente do que o time leu")
 		}
-		if _, err := cfg.AddPipeline("y", "", []string{"review-fleet", "publish", "pause"}); err == nil {
-			t.Error("publish com qualquer coisa depois devia ser recusado")
+		if _, err := cfg.AddPipeline("y", "", []string{"review-fleet", "publish", "publish"}); err == nil {
+			t.Error("publicar duas vezes devia ser recusado")
 		}
 	})
 
@@ -876,18 +1175,40 @@ func TestPassosReservados(t *testing.T) {
 		if err := cfg.SetAgentPublishable("history-pr", false); err != nil {
 			t.Fatalf("SetAgentPublishable: %v", err)
 		}
-		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "pause", "publish"}); err == nil {
+		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "publish"}); err == nil {
 			t.Error("history-pr não produz review — não há o que publicar")
 		}
 		// Com um agente publicável na frente, passa.
-		if _, err := cfg.AddPipeline("y", "", []string{"history-pr", "review-fleet", "pause", "publish"}); err != nil {
+		if _, err := cfg.AddPipeline("y", "", []string{"history-pr", "review-fleet", "publish"}); err != nil {
 			t.Errorf("com um review no meio devia passar: %v", err)
 		}
 	})
 
-	t.Run("agente não pode se chamar pause", func(t *testing.T) {
+	t.Run("quem posta sozinho não vai antes do publish", func(t *testing.T) {
+		cfg := novo(t)
+		cfg.Agents = append(cfg.Agents, AgentDef{Name: "frota-post", Task: "/review-fleet {{number}} --post", Posts: true})
+		for i, steps := range [][]string{
+			{"frota-post", "publish"},
+			{"review-fleet", "frota-post", "publish"},
+		} {
+			_, err := cfg.AddPipeline(fmt.Sprintf("x%d", i), "", steps)
+			if err == nil {
+				t.Errorf("%v: o agente já postou quando o publish pararia para você escolher", steps)
+				continue
+			}
+			if !strings.Contains(err.Error(), "frota-post") {
+				t.Errorf("%v: a mensagem devia dizer quem posta sozinho: %v", steps, err)
+			}
+		}
+		// Without publish, an agent that posts on its own can still go in.
+		if _, err := cfg.AddPipeline("y", "", []string{"review-fleet", "frota-post"}); err != nil {
+			t.Errorf("sem publish devia passar: %v", err)
+		}
+	})
+
+	t.Run("agente não pode se chamar publish", func(t *testing.T) {
 		cfg := Default()
-		for _, n := range []string{"pause", "publish", "PAUSE"} {
+		for _, n := range []string{"publish", "PUBLISH"} {
 			if _, err := cfg.AddAgentFromSkill(n, "", false); err == nil {
 				t.Errorf("%q é passo reservado — um agente assim tornaria a pipeline ambígua", n)
 			}
@@ -896,17 +1217,18 @@ func TestPassosReservados(t *testing.T) {
 
 	t.Run("agente removido deixa o reservado órfão", func(t *testing.T) {
 		cfg := novo(t)
-		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "pause", "review-fleet"}); err != nil {
+		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "publish"}); err != nil {
 			t.Fatalf("AddPipeline: %v", err)
 		}
-		// Sem o history-pr, a pausa fica sem nada para mostrar antes dela.
-		cfg.RemoveAgent("history-pr")
-		ch, err := cfg.ChoiceByName("x")
-		if err != nil {
-			t.Fatalf("ChoiceByName: %v", err)
+		// Sem o review-fleet, o publish fica sem nada para publicar.
+		cfg.RemoveAgent("review-fleet")
+		// Sobra só o publish, que não tem o que publicar: a pipeline inteira
+		// sai do seletor.
+		if ch, err := cfg.ChoiceByName("x"); err == nil {
+			t.Errorf("a pipeline só com o publish órfão devia sair do seletor, veio %v", ch.StepNames())
 		}
-		if len(ch.Steps) != 1 || ch.Steps[0].Name != "review-fleet" {
-			t.Errorf("a pausa órfã devia sumir junto: %v", ch.StepNames())
+		if got := cfg.Choices(); len(got) != 1 || got[0].Name != "history-pr" {
+			t.Errorf("só o history-pr devia continuar no seletor: %v", got)
 		}
 	})
 }

@@ -187,8 +187,13 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .md h2 { font-size: 18px; margin-top: 28px; color: var(--accent); }
 .md h3 { font-size: 15px; margin-top: 22px; }
 .md code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
-.md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto; }
+.md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto;
+  font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .md pre code { background: none; padding: 0; }
+/* Raw HTML in the review shows up as escaped text in a bare <pre> (no <code>
+   inside). Wrap it: it is prose-shaped markup, and a scroll bar would hide the
+   part that is about to go to the PR. Code blocks keep scrolling. */
+.md pre:not(:has(> code)) { white-space: pre-wrap; overflow-wrap: anywhere; }
 .md a { color: var(--blue); }
 .md blockquote { border-left: 3px solid var(--line); margin-left: 0; padding-left: 14px; color: var(--dim); }
 .md table { border-collapse: collapse; display: block; overflow-x: auto; }
@@ -379,6 +384,21 @@ main.no-prs .burger span { background: var(--accent); }
   margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line);
 }
 
+/* Pipeline que parou no publish: nada subiu ainda, e a escolha é sua. */
+.awaits-note {
+  margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
+  background: #2a1b12; color: var(--warn);
+  border: 1px solid #4a3218; border-radius: 6px;
+}
+/* Quando só parte do relatório vai ao PR, as duas partes ganham rótulo. O
+   que fica no Bazel vem apagado: é contexto para você, não para o autor. */
+.section-label {
+  margin: 28px 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+  color: var(--dim); border-bottom: 1px solid var(--line); padding-bottom: 6px;
+}
+.section-label:first-child { margin-top: 0; }
+.md.context { opacity: .7; }
+
 /* A caixa de cada achado: desmarcada, ele fica para trás na publicação.
    O que apaga é o conteúdo, não a caixa — é ela que traz o achado de volta. */
 .finding { margin-top: 22px; padding-left: 14px; border-left: 2px solid var(--line); }
@@ -472,8 +492,7 @@ main.no-prs .burger span { background: var(--accent); }
 #config-raw { margin-top: 10px; }
 #config-raw summary { cursor: pointer; }
 #config-raw pre { margin-top: 8px; }
-.state.paused { color: var(--warn); }
-.step.paused { color: var(--warn); }
+.state.awaits { color: var(--warn); }
 
 /* O aviso do molde que dispara comando sozinho. Fica no topo da configuração,
    que é onde se conserta. */

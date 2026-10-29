@@ -341,7 +341,8 @@ inline anchors, but no agent spend either.
 **Leaving a false positive behind.** Every finding on screen — each `###`
 under `## Findings` or `## Cuts`, or each `**1. …**` paragraph in reports that
 number their findings in bold instead — carries a **report** checkbox, ticked
-by default. Untick the ones you disagree with and they drop out of whatever you
+by default. So does each item under `## Needs human verification`: a doubt you
+have already settled doesn't need to reach the PR. Untick the ones you disagree with and they drop out of whatever you
 publish next, on both paths above: the inline publish hands the post agent a
 copy of the review without them (written to `publish/` inside the reviews
 directory, the saved file stays whole), and the pasted comment simply omits
@@ -495,9 +496,9 @@ pipelines:
   - name: serial-fleet
     description: the three lenses one at a time, each in its own process
     steps: [senior-code-reviewer, exploit-digger, lazy-senior-dev]
-  # `pause` and `publish` are steps Bazel runs itself: read before it goes out.
+  # `publish` is a step Bazel runs itself: you choose what goes before it goes out.
   - name: read before sending
-    steps: [review-fleet, pause, publish]
+    steps: [review-fleet, publish]
 
 # Which choice runs when you don't pick one. Empty = the first in the selector.
 default: serial-fleet
@@ -507,20 +508,38 @@ A **pipeline** chains agents by name, in order, over the same clone; the report
 comes out with one section per step. A step pointing at an agent that doesn't
 exist is skipped.
 
-Two steps are not agents — Bazel runs them itself:
+One step is not an agent — Bazel runs it itself: **`publish`**. It has to be
+the last step. Bazel's own code publishes nothing on its own: only your clicks
+do. The pipeline runs, the review is saved, and the card stops **waiting on
+you** with what would go to the PR on screen, each finding with its **report**
+checkbox. Untick what should not go and hit **publish inline review**: from
+there it is the same path as the button on any review. If nothing should go,
+hit **keep it here** — the card stops waiting and nothing is sent. The card
+only waits when there is something to choose: a pipeline whose agents already
+post on their own, or whose steps produce nothing publishable, ends as a
+normal finished review.
 
-| Step | What it does |
-|---|---|
-| `pause` | Stops there. The clone stays up, the worker goes back to the queue, and the card waits with the report so far on screen and a **continue** button. |
-| `publish` | Takes the report to the PR with the publishing agent — the same one the **publish inline review** button uses. Has to be the last step. |
+That guarantee is about Bazel's code, not about the agents. They run with
+`Bash` and your `gh` login inside the code of the PR under review, so a hostile
+PR can try a prompt injection that makes an agent comment, or do worse, without
+any click of yours. The `publish` step is a gate in front of Bazel's publishing
+path, not a sandbox around the agents: be careful with PRs from people you
+do not trust.
 
-That is what `review-fleet → pause → publish` is for: the fleet runs, you read
-what it found, and only then does anything reach the PR. Continuing resumes
-**inside the same clone** — cloning again would give you a different commit, and
-the steps that already ran would be talking about another repository.
+The wait lives in memory. It survives in the session history — the queue —
+until the server restarts, and then it is gone; the review itself is already
+saved to disk and stays in the **Saved** tab, where it can be published later
+with the same ticks. **keep it here** drops the wait, not the review.
 
-While a pipeline is paused it holds no worker: other reviews keep running. Give
-up with **stop here** and what you read stays on screen; the clone goes.
+The screen shows what goes, as Bazel renders it. Raw HTML in the review is
+shown as escaped text (in a block of its own for HTML blocks) instead of being
+interpreted or hidden, so what you see is the text that would be published. The
+one exception is the `<!-- finding … -->` comment right after a finding's `###`:
+it is metadata for the post agent that GitHub does not show either, so it is
+left out. (The PR description is the author's text, not something Bazel
+publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
+not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
+the checkboxes live only in the part under *goes to the PR*.
 
 You build one in the page rather than here: under **pipelines** on the config
 page, drag a step out of the tray into the chain and drag the cards to reorder
@@ -528,10 +547,15 @@ them — clicking works the same, for when dragging is not worth it. Name it and
 create. Only agents already in the list can be steps — that
 is what guarantees each step arrives with its prompt, its command and its
 publishing flag already settled. The same agent twice in one sequence is refused:
-it would be the same work twice over the same clone. The rules around `pause` and
-`publish` are enforced on the way in, not at run time: neither can open a
-pipeline, a pause never follows a pause nor closes the sequence, `publish` runs
+it would be the same work twice over the same clone. The rules around `publish`
+are enforced on the way in, not at run time: it cannot open a pipeline, it runs
 at most once and always last, and it needs something publishable before it.
+
+The publishing skill (`bazel-post-report`, or whatever `post_agent.task` calls)
+is not offered as an agent: on its own, as an ordinary step, it would run
+without the review or the prompt that authorizes posting. In a pipeline it is
+the `publish` step. A config saved with it as an agent, or with the old `pause`
+step, is fixed when it loads.
 
 `default:` names the choice that runs when you don't pick one. A pipeline can be
 it — the selector lists agents before pipelines, so being first is not something

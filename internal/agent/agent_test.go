@@ -788,6 +788,26 @@ func TestUsageParcialChegaDuranteOReview(t *testing.T) {
 	}
 }
 
+// Um passo que fica no Bazel e falhou não some da tela: a seção dele mostra a
+// falha, como o relatório de pipeline sempre mostrou.
+func TestContextBodyMostraPassoQueFalhou(t *testing.T) {
+	choice := config.Choice{Name: "p", Pipeline: true, Publishable: true, Steps: []config.ResolvedAgent{
+		{Name: "history-pr", Publishable: false},
+		{Name: "review-fleet", Publishable: true},
+	}}
+	res := Result{Steps: []StepResult{
+		{Name: "history-pr", Err: errors.New("exit status 1\nstack")},
+		{Name: "review-fleet", Body: "- token guardado no cliente"},
+	}}
+	got := ContextBody(res, choice)
+	if !strings.Contains(got, "history-pr failed: exit status 1") {
+		t.Errorf("a falha do passo que fica no Bazel sumiu: %q", got)
+	}
+	if strings.Contains(got, "stack") || strings.Contains(got, "token guardado") {
+		t.Errorf("só a primeira linha do erro, e nada do passo publicável: %q", got)
+	}
+}
+
 // Numa pipeline que junta história e review, a tela mostra as duas e o PR
 // recebe só o review. É o ponto inteiro de marcar um agente como não-publicável.
 func TestPublishableBody(t *testing.T) {
