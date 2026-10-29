@@ -440,6 +440,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if err != nil {
 		return "", Usage{}, err
 	}
+	if ca, ok := adapter.(*claudeAdapter); ok {
+		ca.pricing = r.PricingTable
+	}
 	createdHome, err := isolateGrok(&step)
 	if err != nil {
 		return "", Usage{}, err

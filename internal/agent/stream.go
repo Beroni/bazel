@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/beroni/bazel/internal/pricing"
 )
 
 // isStreamJSON says whether the args ask for the event format. Only then is
@@ -210,6 +212,10 @@ type streamParser struct {
 	// line: they run in parallel inside the same process and without this the
 	// lines arrive jumbled and anonymous.
 	subagents map[string]string
+	// pricing is the price table the Runner charges with. The done line prices
+	// the run with it, so the log shows the same number as the card, the report
+	// footer and the saved file. Nil keeps the provider's total_cost_usd.
+	pricing *pricing.Table
 }
 
 // line translates a stream line into zero or more log lines. A line that isn't
@@ -269,8 +275,11 @@ func (p *streamParser) line(raw string) []logEntry {
 		if t := p.usage.Total(); t > 0 {
 			line += " · " + FormatTokens(t) + " tokens"
 		}
-		if ev.CostUSD > 0 {
-			line += fmt.Sprintf(" · $%.2f", ev.CostUSD)
+		// The same price the Runner settles on (priced over the whole run), not
+		// the event's own total_cost_usd: with a price table they differ, and the
+		// log was the one place showing the other number (BUG-QA-01).
+		if c := priced(p.usage, p.models(), p.pricing).CostUSD; c > 0 {
+			line += fmt.Sprintf(" · $%.2f", c)
 		}
 		return one(line)
 
