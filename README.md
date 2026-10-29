@@ -119,7 +119,9 @@ From the page you can:
 
 - **tick PRs** and choose **which agent** runs over them;
 - **filter the list**: by text (title, repo or author), by ownership
-  (`everyone` / `mine only`), by repository, and by review state —
+  (`everyone` / `mine only`), by repository owner — shown once you watch
+  repositories from more than one owner, and it narrows the repository selector
+  to that owner's —, by repository, and by review state —
   `not reviewed`, `✓ reviewed`, `⟳ changed since review`. With a filter on, the
   header counter becomes `12 of 92 PRs`. Filtering never unticks anything, but
   **review** only runs on what is currently visible;

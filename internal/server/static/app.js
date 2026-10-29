@@ -20,7 +20,8 @@ const state = {
   selected: new Set(),
   scope: 'all',
   filter: '',
-  repoFilter: '',     // '' = todos os repositórios
+  ownerFilter: '',    // '' = every owner
+  repoFilter: '',     // '' = every repository (of the chosen owner)
   reviewFilter: 'all', // all | none | reviewed | changed
   hideDrafts: false,
   prsHidden: false,   // lista de PRs recolhida, para ler o review em tela cheia
@@ -132,7 +133,7 @@ async function boot() {
     renderQuota();
     applyAgents(st.agents || []);
     state.repos = st.repos || [];
-    renderRepoFilter();
+    renderRepoFilters();
     // Um comando escrito no molde roda junto com todo agente que você escolher,
     // e nada no resultado denuncia isso — só o gasto no fim.
     if (st.stray_command) {
@@ -170,7 +171,7 @@ async function loadPRs(force) {
       : state.warning);
     // As contagens do filtro por repositório saem daqui, então ele é montado
     // antes da lista.
-    renderRepoFilter();
+    renderRepoFilters();
     renderPRs();
   } catch (err) {
     list.innerHTML = '';
@@ -694,6 +695,7 @@ function visiblePRs() {
   const q = state.filter.toLowerCase();
   return state.prs.filter((pr) => {
     if (state.scope === 'mine' && !pr.mine) return false;
+    if (state.ownerFilter && repoOwner(pr.repo) !== state.ownerFilter) return false;
     if (state.repoFilter && pr.repo !== state.repoFilter) return false;
     if (!matchesReview(pr)) return false;
     if (state.hideDrafts && pr.draft) return false;
@@ -721,31 +723,75 @@ function matchesReview(pr) {
   }
 }
 
-// renderRepoFilter monta as opções com os repositórios monitorados e quantos
-// PRs cada um tem agora. Com um repositório só o seletor não aparece: não há
-// o que escolher.
-function renderRepoFilter() {
-  const sel = $('#repo-filter');
+// repoOwner and repoName split "owner/repo" into the two halves behind the two
+// selectors. A repository with no slash has no owner to offer: it keeps only
+// its name and stays out of the owner selector.
+function repoOwner(repo) {
+  const i = repo.indexOf('/');
+  return i > 0 ? repo.slice(0, i) : '';
+}
+
+function repoName(repo) {
+  const i = repo.indexOf('/');
+  return i > 0 ? repo.slice(i + 1) : repo;
+}
+
+// renderRepoFilters builds the two selectors — owner and repository — from
+// what is watched and how many PRs each one has right now. The repository one
+// only lists the chosen owner's repositories, and each selector hides when a
+// single option is left: there is nothing to choose.
+function renderRepoFilters() {
   const contagem = new Map();
   for (const pr of state.prs) contagem.set(pr.repo, (contagem.get(pr.repo) || 0) + 1);
   // Os monitorados mandam na ordem; um PR de repositório que saiu da lista
   // ainda aparece, senão ele viraria um filtro impossível de desfazer.
   const repos = [...new Set([...state.repos, ...contagem.keys()])];
+  const conta = (lista) => lista.reduce((n, r) => n + (contagem.get(r) || 0), 0);
 
-  sel.hidden = repos.length < 2;
+  const owners = [...new Set(repos.map(repoOwner).filter(Boolean))];
+  const donoSel = $('#owner-filter');
+  donoSel.hidden = owners.length < 2;
+  // The chosen owner stays chosen even with no open PR left; it only drops
+  // when its repositories are no longer watched.
+  if (donoSel.hidden || (state.ownerFilter && !owners.includes(state.ownerFilter))) {
+    state.ownerFilter = '';
+  }
+  if (!donoSel.hidden) {
+    donoSel.innerHTML = '';
+    const todos = el('option', null, `any owner (${conta(repos)})`);
+    todos.value = '';
+    donoSel.append(todos);
+    for (const owner of owners) {
+      const o = el('option', null, `${owner} (${conta(repos.filter((r) => repoOwner(r) === owner))})`);
+      o.value = owner;
+      donoSel.append(o);
+    }
+    donoSel.value = state.ownerFilter;
+    donoSel.classList.toggle('on', !!state.ownerFilter);
+  }
+
+  // With a single owner in play — chosen, or because it is the only one — the
+  // repository name is enough: repeating the owner in every option only eats
+  // width.
+  const doDono = state.ownerFilter
+    ? repos.filter((r) => repoOwner(r) === state.ownerFilter)
+    : repos;
+  const soNome = !!state.ownerFilter || owners.length < 2;
+  const sel = $('#repo-filter');
+  sel.hidden = doDono.length < 2;
   if (sel.hidden) {
     if (state.repoFilter) { state.repoFilter = ''; }
     return;
   }
-  // O repositório escolhido continua escolhido mesmo que fique sem PR aberto.
-  if (state.repoFilter && !repos.includes(state.repoFilter)) state.repoFilter = '';
+  if (state.repoFilter && !doDono.includes(state.repoFilter)) state.repoFilter = '';
 
   sel.innerHTML = '';
-  const todos = el('option', null, `any repo (${state.prs.length})`);
+  const todos = el('option', null, `any repo (${conta(doDono)})`);
   todos.value = '';
   sel.append(todos);
-  for (const repo of repos) {
-    const o = el('option', null, `${repo} (${contagem.get(repo) || 0})`);
+  for (const repo of doDono) {
+    const rotulo = soNome ? repoName(repo) : repo;
+    const o = el('option', null, `${rotulo} (${contagem.get(repo) || 0})`);
     o.value = repo;
     sel.append(o);
   }
@@ -1504,6 +1550,13 @@ function wire() {
     if (active.state === 'running' && logState(active.id).live && $('#log-terms')) pollLog(active.id);
   }, 1000);
   $('#filter').addEventListener('input', (e) => { state.filter = e.target.value; renderPRs(); });
+  $('#owner-filter').addEventListener('change', (e) => {
+    state.ownerFilter = e.target.value;
+    // Switching owner rebuilds the repository selector: the chosen repository
+    // either belongs to the new owner or is dropped with the old one.
+    renderRepoFilters();
+    renderPRs();
+  });
   $('#repo-filter').addEventListener('change', (e) => {
     state.repoFilter = e.target.value;
     e.target.classList.toggle('on', !!state.repoFilter);

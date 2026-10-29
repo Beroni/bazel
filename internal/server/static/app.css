@@ -284,9 +284,11 @@ main.no-prs .burger { width: 30px; margin: 0 auto; border-color: var(--accent); 
 main.no-prs .burger span { background: var(--accent); }
 
 /* --- seletores --- */
-/* Os dois filtros dividem a linha em partes iguais; o nome do repositório é
-   longo e o que sobra é cortado com reticências pelo próprio <select>. */
-.pane-head select { flex: 1; min-width: 0; }
+/* Three selectors (owner, repository, review state) share a list that may be
+   narrow: each asks for a readable minimum width, and the row wraps instead of
+   squeezing all three. */
+.pane-head .row { flex-wrap: wrap; }
+.pane-head select { flex: 1 1 110px; min-width: 0; }
 .pane-head select, select#agent {
   font: inherit; font-size: 12px;
   background: var(--panel-2); color: var(--text);
