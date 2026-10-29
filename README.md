@@ -156,9 +156,10 @@ seen at review time.
 
 ## Agents are your skills
 
-**An agent is one of your skills running over a PR.** That is why the list ships
-empty: a factory list would only be right by accident, pointing at skills this
-machine may never have had.
+**An agent is one of your skills running over a PR.** A new config starts with
+the [skills that ship inside Bazel](#the-skills-that-ship-inside-bazel), so the
+first review works right after install; everything else comes from your own
+skills.
 
 In **config**, the page lists what is actually installed — read from
 `~/.claude/skills`, or from `skills_dir` in `config.yaml` — and every row turns
@@ -193,24 +194,55 @@ the repository where you version them, and Bazel follows the links; the list is
 read from disk every time you open the page, so installing a skill needs no
 restart.
 
-### The skill that ships inside Bazel
+### The skills that ship inside Bazel
 
-One entry in that list is marked **in Bazel** and is never `✗`:
-`bazel-post-report`, the skill that takes a review you have read to the PR. It
-travels inside the binary and, right before a Claude Code agent runs, is
-written as a Claude Code plugin into a folder of Bazel's —
-`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone — that the agent loads with
+Some entries in that list are marked **in Bazel** and are never `✗`. They travel
+inside the binary and, right before a Claude Code agent runs, are written as a
+Claude Code plugin — skills and the lens agents — into a folder of Bazel's,
+`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone, that the agent loads with
 `--plugin-dir`. Nothing is installed on your machine, and the folder is removed
 when the review ends, however it ends.
 
-This is what makes **publish** true on a machine that has never installed a
-skill. Before it existed, the default `post_agent` called a `/post-report` that
-only some machines had; everywhere else the agent ran with explicit permission
-to write to the PR and no instructions at all.
+| Skill | What it does |
+|---|---|
+| `bazel-review-fleet` | three lenses over the same diff, deduplicated into one report and one verdict |
+| `bazel-senior-code-reviewer` | precision lens: a few findings it can defend at confidence 8+ |
+| `bazel-exploit-digger` | adversarial recall lens, class by class, with what needs a human eye |
+| `bazel-lazy-senior-dev` | subtraction lens: code that should not exist |
+| `bazel-history-pr` | the PR's story — commits, reviews, the review→fix loop; not a review, never published |
+| `bazel-post-report` | takes a review you have read to the PR (the `post_agent`) |
 
-Your own publishing skill still wins whenever you want it: point `post_agent.task`
-at it, or build an agent out of it in the panel. A `post_agent` you have edited
-is never rewritten — only the old untouched default is migrated to the built-in.
+They are written for a run nobody is watching: they never ask a question, take
+the scope from the prompt (`git diff origin/{{base}}...HEAD` in the clone),
+print the whole report as their final output in the format the page splits into
+findings, and when they cannot review they print a report that says why. The
+contract is `bazel-review-fleet/references/headless.md`, in the binary under
+`internal/skills/builtin/`, which is where these skills are written and
+maintained.
+
+A **new** `config.yaml` comes with an agent for each review skill
+(`bazel-review-fleet` is the default), the `serial-fleet` pipeline (the three
+lenses, each in its own process) and `review-then-publish` (the fleet, then you
+choose what goes). A config you already have is never touched; add them from the
+list with **use**.
+
+**Other agent CLIs.** Codex, Grok and the rest do not load Claude Code skills, so
+for a step whose command is not `claude` and whose format is not
+`claude-stream`, Bazel replaces a `/bazel-…` task with the skill's instructions
+and its arguments, and the absolute path of the plugin folder where the files
+they mention are. Without
+subagents the fleet runs its lenses as sequential passes in one process, which
+keeps them less independent; `serial-fleet` keeps each lens in its own process
+on any CLI.
+
+**Your own skill of the same name may win.** The built-ins reach Claude Code as
+plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` may answer
+the bare `/bazel-<name>` instead. That is why they all carry the `bazel-`
+prefix: your `review-fleet` and Bazel's `bazel-review-fleet` live side by side,
+and you pick one by choosing the agent. The same goes for publishing: point
+`post_agent.task` at your own skill, or build an agent out of it in the panel. A
+`post_agent` you have edited is never rewritten — only the old untouched default
+is migrated to the built-in.
 
 Everything the page does is written to `config.yaml`, and you can edit it by
 hand for what the page doesn't offer — another model, another executable, your
