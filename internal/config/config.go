@@ -599,27 +599,43 @@ func (c *Config) AddRepo(repo string) bool {
 }
 
 var (
-	repoOwnerRe = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$`)
-	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,100}$`)
+	// An owner is letters, digits and single hyphens, never at either end
+	// (39 characters at most); a repository name is letters, digits, ".", "_"
+	// and "-", up to 100, not starting with "-" and not only dots.
+	repoOwnerRe = regexp.MustCompile(`^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$`)
+	repoNameRe  = regexp.MustCompile(`^[A-Za-z0-9._][A-Za-z0-9._-]{0,99}$`)
 )
 
 // NormalizeRepo turns what was typed into the owner/name the config keeps, or
-// says why it can't. A repository URL (https://github.com/owner/name, with or
-// without .git) is accepted and trimmed; a PR or any deeper URL is refused —
-// it names one pull request, not the repository to watch — and so are an empty
-// owner or name and characters GitHub doesn't allow in them.
+// says why it can't. Besides owner/name it takes what is usually pasted for a
+// repository — https://github.com/owner/name (any case in the scheme and host,
+// with or without www., .git or a trailing slash) and git@github.com:owner/name
+// — and trims it down. A PR or any deeper URL is refused, since it names one
+// pull request and not the repository to watch, and so is another host or a
+// name GitHub would not accept.
 func NormalizeRepo(in string) (string, error) {
 	repo := strings.TrimSpace(in)
-	for _, prefix := range []string{"https://github.com/", "http://github.com/", "github.com/"} {
-		repo = strings.TrimPrefix(repo, prefix)
+	cut := func(prefix string) bool {
+		if strings.HasPrefix(strings.ToLower(repo), prefix) {
+			repo = repo[len(prefix):]
+			return true
+		}
+		return false
+	}
+	if !cut("git@github.com:") {
+		url := cut("https://") || cut("http://")
+		url = cut("www.") || url
+		if !cut("github.com/") && url {
+			return "", fmt.Errorf("%q is not a GitHub repository (use owner/name)", in)
+		}
 	}
 	repo = strings.TrimSuffix(strings.TrimSuffix(repo, "/"), ".git")
 	parts := strings.Split(repo, "/")
 	if len(parts) > 2 && (parts[2] == "pull" || parts[2] == "pulls") {
 		return "", fmt.Errorf("%q is a pull request — add its repository instead: %s/%s", in, parts[0], parts[1])
 	}
-	if len(parts) != 2 || !repoOwnerRe.MatchString(parts[0]) ||
-		!repoNameRe.MatchString(parts[1]) || parts[1] == "." || parts[1] == ".." {
+	if len(parts) != 2 || len(parts[0]) > 39 || !repoOwnerRe.MatchString(parts[0]) ||
+		!repoNameRe.MatchString(parts[1]) || strings.Trim(parts[1], ".") == "" {
 		return "", fmt.Errorf("invalid repository: %q (use owner/name)", in)
 	}
 	return parts[0] + "/" + parts[1], nil

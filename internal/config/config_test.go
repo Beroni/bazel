@@ -1335,6 +1335,11 @@ func TestNormalizeRepo(t *testing.T) {
 		"https://github.com/acme/web-app.git": "acme/web-app",
 		"github.com/Beroni/bazel":             "Beroni/bazel",
 		"acme/my.repo_v2":                     "acme/my.repo_v2",
+		"HTTPS://GitHub.com/acme/web-app":     "acme/web-app",
+		"https://www.github.com/acme/web-app": "acme/web-app",
+		"git@github.com:acme/web-app.git":     "acme/web-app",
+		"a-b/c":                               "a-b/c",
+		"acme/.github":                        "acme/.github",
 	} {
 		if got, err := NormalizeRepo(in); err != nil || got != want {
 			t.Errorf("NormalizeRepo(%q) = %q, %v; want %q", in, got, err, want)
@@ -1343,6 +1348,8 @@ func TestNormalizeRepo(t *testing.T) {
 	for _, in := range []string{
 		"", "acme", "acme/", "/web-app", "acme/web-app/tree/main", "acme/web app",
 		"-acme/web-app", "acme/..", "https://gitlab.com/acme/web-app",
+		"a/-x", "a/...", "a--b/c", "a-/c", "https://github.com/github.com/a/b",
+		"git@gitlab.com:acme/web-app.git", strings.Repeat("a", 40) + "/b",
 	} {
 		if got, err := NormalizeRepo(in); err == nil {
 			t.Errorf("NormalizeRepo(%q) = %q, want an error", in, got)
