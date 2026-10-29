@@ -1,5 +1,5 @@
-// Package splash desenha a animação de abertura: um ovo-bomba do Bazelgeuse
-// que racha, esquenta e detona revelando o logo.
+// Package splash draws the opening animation: a Bazelgeuse bomb-egg
+// that cracks, heats up and detonates to reveal the logo.
 package splash
 
 import (
@@ -16,18 +16,18 @@ import (
 const (
 	frameDur = 45 * time.Millisecond
 
-	// Marcos da linha do tempo, em frames.
-	crackStart = 12 // o ovo começa a rachar
-	glowStart  = 20 // o casco esquenta
-	flashStart = 24 // detonação
-	waveStart  = 26 // onda de choque
-	logoStart  = 34 // logo aparece
+	// Timeline milestones, in frames.
+	crackStart = 12 // the egg starts to crack
+	glowStart  = 20 // the shell heats up
+	flashStart = 24 // detonation
+	waveStart  = 26 // shockwave
+	logoStart  = 34 // logo appears
 	endFrame   = 44
 )
 
-// waveGrowth é o passo do raio por frame. O anel precisa continuar visível até
-// logoStart: no último frame da onda o raio ainda tem que caber no canto do
-// canvas, senão a tela sai em branco.
+// waveGrowth is the radius step per frame. The ring has to stay visible until
+// logoStart: on the wave's last frame the radius still has to fit in the
+// corner of the canvas, otherwise the screen comes out blank.
 const waveGrowth = 1.3
 
 var (
@@ -40,8 +40,8 @@ var (
 	hint      = lipgloss.NewStyle().Foreground(lipgloss.Color("#5c5c5c"))
 )
 
-// egg é o ovo intacto. Todas as linhas têm a mesma largura para o overlay
-// de rachaduras cair sempre na coluna certa.
+// egg is the intact egg. All lines have the same width so the crack
+// overlay always lands in the right column.
 var egg = []string{
 	`      .-'''-.      `,
 	`    .'       '.    `,
@@ -54,7 +54,7 @@ var egg = []string{
 	`      '-...-'      `,
 }
 
-// crack é uma fissura aplicada sobre o ovo, na ordem em que aparece.
+// crack is a fissure applied over the egg, in the order it appears.
 type crack struct {
 	row, col int
 	ch       rune
@@ -101,7 +101,7 @@ func tick() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg.(type) {
 	case tea.KeyMsg:
-		// Qualquer tecla pula direto pro logo final.
+		// Any key skips straight to the final logo.
 		return model{frame: endFrame - 1, done: true}, tea.Quit
 	case frameMsg:
 		if m.done {
@@ -133,9 +133,9 @@ func (m model) View() string {
 	return "\n" + body + "\n"
 }
 
-// renderEgg desenha o ovo com pulsação, rachaduras e tremor crescentes.
+// renderEgg draws the egg with growing pulsing, cracks and shaking.
 func renderEgg(frame int) string {
-	// Quantas fissuras já apareceram.
+	// How many fissures have appeared so far.
 	shown := 0
 	if frame >= crackStart {
 		progress := float64(frame-crackStart) / float64(flashStart-crackStart)
@@ -149,7 +149,7 @@ func renderEgg(frame int) string {
 		active[[2]int{c.row, c.col}] = c.ch
 	}
 
-	// O casco vai de morno a incandescente conforme a detonação se aproxima.
+	// The shell goes from warm to incandescent as detonation approaches.
 	shell := shellDim
 	if frame >= glowStart {
 		shell = glowHot
@@ -157,7 +157,7 @@ func renderEgg(frame int) string {
 		shell = shellWarm
 	}
 
-	// Tremor: mais forte quanto mais perto do estouro.
+	// Shaking: stronger the closer it is to the blast.
 	shake := 0
 	if frame >= crackStart {
 		amp := 1
@@ -191,7 +191,7 @@ func renderEgg(frame int) string {
 	return frameBlock(lines)
 }
 
-// renderFlash é o clarão da explosão.
+// renderFlash is the explosion's flash.
 func renderFlash(frame int) string {
 	density := []string{"▓", "█"}[frame%2]
 	lines := make([]string, canvasH)
@@ -201,14 +201,14 @@ func renderFlash(frame int) string {
 	return frameBlock(lines)
 }
 
-// renderWave desenha o anel de detritos se expandindo a partir do centro.
+// renderWave draws the debris ring expanding from the center.
 func renderWave(frame int) string {
 	step := frame - waveStart
 	radius := 1.5 + float64(step)*waveGrowth
 
 	cx, cy := float64(canvasW-1)/2, float64(canvasH-1)/2
 	glyphs := []rune{'✦', '*', '·', '˙'}
-	// Quanto mais longe, mais rarefeito o detrito.
+	// The farther out, the sparser the debris.
 	glyph := glyphs[min(step/3, len(glyphs)-1)]
 
 	style := glowHot
@@ -223,7 +223,7 @@ func renderWave(frame int) string {
 	for y := range canvasH {
 		var b strings.Builder
 		for x := range canvasW {
-			// Correção de aspecto: célula de terminal é ~2x mais alta que larga.
+			// Aspect correction: a terminal cell is ~2x taller than it is wide.
 			dx := (float64(x) - cx) * 0.5
 			dy := float64(y) - cy
 			d := math.Sqrt(dx*dx + dy*dy)
@@ -238,7 +238,7 @@ func renderWave(frame int) string {
 	return frameBlock(lines)
 }
 
-// renderLogo revela o logo esquentando até a cor final.
+// renderLogo reveals the logo heating up to its final color.
 func renderLogo(frame int) string {
 	step := frame - logoStart
 	color := logoRamp[min(step, len(logoRamp)-1)]
@@ -268,8 +268,8 @@ func pad(shake int) string {
 	return strings.Repeat(" ", shake)
 }
 
-// Play roda a animação. Vira no-op fora de um TTY, com BAZEL_NO_SPLASH
-// definido ou com NO_COLOR — assim `bazel list | grep` continua limpo.
+// Play runs the animation. It is a no-op outside a TTY, with BAZEL_NO_SPLASH
+// set or with NO_COLOR — so `bazel list | grep` stays clean.
 func Play() {
 	if !Enabled() {
 		return
@@ -278,7 +278,7 @@ func Play() {
 	_, _ = p.Run()
 }
 
-// Enabled diz se a animação deve rodar no ambiente atual.
+// Enabled says whether the animation should run in the current environment.
 func Enabled() bool {
 	if os.Getenv("BAZEL_NO_SPLASH") != "" || os.Getenv("NO_COLOR") != "" || os.Getenv("CI") != "" {
 		return false

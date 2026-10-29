@@ -16,8 +16,8 @@ func escreve(t *testing.T, path, conteudo string) {
 	}
 }
 
-// Uma skill é uma pasta com SKILL.md; o nome e a descrição saem do
-// frontmatter, com as descrições longas remontadas de várias linhas.
+// A skill is a folder with SKILL.md; the name and description come from the
+// frontmatter, with long descriptions rejoined from several lines.
 func TestListReadsFrontmatter(t *testing.T) {
 	dir := t.TempDir()
 	escreve(t, filepath.Join(dir, "review-fleet", "SKILL.md"), `---
@@ -47,14 +47,14 @@ allowed-tools: Read Grep Bash
 	if want := "Roda uma frota de lentes de code review sobre UM mesmo diff — precisão, recall adversarial e over-engineering, deduplicando os achados entre as lentes."; fleet.Description != want {
 		t.Errorf("descrição remontada errada:\n%q", fleet.Description)
 	}
-	// Sem frontmatter, o nome da pasta serve.
+	// Without frontmatter, the folder name does.
 	if list[1].Name != "sem-frontmatter" {
 		t.Errorf("skill sem frontmatter devia usar o nome da pasta, veio %q", list[1].Name)
 	}
 }
 
-// As skills costumam ser symlinks para o repositório onde você as versiona —
-// e para o os.ReadDir um symlink não é diretório.
+// Skills are often symlinks to the repository where you version them —
+// and to os.ReadDir a symlink is not a directory.
 func TestListFollowsSymlinks(t *testing.T) {
 	real := t.TempDir()
 	escreve(t, filepath.Join(real, "exploit-digger", "SKILL.md"), "---\nname: exploit-digger\ndescription: caça brecha\n---\n")
@@ -70,7 +70,7 @@ func TestListFollowsSymlinks(t *testing.T) {
 	}
 }
 
-// Diretório que não existe é lista vazia, não erro.
+// A directory that doesn't exist is an empty list, not an error.
 func TestListMissingDir(t *testing.T) {
 	if got := List(filepath.Join(t.TempDir(), "nao-existe")); got != nil {
 		t.Errorf("esperava nada, veio %+v", got)

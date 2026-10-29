@@ -1,4 +1,5 @@
-// Package config carrega e persiste a configuração do Bazel (~/.bazel/config.yaml).
+// Package config loads and persists the Bazel configuration
+// (~/.bazel/config.yaml).
 package config
 
 import (
@@ -15,36 +16,38 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config é o arquivo de configuração do usuário.
+// Config is the user's configuration file.
 type Config struct {
-	// Repos monitorados, no formato "owner/repo".
+	// Watched repos, in the "owner/repo" format.
 	Repos []string `yaml:"repos"`
-	// Authors filtra os PRs por autor (logins do GitHub). Vazio = todos.
+	// Authors filters PRs by author (GitHub logins). Empty = everyone.
 	Authors []string `yaml:"authors"`
-	// IncludeDrafts inclui PRs em rascunho na listagem.
+	// IncludeDrafts includes draft PRs in the listing.
 	IncludeDrafts bool `yaml:"include_drafts"`
-	// ReviewsDir é onde os reviews em markdown são salvos.
-	// Vazio = <BAZEL_HOME>/reviews.
+	// ReviewsDir is where the markdown reviews are saved.
+	// Empty = <BAZEL_HOME>/reviews.
 	ReviewsDir string `yaml:"reviews_dir"`
-	// MaxDiffBytes trunca diffs gigantes antes de mandar pro agent.
+	// MaxDiffBytes truncates huge diffs before sending them to the agent.
 	MaxDiffBytes int `yaml:"max_diff_bytes"`
-	// SkillsDir é onde estão as skills do agente. Vazio = ~/.claude/skills.
+	// SkillsDir is where the agent's skills live. Empty = ~/.claude/skills.
 	SkillsDir string `yaml:"skills_dir"`
 
-	// Agent é a base: comando, args e o molde do prompt usados por todo
-	// agente que não sobrescrever esses campos.
+	// Agent is the base: command, args and prompt template used by every agent
+	// that does not override those fields.
 	Agent Agent `yaml:"agent"`
-	// Agents são as lentes que podem rodar sobre um PR. A primeira é a padrão.
+	// Agents are the lenses that can run over a PR. The first one is the
+	// default.
 	Agents []AgentDef `yaml:"agents"`
-	// Pipelines encadeiam agentes sobre o mesmo clone, na ordem dada.
+	// Pipelines chain agents over the same clone, in the given order.
 	Pipelines []Pipeline `yaml:"pipelines"`
-	// Default é o nome da escolha que roda quando ninguém escolhe. Vazio = a
-	// primeira da lista. Existe porque uma pipeline também pode ser o padrão,
-	// e ela não tem como ser a primeira: no seletor os agents vêm antes.
+	// Default is the name of the choice that runs when nobody chooses. Empty =
+	// the first in the list. It exists because a pipeline can also be the
+	// default, and it has no way to be first: in the selector the agents come
+	// before it.
 	Default string `yaml:"default,omitempty"`
-	// PostAgent é quem publica um review que você já leu. É o outro caminho
-	// para o PR: em vez de escolher um agente que publica sozinho, você roda
-	// a frota, lê o resultado e só então manda publicar.
+	// PostAgent is who publishes a review you have already read. It is the
+	// other road to the PR: instead of choosing an agent that publishes on its
+	// own, you run the fleet, read the result and only then order it published.
 	PostAgent AgentDef `yaml:"post_agent"`
 	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
 	// When off, the MCP surface does not offer publishing — neither as a tool
@@ -59,69 +62,73 @@ type Config struct {
 	Warnings []string `yaml:"-"`
 }
 
-// AgentDef é um agente nomeado que aparece no seletor da TUI.
+// AgentDef is a named agent that appears in the TUI selector.
 type AgentDef struct {
 	Name string `yaml:"name"`
-	// Description é a linha que explica o agente no seletor.
+	// Description is the line that explains the agent in the selector.
 	Description string `yaml:"description,omitempty"`
-	// Task é a instrução específica desta lente. Entra no {{task}} do molde
-	// de agent.prompt — é só isso que muda entre um agente e outro.
+	// Task is this lens's specific instruction. It goes into the {{task}} of
+	// the agent.prompt template — that is all that changes from one agent to
+	// another.
 	Task string `yaml:"task,omitempty"`
-	// Prompt substitui o molde inteiro quando preenchido. Aceita os mesmos
-	// placeholders de agent.prompt.
+	// Prompt replaces the whole template when filled in. It accepts the same
+	// placeholders as agent.prompt.
 	Prompt string `yaml:"prompt,omitempty"`
-	// Command e Args sobrescrevem os de agent quando preenchidos — serve para
-	// rodar uma lente em outro modelo ou em outro executável.
+	// Command and Args override agent's when filled in — useful for running a
+	// lens on another model or another executable.
 	Command string   `yaml:"command,omitempty"`
 	Args    []string `yaml:"args,omitempty"`
-	// Format descreve o protocolo de saída do agente. Vazio preserva a
-	// detecção legada pelos args (Claude stream-json, ou saída crua).
+	// Format describes the agent's output protocol. Empty keeps the legacy
+	// detection by args (Claude stream-json, or raw output).
 	Format string `yaml:"format,omitempty"`
-	// Posts marca o agente que publica o review no PR sozinho, em vez de
-	// devolver o texto para o Bazel publicar depois. A interface avisa antes
-	// de rodar um desses: é escrita em PR de outra pessoa.
+	// Posts marks the agent that publishes the review to the PR on its own,
+	// instead of handing the text back for Bazel to publish later. The
+	// interface warns before running one of these: it writes on someone else's
+	// PR.
 	Posts bool `yaml:"posts,omitempty"`
-	// Publishable diz se a saída deste agente pode ir para o PR. nil = pode,
-	// que é como todo agente sempre se comportou. Desligar é o que separa um
-	// agente que produz review de um que produz outra coisa — a história de um
-	// PR, por exemplo. Publicar uma narrativa de processo diria ao time que o
-	// código foi revisado quando ninguém revisou nada.
+	// Publishable says whether this agent's output can go to the PR. nil = it
+	// can, which is how every agent has always behaved. Turning it off is what
+	// separates an agent that produces a review from one that produces
+	// something else — a PR's history, for example. Publishing a process
+	// narrative would tell the team the code was reviewed when nobody reviewed
+	// anything.
 	Publishable *bool `yaml:"publishable,omitempty"`
-	// Checkout sobrescreve agent.checkout. nil = herda.
+	// Checkout overrides agent.checkout. nil = inherits.
 	Checkout *bool `yaml:"checkout,omitempty"`
-	// TimeoutSeconds sobrescreve agent.timeout_seconds. 0 = herda.
+	// TimeoutSeconds overrides agent.timeout_seconds. 0 = inherits.
 	TimeoutSeconds int `yaml:"timeout_seconds,omitempty"`
 	// Env is merged into this agent's process environment. Empty inherits
 	// agent.env; that empty too means the Bazel process environment only.
 	Env map[string]string `yaml:"env,omitempty"`
 }
 
-// Pipeline é uma sequência de agentes rodada sobre o mesmo clone do PR.
+// Pipeline is a sequence of agents run over the same clone of the PR.
 type Pipeline struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description,omitempty"`
-	// Steps são nomes de agents, na ordem de execução.
+	// Steps are agent names, in execution order.
 	Steps []string `yaml:"steps"`
 }
 
-// StepPublish é o passo reservado de uma pipeline. Não é agente: o Bazel o
-// executa por conta própria, e é por isso que ninguém pode ter um agente com
-// esse nome. A pipeline termina nele mostrando o que vai ao PR — só o que é
-// publicável, achado por achado — e espera você escolher e mandar, com o
-// mesmo agente de publicação do botão.
+// StepPublish is a pipeline's reserved step. It is not an agent: Bazel runs it
+// on its own, and that is why nobody can have an agent with that name. The
+// pipeline ends on it showing what goes to the PR — only what is publishable,
+// finding by finding — and waits for you to choose and send, with the same
+// publishing agent as the button.
 const StepPublish = "publish"
 
-// stepPause é o passo que existia antes do publish esperar por você. Só
-// sobrevive para sair das pipelines gravadas com ele.
+// stepPause is the step that existed before publish waited for you. It only
+// survives to get out of the pipelines saved with it.
 const stepPause = "pause"
 
-// ReservedStep diz se um nome de passo é executado pelo Bazel em vez de ser um
-// agente da lista.
+// ReservedStep says whether a step name is run by Bazel instead of being an
+// agent from the list.
 func ReservedStep(name string) bool {
 	return strings.EqualFold(strings.TrimSpace(name), StepPublish)
 }
 
-// ResolvedAgent é um AgentDef com os campos herdados de agent já preenchidos.
+// ResolvedAgent is an AgentDef with the fields inherited from agent already
+// filled in.
 type ResolvedAgent struct {
 	Name           string
 	Description    string
@@ -135,23 +142,23 @@ type ResolvedAgent struct {
 	Checkout       bool
 	TimeoutSeconds int
 	Env            map[string]string
-	// Reserved é o nome do passo reservado quando este não é um agente de
-	// verdade — `publish`. Vazio no resto.
+	// Reserved is the name of the reserved step when this is not a real agent —
+	// `publish`. Empty otherwise.
 	Reserved string
 }
 
-// Choice é o que o usuário escolhe antes do review: um agente sozinho ou uma
-// pipeline inteira. Nos dois casos o que roda é a lista de Steps.
+// Choice is what the user picks before the review: a single agent or a whole
+// pipeline. In both cases what runs is the list of Steps.
 type Choice struct {
 	Name        string
 	Description string
-	// Pipeline diz se essa escolha encadeia mais de um agente.
+	// Pipeline says whether this choice chains more than one agent.
 	Pipeline bool
-	// Posts diz se algum passo publica no PR por conta própria.
+	// Posts says whether any step publishes to the PR on its own.
 	Posts bool
-	// Publishable diz se há alguma coisa aqui que possa ir ao PR: pelo menos
-	// um passo publicável. Numa pipeline, só o corpo desses passos é que sobe
-	// — o resto você lê na tela e fica por aí.
+	// Publishable says whether there is anything here that can go to the PR: at
+	// least one publishable step. In a pipeline, only those steps' body goes up
+	// — the rest you read on screen and it stays there.
 	Publishable bool
 	// Bare diz que esta é a escolha única do bloco `agent`, sem lista de
 	// agents: o prompt é todo seu, e o Bazel não tem como saber se ele publica.
@@ -216,24 +223,24 @@ func promptAuthorizesPosting(prompt string) bool {
 	return strings.Contains(strings.ToLower(prompt), "authorized to publish")
 }
 
-// Agent descreve como invocar o agente de IA que faz o review.
+// Agent describes how to invoke the AI agent that does the review.
 type Agent struct {
-	// Command é o executável (ex.: "claude").
+	// Command is the executable (e.g. "claude").
 	Command string `yaml:"command"`
-	// Args são os argumentos fixos. O prompt vai pelo stdin.
+	// Args are the fixed arguments. The prompt goes through stdin.
 	Args []string `yaml:"args"`
-	// Format identifica o protocolo de saída estruturada do agente. Vazio
-	// preserva a detecção legada pelos args.
+	// Format identifies the agent's structured output protocol. Empty keeps the
+	// legacy detection by args.
 	Format string `yaml:"format,omitempty"`
-	// Checkout clona o repositório numa pasta temporária e faz o checkout do
-	// PR antes de rodar o agente, que roda com essa pasta como diretório de
-	// trabalho. Necessário para agentes que leem o código, e não só o diff.
+	// Checkout clones the repository into a temporary folder and checks out the
+	// PR before running the agent, which runs with that folder as its working
+	// directory. Needed for agents that read the code, and not just the diff.
 	Checkout bool `yaml:"checkout"`
-	// Prompt é o template do review. Placeholders: {{repo}}, {{number}},
+	// Prompt is the review template. Placeholders: {{repo}}, {{number}},
 	// {{title}}, {{author}}, {{url}}, {{branch}}, {{base}}, {{body}},
-	// {{workdir}}, {{diff}}. O diff só é baixado se o template pedir.
+	// {{workdir}}, {{diff}}. The diff is only downloaded if the template asks.
 	Prompt string `yaml:"prompt"`
-	// TimeoutSeconds limita a duração de um review. 0 = sem limite.
+	// TimeoutSeconds caps how long a review takes. 0 = no limit.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
 	// Env is merged into every agent process that does not set its own env.
 	Env map[string]string `yaml:"env,omitempty"`
@@ -266,9 +273,9 @@ PR description:
 
 Write only the final report to stdout, in Markdown.`
 
-// postPrompt é o molde do agente que publica sozinho. O molde padrão proíbe
-// escrever no GitHub — este troca essa linha pela permissão explícita, que é
-// justamente o que a skill de post precisa.
+// postPrompt is the template for the agent that publishes on its own. The
+// default template forbids writing to GitHub — this one swaps that line for the
+// explicit permission, which is exactly what the post skill needs.
 const postPrompt = `{{task}}
 
 The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
@@ -289,9 +296,9 @@ PR description:
 Write the final report to stdout in Markdown, and say at the end what was
 published on the PR.`
 
-// publishPrompt é o molde de quem publica um review já escrito. A instrução
-// que importa é a última: não refazer o review, publicar o que está no arquivo
-// — é ele que você leu na tela antes de mandar.
+// publishPrompt is the template for whoever publishes an already written
+// review. The instruction that matters is the last one: do not redo the review,
+// publish what is in the file — that is what you read on screen before sending.
 const publishPrompt = `{{task}}
 
 The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
@@ -310,10 +317,10 @@ PR: {{title}} — @{{author}}
 
 Write to stdout what was published, in Markdown.`
 
-// defaultArgs são os args do `claude`. O --output-format stream-json é o que
-// faz o agente narrar o que está fazendo enquanto trabalha, em vez de ficar
-// mudo até o relatório sair — é dele que vem o log ao vivo da interface web.
-// Sem --allowedTools o `claude -p` nega toda permissão em silêncio.
+// defaultArgs are the `claude` args. --output-format stream-json is what makes
+// the agent narrate what it is doing while it works, instead of staying silent
+// until the report comes out — that is where the web interface's live log comes
+// from. Without --allowedTools `claude -p` silently denies every permission.
 func defaultArgs() []string {
 	return []string{
 		"-p", "--output-format", "stream-json", "--verbose",
@@ -321,15 +328,15 @@ func defaultArgs() []string {
 	}
 }
 
-// legacyArgs são os args que o `bazel init` gravava antes do log ao vivo.
+// legacyArgs are the args `bazel init` saved before the live log.
 func legacyArgs() []string {
 	return []string{"-p", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
 }
 
-// defaultPostAgent é quem publica um review já lido. A skill que ele chama vem
-// dentro do binário: publicar não pode depender de uma skill instalada na
-// máquina de quem escreveu o Bazel. Quem tem a sua própria troca o task aqui,
-// ou monta outro agente de publicação na página.
+// defaultPostAgent is who publishes an already read review. The skill it calls
+// ships inside the binary: publishing cannot depend on a skill installed on the
+// machine of whoever wrote Bazel. Anyone who has their own swaps the task here,
+// or builds another publishing agent on the page.
 func defaultPostAgent() AgentDef {
 	return AgentDef{
 		Name:        "bazel-post-report",
@@ -340,9 +347,9 @@ func defaultPostAgent() AgentDef {
 	}
 }
 
-// legacyPostAgent é o agente de publicação que o Bazel gravava antes da skill
-// embarcada — ele chamava a `/post-report` de ~/.claude/skills, que só existia
-// em quem a tivesse instalado.
+// legacyPostAgent is the publishing agent Bazel saved before the embedded skill
+// — it called the `/post-report` from ~/.claude/skills, which only existed for
+// whoever had installed it.
 func legacyPostAgent() AgentDef {
 	return AgentDef{
 		Name:        "post-report",
@@ -353,15 +360,15 @@ func legacyPostAgent() AgentDef {
 	}
 }
 
-// migratePostAgent troca a skill do agente de publicação padrão pela que vem
-// no binário. Só nome e task mudam: prompt, comando, checkout e timeout são
-// escolhas de quem editou o arquivo e sobrevivem. O que não pode sobreviver é
-// a task apontando para uma skill que esta máquina talvez nunca tenha tido —
-// era isso que fazia o botão de publicar disparar um agente sem instrução.
+// migratePostAgent swaps the default publishing agent's skill for the one that
+// ships in the binary. Only name and task change: prompt, command, checkout and
+// timeout are choices of whoever edited the file and survive. What cannot
+// survive is the task pointing to a skill this machine may never have had —
+// that is what made the publish button fire an agent with no instruction.
 //
-// Quem apontou o post_agent para outra coisa não é tocado, inclusive quem
-// aponta para a própria /post-report de propósito: só casa o padrão antigo,
-// nome e task exatos.
+// Whoever pointed post_agent at something else is not touched, including
+// whoever points at their own /post-report on purpose: only the old default
+// matches, exact name and task.
 func migratePostAgent(def AgentDef) AgentDef {
 	legacy := legacyPostAgent()
 	if strings.TrimSpace(def.Name) != legacy.Name || strings.TrimSpace(def.Task) != legacy.Task {
@@ -375,7 +382,7 @@ func migratePostAgent(def AgentDef) AgentDef {
 	return def
 }
 
-// Default devolve a configuração inicial usada pelo "bazel init".
+// Default returns the initial configuration used by "bazel init".
 func Default() *Config {
 	return &Config{
 		Repos:         []string{},
@@ -390,10 +397,10 @@ func Default() *Config {
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
 		},
-		// Agents e Pipelines nascem vazios de propósito: quem monta a lista é
-		// você, na página, a partir das skills que estão instaladas na sua
-		// máquina. Uma lista de fábrica só acertaria por coincidência — ela
-		// apontaria para skills que este computador pode nunca ter tido.
+		// Agents and Pipelines start empty on purpose: the one who builds the
+		// list is you, on the page, from the skills installed on your machine.
+		// A factory list would only be right by coincidence — it would point to
+		// skills this computer may never have had.
 		PostAgent: defaultPostAgent(),
 	}
 }
@@ -443,7 +450,7 @@ func Dir() (string, error) {
 	return filepath.Join(home, ".bazel"), nil
 }
 
-// Path é o caminho do config.yaml.
+// Path is the path of config.yaml.
 func Path() (string, error) {
 	dir, err := Dir()
 	if err != nil {
@@ -452,7 +459,8 @@ func Path() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
-// Load lê a configuração do disco, preenchendo os campos ausentes com o padrão.
+// Load reads the configuration from disk, filling missing fields with the
+// default.
 func Load() (*Config, error) {
 	path, err := Path()
 	if err != nil {
@@ -477,18 +485,18 @@ func Load() (*Config, error) {
 	if strings.TrimSpace(cfg.Agent.Prompt) == "" {
 		cfg.Agent.Prompt = defaultPrompt
 	}
-	// Mesma ideia para os args: quem está com os de fábrica antigos ganha o
-	// --output-format stream-json, que é o que acende o log ao vivo. Args
-	// customizados ficam como estão — sem stream-json o log mostra a saída
-	// crua do agente, que é o que ele de fato escreve.
+	// Same idea for the args: whoever has the old factory ones gets
+	// --output-format stream-json, which is what lights up the live log. Custom
+	// args stay as they are — without stream-json the log shows the agent's raw
+	// output, which is what it actually writes.
 	if sameArgs(cfg.Agent.Args, legacyArgs()) {
 		cfg.Agent.Args = defaultArgs()
 	}
 	if strings.TrimSpace(cfg.PostAgent.Name) == "" {
 		cfg.PostAgent = defaultPostAgent()
 	}
-	// Mesma ideia dos args: quem está com o padrão antigo ganha a skill
-	// embarcada, que funciona sem nada instalado.
+	// Same idea as the args: whoever has the old default gets the embedded
+	// skill, which works with nothing installed.
 	cfg.PostAgent = migratePostAgent(cfg.PostAgent)
 	cfg.migratePipelines()
 	for _, w := range cfg.Warnings {
@@ -529,7 +537,7 @@ func LoadOrInit() (*Config, bool, error) {
 	return cfg, true, nil
 }
 
-// Save grava a configuração, criando o diretório se necessário.
+// Save writes the configuration, creating the directory if needed.
 func (c *Config) Save() error {
 	if err := c.validateFormats(); err != nil {
 		return err
@@ -548,8 +556,9 @@ func (c *Config) Save() error {
 	return os.WriteFile(path, data, 0o644)
 }
 
-// ResolvedReviewsDir devolve o diretório de reviews absoluto. Se reviews_dir
-// estiver vazio, cai em <BAZEL_HOME>/reviews — assim BAZEL_HOME isola tudo.
+// ResolvedReviewsDir returns the absolute reviews directory. If reviews_dir is
+// empty, it falls back to <BAZEL_HOME>/reviews — that way BAZEL_HOME isolates
+// everything.
 func (c *Config) ResolvedReviewsDir() (string, error) {
 	if strings.TrimSpace(c.ReviewsDir) == "" {
 		dir, err := Dir()
@@ -572,7 +581,7 @@ func expandHome(p string) (string, error) {
 	return filepath.Join(home, strings.TrimPrefix(p, "~")), nil
 }
 
-// AddRepo adiciona um repositório, ignorando duplicatas.
+// AddRepo adds a repository, ignoring duplicates.
 func (c *Config) AddRepo(repo string) bool {
 	repo = strings.TrimSpace(strings.TrimSuffix(repo, "/"))
 	repo = strings.TrimPrefix(repo, "https://github.com/")
@@ -585,7 +594,7 @@ func (c *Config) AddRepo(repo string) bool {
 	return true
 }
 
-// RemoveRepo remove um repositório da lista.
+// RemoveRepo removes a repository from the list.
 func (c *Config) RemoveRepo(repo string) bool {
 	for i, r := range c.Repos {
 		if strings.EqualFold(r, repo) {
@@ -596,19 +605,19 @@ func (c *Config) RemoveRepo(repo string) bool {
 	return false
 }
 
-// --- agents e pipelines ---
+// --- agents and pipelines ---
 
-// ErrNoAgents é o que sai quando ainda não há agente nenhum na configuração.
-// Um config novo começa assim: a lista é montada na página, a partir das
-// skills que o Claude Code tem instaladas nesta máquina.
+// ErrNoAgents is what comes out when there is no agent at all in the
+// configuration yet. A new config starts like this: the list is built on the
+// page, from the skills Claude Code has installed on this machine.
 var ErrNoAgents = errors.New("no agents configured — open the configuration and add one out of your skills")
 
-// AddAgentFromSkill acrescenta um agente que roda uma skill do Claude Code
-// sobre o PR. É por aqui que a lista vazia de um config novo é preenchida: o
-// nome do agente é o da skill, e a task é a invocação dela com o número do PR.
+// AddAgentFromSkill adds an agent that runs a Claude Code skill over the PR.
+// This is how the empty list of a new config gets filled: the agent's name is
+// the skill's, and the task is its invocation with the PR number.
 //
-// Com posts, o agente publica o review sozinho: a task ganha o --post e o
-// molde do prompt passa a ser o que autoriza escrever no GitHub.
+// With posts, the agent publishes the review on its own: the task gets --post
+// and the prompt template becomes the one that authorizes writing to GitHub.
 func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (AgentDef, error) {
 	skill = strings.TrimPrefix(strings.TrimSpace(skill), "/")
 	if skill == "" {
@@ -617,9 +626,9 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	if strings.ContainsAny(skill, " \t\n/") {
 		return AgentDef{}, fmt.Errorf("%q is not a skill name", skill)
 	}
-	// `publish` é um passo que o Bazel executa dentro de uma pipeline. Um
-	// agente com esse nome tornaria ambíguo o que o passo quer dizer, e a
-	// pipeline escolheria errado.
+	// `publish` is a step Bazel runs inside a pipeline. An agent with that name
+	// would make what the step means ambiguous, and the pipeline would pick
+	// wrong.
 	if ReservedStep(skill) {
 		return AgentDef{}, fmt.Errorf("%q is a reserved pipeline step — an agent cannot be called that", skill)
 	}
@@ -632,8 +641,9 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 		Task:        "/" + skill + " {{number}}",
 	}
 	if posts {
-		// O sufixo é o que deixa os dois conviverem na lista: a mesma skill
-		// pode virar um agente que você lê e outro que publica sozinho.
+		// The suffix is what lets the two live together in the list: the same
+		// skill can become an agent you read and another that publishes on its
+		// own.
 		def.Name = skill + "-post"
 		def.Task += " --post"
 		def.Prompt = postPrompt
@@ -648,9 +658,9 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	return def, nil
 }
 
-// RemoveAgent tira um agente da lista. Pipeline que apontava para ele continua
-// valendo pelo resto dos passos — é o mesmo tratamento que ela já dá a um
-// passo desconhecido.
+// RemoveAgent takes an agent out of the list. A pipeline that pointed to it
+// still holds for the rest of its steps — it is the same treatment it already
+// gives an unknown step.
 func (c *Config) RemoveAgent(name string) bool {
 	name = strings.TrimSpace(name)
 	for i, a := range c.Agents {
@@ -663,9 +673,9 @@ func (c *Config) RemoveAgent(name string) bool {
 	return false
 }
 
-// SetDefaultAgent marca a escolha que roda quando ninguém escolhe. Vale para
-// agente e para pipeline: no seletor os agents vêm antes das pipelines, então
-// "ser o primeiro" não é algo que uma pipeline consiga por posição.
+// SetDefaultAgent marks the choice that runs when nobody chooses. It works for
+// agent and for pipeline: in the selector the agents come before the pipelines,
+// so "being first" is not something a pipeline can get by position.
 func (c *Config) SetDefaultAgent(name string) bool {
 	name = strings.TrimSpace(name)
 	for _, ch := range c.Choices() {
@@ -679,13 +689,13 @@ func (c *Config) SetDefaultAgent(name string) bool {
 
 // --- pipelines ---
 
-// AddPipeline encadeia agentes sobre o mesmo clone, na ordem dada. É o que a
-// página monta quando você quer duas lentes em sequência sem clonar duas
-// vezes, ou a história do PR antes do review dele.
+// AddPipeline chains agents over the same clone, in the given order. It is what
+// the page builds when you want two lenses in sequence without cloning twice,
+// or the PR's history before its review.
 //
-// Todo passo tem de ser um agente que existe: uma pipeline com passo
-// desconhecido roda pelo resto e cala sobre o que faltou, e descobrir isso no
-// meio de um review é tarde demais.
+// Every step has to be an agent that exists: a pipeline with an unknown step
+// runs through the rest and says nothing about what was missing, and finding
+// that out in the middle of a review is too late.
 func (c *Config) AddPipeline(name, description string, steps []string) (Pipeline, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -711,10 +721,10 @@ func (c *Config) AddPipeline(name, description string, steps []string) (Pipeline
 	return p, nil
 }
 
-// resolveSteps valida a sequência que a página montou e devolve os nomes já
-// normalizados. As regras existem porque cada uma delas produz, em runtime, um
-// comportamento que parece bug: publicar antes de qualquer agente, ou duas
-// vezes, ou no meio da sequência.
+// resolveSteps validates the sequence the page built and returns the names
+// already normalized. The rules exist because each of them produces, at
+// runtime, a behavior that looks like a bug: publishing before any agent, or
+// twice, or in the middle of the sequence.
 func (c *Config) resolveSteps(steps []string) ([]string, error) {
 	out := make([]string, 0, len(steps))
 	vistos := make(map[string]bool, len(steps))
@@ -756,8 +766,8 @@ func (c *Config) resolveSteps(steps []string) ([]string, error) {
 		if achou == "" {
 			return nil, fmt.Errorf("%q is not an agent — a pipeline chains agents from the list, not skills", step)
 		}
-		// O mesmo agente duas vezes seria o mesmo trabalho duas vezes sobre o
-		// mesmo clone, e os dois passos dividiriam o nome no log.
+		// The same agent twice would be the same work twice over the same
+		// clone, and the two steps would share the name in the log.
 		if vistos[strings.ToLower(achou)] {
 			return nil, fmt.Errorf("%q is in this pipeline twice", achou)
 		}
@@ -769,18 +779,18 @@ func (c *Config) resolveSteps(steps []string) ([]string, error) {
 	if agentes == 0 {
 		return nil, errors.New("a pipeline needs at least one agent")
 	}
-	// Publicar é o fim da linha: o relatório que vai ao PR é o que a pipeline
-	// produziu, e continuar revisando depois de já ter publicado deixaria em
-	// disco um review diferente do que o time leu.
+	// Publishing is the end of the line: the report that goes to the PR is what
+	// the pipeline produced, and to keep reviewing after having published would
+	// leave on disk a review different from the one the team read.
 	if publica && !strings.EqualFold(out[len(out)-1], StepPublish) {
 		return nil, errors.New("publish has to be the last step — what goes to the PR is what the pipeline produced")
 	}
 	return out, nil
 }
 
-// temPublicavelAntes diz se algum passo já corrido produz relatório que pode ir
-// ao PR. Publicar o que não é review é justamente o que o tique de publicação
-// existe para impedir.
+// temPublicavelAntes says whether any step already run produces a report that
+// can go to the PR. Publishing what is not a review is exactly what the publish
+// tick exists to prevent.
 func (c *Config) temPublicavelAntes(steps []string) bool {
 	for _, step := range steps {
 		if ReservedStep(step) {
@@ -826,23 +836,23 @@ func (c *Config) RemovePipeline(name string) bool {
 	return false
 }
 
-// clearDefault esquece o padrão quando ele apontava para o que acabou de sair.
-// Sem isso o seletor voltaria para a primeira escolha de qualquer jeito, mas o
-// yaml ficaria com um nome que não existe mais.
+// clearDefault forgets the default when it pointed to what just left. Without
+// it the selector would fall back to the first choice anyway, but the yaml
+// would keep a name that no longer exists.
 func (c *Config) clearDefault(name string) {
 	if strings.EqualFold(strings.TrimSpace(c.Default), strings.TrimSpace(name)) {
 		c.Default = ""
 	}
 }
 
-// SetAgentPublishable liga ou desliga a ida ao PR da saída de um agente. É o
-// tique do painel: history-pr conta a história de um PR, e história não é
-// review — publicá-la diria ao time que o código foi revisado quando ninguém
-// revisou nada.
+// SetAgentPublishable turns on or off whether an agent's output goes to the PR.
+// It is the panel's tick: history-pr tells a PR's story, and a story is not a
+// review — publishing it would tell the team the code was reviewed when nobody
+// reviewed anything.
 //
-// Agente que publica sozinho não pode ser marcado como não-publicável: ele
-// escreve no PR por conta própria, e desligar o botão aqui não o impediria de
-// nada. Nesse caso o jeito é tirá-lo da lista.
+// An agent that publishes on its own cannot be marked as not publishable: it
+// writes on the PR by itself, and turning the button off here would not stop it
+// from anything. In that case the way out is to take it off the list.
 func (c *Config) SetAgentPublishable(name string, v bool) error {
 	name = strings.TrimSpace(name)
 	for i, a := range c.Agents {
@@ -858,8 +868,8 @@ func (c *Config) SetAgentPublishable(name string, v bool) error {
 	return fmt.Errorf("the agent %q is not in the list", name)
 }
 
-// StepPublishes diz se a saída deste passo pode ir ao PR. Um passo que não
-// está na escolha não publica nada.
+// StepPublishes says whether this step's output can go to the PR. A step that
+// is not in the choice publishes nothing.
 func (c Choice) StepPublishes(name string) bool {
 	name = strings.TrimSpace(name)
 	for _, s := range c.Steps {
@@ -870,8 +880,9 @@ func (c Choice) StepPublishes(name string) bool {
 	return false
 }
 
-// Agents são os passos que são agente de verdade — os que rodam um processo.
-// É o que separa "quantas lentes vão rodar" de "quantas linhas a pipeline tem".
+// Agents are the steps that are real agents — the ones that run a process. It
+// is what separates "how many lenses will run" from "how many lines the
+// pipeline has".
 func (c Choice) Agents() []ResolvedAgent {
 	out := make([]ResolvedAgent, 0, len(c.Steps))
 	for _, s := range c.Steps {
@@ -882,7 +893,7 @@ func (c Choice) Agents() []ResolvedAgent {
 	return out
 }
 
-// sameArgs compara duas listas de argumentos.
+// sameArgs compares two argument lists.
 func sameArgs(a, b []string) bool {
 	if len(a) != len(b) {
 		return false
@@ -895,18 +906,18 @@ func sameArgs(a, b []string) bool {
 	return true
 }
 
-// StrayCommand devolve o comando que o molde de `agent` dispara por conta
-// própria. É o vazio no caso normal.
+// StrayCommand returns the command that the `agent` template fires on its own.
+// It is empty in the normal case.
 //
-// Um molde sem `{{task}}` ganha a task prefixada na primeira linha, o que é
-// conveniente para quem escreveu um molde sem placeholder — e é uma armadilha
-// para quem escreveu um molde de antes de existir seletor, com a skill escrita
-// à mão nele. Aí todo agente roda dois comandos: o que você escolheu e o que
-// está no molde. O agente até parece funcionar, e o segundo comando aparece
-// como um gasto que ninguém pediu.
+// A template without `{{task}}` gets the task prefixed on the first line, which
+// is convenient for whoever wrote a template without a placeholder — and it is
+// a trap for whoever wrote a template from before the selector existed, with
+// the skill handwritten in it. Then every agent runs two commands: the one you
+// chose and the one in the template. The agent even seems to work, and the
+// second command shows up as an expense nobody asked for.
 //
-// Agente com `prompt` próprio não passa por aqui: só herda quem não escreveu o
-// seu, e é o bloco `agent` que vale para esses.
+// An agent with its own `prompt` does not go through here: only those who did
+// not write theirs inherit, and for those it is the `agent` block that counts.
 func (c *Config) StrayCommand() string {
 	tmpl := c.Agent.Prompt
 	if strings.Contains(tmpl, "{{task}}") {
@@ -921,7 +932,8 @@ func (c *Config) StrayCommand() string {
 		if i := strings.IndexAny(cmd, " \t"); i > 0 {
 			cmd = cmd[:i]
 		}
-		// Um caminho absoluto não é comando; uma skill não tem barra no meio.
+		// An absolute path is not a command; a skill has no slash in the
+		// middle.
 		if len(cmd) > 1 && !strings.Contains(cmd[1:], "/") {
 			return cmd
 		}
@@ -956,26 +968,26 @@ func validateFormat(format string) error {
 	}
 }
 
-// promptNeedsTask diz se o molde é o de fábrica — uma casca em volta do
-// {{task}} de um agente. Sozinho ele não pede nada: quem manda no review é o
-// agente que preenche esse buraco.
+// promptNeedsTask says whether the template is the factory one — a shell around
+// an agent's {{task}}. On its own it asks for nothing: what drives the review
+// is the agent that fills that hole.
 func promptNeedsTask(p string) bool {
 	return strings.TrimSpace(p) == strings.TrimSpace(defaultPrompt)
 }
 
-// Choices é o que o seletor mostra antes do review: primeiro os agents
-// nomeados, depois as pipelines. A primeira da lista é a padrão.
+// Choices is what the selector shows before the review: first the named agents,
+// then the pipelines. The first in the list is the default.
 //
-// A lista começa vazia num config novo: é a página que a preenche, a partir
-// das skills que o Claude Code tem instaladas nesta máquina. Sem `agents:` e
-// com um `agent.prompt` seu, sobra uma escolha só — o bloco `agent` puro, que
-// é como o Bazel se comportava antes de existir seletor.
+// The list starts empty in a new config: it is the page that fills it, from the
+// skills Claude Code has installed on this machine. Without `agents:` and with
+// an `agent.prompt` of your own, a single choice is left — the plain `agent`
+// block, which is how Bazel behaved before the selector existed.
 func (c *Config) Choices() []Choice {
 	if len(c.Agents) == 0 {
-		// Lista vazia é o estado inicial: os agents são adicionados na página,
-		// a partir das skills instaladas. Quem escreveu o próprio
-		// `agent.prompt` continua tendo o que rodar sem eles — o de fábrica,
-		// não: sem {{task}} preenchido ele não pede review nenhum.
+		// An empty list is the initial state: the agents are added on the page,
+		// from the installed skills. Whoever wrote their own `agent.prompt`
+		// still has something to run without them — the factory one does not:
+		// without {{task}} filled in it asks for no review at all.
 		if promptNeedsTask(c.Agent.Prompt) {
 			return nil
 		}
@@ -1002,7 +1014,7 @@ func (c *Config) Choices() []Choice {
 	for _, p := range c.Pipelines {
 		name := strings.TrimSpace(p.Name)
 		if name == "" || byName[name].Name != "" {
-			// Nome vazio ou colidindo com um agent: o agent ganha.
+			// Empty name or colliding with an agent: the agent wins.
 			continue
 		}
 		var steps []ResolvedAgent
@@ -1013,8 +1025,8 @@ func (c *Config) Choices() []Choice {
 				steps = append(steps, ResolvedAgent{Name: nome, Reserved: nome})
 				continue
 			}
-			// Passo apontando para agent que não existe é ignorado — a
-			// pipeline continua valendo pelo resto.
+			// A step pointing to an agent that does not exist is ignored — the
+			// pipeline still holds for the rest.
 			if ra, ok := byName[step]; ok {
 				steps = append(steps, ra)
 			}
@@ -1025,8 +1037,9 @@ func (c *Config) Choices() []Choice {
 		}
 		posts, publicavel := false, false
 		for _, st := range steps {
-			// O passo `publish` não conta: ele espera você mandar. Só um
-			// agente que publica por conta própria escreve no PR sem pedir.
+			// The `publish` step does not count: it waits for you to send. Only
+			// an agent that publishes on its own writes on the PR without
+			// asking.
 			posts = posts || st.Posts
 			publicavel = publicavel || st.Publishable
 		}
@@ -1042,10 +1055,10 @@ func (c *Config) Choices() []Choice {
 	return frente(out, c.Default)
 }
 
-// semReservadoSolto tira os passos reservados que sobraram sem agente nenhum
-// para acompanhar. Um agente pode ter sido removido da lista depois que a
-// pipeline foi montada, e o que resta pode ser um `publish` sem relatório para
-// publicar — publicar o nada é pior do que simplesmente não fazer.
+// semReservadoSolto removes the reserved steps left over with no agent at all
+// to go with them. An agent may have been removed from the list after the
+// pipeline was built, and what is left may be a `publish` with no report to
+// publish — publishing nothing is worse than simply not doing it.
 func semReservadoSolto(steps []ResolvedAgent) []ResolvedAgent {
 	out := make([]ResolvedAgent, 0, len(steps))
 	agentes := 0
@@ -1055,14 +1068,14 @@ func semReservadoSolto(steps []ResolvedAgent) []ResolvedAgent {
 			out = append(out, st)
 			continue
 		}
-		// Reservado só vale com algum agente antes dele.
+		// A reserved step only counts with some agent before it.
 		if agentes == 0 {
 			continue
 		}
 		out = append(out, st)
 	}
-	// publish que deixou de ser o último (porque um agente depois dele
-	// sumiu) também não vale mais.
+	// A publish that stopped being the last (because an agent after it
+	// vanished) no longer counts either.
 	for i := 0; i < len(out)-1; i++ {
 		if out[i].Reserved == StepPublish {
 			out = out[:i]
@@ -1075,10 +1088,10 @@ func semReservadoSolto(steps []ResolvedAgent) []ResolvedAgent {
 	return out
 }
 
-// frente traz a escolha padrão para o começo da lista. A primeira é a que roda
-// quando ninguém escolhe, e é assim que a página a marca — então basta
-// reordenar aqui para o resto da casa concordar. Nome vazio ou que não existe
-// mais deixa a ordem como está.
+// frente brings the default choice to the start of the list. The first is the
+// one that runs when nobody chooses, and that is how the page marks it — so
+// reordering here is enough for the rest of the house to agree. An empty name
+// or one that no longer exists leaves the order as it is.
 func frente(list []Choice, padrao string) []Choice {
 	padrao = strings.TrimSpace(padrao)
 	if padrao == "" {
@@ -1099,8 +1112,9 @@ func frente(list []Choice, padrao string) []Choice {
 	return list
 }
 
-// DefaultChoice é a que roda quando ninguém escolhe: a primeira da lista. Sem
-// nenhum agente configurado ela vem vazia, e quem for rodá-la reclama.
+// DefaultChoice is the one that runs when nobody chooses: the first in the
+// list. With no agent configured it comes back empty, and whoever goes to run
+// it complains.
 func (c *Config) DefaultChoice() Choice {
 	choices := c.Choices()
 	if len(choices) == 0 {
@@ -1109,7 +1123,7 @@ func (c *Config) DefaultChoice() Choice {
 	return choices[0]
 }
 
-// ChoiceByName acha um agent ou pipeline pelo nome, sem diferenciar caixa.
+// ChoiceByName finds an agent or pipeline by name, case-insensitively.
 func (c *Config) ChoiceByName(name string) (Choice, error) {
 	name = strings.TrimSpace(name)
 	choices := c.Choices()
@@ -1128,9 +1142,10 @@ func (c *Config) ChoiceByName(name string) (Choice, error) {
 	return Choice{}, fmt.Errorf("no such agent %q — available: %s", name, strings.Join(names, ", "))
 }
 
-// PostSkill é a skill que o agente de publicação chama. Ela não vira agente
-// da lista: sozinha, num passo comum, roda sem o review nem o prompt de
-// publicar e não posta nada. Numa pipeline quem publica é o passo `publish`.
+// PostSkill is the skill the publishing agent calls. It does not become an
+// agent in the list: alone, in an ordinary step, it runs without the review or
+// the publish prompt and posts nothing. In a pipeline the one that publishes is
+// the `publish` step.
 func (c *Config) PostSkill() string {
 	post := c.PostAgent
 	if strings.TrimSpace(post.Name) == "" {
@@ -1177,7 +1192,7 @@ func taskShape(task string) string {
 	return strings.Join(strings.Fields(placeholderRe.ReplaceAllString(task, "{{}}")), " ")
 }
 
-// migratePipelines arruma o que a página deixava gravar antes:
+// migratePipelines fixes what the page used to let be saved:
 //
 //   - the post agent listed as a regular agent leaves the list, and its steps
 //     in the pipelines become a single `publish` at the end, which is what they
@@ -1308,16 +1323,17 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 	return AgentDef{}, false
 }
 
-// PostChoice é o agente de publicação, pronto para rodar.
+// PostChoice is the publishing agent, ready to run.
 func (c *Config) PostChoice() Choice {
 	def := c.PostAgent
 	if strings.TrimSpace(def.Name) == "" {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
-	// Sem dizer nada, publicar clona: comentário inline precisa do diff para
-	// achar a linha. Quem escreveu `checkout: false` no post_agent sabe o que
-	// está fazendo — um agente que só chama a API do GitHub não precisa disso.
+	// Unless told otherwise, publishing clones: an inline comment needs the
+	// diff to find the line. Whoever wrote `checkout: false` in post_agent
+	// knows what they are doing — an agent that only calls the GitHub API does
+	// not need it.
 	if def.Checkout == nil {
 		ra.Checkout = true
 	}
@@ -1326,7 +1342,7 @@ func (c *Config) PostChoice() Choice {
 	return Choice{Name: ra.Name, Description: ra.Description, Posts: true, Publishable: true, Steps: []ResolvedAgent{ra}}
 }
 
-// baseChoice embrulha o bloco `agent` num Choice de um passo só.
+// baseChoice wraps the `agent` block in a single-step Choice.
 func (c *Config) baseChoice() Choice {
 	ra := ResolvedAgent{
 		Name:           "default",
@@ -1343,7 +1359,8 @@ func (c *Config) baseChoice() Choice {
 	return Choice{Name: ra.Name, Description: ra.Description, Publishable: true, Bare: true, Steps: []ResolvedAgent{ra}}
 }
 
-// resolve preenche com o bloco `agent` tudo que o AgentDef não sobrescreve.
+// resolve fills in from the `agent` block everything the AgentDef does not
+// override.
 func (c *Config) resolve(def AgentDef) ResolvedAgent {
 	ra := ResolvedAgent{
 		Name:        strings.TrimSpace(def.Name),
@@ -1354,8 +1371,8 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 		Prompt:      def.Prompt,
 		Task:        def.Task,
 		Posts:       def.Posts,
-		// nil é publicável: todo agente escrito antes deste campo existir
-		// continua indo ao PR como sempre foi.
+		// nil is publishable: every agent written before this field existed
+		// keeps going to the PR as it always has.
 		Publishable:    def.Publishable == nil || *def.Publishable,
 		Checkout:       c.Agent.Checkout,
 		TimeoutSeconds: def.TimeoutSeconds,
@@ -1363,8 +1380,8 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 	}
 	if ra.Command == "" {
 		ra.Command = c.Agent.Command
-		// Args só herdam junto com o comando: args do claude num codex da
-		// vida não querem dizer nada.
+		// Args only inherit along with the command: claude's args on some codex
+		// or other mean nothing.
 		if ra.Args == nil {
 			ra.Args = c.Agent.Args
 		}
@@ -1387,7 +1404,7 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 	return ra
 }
 
-// NeedsCheckout diz se algum passo da escolha precisa do clone do PR.
+// NeedsCheckout says whether any step of the choice needs the PR clone.
 func (c Choice) NeedsCheckout() bool {
 	for _, s := range c.Steps {
 		if s.Checkout {
@@ -1397,7 +1414,7 @@ func (c Choice) NeedsCheckout() bool {
 	return false
 }
 
-// StepNames são os nomes dos passos, na ordem de execução.
+// StepNames are the step names, in execution order.
 func (c Choice) StepNames() []string {
 	out := make([]string, 0, len(c.Steps))
 	for _, s := range c.Steps {

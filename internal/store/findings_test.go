@@ -51,8 +51,8 @@ Prose after the list is not an item.
 - clean
 `
 
-// A concatenação das partes devolve o texto original, e só os `###` das
-// seções de achados viram achado — cerca de código e `####` ficam dentro.
+// Concatenating the parts gives back the original text, and only the `###` of
+// findings sections become findings — code fences and `####` stay inside.
 func TestSplitFindingsRecortaSoOsAchados(t *testing.T) {
 	parts := SplitFindings(relatorio)
 	var back strings.Builder
@@ -74,7 +74,7 @@ func TestSplitFindingsRecortaSoOsAchados(t *testing.T) {
 	if n := Findings(relatorio); n != 5 {
 		t.Errorf("Findings = %d, queria 5", n)
 	}
-	// O primeiro achado leva a cerca de código inteira, com os falsos headings.
+	// The first finding takes the whole code fence, with the fake headings.
 	for _, p := range parts {
 		if p.Finding && strings.HasPrefix(p.Text, "### 1.") && !strings.Contains(p.Text, "### nor this") {
 			t.Error("o bloco de código devia ficar dentro do achado")
@@ -91,7 +91,7 @@ func TestSplitFindingsRecortaSoOsAchados(t *testing.T) {
 	}
 }
 
-// Sem seção `## Findings`, o comentário do review-fleet ainda marca o achado.
+// Without a `## Findings` section, the review-fleet comment still marks the finding.
 func TestSplitFindingsReconhecePeloComentario(t *testing.T) {
 	src := "# Report\n\n## Security\n\n### IDOR on transfer\n<!-- finding severity=critical class=authz lenses=x path=a.go line=1 side=RIGHT -->\n\ntext\n\n### Just a note\n\nno comment here\n"
 	var got []string
@@ -105,8 +105,8 @@ func TestSplitFindingsReconhecePeloComentario(t *testing.T) {
 	}
 }
 
-// Os reviews mais antigos numeram os achados em negrito, sem `###`: cada
-// parágrafo numerado é um achado, e a prosa antes do primeiro fica de fora.
+// Older reviews number findings in bold, without `###`: each numbered
+// paragraph is a finding, and the prose before the first stays out.
 func TestSplitFindingsReconheceNegritoNumerado(t *testing.T) {
 	src := "## Findings (2) — both pre-existing\n\nNeither is a reason to hold the merge.\n\n" +
 		"**1. `major · error-handling` — panic escapes** (`routes.go:398`)\n\nprose one\n\n**Fix:** recover.\n\n" +
@@ -129,7 +129,7 @@ func TestSplitFindingsReconheceNegritoNumerado(t *testing.T) {
 	if strings.Contains(rest, "prose one") || strings.Contains(rest, "**Fix:** recover") || !strings.Contains(rest, "prose two") {
 		t.Errorf("corte errado:\n%s", rest)
 	}
-	// Numeração em negrito dentro de um achado `###` não abre outro achado.
+	// Bold numbering inside a `###` finding does not open another finding.
 	mixed := "## Findings\n\n### Real one\n\n**1.** step\n\n**2.** step\n\n### Second\n\nx\n"
 	if n := Findings(mixed); n != 2 {
 		t.Errorf("com ###, o negrito numerado fica dentro: %d achados, queria 2", n)
@@ -154,8 +154,8 @@ func TestDropFindingsTiraSoOsDesmarcados(t *testing.T) {
 	}
 }
 
-// A cópia que vai ao agente tem o cabeçalho do Save e o corpo já cortado, e
-// mora em publish/ — fora da lista dos salvos. O original não muda.
+// The copy that goes to the agent has the Save header and the body already
+// cut, and lives in publish/ — out of the saved list. The original is unchanged.
 func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 	dir := t.TempDir()
 	orig := filepath.Join(dir, "acme-api-482-20260909-120000.md")
@@ -196,9 +196,9 @@ func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 	}
 }
 
-// Relatório colado num bloco ```markdown sai do bloco; as cercas de código
-// de dentro dele ficam pareadas, e um trecho de markdown sem heading não é
-// desembrulhado.
+// A report pasted into a ```markdown block comes out of the block; the code
+// fences inside it stay paired, and a markdown snippet without a heading is
+// not unwrapped.
 func TestUnwrapTiraOBlocoMarkdownDeFora(t *testing.T) {
 	src := "All lenses returned.\n\n```markdown\n# Review Fleet\n\n## Findings\n\n### One\n\n```go\nx := 1\n```\n\ntext\n```\n\nNotes after.\n"
 	got := Unwrap(src)
@@ -218,8 +218,8 @@ func TestUnwrapTiraOBlocoMarkdownDeFora(t *testing.T) {
 	}
 }
 
-// A dúvida que você já resolveu sai do que vai ao PR como um achado: a caixa
-// é a mesma, e o resto da seção fica.
+// A doubt you already resolved drops out of what goes to the PR like a
+// finding: the checkbox is the same, and the rest of the section stays.
 func TestDropFindingsTiraDuvidaResolvida(t *testing.T) {
 	got := DropFindings(relatorio, []int{3})
 	if strings.Contains(got, "something to confirm") || strings.Contains(got, "with a second line") {

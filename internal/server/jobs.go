@@ -15,7 +15,7 @@ import (
 	"github.com/beroni/bazel/internal/store"
 )
 
-// State é o ciclo de vida de um review na fila.
+// State is the lifecycle of a review in the queue.
 type State string
 
 const (
@@ -37,27 +37,27 @@ var (
 // salvos em disco; isto aqui é só a fila da sessão.
 const maxJobs = 200
 
-// O log de um review é uma janela, não um arquivo: um agente falante escreve
-// milhares de linhas e o que interessa na tela é o fim. Estes dois limites são
-// o teto de memória por job.
+// A review's log is a window, not a file: a chatty agent writes thousands of
+// lines and what matters on screen is the end. These two limits are the memory
+// ceiling per job.
 const (
 	maxLogLines     = 500
 	maxLogLineRunes = 2000
 )
 
-// logLine é uma linha que um agente escreveu. Seq é monotônico por job: é como
-// o navegador pede só o que ainda não viu.
+// logLine is a line an agent wrote. Seq is monotonic per job: it is how the
+// browser asks only for what it has not seen yet.
 type logLine struct {
 	Seq  int `json:"seq"`
 	Step int `json:"step"`
-	// Agent é quem escreveu: o agente do passo ou um sub-agente dele. É por
-	// ele que a página separa as lentes que rodam em paralelo.
+	// Agent is who wrote it: the step's agent or one of its sub-agents. It is
+	// by this that the page separates the lenses running in parallel.
 	Agent  string `json:"agent"`
 	Stream string `json:"stream"`
 	Text   string `json:"text"`
 }
 
-// jobStep é um passo do review — um agente da escolha — como a página o vê.
+// jobStep is a review step — an agent of the choice — as the page sees it.
 type jobStep struct {
 	Name      string
 	State     State
@@ -66,34 +66,36 @@ type jobStep struct {
 	Err       string
 }
 
-// Job é um review pedido pela interface: enfileirado, rodando ou terminado.
+// Job is a review requested through the interface: queued, running or
+// finished.
 //
-// Um review leva minutos — o `timeout_seconds` padrão é 1800 — e nenhuma
-// requisição HTTP segura isso. Por isso o handler só enfileira e devolve o id;
-// o resultado chega ao navegador pelo SSE de /api/events.
+// A review takes minutes — the default `timeout_seconds` is 1800 — and no HTTP
+// request holds that long. So the handler only enqueues and returns the id;
+// the result reaches the browser through the SSE of /api/events.
 type Job struct {
 	ID   string
 	PR   gh.PR
 	Mine bool
 
-	// Choice é o agente ou pipeline escolhido para este PR; Steps é o
-	// andamento de cada passo dele, que é o que a página anima.
+	// Choice is the agent or pipeline chosen for this PR; Steps is the
+	// progress of each of its steps, which is what the page animates.
 	Choice  config.Choice
 	Steps   []jobStep
 	Cloning bool
 
-	// publish, quando preenchido, diz que este job está levando um review ao
-	// PR em vez de produzir um: o agente pega o review já lido e o põe lá.
-	// Acontece de duas formas — no card do próprio review, depois de o
-	// usuário lê-lo (pubChoice é o agente de post e stepBase diz onde os
-	// passos dele entram em Steps), ou num card só dele, quando o review veio
-	// do disco e não há job de origem nenhum.
+	// publish, when set, says this job is carrying a review to the PR instead
+	// of producing one: the agent takes the already-read review and puts it
+	// there. It happens in two ways — in the review's own card, after the user
+	// has read it (pubChoice is the post agent and stepBase says where its
+	// steps go in Steps), or in a card of its own, when the review came from
+	// disk and there is no origin job at all.
 	publish   *publishInput
 	pubChoice config.Choice
 	stepBase  int
 
-	// logs é a janela do que os agentes escreveram; logSeq é o próximo
-	// número de linha e dropped conta o que já saiu pela frente da janela.
+	// logs is the window of what the agents wrote; logSeq is the next line
+	// number and dropped counts what has already fallen off the front of the
+	// window.
 	logs    []logLine
 	logSeq  int
 	dropped int
@@ -104,15 +106,17 @@ type Job struct {
 	FinishedAt time.Time
 
 	Result agent.Result
-	// Live é o gasto parcial de um review em curso: o fechado dos passos que
-	// já terminaram mais o que o passo atual já consumiu.
+	// Live is the partial spend of a review in progress: the closed spend of
+	// the steps that already finished plus what the current step has consumed
+	// so far.
 	Live    agent.Usage
 	Err     string
 	SavedTo string
 	Posted  bool
 	PostErr string
-	// AwaitsPublish é a pipeline que terminou num passo `publish`: ela não
-	// publica sozinha, espera você escolher o que vai ao PR e mandar.
+	// AwaitsPublish is the pipeline that ended in a `publish` step: it does
+	// not publish on its own, it waits for you to choose what goes to the PR
+	// and send it.
 	AwaitsPublish bool
 	// posting is set under the lock while Post is inside gh.Comment, which
 	// runs without the lock: a second click in that window is refused.
@@ -137,7 +141,7 @@ func (j *Job) duration() time.Duration {
 	}
 }
 
-// publishInput é o review já pronto que um job de publicação leva ao PR.
+// publishInput is the ready review a publish job carries to the PR.
 type publishInput struct {
 	Path string
 	Body string
@@ -155,14 +159,14 @@ func (in *publishInput) discard() {
 	}
 }
 
-// publishInputFor monta o que o agente de post recebe. Sem achado desmarcado e
-// com o relatório inteiro publicável é o review como está; se algum achado saiu
-// ou se a pipeline tinha passo que não vai ao PR, o agente ganha uma cópia do
-// arquivo já aparado em publish/, porque a skill de post lê o arquivo, não o
-// prompt.
+// publishInputFor builds what the post agent receives. With no finding
+// unticked and the whole report publishable it is the review as is; if some
+// finding was dropped or the pipeline had a step that does not go to the PR,
+// the agent gets a copy of the file already trimmed in publish/, because the
+// post skill reads the file, not the prompt.
 //
-// trimmed diz que o corpo recebido já não é o que está em path — é o que
-// obriga a cópia mesmo sem achado desmarcado nenhum.
+// trimmed says the body received is no longer what is in path — that is what
+// forces the copy even with no finding unticked.
 func (m *Manager) publishInputFor(path, body string, skip []int, trimmed bool) (*publishInput, error) {
 	if len(skip) == 0 && !trimmed {
 		return &publishInput{Path: path, Body: body, Source: path}, nil
@@ -177,9 +181,9 @@ func (m *Manager) publishInputFor(path, body string, skip []int, trimmed bool) (
 	return &publishInput{Path: copyPath, Body: body, Source: path}, nil
 }
 
-// inPlacePublish diz que a publicação está rodando dentro do card do review
-// que a originou: os passos do agente de post vêm depois dos do review, e o
-// que ele escreve não substitui o review que está na tela.
+// inPlacePublish says the publication is running inside the card of the review
+// that started it: the post agent's steps come after the review's, and what it
+// writes does not replace the review on screen.
 func (j *Job) inPlacePublish() bool { return j.publish != nil && j.stepBase > 0 }
 
 // queued is one entry in the queue: the job and the gen it was sent with.
@@ -216,9 +220,9 @@ type Manager struct {
 	limits   agent.Limits
 }
 
-// NewManager sobe o pool de workers. concurrency limita quantos agentes rodam
-// ao mesmo tempo: cada review clona um repositório e sobe um processo, então
-// isso é o que separa "revisando dois PRs" de "derrubando o notebook".
+// NewManager starts the worker pool. concurrency caps how many agents run at
+// once: each review clones a repository and starts a process, so this is what
+// separates "reviewing two PRs" from "bringing down the laptop".
 func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, concurrency int, keep bool, hub *Hub) *Manager {
 	if concurrency < 1 {
 		concurrency = 1
@@ -243,15 +247,16 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 	return m
 }
 
-// Enqueue põe um PR na fila com o agente escolhido. O mesmo PR com o mesmo
-// agente já esperando ou rodando devolve o job existente em vez de clonar o
-// repositório duas vezes — com outro agente é outro review, e entra na fila.
+// Enqueue puts a PR in the queue with the chosen agent. The same PR with the
+// same agent already waiting or running returns the existing job instead of
+// cloning the repository twice — with another agent it is another review, and
+// it goes into the queue.
 func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, error) {
 	if len(choice.Steps) == 0 {
 		choice = m.cfg.DefaultChoice()
 	}
-	// Sem agente nenhum não há review para enfileirar: a lista começa vazia e
-	// é a página que a preenche com as skills instaladas.
+	// With no agent at all there is no review to enqueue: the list starts
+	// empty and it is the page that fills it with the installed skills.
 	if len(choice.Steps) == 0 {
 		return jobView{}, config.ErrNoAgents
 	}
@@ -268,9 +273,9 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.seq++
 	steps := make([]jobStep, 0, len(choice.Steps))
 	for _, st := range choice.Steps {
-		// O passo `publish` não ganha linha própria: quem aparece na tela é o
-		// agente de publicação, que entra no fim da lista quando você manda —
-		// e é o mesmo caminho do botão de publicar.
+		// The `publish` step does not get its own row: what shows on screen is
+		// the publishing agent, which joins the end of the list when you send
+		// — and it is the same path as the publish button.
 		if st.Reserved == config.StepPublish {
 			continue
 		}
@@ -311,7 +316,7 @@ func (m *Manager) sendLocked(job *Job) error {
 	}
 }
 
-// trimLocked descarta os jobs terminados mais antigos. Chamar com o lock.
+// trimLocked drops the oldest finished jobs. Call with the lock held.
 func (m *Manager) trimLocked() {
 	for len(m.order) > maxJobs {
 		for i, id := range m.order {
@@ -325,7 +330,7 @@ func (m *Manager) trimLocked() {
 			m.order = append(m.order[:i], m.order[i+1:]...)
 			break
 		}
-		// Nada descartável: tudo na fila está ativo.
+		// Nothing to drop: everything in the queue is active.
 		if len(m.order) > maxJobs {
 			return
 		}
@@ -382,9 +387,10 @@ func (m *Manager) run(q queued) {
 		res, err = m.runner.Review(ctx, job.PR, job.Choice, onEvent)
 	}
 	if err != nil {
-		// Publicando dentro do card do review, quem falhou foi a publicação:
-		// o review continua lido, salvo e publicável de novo, e apagá-lo da
-		// tela custaria justamente o que o usuário quer.
+		// Publishing inside the review's card, what failed was the
+		// publication: the review is still read, saved and publishable again,
+		// and wiping it from the screen would cost exactly what the user
+		// wants.
 		if job.inPlacePublish() {
 			msg := err.Error()
 			if ctx.Err() != nil {
@@ -401,13 +407,13 @@ func (m *Manager) run(q queued) {
 		return
 	}
 
-	// Relatório colado num bloco ```markdown sai do bloco antes de qualquer
-	// outra coisa: dentro dele os headings são texto, e a tela, o disco e o PR
-	// mostrariam o markdown cru em vez do review.
+	// A report pasted inside a ```markdown block comes out of the block before
+	// anything else: inside it the headings are text, and the screen, the disk
+	// and the PR would show the raw markdown instead of the review.
 	//
-	// Passo a passo, e não só no corpo final, porque o corpo de cada passo é
-	// reaproveitado depois: é dele que sai o que vai ao PR quando só parte dos
-	// passos é publicável.
+	// Step by step, and not only on the final body, because each step's body
+	// is reused later: it is where what goes to the PR comes from when only
+	// some of the steps are publishable.
 	desembrulha(&res)
 
 	// fresh is a review that just ran, as opposed to a publish. Captured
@@ -446,9 +452,9 @@ func (m *Manager) run(q queued) {
 
 	m.mu.Lock()
 	if job.inPlacePublish() {
-		// O relatório do agente de post não toma o lugar do review: o card
-		// continua mostrando o que o usuário leu, agora marcado como
-		// publicado e com o gasto das duas rodadas somado.
+		// The post agent's report does not take the review's place: the card
+		// keeps showing what the user read, now marked as published and with
+		// the spend of both rounds added up.
 		job.Posted = true
 		job.PostErr = ""
 		job.AwaitsPublish = false
@@ -487,9 +493,9 @@ func (m *Manager) run(q queued) {
 	m.publish(job)
 }
 
-// desembrulha tira o relatório de dentro de um bloco ```markdown — o corpo e o
-// de cada passo. O agente às vezes devolve o relatório inteiro colado num bloco
-// de código, e aí nada dele renderiza: a página mostra o markdown cru.
+// desembrulha takes the report out of a ```markdown block — the body and each
+// step's. The agent sometimes returns the whole report pasted inside a code
+// block, and then none of it renders: the page shows the raw markdown.
 func desembrulha(res *agent.Result) {
 	res.Body = store.Unwrap(res.Body)
 	for i := range res.Steps {
@@ -497,10 +503,10 @@ func desembrulha(res *agent.Result) {
 	}
 }
 
-// failPublish devolve ao card o review que ele já tinha: a publicação falhou
-// ou foi cancelada, mas o review continua na tela, salvo em disco e publicável
-// de novo. Os passos do agente de post ficam como estão — é neles que se vê
-// onde a publicação quebrou.
+// failPublish hands the card back the review it already had: the publication
+// failed or was cancelled, but the review is still on screen, saved on disk
+// and publishable again. The post agent's steps stay as they are — they are
+// where you see where the publication broke.
 func (m *Manager) failPublish(job *Job, msg string) {
 	m.mu.Lock()
 	m.failPublishLocked(job, msg)
@@ -508,7 +514,7 @@ func (m *Manager) failPublish(job *Job, msg string) {
 	m.publish(job)
 }
 
-// failPublishLocked é o failPublish para quem já está com o lock na mão.
+// failPublishLocked is failPublish for callers already holding the lock.
 func (m *Manager) failPublishLocked(job *Job, msg string) {
 	for i := job.stepBase; i < len(job.Steps); i++ {
 		if st := &job.Steps[i]; st.State == StateQueued || st.State == StateRunning {
@@ -525,13 +531,14 @@ func (m *Manager) failPublishLocked(job *Job, msg string) {
 	job.cancel = nil
 }
 
-// applyEvent registra o andamento de um passo e avisa os navegadores. É
-// chamada da goroutine do runner, então mexe no job sob o lock e só publica
-// depois de soltá-lo.
+// applyEvent records a step's progress and notifies the browsers. It is called
+// from the runner's goroutine, so it touches the job under the lock and only
+// publishes after releasing it.
 func (m *Manager) applyEvent(job *Job, e agent.Event) {
-	// Linha de log não mexe no estado do job e não vai para o SSE: um agente
-	// falante geraria milhares de eventos e cada um acordaria todo navegador
-	// aberto. O navegador busca o log incrementalmente em /api/jobs/{id}/log.
+	// A log line does not change the job's state and does not go to the SSE: a
+	// chatty agent would generate thousands of events and each one would wake
+	// every open browser. The browser fetches the log incrementally at
+	// /api/jobs/{id}/log.
 	if e.Kind == agent.EventLog {
 		m.mu.Lock()
 		job.appendLog(e.Index+job.stepBase, e.Agent, e.Stream, e.Text)
@@ -539,8 +546,9 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		return
 	}
 
-	// A cota do Claude não é do job: chega pelo stream dele, mas vale para a
-	// máquina toda e vai para a página por um aviso próprio.
+	// The Claude quota is not the job's: it arrives through its stream, but
+	// holds for the whole machine and goes to the page through a notice of its
+	// own.
 	if e.Kind == agent.EventLimits {
 		m.limitsMu.Lock()
 		m.limits = e.Limits
@@ -549,8 +557,8 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		return
 	}
 
-	// O gasto parcial anda sozinho: não mexe em passo nenhum, só no número
-	// que a página mostra enquanto o agente trabalha.
+	// The partial spend moves on its own: it touches no step, only the number
+	// the page shows while the agent works.
 	if e.Kind == agent.EventUsage {
 		m.mu.Lock()
 		job.Live = e.Usage
@@ -560,15 +568,15 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 	}
 
 	m.mu.Lock()
-	// O runner conta os passos da rodada dele a partir do zero; publicando
-	// dentro do card do review, essa rodada começa depois dos passos que já
-	// estão lá — stepBase é o que põe o evento na linha certa.
+	// The runner counts the steps of its round from zero; publishing inside
+	// the review's card, that round starts after the steps already there —
+	// stepBase is what puts the event on the right row.
 	i := e.Index + job.stepBase
 	switch {
 	case e.Kind == agent.EventClone:
 		job.Cloning = true
 	case e.Index < 0 || i >= len(job.Steps):
-		// Evento de um passo que não existe: nada a mostrar.
+		// Event for a step that does not exist: nothing to show.
 	case e.Kind == agent.EventStep:
 		job.Cloning = false
 		job.Steps[i].State = StateRunning
@@ -602,8 +610,8 @@ func (m *Manager) finishLocked(job *Job, state State, errMsg string) {
 	job.cancel = nil
 }
 
-// appendLog guarda uma linha, jogando fora a mais velha quando a janela enche.
-// Chamar com o lock do Manager seguro.
+// appendLog stores a line, throwing away the oldest when the window fills.
+// Call with the Manager lock held.
 func (j *Job) appendLog(step int, who, stream, text string) {
 	if r := []rune(text); len(r) > maxLogLineRunes {
 		text = string(r[:maxLogLineRunes]) + "…"
@@ -616,18 +624,20 @@ func (j *Job) appendLog(step int, who, stream, text string) {
 	}
 }
 
-// logView é o pedaço do log que o navegador ainda não tem.
+// logView is the piece of the log the browser does not have yet.
 type logView struct {
 	Lines []logLine `json:"lines"`
-	// Next é o seq a pedir na próxima vez.
+	// Next is the seq to ask for next time.
 	Next int `json:"next"`
-	// Dropped conta o que a janela descartou — o navegador avisa do buraco.
+	// Dropped counts what the window discarded — the browser warns about the
+	// gap.
 	Dropped int `json:"dropped"`
-	// Live diz se ainda vem mais coisa; falso, o navegador para de pedir.
+	// Live says whether more is still coming; when false, the browser stops
+	// asking.
 	Live bool `json:"live"`
 }
 
-// Log devolve as linhas com seq >= from.
+// Log returns the lines with seq >= from.
 func (m *Manager) Log(id string, from int) (logView, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -649,12 +659,12 @@ func (m *Manager) Log(id string, from int) (logView, bool) {
 	return out, true
 }
 
-// Remove tira um job da fila. Um review ainda vivo é cancelado antes: o card
-// some da tela, e deixar o processo rodando sem nada que o mostre seria um
-// agente fantasma queimando token.
+// Remove takes a job out of the queue. A review still alive is cancelled
+// first: the card disappears from the screen, and leaving the process running
+// with nothing to show it would be a ghost agent burning tokens.
 //
-// Só sai da memória desta sessão — o markdown salvo e o índice de revisados
-// continuam onde estão.
+// It only leaves this session's memory — the saved markdown and the index of
+// reviewed PRs stay where they are.
 func (m *Manager) Remove(id string) error {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
@@ -691,7 +701,7 @@ func (m *Manager) Remove(id string) error {
 	return nil
 }
 
-// Cancel interrompe um review — na fila ou já rodando.
+// Cancel interrupts a review — queued or already running.
 func (m *Manager) Cancel(id string) error {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
@@ -701,9 +711,10 @@ func (m *Manager) Cancel(id string) error {
 	}
 	switch job.State {
 	case StateQueued:
-		// Cancelar uma publicação que espera na fila não cancela o review que
-		// já está no card: ele volta a ser um review terminado. O worker vê o
-		// estado mudado e nem chega a rodar o agente de post.
+		// Cancelling a publication waiting in the queue does not cancel the
+		// review already in the card: it goes back to being a finished review.
+		// The worker sees the changed state and never gets to run the post
+		// agent.
 		if job.inPlacePublish() {
 			m.failPublishLocked(job, "publishing canceled")
 			m.mu.Unlock()
@@ -731,19 +742,18 @@ func (m *Manager) Cancel(id string) error {
 	}
 }
 
-// PublishWithAgent manda o agente de post levar ao PR o review que o usuário
-// acabou de ler. É o outro caminho para o GitHub: o comentário simples do Post
-// é o Bazel escrevendo; este é o agente publicando um review com comentários
-// inline.
+// PublishWithAgent sends the post agent to carry to the PR the review the user
+// just read. It is the other path to GitHub: Post's plain comment is Bazel
+// writing; this is the agent publishing a review with inline comments.
 //
-// Roda no card do próprio review: os passos do agente de post entram depois
-// dos do review e o card volta a rodar. Publicar não é um trabalho à parte —
-// é o fim do review — e um segundo card só espalharia o mesmo PR por dois
-// lugares da fila.
+// It runs in the review's own card: the post agent's steps come after the
+// review's and the card goes back to running. Publishing is not a separate job
+// — it is the end of the review — and a second card would only spread the same
+// PR across two places in the queue.
 //
-// skip são os achados que o usuário desmarcou na tela: eles saem do que vai
-// ao PR, e o agente recebe uma cópia do review sem eles — o arquivo salvo
-// continua inteiro.
+// skip are the findings the user unticked on screen: they drop out of what
+// goes to the PR, and the agent gets a copy of the review without them — the
+// saved file stays whole.
 func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
@@ -751,8 +761,8 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, fmt.Errorf("job %q does not exist", id)
 	}
-	// Já publicando: devolve o card como está, em vez de mandar o agente de
-	// post ao mesmo PR duas vezes.
+	// Already publishing: return the card as is, instead of sending the post
+	// agent to the same PR twice.
 	if job.publish != nil && (job.State == StateQueued || job.State == StateRunning) {
 		v := job.view()
 		m.mu.Unlock()
@@ -774,8 +784,9 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, errors.New("that review was not saved to disk — there is nothing to publish")
 	}
-	// Agente cuja saída não é review não tem caminho para o PR. A interface
-	// já esconde o botão; isto é o que segura um POST vindo de outro lugar.
+	// An agent whose output is not a review has no path to the PR. The
+	// interface already hides the button; this is what stops a POST coming
+	// from elsewhere.
 	if !job.Choice.Publishable {
 		m.mu.Unlock()
 		return jobView{}, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name)
@@ -796,8 +807,8 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		return jobView{}, err
 	}
 
-	// Uma publicação anterior que falhou deixou os passos dela no card; a
-	// tentativa nova os refaz, não os empilha.
+	// A previous publication that failed left its steps on the card; the new
+	// attempt redoes them, it does not stack them.
 	if job.stepBase > 0 {
 		job.Steps = job.Steps[:job.stepBase]
 	} else {
@@ -835,10 +846,10 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 	return m.mustView(job.ID), nil
 }
 
-// PublishSaved leva ao PR um review que está em disco — o de uma sessão
-// anterior, aberto na aba dos salvos. É o mesmo caminho do PublishWithAgent,
-// mas partindo do arquivo: um review sobrevive ao servidor, e a chance de
-// publicá-lo tem de sobreviver junto.
+// PublishSaved carries to the PR a review that is on disk — one from a
+// previous session, opened in the saved tab. It is the same path as
+// PublishWithAgent, but starting from the file: a review outlives the server,
+// and the chance to publish it has to outlive it too.
 func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []int) (jobView, error) {
 	if strings.TrimSpace(path) == "" {
 		return jobView{}, errors.New("no review file to publish")
@@ -848,7 +859,7 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 		return jobView{}, err
 	}
 	m.mu.Lock()
-	// Já publicando este mesmo arquivo: devolve o job que está em curso.
+	// Already publishing this same file: return the job in progress.
 	for _, id := range m.order {
 		j := m.jobs[id]
 		if j.publish != nil && j.publish.Source == path && (j.State == StateQueued || j.State == StateRunning) {
@@ -887,8 +898,8 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 	return m.mustView(job.ID), err
 }
 
-// CommentSaved cola no PR um review que está em disco, sem agente nenhum. É o
-// caminho barato do arquivo para o GitHub.
+// CommentSaved pastes onto the PR a review that is on disk, with no agent at
+// all. It is the cheap path from the file to GitHub.
 func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, body string, skip []int) error {
 	body = store.DropFindings(body, skip)
 	if strings.TrimSpace(body) == "" {
@@ -901,7 +912,8 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, body string, skip 
 	return err
 }
 
-// Post publica o review como comentário no PR, sem os achados em skip.
+// Post publishes the review as a comment on the PR, without the findings in
+// skip.
 func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, error) {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
@@ -926,8 +938,8 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 		return jobView{}, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name)
 	}
 	res := job.Result
-	// Colar como comentário é o mesmo destino por outra porta: da pipeline vai
-	// só o que é publicável, igual ao caminho do agente de post.
+	// Pasting as a comment is the same destination through another door: from
+	// the pipeline only what is publishable goes, same as the post agent path.
 	body, _, err := agent.PublishableBody(res, job.Choice)
 	if err != nil {
 		m.mu.Unlock()
@@ -1011,7 +1023,7 @@ func (m *Manager) mustView(id string) jobView {
 	return v
 }
 
-// Snapshot devolve os jobs do mais novo para o mais velho.
+// Snapshot returns the jobs from newest to oldest.
 func (m *Manager) Snapshot() []jobView {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1022,15 +1034,15 @@ func (m *Manager) Snapshot() []jobView {
 	return out
 }
 
-// Limits é a última leitura da cota do Claude, vazia até o primeiro review
-// desta sessão — ela só chega no stream de um agente rodando.
+// Limits is the last reading of the Claude quota, empty until the first review
+// of this session — it only arrives in the stream of a running agent.
 func (m *Manager) Limits() agent.Limits {
 	m.limitsMu.RLock()
 	defer m.limitsMu.RUnlock()
 	return m.limits
 }
 
-// Active conta os reviews esperando ou rodando.
+// Active counts the reviews waiting or running.
 func (m *Manager) Active() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()

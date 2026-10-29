@@ -12,9 +12,9 @@ import (
 	"github.com/beroni/bazel/internal/pricing"
 )
 
-// Um config novo nasce sem agente nenhum: a lista é montada na página, a
-// partir das skills instaladas — não há lista de fábrica que chute o que este
-// computador tem.
+// A new config is born with no agent at all: the list is built on the page,
+// from the installed skills — there is no factory list guessing what this
+// computer has.
 func TestDefaultComecaSemAgentes(t *testing.T) {
 	cfg := Default()
 	if len(cfg.Agents) != 0 || len(cfg.Pipelines) != 0 {
@@ -29,15 +29,15 @@ func TestDefaultComecaSemAgentes(t *testing.T) {
 	if _, err := cfg.ChoiceByName("review-fleet"); !errors.Is(err, ErrNoAgents) {
 		t.Errorf("escolher um agente numa lista vazia devia dar ErrNoAgents, deu %v", err)
 	}
-	// E o agente de publicação continua de pé: ele não é uma escolha da
-	// lista, é o que roda quando você manda publicar um review já lido.
+	// And the publishing agent is still standing: it is not a choice in the
+	// list, it is what runs when you order an already read review published.
 	if cfg.PostChoice().Name != "bazel-post-report" {
 		t.Errorf("o post_agent devia continuar no padrão, veio %q", cfg.PostChoice().Name)
 	}
 }
 
-// O seletor mostra os agents na ordem do arquivo e depois as pipelines, com a
-// primeira escolha valendo como padrão.
+// The selector shows the agents in file order and then the pipelines, with the
+// first choice counting as the default.
 func TestChoicesOrderAndDefault(t *testing.T) {
 	cfg := Default()
 	cfg.Agents = []AgentDef{
@@ -66,8 +66,8 @@ func TestChoicesOrderAndDefault(t *testing.T) {
 	}
 }
 
-// Adicionar uma skill é o caminho normal de montar a lista: o agente sai com o
-// nome da skill e a task que a invoca sobre o PR.
+// Adding a skill is the normal way to build the list: the agent comes out with
+// the skill's name and the task that invokes it over the PR.
 func TestAddAgentFromSkill(t *testing.T) {
 	cfg := Default()
 	def, err := cfg.AddAgentFromSkill("/review-fleet", "as três lentes", false)
@@ -84,8 +84,8 @@ func TestAddAgentFromSkill(t *testing.T) {
 		t.Error("o primeiro agente adicionado devia virar o padrão")
 	}
 
-	// A mesma skill pode virar também um agente que publica sozinho: o nome
-	// muda, e é o sufixo que deixa os dois conviverem.
+	// The same skill can also become an agent that publishes on its own: the
+	// name changes, and it is the suffix that lets the two live together.
 	post, err := cfg.AddAgentFromSkill("review-fleet", "as três lentes", true)
 	if err != nil {
 		t.Fatalf("AddAgentFromSkill com posts: %v", err)
@@ -111,7 +111,8 @@ func TestAddAgentFromSkill(t *testing.T) {
 	}
 }
 
-// Tirar da lista e trocar o padrão são as outras duas mexidas que a página faz.
+// Taking off the list and changing the default are the other two tweaks the
+// page makes.
 func TestRemoveAgentAndSetDefault(t *testing.T) {
 	cfg := Default()
 	for _, name := range []string{"a", "b", "c"} {
@@ -136,7 +137,8 @@ func TestRemoveAgentAndSetDefault(t *testing.T) {
 	}
 }
 
-// Um agent nomeado herda comando, args, checkout e timeout do bloco `agent`.
+// A named agent inherits command, args, checkout and timeout from the `agent`
+// block.
 func TestResolveInheritsBase(t *testing.T) {
 	cfg := Default()
 	cfg.Agent.Command = "codex"
@@ -166,7 +168,7 @@ func TestResolveInheritsBase(t *testing.T) {
 	if proprio.Command != "claude" || proprio.TimeoutSeconds != 60 || proprio.Checkout {
 		t.Errorf("não respeitou os campos próprios: %+v", proprio)
 	}
-	// Args do claude não podem vir do bloco de outro executável.
+	// claude's args cannot come from another executable's block.
 	if len(proprio.Args) != 0 {
 		t.Errorf("args do comando base vazaram para outro executável: %v", proprio.Args)
 	}
@@ -242,8 +244,8 @@ func TestPostChoiceInheritsAndOverridesFormat(t *testing.T) {
 	}
 }
 
-// Passo apontando para agent inexistente é ignorado; pipeline sem passo válido
-// nem aparece.
+// A step pointing to a nonexistent agent is ignored; a pipeline with no valid
+// step does not even show up.
 func TestPipelineSkipsUnknownSteps(t *testing.T) {
 	cfg := Default()
 	cfg.Agents = []AgentDef{{Name: "a"}, {Name: "b"}}
@@ -278,9 +280,10 @@ func TestChoiceByName(t *testing.T) {
 	}
 }
 
-// Sem `agents:` mas com um prompt seu, sobra a escolha única do bloco `agent`
-// — que é como o Bazel se comportava antes do seletor. Com o molde de fábrica
-// não sobra nada: ele é uma casca em volta do {{task}} de um agente.
+// Without `agents:` but with a prompt of your own, the single choice of the
+// `agent` block is left — which is how Bazel behaved before the selector. With
+// the factory template nothing is left: it is a shell around an agent's
+// {{task}}.
 func TestChoicesFallsBackToBaseAgent(t *testing.T) {
 	cfg := Default()
 	cfg.Agents = nil
@@ -298,7 +301,7 @@ func TestChoicesFallsBackToBaseAgent(t *testing.T) {
 	}
 }
 
-// O que está no arquivo é o que vale: o Load não inventa agente para ninguém.
+// What is in the file is what counts: Load does not invent an agent for anyone.
 func TestLoadNaoInventaAgentes(t *testing.T) {
 	t.Run("arquivo sem agents", func(t *testing.T) {
 		cfg := loadFrom(t, "repos: [acme/api-core]\nagent:\n  command: claude\n")
@@ -325,8 +328,8 @@ func TestLoadNaoInventaAgentes(t *testing.T) {
 	})
 }
 
-// O agente que publica sozinho é declarado como tal — a interface precisa
-// disso para avisar antes de escrever no PR de outra pessoa.
+// The agent that publishes on its own is declared as such — the interface needs
+// that to warn before writing on someone else's PR.
 func TestPostingAgentIsMarked(t *testing.T) {
 	cfg := Default()
 	if _, err := cfg.AddAgentFromSkill("review-fleet", "", false); err != nil {
@@ -358,7 +361,7 @@ func TestPostingAgentIsMarked(t *testing.T) {
 	}
 }
 
-// Uma pipeline herda o aviso de publicação de qualquer passo seu.
+// A pipeline inherits the publishing warning from any of its steps.
 func TestPipelineInheritsPostsFlag(t *testing.T) {
 	cfg := Default()
 	cfg.Agents = []AgentDef{{Name: "lê"}, {Name: "publica", Posts: true}}
@@ -376,7 +379,7 @@ func TestPipelineInheritsPostsFlag(t *testing.T) {
 	}
 }
 
-// Args de fábrica antigos ganham o modo stream; args customizados ficam.
+// Old factory args get stream mode; custom args stay.
 func TestLoadUpgradesLegacyArgs(t *testing.T) {
 	cfg := loadFrom(t, "repos: [acme/api]\nagent:\n  command: claude\n  args: [-p, --allowedTools, \"Read,Grep,Glob,Bash,Agent\"]\n")
 	if !sameArgs(cfg.Agent.Args, defaultArgs()) {
@@ -467,8 +470,8 @@ func TestFormatValidationOnLoadAndSave(t *testing.T) {
 	}
 }
 
-// O agente de publicação é o que roda depois de você ler o review: clona por
-// padrão (inline precisa do diff) e leva o arquivo do review no prompt.
+// The publishing agent is what runs after you read the review: it clones by
+// default (inline needs the diff) and carries the review file in the prompt.
 func TestPostChoice(t *testing.T) {
 	cfg := Default()
 	post := cfg.PostChoice()
@@ -485,23 +488,24 @@ func TestPostChoice(t *testing.T) {
 		t.Error("o molde precisa proibir refazer o review — o que vai ao PR é o que foi lido")
 	}
 
-	// checkout: false explícito é respeitado.
+	// An explicit checkout: false is respected.
 	no := false
 	cfg.PostAgent.Checkout = &no
 	if cfg.PostChoice().Steps[0].Checkout {
 		t.Error("checkout: false no post_agent devia valer")
 	}
 
-	// Config sem post_agent ganha o padrão.
+	// A config without post_agent gets the default.
 	fromDisk := loadFrom(t, "repos: [acme/api]\n")
 	if fromDisk.PostChoice().Name != "bazel-post-report" {
 		t.Errorf("config sem post_agent devia cair no padrão, veio %q", fromDisk.PostChoice().Name)
 	}
 }
 
-// A skill de publicação não vira agente: num passo comum ela roda sem o review
-// nem o prompt de publicar, e não posta nada. Quem publica é o passo publish —
-// e é ele que para para você escolher o que vai, por isso o pause saiu.
+// The publishing skill does not become an agent: in an ordinary step it runs
+// without the review or the publish prompt, and posts nothing. The one that
+// publishes is the publish step — and it is the one that stops for you to
+// choose what goes, which is why pause is gone.
 func TestMigraPipelines(t *testing.T) {
 	cfg := Default()
 	for _, posts := range []bool{false, true} {
@@ -510,7 +514,8 @@ func TestMigraPipelines(t *testing.T) {
 		}
 	}
 
-	// Config gravada antes disso: o agente sai e o passo vira publish.
+	// A config saved before this: the agent leaves and the step becomes
+	// publish.
 	old := loadFrom(t, `repos: [acme/api]
 agents:
   - name: review-fleet
@@ -822,9 +827,9 @@ func loadFrom(t *testing.T, yaml string) *Config {
 	return cfg
 }
 
-// Nem toda skill produz review. A que não produz — history-pr conta a história
-// de um PR — não pode ter caminho para o GitHub: publicá-la diria ao time que
-// o código foi revisado quando ninguém revisou nada.
+// Not every skill produces a review. The one that does not — history-pr tells a
+// PR's story — cannot have a road to GitHub: publishing it would tell the team
+// the code was reviewed when nobody reviewed anything.
 func TestPublishable(t *testing.T) {
 	t.Run("padrão é publicável", func(t *testing.T) {
 		cfg := Default()
@@ -852,7 +857,7 @@ func TestPublishable(t *testing.T) {
 		if ch.Publishable || ch.Steps[0].Publishable {
 			t.Error("desligado no painel, a saída não vai ao PR")
 		}
-		// E o tique volta.
+		// And the tick comes back.
 		if err := cfg.SetAgentPublishable("history-pr", true); err != nil {
 			t.Fatalf("religando: %v", err)
 		}
@@ -919,10 +924,10 @@ pipelines:
 	})
 }
 
-// A skill de publicação passou a viajar no binário. Quem está com o padrão
-// antigo intocado — que chamava a /post-report de ~/.claude/skills e só
-// funcionava em quem a tivesse instalado — ganha a embarcada; quem editou o
-// seu fica com o que escreveu.
+// The publishing skill now travels in the binary. Whoever has the old default
+// untouched — which called the /post-report from ~/.claude/skills and only
+// worked for whoever had installed it — gets the embedded one; whoever edited
+// theirs keeps what they wrote.
 func TestPostAgentMigraParaAEmbarcada(t *testing.T) {
 	t.Run("padrão antigo vira o novo", func(t *testing.T) {
 		cfg := loadFrom(t, `repos: [acme/api-core]
@@ -974,9 +979,10 @@ post_agent:
 	})
 }
 
-// A pipeline é montada na página a partir dos agentes que já existem. Passo
-// que não é agente, nome repetido e agente duas vezes na mesma sequência são
-// recusados na criação — descobrir isso no meio de um review é tarde demais.
+// The pipeline is built on the page from the agents that already exist. A step
+// that is not an agent, a repeated name and an agent twice in the same sequence
+// are refused at creation — finding that out in the middle of a review is too
+// late.
 func TestAddPipeline(t *testing.T) {
 	novo := func(t *testing.T) *Config {
 		t.Helper()
@@ -1062,8 +1068,8 @@ func TestAddPipeline(t *testing.T) {
 	})
 }
 
-// O padrão é quem roda quando ninguém escolhe, e uma pipeline também pode ser:
-// no seletor os agents vêm antes, então ela nunca seria a primeira por posição.
+// The default is who runs when nobody chooses, and a pipeline can be it too: in
+// the selector the agents come first, so it would never be first by position.
 func TestPipelinePodeSerOPadrao(t *testing.T) {
 	cfg := Default()
 	for _, n := range []string{"history-pr", "review-fleet"} {
@@ -1087,7 +1093,7 @@ func TestPipelinePodeSerOPadrao(t *testing.T) {
 	if got := cfg.Choices()[0].Name; got != "dupla" {
 		t.Errorf("o padrão vem na frente da lista — é assim que a página o marca: %q", got)
 	}
-	// E a lista continua inteira, só reordenada.
+	// And the list is still whole, just reordered.
 	if len(cfg.Choices()) != 3 {
 		t.Errorf("reordenar não podia perder escolha: %d", len(cfg.Choices()))
 	}
@@ -1096,7 +1102,7 @@ func TestPipelinePodeSerOPadrao(t *testing.T) {
 		t.Error("escolha que não existe não vira padrão")
 	}
 
-	// Removida a pipeline, o padrão não pode continuar apontando para ela.
+	// With the pipeline removed, the default cannot keep pointing to it.
 	cfg.RemovePipeline("dupla")
 	if cfg.Default != "" {
 		t.Errorf("o padrão devia ter sido esquecido junto: %q", cfg.Default)
@@ -1106,8 +1112,8 @@ func TestPipelinePodeSerOPadrao(t *testing.T) {
 	}
 }
 
-// `publish` é um passo que o Bazel executa, não um agente. As regras existem
-// porque cada uma delas produz, em runtime, algo que parece bug.
+// `publish` is a step Bazel runs, not an agent. The rules exist because each of
+// them produces, at runtime, something that looks like a bug.
 func TestPassosReservados(t *testing.T) {
 	novo := func(t *testing.T) *Config {
 		t.Helper()
@@ -1178,7 +1184,7 @@ func TestPassosReservados(t *testing.T) {
 		if _, err := cfg.AddPipeline("x", "", []string{"history-pr", "publish"}); err == nil {
 			t.Error("history-pr não produz review — não há o que publicar")
 		}
-		// Com um agente publicável na frente, passa.
+		// With a publishable agent in front, it passes.
 		if _, err := cfg.AddPipeline("y", "", []string{"history-pr", "review-fleet", "publish"}); err != nil {
 			t.Errorf("com um review no meio devia passar: %v", err)
 		}
@@ -1220,7 +1226,7 @@ func TestPassosReservados(t *testing.T) {
 		if _, err := cfg.AddPipeline("x", "", []string{"review-fleet", "publish"}); err != nil {
 			t.Fatalf("AddPipeline: %v", err)
 		}
-		// Sem o review-fleet, o publish fica sem nada para publicar.
+		// Without review-fleet, publish is left with nothing to publish.
 		cfg.RemoveAgent("review-fleet")
 		// Sobra só o publish, que não tem o que publicar: a pipeline inteira
 		// sai do seletor.
@@ -1233,9 +1239,10 @@ func TestPassosReservados(t *testing.T) {
 	})
 }
 
-// Um molde de `agent` sem {{task}} ganha a task prefixada — e se ele já tiver
-// um comando escrito à mão, todo agente passa a rodar dois: o escolhido e o do
-// molde. O agente parece funcionar, e só a conta de tokens denuncia.
+// An `agent` template without {{task}} gets the task prefixed — and if it
+// already has a handwritten command, every agent starts running two: the chosen
+// one and the template's. The agent seems to work, and only the token bill
+// gives it away.
 func TestStrayCommand(t *testing.T) {
 	casos := []struct {
 		nome   string

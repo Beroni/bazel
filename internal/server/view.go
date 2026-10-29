@@ -9,11 +9,11 @@ import (
 	"github.com/beroni/bazel/internal/store"
 )
 
-// prView é o PR como o navegador precisa dele.
+// prView is the PR as the browser needs it.
 //
-// gh.PR marca Repo como `json:"-"` — é preenchido a partir do repositório
-// consultado, não vem do gh — então serializar o struct direto perderia
-// justamente o campo que identifica o PR. Daí esta view.
+// gh.PR marks Repo as `json:"-"` — it is filled from the repository queried,
+// it does not come from gh — so serializing the struct directly would lose
+// precisely the field that identifies the PR. Hence this view.
 type prView struct {
 	Key          string    `json:"key"`
 	Repo         string    `json:"repo"`
@@ -32,13 +32,13 @@ type prView struct {
 	Base         string    `json:"base"`
 	Decision     string    `json:"review_decision"`
 	Mine         bool      `json:"mine"`
-	// BodyHTML é a descrição do PR já convertida e sanitizada. Só vai
-	// preenchida na listagem — nos eventos de job seria render à toa a cada
-	// mudança de estado.
+	// BodyHTML is the PR description already converted and sanitized. It is
+	// only filled in the listing — in job events it would be a pointless
+	// render on every state change.
 	BodyHTML string `json:"body_html,omitempty"`
 
-	// Reviewed e companhia são o histórico: este PR já passou por um review?
-	// Ele mudou desde então? O review foi para o GitHub?
+	// Reviewed and friends are the history: has this PR been through a review?
+	// Has it changed since then? Did the review go to GitHub?
 	Reviewed     bool   `json:"reviewed,omitempty"`
 	ReviewedAt   string `json:"reviewed_at,omitempty"`
 	ReviewAgent  string `json:"review_agent,omitempty"`
@@ -46,7 +46,7 @@ type prView struct {
 	Changed      bool   `json:"changed_since_review,omitempty"`
 }
 
-// withStatus carimba no PR o que o índice de reviews sabe sobre ele.
+// withStatus stamps onto the PR what the review index knows about it.
 func (v prView) withStatus(st store.Status, now time.Time) prView {
 	if !st.Reviewed {
 		return v
@@ -81,9 +81,9 @@ func newPRView(pr gh.PR, mine bool, now time.Time) prView {
 	}
 }
 
-// stepView é um passo do review serializado. started_at vai junto para a
-// página conseguir contar o tempo do passo que está rodando sem depender de um
-// evento novo a cada segundo.
+// stepView is a serialized review step. started_at goes along so the page can
+// count the time of the running step without depending on a new event every
+// second.
 type stepView struct {
 	Name      string     `json:"name"`
 	State     State      `json:"state"`
@@ -92,24 +92,25 @@ type stepView struct {
 	Err       string     `json:"error,omitempty"`
 }
 
-// jobView é um job serializável. O corpo do review só vai junto quando o
-// cliente pede um job específico — na lista ele só ocuparia banda.
+// jobView is a serializable job. The review body only goes along when the
+// client asks for a specific job — in the list it would just take up
+// bandwidth.
 type jobView struct {
 	ID       string `json:"id"`
 	PR       prView `json:"pr"`
 	Agent    string `json:"agent,omitempty"`
 	Pipeline bool   `json:"pipeline,omitempty"`
 	Posts    bool   `json:"posts,omitempty"`
-	// Publishable diz se o que este job produziu pode ir ao PR. Vai sempre,
-	// sem omitempty: é justamente o false que a página precisa ler para
-	// esconder os botões de publicar.
+	// Publishable says whether what this job produced can go to the PR. Always
+	// sent, no omitempty: the false is exactly what the page needs to read to
+	// hide the publish buttons.
 	Publishable bool `json:"publishable"`
-	// AwaitsPublish marca a pipeline que terminou num passo `publish` e
-	// espera você escolher o que vai ao PR.
+	// AwaitsPublish marks the pipeline that ended in a `publish` step and
+	// waits for you to choose what goes to the PR.
 	AwaitsPublish bool `json:"awaits_publish,omitempty"`
-	// Publishing marca o job que está levando ao PR um review já lido — o
-	// card do próprio review enquanto o agente de post roda, ou o card de uma
-	// publicação vinda do disco.
+	// Publishing marks the job that is carrying an already-read review to the
+	// PR — the review's own card while the post agent runs, or the card of a
+	// publication coming from disk.
 	Publishing bool       `json:"publishing,omitempty"`
 	LogLines   int        `json:"log_lines"`
 	Steps      []stepView `json:"steps,omitempty"`
@@ -123,10 +124,10 @@ type jobView struct {
 	SavedTo    string     `json:"saved_to,omitempty"`
 	Workdir    string     `json:"workdir,omitempty"`
 	Truncated  bool       `json:"truncated,omitempty"`
-	// Tokens e Cost são o gasto do review. Enquanto ele roda são a conta
-	// parcial, e Partial diz isso à página: falta o que as lentes gastaram
-	// como sub-agente, que só entra no fechamento. Um agente que não fala
-	// stream-json não reporta gasto nenhum e fica zerado.
+	// Tokens and Cost are the review's spend. While it runs they are the
+	// partial tally, and Partial tells the page so: missing is what the lenses
+	// spent as sub-agents, which only comes in at the close. An agent that
+	// does not speak stream-json reports no spend at all and stays at zero.
 	Tokens  int     `json:"tokens,omitempty"`
 	Cost    float64 `json:"cost_usd,omitempty"`
 	Partial bool    `json:"tokens_partial,omitempty"`
@@ -135,11 +136,11 @@ type jobView struct {
 	HasBody bool    `json:"has_body"`
 	Body    string  `json:"body,omitempty"`
 	HTML    string  `json:"html,omitempty"`
-	// PublishHTML e ContextHTML separam o relatório quando só parte dos
-	// passos vai ao PR: o primeiro é exatamente o que sobe — é nele que ficam
-	// os tiques dos achados, na mesma numeração que o servidor usa para
-	// tirá-los — e o segundo é o que fica no Bazel. Vazios quando o
-	// relatório inteiro é publicável, ou nada dele é.
+	// PublishHTML and ContextHTML split the report when only some of the steps
+	// go to the PR: the first is exactly what goes up — it is where the
+	// finding checkboxes live, in the same numbering the server uses to remove
+	// them — and the second is what stays in Bazel. Empty when the whole
+	// report is publishable, or none of it is.
 	PublishHTML string `json:"publish_html,omitempty"`
 	ContextHTML string `json:"context_html,omitempty"`
 }
@@ -167,10 +168,10 @@ func (j *Job) view() jobView {
 		PostErr:     j.PostErr,
 		HasBody:     j.Result.Body != "",
 	}
-	// Terminado, quem manda é o gasto fechado do resultado; antes disso, o
-	// parcial que o agente vai reportando. Publicando dentro do card do
-	// review, os dois valem: o fechado do review mais o que o agente de post
-	// já queimou.
+	// Once finished, the closed spend of the result rules; before that, the
+	// partial the agent keeps reporting. Publishing inside the review's card,
+	// both count: the review's closed spend plus what the post agent has
+	// already burned.
 	switch fechado := j.Result.Usage; {
 	case !fechado.Empty() && j.publish != nil && !j.Live.Empty():
 		soma := fechado.Plus(j.Live)
@@ -224,7 +225,7 @@ func (v *jobView) renderBody(src bodySource) {
 	}
 }
 
-// stepViews serializa os passos. Chamar com o lock do Manager seguro.
+// stepViews serializes the steps. Call with the Manager lock held.
 func (j *Job) stepViews() []stepView {
 	if len(j.Steps) == 0 {
 		return nil

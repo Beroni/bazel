@@ -1,4 +1,4 @@
-// Package store salva os reviews em markdown no disco.
+// Package store saves reviews as markdown on disk.
 package store
 
 import (
@@ -33,9 +33,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	fmt.Fprintf(&b, "- Author: @%s\n", res.PR.Author.Login)
 	fmt.Fprintf(&b, "- Branch: `%s`\n", res.PR.HeadRefName)
 	fmt.Fprintf(&b, "- URL: %s\n", res.PR.URL)
-	// O sha é o que deixa publicar com segurança depois: com commit novo no
-	// PR, as linhas se moveram e uma âncora `path:line` do review passa a
-	// apontar para o lugar errado. Quem publica compara este valor com o HEAD.
+	// The sha is what makes publishing safe later: with a new commit on the
+	// PR, lines have moved and a `path:line` anchor in the review ends up
+	// pointing to the wrong place. Whoever publishes compares this value with HEAD.
 	if res.PR.HeadRefOid != "" {
 		fmt.Fprintf(&b, "- Head sha: %s\n", res.PR.HeadRefOid)
 	}
@@ -63,7 +63,7 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	return path, nil
 }
 
-// CommentBody monta o texto publicado no PR.
+// CommentBody builds the text posted on the PR.
 func CommentBody(res agent.Result) string {
 	var b strings.Builder
 	b.WriteString("## 🥚 Automated review — Bazel\n\n")
@@ -80,8 +80,8 @@ func CommentBody(res agent.Result) string {
 	return b.String()
 }
 
-// agentLine descreve quem rodou: o nome da escolha e, quando ela encadeia mais
-// de um agente, o tempo de cada passo.
+// agentLine describes who ran: the name of the choice and, when it chains more
+// than one agent, the time of each step.
 func agentLine(res agent.Result) string {
 	if len(res.Steps) < 2 {
 		return res.Agent
@@ -101,26 +101,26 @@ func sanitize(s string) string {
 	return strings.NewReplacer("/", "-", " ", "-", ":", "-").Replace(s)
 }
 
-// Entry é um review já salvo em disco.
+// Entry is a review already saved on disk.
 //
-// Repo e Number saem do cabeçalho do arquivo e são o que permite agir sobre um
-// review depois de o servidor ter sido reiniciado: sem eles, um review salvo é
-// só texto — não dá para publicá-lo no PR de onde veio.
+// Repo and Number come from the file header and are what allows acting on a
+// review after the server has been restarted: without them, a saved review is
+// just text — there is no way to publish it on the PR it came from.
 type Entry struct {
 	Name  string `json:"name"`
 	Title string `json:"title"`
 	Repo  string `json:"repo,omitempty"`
-	// Agent é quem produziu este review, lido do cabeçalho do arquivo. É o que
-	// permite, uma sessão depois, saber se o que está aqui pode ir ao PR — um
-	// relatório de história salvo em disco continua não sendo um review.
+	// Agent is who produced this review, read from the file header. It is what
+	// lets you know, a session later, whether what is here can go to the PR — a
+	// history report saved on disk is still not a review.
 	Agent   string    `json:"agent,omitempty"`
 	Number  int       `json:"number,omitempty"`
 	ModTime time.Time `json:"mod_time"`
 	Size    int64     `json:"size"`
 }
 
-// List devolve os reviews salvos, do mais novo para o mais velho. Diretório
-// inexistente é uma lista vazia, não um erro: ninguém revisou nada ainda.
+// List returns the saved reviews, newest to oldest. A missing
+// directory is an empty list, not an error: nobody has reviewed anything yet.
 func List(dir string) ([]Entry, error) {
 	items, err := os.ReadDir(dir)
 	if err != nil {
@@ -154,9 +154,9 @@ func List(dir string) ([]Entry, error) {
 	return out, nil
 }
 
-// Read devolve o markdown de um review salvo. name é só o nome do arquivo —
-// qualquer coisa com separador de caminho é recusada para não deixar a
-// interface web ler fora do diretório de reviews.
+// Read returns the markdown of a saved review. name is just the file name —
+// anything with a path separator is refused so the web interface can't read
+// outside the reviews directory.
 func Read(dir, name string) (string, error) {
 	if name == "" || name != filepath.Base(name) || strings.Contains(name, "..") {
 		return "", fmt.Errorf("invalid review name: %q", name)
@@ -171,7 +171,7 @@ func Read(dir, name string) (string, error) {
 	return string(data), nil
 }
 
-// Heading é o título de um review já lido — a primeira linha "# ...".
+// Heading is the title of an already-read review — the first "# ..." line.
 func Heading(file string) string {
 	for _, line := range strings.SplitN(file, "\n", 6) {
 		if line = strings.TrimSpace(line); strings.HasPrefix(line, "# ") {
@@ -181,8 +181,8 @@ func Heading(file string) string {
 	return ""
 }
 
-// AgentOf é o agente que escreveu um review já lido — a linha "- Agent: ..."
-// do cabeçalho. Vazio quando o arquivo não diz.
+// AgentOf is the agent that wrote an already-read review — the "- Agent: ..."
+// line of the header. Empty when the file doesn't say.
 func AgentOf(file string) string {
 	for _, line := range strings.SplitN(file, "\n", 16) {
 		line = strings.TrimSpace(line)
@@ -196,9 +196,9 @@ func AgentOf(file string) string {
 	return ""
 }
 
-// PRFromTitle tira o PR do cabeçalho de um review salvo — o
-// "acme/api-core#482 — título" que o Save escreve na primeira linha. É o que
-// liga o markdown em disco de volta ao pull request.
+// PRFromTitle pulls the PR out of a saved review's header — the
+// "acme/api-core#482 — título" that Save writes on the first line. It is what
+// links the markdown on disk back to the pull request.
 func PRFromTitle(title string) (string, int) {
 	head, _, _ := strings.Cut(title, " ")
 	repo, num, ok := strings.Cut(head, "#")
@@ -212,8 +212,8 @@ func PRFromTitle(title string) (string, int) {
 	return repo, n
 }
 
-// ReviewBody é o relatório dentro de um review salvo, sem o cabeçalho que o
-// Save escreveu — é o texto que o agente produziu, e é ele que vai ao PR.
+// ReviewBody is the report inside a saved review, without the header that
+// Save wrote — it is the text the agent produced, and it is what goes to the PR.
 func ReviewBody(file string) string {
 	if _, corpo, ok := strings.Cut(file, "\n---\n"); ok {
 		return strings.TrimSpace(Unwrap(corpo))
@@ -221,8 +221,8 @@ func ReviewBody(file string) string {
 	return strings.TrimSpace(Unwrap(file))
 }
 
-// header lê o título e o agente de um review salvo, sem carregar o arquivo
-// inteiro: são as duas coisas que a listagem precisa de dentro dele.
+// header reads the title and the agent of a saved review without loading the
+// whole file: they are the two things the listing needs from inside it.
 func header(path string) (title, agent string) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -230,8 +230,8 @@ func header(path string) (title, agent string) {
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
-	// O cabeçalho do Save tem meia dúzia de linhas e acaba no "---"; parar ali
-	// é o que evita varrer um review de 2 mil linhas atrás de dois campos.
+	// Save's header has half a dozen lines and ends at "---"; stopping there
+	// is what avoids scanning a 2,000-line review for two fields.
 	for i := 0; sc.Scan() && i < 15; i++ {
 		line := strings.TrimSpace(sc.Text())
 		switch {
@@ -246,9 +246,9 @@ func header(path string) (title, agent string) {
 	return title, agent
 }
 
-// AgentFromLine tira o nome da escolha da linha "- Agent: ..." do cabeçalho.
-// Numa pipeline o Save escreve também o tempo de cada passo depois de um
-// travessão; o nome é o que vem antes dele.
+// AgentFromLine pulls the choice name out of the header's "- Agent: ..." line.
+// In a pipeline Save also writes each step's time after a
+// dash; the name is what comes before it.
 func AgentFromLine(line string) string {
 	v := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- Agent:"))
 	if name, _, ok := strings.Cut(v, " — "); ok {

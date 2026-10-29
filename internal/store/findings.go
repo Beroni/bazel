@@ -6,26 +6,26 @@ import (
 	"strings"
 )
 
-// Part é um pedaço do review: ou um achado, ou o texto entre achados.
+// Part is a piece of the review: either a finding, or the text between findings.
 //
-// Um achado é o bloco de um `###` dentro de uma seção `## Findings` ou
-// `## Cuts` — do heading até o próximo heading — ou qualquer `###` seguido do
-// comentário `<!-- finding ... -->` que o review-fleet grava. Seção que não
-// usa `###` e numera os achados em negrito (`**1. major · …**`, o formato dos
-// reviews mais antigos) tem cada parágrafo numerado como um achado, até o
-// próximo número ou heading. Em `## Needs human verification` cada item da
-// lista também é um: a dúvida que você já resolveu não precisa ir ao PR. É a
-// unidade que a página deixa marcar: um falso positivo sai do que vai ao PR
-// sem que o resto do review mude.
+// A finding is the block of a `###` inside a `## Findings` or `## Cuts`
+// section — from the heading to the next heading — or any `###` followed by
+// the `<!-- finding ... -->` comment that review-fleet writes. A section that
+// doesn't use `###` and numbers findings in bold (`**1. major · …**`, the
+// format of older reviews) has each numbered paragraph as a finding, up to the
+// next number or heading. In `## Needs human verification` each list item is
+// one too: a doubt you have already resolved doesn't need to go to the PR. It
+// is the unit the page lets you tick: a false positive drops out of what goes
+// to the PR without the rest of the review changing.
 type Part struct {
 	Text    string
 	Finding bool
 }
 
-// SplitFindings corta o review nos achados, na ordem em que aparecem. A
-// concatenação das partes devolve o texto original: o corte só marca onde
-// cada achado começa e termina, para a página numerá-los e o publish tirar
-// os desmarcados.
+// SplitFindings cuts the review into its findings, in the order they appear.
+// Concatenating the parts gives back the original text: the cut only marks
+// where each finding starts and ends, so the page can number them and publish
+// can drop the unticked ones.
 func SplitFindings(body string) []Part {
 	lines := strings.SplitAfter(body, "\n")
 	var (
@@ -103,8 +103,8 @@ func SplitFindings(body string) []Part {
 			cur.WriteString(line)
 			continue
 		case level <= 2:
-			// Um heading maior fecha o achado que estava aberto, e um `##`
-			// diz se o que vem agora é uma seção de achados.
+			// A bigger heading closes the finding that was open, and a `##`
+			// says whether what comes next is a findings section.
 			flush()
 			finding, bold, blank = false, false, false
 			human = level == 2 && isHumanSection(title)
@@ -125,7 +125,7 @@ func SplitFindings(body string) []Part {
 	return parts
 }
 
-// Findings conta os achados de um review.
+// Findings counts the findings in a review.
 func Findings(body string) int {
 	n := 0
 	for _, p := range SplitFindings(body) {
@@ -136,9 +136,9 @@ func Findings(body string) int {
 	return n
 }
 
-// DropFindings devolve o review sem os achados de índice em skip — a
-// numeração é a mesma do SplitFindings, e é a que a página usa nas caixas.
-// Índice fora da faixa é ignorado.
+// DropFindings returns the review without the findings whose index is in
+// skip — the numbering is SplitFindings', and it is the one the page uses on
+// the checkboxes. An out-of-range index is ignored.
 func DropFindings(body string, skip []int) string {
 	if len(skip) == 0 {
 		return body
@@ -162,10 +162,10 @@ func DropFindings(body string, skip []int) string {
 	return b.String()
 }
 
-// SavePublishCopy grava, ao lado do review salvo, a versão dele que vai ao
-// PR: o mesmo cabeçalho, mas com o corpo já sem os achados desmarcados. Fica
-// em publish/ dentro do diretório de reviews, para não aparecer na lista dos
-// salvos — o review de verdade continua inteiro, é só o que sai que muda.
+// SavePublishCopy writes, next to the saved review, the version that goes to
+// the PR: the same header, but the body already without the unticked findings.
+// It lives in publish/ inside the reviews directory, so it stays out of the
+// saved list — the real review stays whole, only what goes out changes.
 func SavePublishCopy(dir, original, body string) (string, error) {
 	pubDir := filepath.Join(dir, "publish")
 	if err := os.MkdirAll(pubDir, 0o755); err != nil {
@@ -201,7 +201,7 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 	return path, nil
 }
 
-// boldNumbered reconhece a linha que abre um achado numerado em negrito:
+// boldNumbered recognizes the line that opens a bold numbered finding:
 // `**1. …`, `**2)** …`.
 func boldNumbered(trim string) bool {
 	rest := strings.TrimLeft(strings.TrimPrefix(trim, "**"), " ")
@@ -215,8 +215,8 @@ func boldNumbered(trim string) bool {
 	return n > 0 && n < len(rest) && (rest[n] == '.' || rest[n] == ')')
 }
 
-// headingOf devolve o nível de um heading ATX e o título, ou 0 se a linha
-// não for heading.
+// headingOf returns the level of an ATX heading and the title, or 0 if the
+// line is not a heading.
 func headingOf(trim string) (int, string) {
 	n := 0
 	for n < len(trim) && trim[n] == '#' {
@@ -234,22 +234,22 @@ func headingOf(trim string) (int, string) {
 	return n, strings.TrimSpace(trim[n:])
 }
 
-// isFindingsSection reconhece os `##` que agrupam achados — "Findings",
-// "Cuts (lazy-senior-dev)", "Cuts — `lazy-senior-dev`" — pelo começo do
-// título, porque o resto varia de review para review.
+// isFindingsSection recognizes the `##` that group findings — "Findings",
+// "Cuts (lazy-senior-dev)", "Cuts — `lazy-senior-dev`" — by the start of the
+// title, because the rest varies from review to review.
 func isFindingsSection(title string) bool {
 	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
 	return strings.HasPrefix(t, "finding") || strings.HasPrefix(t, "cut")
 }
 
-// isHumanSection reconhece o `## Needs human verification` que a frota grava
-// com o que as lentes não conseguiram confirmar.
+// isHumanSection recognizes the `## Needs human verification` the fleet
+// writes with what the lenses could not confirm.
 func isHumanSection(title string) bool {
 	t := strings.ToLower(strings.TrimLeft(title, "0123456789. "))
 	return strings.HasPrefix(t, "needs human")
 }
 
-// listItem diz se a linha abre um item de lista: `- `, `* `, `+ ` ou `1. `.
+// listItem says whether the line opens a list item: `- `, `* `, `+ ` or `1. `.
 func listItem(trim string) bool {
 	if strings.HasPrefix(trim, "- ") || strings.HasPrefix(trim, "* ") || strings.HasPrefix(trim, "+ ") {
 		return true

@@ -23,8 +23,8 @@ func testPR() gh.PR {
 	return pr
 }
 
-// A task da lente entra no {{task}} do molde — é só isso que muda de um agente
-// para o outro.
+// The lens's task goes into the template's {{task}} — that's all that changes
+// from one agent to another.
 func TestBuildPromptFillsTask(t *testing.T) {
 	got := buildPrompt("{{task}}\n\nPR {{number}} de {{repo}}", "/exploit-digger {{number}}", testPR(), "", "", nil)
 	want := "/exploit-digger 482\n\nPR 482 de acme/api-core"
@@ -33,8 +33,8 @@ func TestBuildPromptFillsTask(t *testing.T) {
 	}
 }
 
-// Molde sem {{task}} — escrito antes dos agents nomeados — recebe a instrução
-// na primeira linha, que é onde ela ficava.
+// A template without {{task}} — written before the named agents — gets the
+// instruction on the first line, which is where it used to be.
 func TestBuildPromptPrependsTaskToLegacyTemplate(t *testing.T) {
 	got := buildPrompt("revise o PR {{number}}", "/lazy-senior-dev {{number}}", testPR(), "", "", nil)
 	if !strings.HasPrefix(got, "/lazy-senior-dev 482\n\n") {
@@ -45,22 +45,22 @@ func TestBuildPromptPrependsTaskToLegacyTemplate(t *testing.T) {
 	}
 }
 
-// Sem task, o molde não fica com uma linha em branco na frente.
+// Without a task, the template doesn't end up with a blank line in front.
 func TestBuildPromptWithoutTask(t *testing.T) {
 	if got := buildPrompt("{{task}}\n\nrevise", "", testPR(), "", "", nil); got != "revise" {
 		t.Errorf("esperava %q, veio %q", "revise", got)
 	}
 }
 
-// Publish leva ao agente o review que já foi lido, pelos placeholders — e não
-// manda ele revisar de novo.
+// Publish hands the agent the review that was already read, through the
+// placeholders — and doesn't tell it to review again.
 func TestPublishFillsReviewPlaceholders(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Checkout = false
 	cfg.Agent.TimeoutSeconds = 30
 	cfg.Agent.Command = "cat"
 	cfg.Agent.Args = nil
-	// O `cat` devolve o prompt: dá para conferir o que o agente viu.
+	// `cat` returns the prompt: that lets us check what the agent saw.
 	cfg.PostAgent = config.AgentDef{
 		Name:   "post-report",
 		Task:   "/post-report {{review_file}}",
@@ -68,7 +68,7 @@ func TestPublishFillsReviewPlaceholders(t *testing.T) {
 		Posts:  true,
 	}
 	choice := cfg.PostChoice()
-	// O clone é obrigatório para inline, mas neste teste não há repositório.
+	// The clone is required for inline, but in this test there is no repository.
 	choice.Steps[0].Checkout = false
 
 	res, err := New(cfg).Publish(context.Background(), testPR(), choice,
@@ -91,8 +91,8 @@ func TestPublishFillsReviewPlaceholders(t *testing.T) {
 	}
 }
 
-// Uma pipeline roda os passos na ordem, sobre o mesmo material, e o relatório
-// sai em seções.
+// A pipeline runs the steps in order, on the same material, and the report
+// comes out in sections.
 func TestReviewRunsEveryStep(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Command = "echo"
@@ -127,7 +127,7 @@ func TestReviewRunsEveryStep(t *testing.T) {
 		}
 	}
 
-	// Sem checkout não há clone: os eventos de passo saem em ordem...
+	// Without checkout there's no clone: the step events come out in order...
 	var kinds []string
 	for _, e := range events {
 		if e.Kind == EventLog {
@@ -140,7 +140,7 @@ func TestReviewRunsEveryStep(t *testing.T) {
 		t.Errorf("eventos fora de ordem:\n%s\nesperava:\n%s", got, want)
 	}
 
-	// ...e o que cada agente escreveu chega como log, atribuído ao seu passo.
+	// ...and what each agent wrote arrives as log, attributed to its step.
 	logs := map[int][]string{}
 	for _, e := range events {
 		if e.Kind == EventLog {
@@ -179,8 +179,8 @@ func TestReviewPassesAgentEnv(t *testing.T) {
 	}
 }
 
-// O log sai enquanto o agente roda, não só no fim — é o que a interface web
-// mostra ao vivo.
+// The log comes out while the agent runs, not only at the end — that's what the
+// web interface shows live.
 func TestLogStreamsWhileAgentRuns(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Checkout = false
@@ -218,8 +218,8 @@ func TestLogStreamsWhileAgentRuns(t *testing.T) {
 	}
 }
 
-// Com --output-format stream-json o stdout é JSONL: o log recebe a versão
-// legível e o relatório sai do evento final, não do JSON cru.
+// With --output-format stream-json stdout is JSONL: the log gets the readable
+// version and the report comes from the final event, not from the raw JSON.
 func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 	events := []string{
 		`{"type":"system","subtype":"init","tools":["Read","Grep"]}`,
@@ -243,8 +243,8 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 	cfg.Agents = []config.AgentDef{{
 		Name:    "stream",
 		Command: "sh",
-		// As flags de formato vão depois do script: para o `sh` são só
-		// parâmetros posicionais, e para o Bazel são o que liga o modo stream.
+		// The format flags go after the script: to `sh` they're just
+		// positional parameters, and to Bazel they're what turns on stream mode.
 		Args: []string{"-c", "cat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\n", "sh", "--output-format", "stream-json"},
 	}}
 	cfg.Pipelines = nil
@@ -262,8 +262,8 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 		t.Fatalf("Review: %v", err)
 	}
 
-	// Cada linha diz quem a escreveu: o agente do passo ou a lente que ele
-	// subiu. Sem isso as três lentes da frota chegam embaralhadas e anônimas.
+	// Each line says who wrote it: the step's agent or the lens it started.
+	// Without this the fleet's three lenses arrive jumbled and anonymous.
 	if len(byAgent["stream"]) == 0 {
 		t.Errorf("o agente do passo devia assinar as próprias linhas: %v", byAgent)
 	}
@@ -277,9 +277,9 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 	if strings.Contains(res.Body, "achei uma brecha") {
 		t.Error("o texto solto do sub-agente não é o relatório")
 	}
-	// O gasto sai do detalhe por modelo, não do `usage`: é o único que conta
-	// as lentes que rodaram como sub-agente e os modelos auxiliares. Aqui são
-	// os 33.200 da conversa principal mais os 1.000 do haiku.
+	// The spend comes from the per-model detail, not from `usage`: it's the only
+	// one that counts the lenses that ran as sub-agents and the auxiliary models.
+	// Here it's the 33,200 of the main conversation plus the 1,000 from haiku.
 	if res.Usage.Total() != 34200 || res.Usage.CostUSD != 0.42 {
 		t.Errorf("o gasto devia somar todos os modelos: %+v", res.Usage)
 	}
@@ -297,7 +297,7 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 			t.Errorf("o log não tem %q:\n%s", want, got)
 		}
 	}
-	// Nem o JSON cru, nem o thinking, nem o rate limit viram log.
+	// Neither the raw JSON, nor the thinking, nor the rate limit become log.
 	for _, noise := range []string{`{"type":`, "thinking", "rate_limit"} {
 		if strings.Contains(got, noise) {
 			t.Errorf("o log vazou %q:\n%s", noise, got)
@@ -305,12 +305,12 @@ func TestStreamJSONBecomesLogAndReport(t *testing.T) {
 	}
 }
 
-// A ferramenta que sobe sub-agente se chama `Agent` (e já se chamou `Task`).
-// Cada chamada vira um nome próprio: a frota sobe três lentes em paralelo e
-// elas não podem cair todas num balde só chamado "sub-agente".
+// The tool that starts a sub-agent is called `Agent` (and used to be `Task`).
+// Each call gets its own name: the fleet starts three lenses in parallel and
+// they can't all fall into a single bucket called "sub-agent".
 func TestStreamParserNamesEverySubagent(t *testing.T) {
 	var p streamParser
-	// Formato conferido contra o `claude -p --output-format stream-json`.
+	// Format checked against `claude -p --output-format stream-json`.
 	eventos := []string{
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"description":"review de precisão","subagent_type":"senior-code-reviewer","prompt":"..."}}]}}`,
 		`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_B","name":"Agent","input":{"description":"varredura","subagent_type":"exploit-digger","prompt":"..."}}]}}`,
@@ -335,13 +335,13 @@ func TestStreamParserNamesEverySubagent(t *testing.T) {
 	if porAgente["sub-agente"] != 0 {
 		t.Errorf("ninguém devia sobrar como \"sub-agente\": %v", porAgente)
 	}
-	// As três chamadas ficam no terminal de quem as disparou.
+	// The three calls stay in the terminal of whoever fired them.
 	if porAgente[""] != 3 {
 		t.Errorf("as chamadas de Agent são do agente principal: %v", porAgente)
 	}
 }
 
-// Duas chamadas do mesmo tipo são dois sub-agentes, não um.
+// Two calls of the same type are two sub-agents, not one.
 func TestStreamParserSeparatesTwinSubagents(t *testing.T) {
 	var p streamParser
 	p.line(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"exploit-digger"}}]}}`)
@@ -354,7 +354,7 @@ func TestStreamParserSeparatesTwinSubagents(t *testing.T) {
 	}
 }
 
-// Sub-agente que o parser não viu nascer ainda ganha nome próprio por chamada.
+// A sub-agent the parser didn't see being born still gets its own name per call.
 func TestStreamParserUnknownParentsStaySeparate(t *testing.T) {
 	var p streamParser
 	um := p.line(`{"type":"assistant","parent_tool_use_id":"perdido1","message":{"content":[{"type":"text","text":"a"}]}}`)
@@ -364,7 +364,7 @@ func TestStreamParserUnknownParentsStaySeparate(t *testing.T) {
 	}
 }
 
-// Ferramenta comum não é sub-agente.
+// A regular tool is not a sub-agent.
 func TestStreamParserIgnoresPlainTools(t *testing.T) {
 	var p streamParser
 	p.line(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"main.go"}}]}}`)
@@ -373,8 +373,8 @@ func TestStreamParserIgnoresPlainTools(t *testing.T) {
 	}
 }
 
-// Linha que não é JSON passa direto — um agente que não fala esse formato não
-// pode sumir do log.
+// A line that isn't JSON passes straight through — an agent that doesn't speak
+// this format can't vanish from the log.
 func TestStreamParserPassesThroughNonJSON(t *testing.T) {
 	var p streamParser
 	if got := p.line("apenas texto"); len(got) != 1 || got[0].Text != "apenas texto" {
@@ -382,7 +382,7 @@ func TestStreamParserPassesThroughNonJSON(t *testing.T) {
 	}
 }
 
-// Sem evento final, o relatório é o que o assistente escreveu no caminho.
+// Without a final event, the report is what the assistant wrote along the way.
 func TestStreamParserFallsBackToAssistantText(t *testing.T) {
 	var p streamParser
 	p.line(`{"type":"assistant","message":{"content":[{"type":"text","text":"parcial"}]}}`)
@@ -605,8 +605,8 @@ func TestGrokTurnLimitHasOneClearError(t *testing.T) {
 	}
 }
 
-// Um passo que falha não derruba o review: vira uma seção com o erro, e o que
-// deu certo continua no relatório.
+// A step that fails doesn't bring down the review: it becomes a section with
+// the error, and what worked stays in the report.
 func TestReviewKeepsGoingAfterFailedStep(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Checkout = false
@@ -631,7 +631,7 @@ func TestReviewKeepsGoingAfterFailedStep(t *testing.T) {
 	}
 }
 
-// Todos os passos falhando é o review inteiro falhando.
+// All steps failing is the whole review failing.
 func TestReviewFailsWhenEveryStepFails(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Checkout = false
@@ -645,7 +645,7 @@ func TestReviewFailsWhenEveryStepFails(t *testing.T) {
 	}
 }
 
-// Cancelar solta o review na hora, sem tocar nos passos seguintes.
+// Cancelling releases the review right away, without touching the next steps.
 func TestReviewStopsOnCancel(t *testing.T) {
 	cfg := config.Default()
 	cfg.Agent.Checkout = false
@@ -678,8 +678,8 @@ func TestReviewStopsOnCancel(t *testing.T) {
 	}
 }
 
-// O gasto de cada passo soma no do review — uma pipeline de três lentes
-// devolve um número só no fim.
+// Each step's spend adds up into the review's — a three-lens pipeline returns
+// a single number at the end.
 func TestUsageSomaEFormata(t *testing.T) {
 	var u Usage
 	u.add(Usage{InputTokens: 500, OutputTokens: 250, CostUSD: 0.1})
@@ -691,7 +691,7 @@ func TestUsageSomaEFormata(t *testing.T) {
 		t.Errorf("linha de gasto inesperada: %q", got)
 	}
 
-	// Um agente que não fala stream-json não reporta nada, e aí não há linha.
+	// An agent that doesn't speak stream-json reports nothing, so there's no line.
 	if got := (Usage{}).String(); got != "" {
 		t.Errorf("sem gasto não há linha: %q", got)
 	}
@@ -734,8 +734,8 @@ func TestUsageCaiNoUsageQuandoNaoHaModelUsage(t *testing.T) {
 	}
 }
 
-// A conta anda enquanto o agente trabalha: cada mensagem do stream traz o que
-// aquela chamada gastou, e o parcial vai para a tela antes do fechamento.
+// The count moves while the agent works: each stream message carries what that
+// call spent, and the partial goes to the screen before the settlement.
 func TestUsageParcialChegaDuranteOReview(t *testing.T) {
 	events := []string{
 		`{"type":"system","subtype":"init","tools":[]}`,
@@ -772,14 +772,14 @@ func TestUsageParcialChegaDuranteOReview(t *testing.T) {
 		t.Fatalf("Review: %v", err)
 	}
 
-	// Uma atualização por mensagem que gastou, mais o fechamento.
+	// One update per message that spent, plus the settlement.
 	if len(parciais) < 3 {
 		t.Fatalf("esperava a conta andando, vieram %v", parciais)
 	}
 	if parciais[0] != 115 || parciais[1] != 200 {
 		t.Errorf("o parcial devia somar mensagem a mensagem: %v", parciais)
 	}
-	// O fechamento é maior que o parcial: é ele que enxerga o sub-agente.
+	// The settlement is bigger than the partial: it's the one that sees the sub-agent.
 	if fim := parciais[len(parciais)-1]; fim != 1200 {
 		t.Errorf("o último aviso devia trazer o total fechado, veio %d", fim)
 	}
@@ -839,8 +839,8 @@ func TestPublishableBody(t *testing.T) {
 		if !strings.Contains(body, "token guardado no cliente") {
 			t.Errorf("o review tinha de ir: %q", body)
 		}
-		// Sobrando um passo só, sai cru — sem o cabeçalho "## review-fleet",
-		// que só existe para separar passos.
+		// With a single step left, it comes out raw — without the "## review-fleet"
+		// header, which only exists to separate steps.
 		if strings.Contains(body, "## review-fleet") {
 			t.Errorf("um passo só sai como sempre saiu: %q", body)
 		}
@@ -871,9 +871,9 @@ func TestPublishableBody(t *testing.T) {
 	})
 }
 
-// Skill embarcada precisa existir em disco para o Claude Code achá-la, e o
-// lugar dela é o clone. Sem clone ela não tem onde existir, e escrevê-la na
-// pasta de quem rodou o Bazel seria sujar um projeto alheio.
+// An embedded skill needs to exist on disk for Claude Code to find it, and its
+// place is the clone. Without a clone it has nowhere to exist, and writing it
+// into the folder of whoever ran Bazel would be littering someone else's project.
 func TestBuiltinPrecisaDoClone(t *testing.T) {
 	comClone := config.Choice{Name: "publicar", Steps: []config.ResolvedAgent{
 		{Name: "bazel-post-report", Task: "/bazel-post-report {{review_file}}", Checkout: true},

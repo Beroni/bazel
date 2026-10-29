@@ -25,13 +25,13 @@ type Usage struct {
 	Model        string  `json:"model,omitempty"`
 }
 
-// Total é tudo que passou pelo modelo. O cache entra na conta: lido ou
-// escrito, é contexto que o agente consumiu para fazer o review.
+// Total is everything that went through the model. The cache counts: read or
+// written, it's context the agent consumed to do the review.
 func (u Usage) Total() int {
 	return u.InputTokens + u.OutputTokens + u.CacheWrite + u.CacheRead
 }
 
-// Empty diz que não há gasto a mostrar.
+// Empty says there is no spend to show.
 func (u Usage) Empty() bool { return u.Total() == 0 && u.CostUSD == 0 }
 
 // add soma outro gasto a este — é como os passos de uma pipeline viram um
@@ -53,15 +53,15 @@ func (u *Usage) add(o Usage) {
 	u.CostUSD += o.CostUSD
 }
 
-// Plus é a soma de dois gastos, sem mexer em nenhum dos dois. Publicar um
-// review depois de produzi-lo é o mesmo card gastando duas vezes, e o número
-// que ele mostra tem de ser o das duas.
+// Plus is the sum of two spends, without touching either one. Publishing a
+// review after producing it is the same card spending twice, and the number it
+// shows has to be the total of both.
 func (u Usage) Plus(o Usage) Usage {
 	u.add(o)
 	return u
 }
 
-// String é o gasto em uma linha, do jeito que ele aparece no fim do review.
+// String is the spend on one line, the way it appears at the end of the review.
 func (u Usage) String() string {
 	if u.Empty() {
 		return ""
@@ -151,7 +151,7 @@ func FormatTokens(n int) string {
 	}
 }
 
-// trimZero arredonda numa casa decimal, com vírgula, e some com o ",0".
+// trimZero rounds to one decimal place, with a comma, and drops the ",0".
 func trimZero(v float64) string {
 	s := strings.Replace(strconv.FormatFloat(v, 'f', 1, 64), ".", ",", 1)
 	return strings.TrimSuffix(s, ",0")

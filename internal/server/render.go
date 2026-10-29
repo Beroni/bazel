@@ -17,8 +17,8 @@ import (
 	"github.com/yuin/goldmark/util"
 )
 
-// md converte markdown em HTML. Sem goldmark.WithUnsafe(): HTML cru no
-// markdown sai escapado, não executado.
+// md converts markdown to HTML. No goldmark.WithUnsafe(): raw HTML in the
+// markdown comes out escaped, not executed.
 var md = goldmark.New(
 	goldmark.WithExtensions(
 		extension.GFM,
@@ -111,21 +111,22 @@ var findingMetaRe = regexp.MustCompile(`^<!-- finding(?: [a-z_]+=[^\s<>]+)* -->$
 
 // policy limpa o HTML depois de convertido.
 //
-// O markdown não vem só do agente: a descrição do PR é escrita por quem abriu
-// o PR. goldmark escapa HTML cru, mas ainda emite o link que o markdown pediu
-// — e `[clica](javascript:...)` num servidor que dispara review e comenta no
-// GitHub no seu nome não é um link qualquer. UGCPolicy corta esquema que não
-// seja http/https/mailto.
+// The markdown does not come only from the agent: the PR description is
+// written by whoever opened the PR. goldmark escapes raw HTML, but still emits
+// the link the markdown asked for — and `[clica](javascript:...)` on a server
+// that fires off reviews and comments on GitHub in your name is not just any
+// link. UGCPolicy cuts any scheme that is not http/https/mailto.
 var policy = func() *bluemonday.Policy {
 	p := bluemonday.UGCPolicy()
-	// Checkbox de task list do GFM, que o UGCPolicy tiraria.
+	// GFM task list checkbox, which UGCPolicy would strip.
 	p.AllowAttrs("type", "checked", "disabled").Matching(bluemonday.Paragraph).OnElements("input")
-	// Sem isto o class="language-go" some e o bloco de código perde a marca.
+	// Without this the class="language-go" disappears and the code block loses
+	// its marker.
 	p.AllowAttrs("class").OnElements("code", "pre", "span", "div", "li")
 	return p
 }()
 
-// renderMarkdown devolve o HTML seguro para jogar no innerHTML da página.
+// renderMarkdown returns HTML safe to drop into the page's innerHTML.
 func renderMarkdown(src string) string {
 	return convert(md, src)
 }
@@ -144,13 +145,13 @@ func convert(conv goldmark.Markdown, src string) string {
 	return string(policy.SanitizeBytes(buf.Bytes()))
 }
 
-// renderReview converte um review em HTML com cada achado embrulhado numa
-// <section class="finding" data-finding="N">. A página põe a caixa de
-// marcar em cada uma, e o N é o mesmo índice que o publish recebe em `skip`
-// — os dois lados cortam o markdown com o mesmo store.SplitFindings, então
-// a caixa desmarcada na tela é exatamente o bloco que sai do que vai ao PR.
+// renderReview converts a review to HTML with each finding wrapped in a
+// <section class="finding" data-finding="N">. The page puts a checkbox on each
+// one, and N is the same index publish receives in `skip` — both sides cut the
+// markdown with the same store.SplitFindings, so the box unticked on screen is
+// exactly the block that drops out of what goes to the PR.
 //
-// O embrulho fica fora da sanitização: é HTML nosso, não do agente.
+// The wrapper stays outside sanitization: it is our HTML, not the agent's.
 func renderReview(body string) string {
 	parts := store.SplitFindings(body)
 	if len(parts) <= 1 {

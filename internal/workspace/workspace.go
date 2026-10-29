@@ -1,5 +1,5 @@
-// Package workspace prepara um clone descartável do repositório, com o pull
-// request já em checkout, para o agente rodar dentro dele.
+// Package workspace prepares a disposable clone of the repository, with the pull
+// request already checked out, for the agent to run inside it.
 package workspace
 
 import (
@@ -15,11 +15,11 @@ import (
 	"github.com/beroni/bazel/internal/gh"
 )
 
-// Workspace é um clone temporário com o PR em checkout.
+// Workspace is a temporary clone with the PR checked out.
 type Workspace struct {
-	// Dir é a raiz do clone.
+	// Dir is the root of the clone.
 	Dir string
-	// Keep preserva o diretório no Cleanup, para inspeção manual.
+	// Keep preserves the directory on Cleanup, for manual inspection.
 	Keep bool
 }
 
@@ -50,14 +50,14 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 		ws.Remove()
 		return nil, fmt.Errorf("clonando %s: %w", pr.Repo, err)
 	}
-	// `gh pr checkout` resolve sozinho PR vindo de fork.
+	// `gh pr checkout` handles PRs coming from forks on its own.
 	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number)); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("checkout de %s: %w", pr.Key(), err)
 	}
-	// gh repo clone só traz os refs remotos que o clone inicial configurou —
-	// geralmente a branch padrão. Um PR para uma release branch precisa da base
-	// explícita para que o agente consiga comparar origin/<base>...HEAD.
+	// gh repo clone only brings the remote refs the initial clone configured —
+	// usually the default branch. A PR against a release branch needs the base
+	// fetched explicitly so the agent can compare origin/<base>...HEAD.
 	if base := strings.TrimSpace(pr.BaseRefName); base != "" {
 		if err := ensurePRBase(ctx, dir, base); err != nil {
 			ws.Remove()
@@ -108,7 +108,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// Cleanup apaga o clone, a menos que Keep esteja ligado.
+// Cleanup deletes the clone, unless Keep is on.
 func (w *Workspace) Cleanup() {
 	if w == nil || w.Keep {
 		return
@@ -116,7 +116,7 @@ func (w *Workspace) Cleanup() {
 	w.Remove()
 }
 
-// Remove apaga o clone incondicionalmente.
+// Remove deletes the clone unconditionally.
 func (w *Workspace) Remove() {
 	if w == nil || w.Dir == "" {
 		return
@@ -141,8 +141,8 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 	return nil
 }
 
-// lastLines corta a saída de erro do git/gh, que costuma vir com barra de
-// progresso antes da mensagem que interessa.
+// lastLines trims the git/gh error output, which usually comes with a
+// progress bar before the message that matters.
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	if len(lines) > n {
@@ -151,7 +151,7 @@ func lastLines(s string, n int) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-// sanitize deixa só o que pode virar prefixo de diretório temporário.
+// sanitize keeps only what can become a temporary directory prefix.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {

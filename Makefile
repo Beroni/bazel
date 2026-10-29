@@ -5,59 +5,59 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 .DEFAULT_GOAL := build
 
-## build: compila o binário em ./bazel
+## build: builds the binary into ./bazel
 .PHONY: build
 build:
 	go build -ldflags '$(LDFLAGS)' -o $(BINARY) .
 
-## install: compila e instala em ~/.local/bin (mude com PREFIX=...)
+## install: builds and installs into ~/.local/bin (change with PREFIX=...)
 .PHONY: install
 install:
 	@mkdir -p $(PREFIX)
 	go build -ldflags '$(LDFLAGS)' -o $(PREFIX)/$(BINARY) .
 	@echo "instalado em $(PREFIX)/$(BINARY)"
 
-## run: compila e sobe a interface web, abrindo o navegador
+## run: builds and starts the web interface, opening the browser
 .PHONY: run
 run: build
 	./$(BINARY) --open
 
-## test: roda os testes
+## test: runs the tests
 .PHONY: test
 test:
 	go test ./...
 
-## cover: roda os testes com relatório de cobertura
+## cover: runs the tests with a coverage report
 .PHONY: cover
 cover:
 	go test -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out | tail -1
 
-## fmt: formata o código
+## fmt: formats the code
 .PHONY: fmt
 fmt:
 	gofmt -l -w .
 
-## vet: análise estática
+## vet: static analysis
 .PHONY: vet
 vet:
 	go vet ./...
 
-## tidy: arruma o go.mod
+## tidy: tidies go.mod
 .PHONY: tidy
 tidy:
 	go mod tidy
 
-## check: fmt + vet + test, o que rodar antes de commitar
+## check: fmt + vet + test, what to run before committing
 .PHONY: check
 check: fmt vet test
 
-## clean: remove os artefatos de build
+## clean: removes the build artifacts
 .PHONY: clean
 clean:
 	rm -f $(BINARY) coverage.out
 
-## help: lista os alvos
+## help: lists the targets
 .PHONY: help
 help:
 	@grep -E '^## ' $(MAKEFILE_LIST) | sed 's/## /  make /' | column -t -s ':'

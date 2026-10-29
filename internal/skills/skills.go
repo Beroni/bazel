@@ -1,8 +1,8 @@
-// Package skills descobre as skills do Claude Code instaladas na máquina.
+// Package skills discovers the Claude Code skills installed on the machine.
 //
-// É o que permite a página mostrar os agentes disponíveis de verdade — os que
-// estão em ~/.claude/skills — em vez de uma lista escrita à mão que pode
-// apontar para uma skill que você nunca instalou.
+// It is what lets the page show the agents that are actually available — the
+// ones in ~/.claude/skills — instead of a hand-written list that may point to
+// a skill you never installed.
 package skills
 
 import (
@@ -14,19 +14,19 @@ import (
 	"strings"
 )
 
-// Skill é uma skill instalada.
+// Skill is an installed skill.
 type Skill struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	// Dir é a pasta dela, útil quando o nome do diretório e o do frontmatter
-	// não batem.
+	// Dir is its folder, useful when the directory name and the frontmatter one
+	// don't match.
 	Dir string `json:"dir"`
-	// Builtin marca a skill que veio dentro do binário do Bazel. Ela não está
-	// em lugar nenhum do disco até um review rodar, e está sempre disponível.
+	// Builtin marks the skill that came inside the Bazel binary. It is not
+	// anywhere on disk until a review runs, and it is always available.
 	Builtin bool `json:"builtin,omitempty"`
 }
 
-// DefaultDir é onde o Claude Code guarda as skills do usuário.
+// DefaultDir is where Claude Code keeps the user's skills.
 func DefaultDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -35,9 +35,9 @@ func DefaultDir() string {
 	return filepath.Join(home, ".claude", "skills")
 }
 
-// List devolve as skills de um diretório, em ordem alfabética. Diretório
-// inexistente é uma lista vazia: nem toda máquina tem skills instaladas, e
-// isso não é erro.
+// List returns the skills in a directory, in alphabetical order. A missing
+// directory is an empty list: not every machine has skills installed, and
+// that is not an error.
 func List(dir string) []Skill {
 	if strings.TrimSpace(dir) == "" {
 		dir = DefaultDir()
@@ -48,9 +48,9 @@ func List(dir string) []Skill {
 	}
 	var out []Skill
 	for _, e := range entries {
-		// Sem filtrar por IsDir: as skills costumam ser symlinks para o
-		// repositório onde você as versiona, e para o os.ReadDir um symlink
-		// não é diretório. Quem decide é o SKILL.md lá dentro.
+		// No IsDir filter: skills are often symlinks to the repository
+		// where you version them, and to os.ReadDir a symlink is not a
+		// directory. What decides is the SKILL.md inside.
 		s, ok := read(filepath.Join(dir, e.Name()))
 		if !ok {
 			continue
@@ -64,7 +64,7 @@ func List(dir string) []Skill {
 	return out
 }
 
-// read lê o frontmatter de um SKILL.md. Pasta sem SKILL.md não é skill.
+// read reads a SKILL.md's frontmatter. A folder without SKILL.md is not a skill.
 func read(dir string) (Skill, bool) {
 	f, err := os.Open(filepath.Join(dir, "SKILL.md"))
 	if err != nil {
@@ -77,9 +77,9 @@ func read(dir string) (Skill, bool) {
 	return s, true
 }
 
-// frontmatterOf lê o frontmatter de um SKILL.md já em memória — é como as
-// skills embarcadas no binário se descrevem, sem passar pelo disco. Sem `name`
-// no frontmatter, vale o nome da pasta.
+// frontmatterOf reads the frontmatter of a SKILL.md already in memory — it is
+// how the skills embedded in the binary describe themselves, without going
+// through the disk. With no `name` in the frontmatter, the folder name is used.
 func frontmatterOf(content, fallback string) (name, description string) {
 	name, description = parseFrontmatter(strings.NewReader(content))
 	if name == "" {
@@ -88,8 +88,8 @@ func frontmatterOf(content, fallback string) (name, description string) {
 	return name, description
 }
 
-// parseFrontmatter lê o bloco YAML entre os dois `---` do topo. Só interessam
-// name e description: é o que a página mostra.
+// parseFrontmatter reads the YAML block between the two `---` at the top. Only
+// name and description matter: they are what the page shows.
 func parseFrontmatter(r io.Reader) (name, description string) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
@@ -104,8 +104,8 @@ func parseFrontmatter(r io.Reader) (name, description string) {
 		if strings.TrimSpace(line) == "---" {
 			break
 		}
-		// Linha indentada continua o valor anterior: descrições longas vêm
-		// quebradas em várias linhas no YAML.
+		// An indented line continues the previous value: long descriptions come
+		// broken across several lines in the YAML.
 		if key != "" && (strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "\t")) {
 			if key == "description" {
 				description = strings.TrimSpace(description + " " + strings.TrimSpace(line))
@@ -129,9 +129,9 @@ func parseFrontmatter(r io.Reader) (name, description string) {
 	return name, description
 }
 
-// TaskSkill devolve a skill que uma task invoca — o "/review-fleet" de
-// "/review-fleet {{number}} --post". Task que não começa com barra não chama
-// skill nenhuma.
+// TaskSkill returns the skill a task invokes — the "/review-fleet" of
+// "/review-fleet {{number}} --post". A task that doesn't start with a slash
+// calls no skill.
 func TaskSkill(task string) string {
 	task = strings.TrimSpace(task)
 	if !strings.HasPrefix(task, "/") {
@@ -144,7 +144,7 @@ func TaskSkill(task string) string {
 	return name
 }
 
-// Has diz se uma skill está entre as instaladas.
+// Has says whether a skill is among the installed ones.
 func Has(list []Skill, name string) bool {
 	for _, s := range list {
 		if strings.EqualFold(s.Name, name) {
