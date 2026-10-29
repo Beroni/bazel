@@ -355,11 +355,11 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .history-row:hover { background: var(--hover); }
 .end-note { margin-top: 28px; }
 
-.md { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; line-height: 1.65; max-width: 78ch; }
-.md h1 { font-size: 22px; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
-.md h2 { font-size: 18px; margin-top: 28px; color: var(--accent); }
+.md { font-family: var(--sans); font-size: 14px; line-height: 1.65; max-width: 80ch; }
+.md h1 { font-size: 21px; border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-top: 0; }
+.md h2 { font-size: 16.5px; margin-top: 30px; color: var(--accent); }
 .md h3 { font-size: 15px; margin-top: 22px; }
-.md code { font-family: var(--mono); font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+.md code { font-family: var(--mono); font-size: 12.5px; background: var(--hover); padding: 1px 5px; border-radius: 4px; }
 .md pre { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 12px 14px; overflow-x: auto;
   font-family: var(--mono); font-size: 12.5px; line-height: 1.5; color: var(--text); }
 .md pre code { background: none; padding: 0; }
@@ -375,12 +375,18 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .md hr { border: 0; border-top: 1px solid var(--line); margin: 26px 0; }
 .md img { max-width: 100%; }
 
-.error-box { background: #1e1113; border: 1px solid #45222a; color: #fca5a5; border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; }
+.error-box { background: var(--err-soft); border: 1px solid color-mix(in srgb, var(--err) 35%, transparent); color: #fca5a5; border-radius: var(--radius-md); padding: 12px 14px; white-space: pre-wrap; margin-bottom: 12px; }
 .dim { color: var(--dim); }
 
-/* --- saved --- */
-.saved { border-bottom: 1px solid var(--line); padding: 10px 13px; cursor: pointer; }
-.saved:hover { background: var(--panel-2); }
+/* --- saved, and the panels that are not a job --- */
+.doc .job-body { padding: 4px 22px 28px; }
+.doc .viewer-head { padding: 16px 0 12px; }
+.doc .viewer-head .kicker { margin-bottom: 3px; }
+.job-body a { color: var(--blue); }
+.saved-list { padding-top: 12px; }
+.saved { border-radius: var(--radius-md); padding: 9px 12px; cursor: pointer; }
+.saved:hover { background: var(--hover); }
+.saved-title { font-weight: 500; }
 .saved .name { font-size: 12px; color: var(--dim); }
 
 /* --- pages --- */
@@ -516,22 +522,23 @@ main.no-prs .burger span { background: var(--accent); }
 .tag.stale { border-color: var(--warn); color: var(--warn); }
 .stale-box {
   margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
-  background: #2a1b12; color: var(--warn);
-  border: 1px solid #4a3218; border-radius: 6px;
+  background: var(--warn-soft); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius: var(--radius-md);
 }
 
 /* The actions sit at the end of the review, which is where you are when you
    finish reading — and reading before publishing is the point. */
 .viewer-actions {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line);
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-top: 28px; padding: 14px 0 0; border-top: 1px solid var(--line);
+  position: sticky; bottom: -28px; background: var(--panel); padding-bottom: 14px;
 }
 
 /* Pipeline that stopped at publish: nothing went up yet, and the choice is yours. */
 .awaits-note {
   margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
-  background: #2a1b12; color: var(--warn);
-  border: 1px solid #4a3218; border-radius: 6px;
+  background: var(--warn-soft); color: var(--warn);
+  border: 1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius: var(--radius-md);
 }
 /* When only part of the report goes to the PR, both parts get a label. What
    stays in Bazel is dimmed: it is context for you, not for the author. */
@@ -544,7 +551,7 @@ main.no-prs .burger span { background: var(--accent); }
 
 /* The checkbox of each finding: unticked, it is left behind on publishing.
    What dims is the content, not the box — the box is what brings it back. */
-.finding { margin-top: 22px; padding-left: 14px; border-left: 2px solid var(--line); }
+.finding { margin-top: 18px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent-line); }
 .finding > h3 { margin-top: 4px; }
 .finding-pick {
   display: flex; align-items: center; gap: 6px; width: fit-content;

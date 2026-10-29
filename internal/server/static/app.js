@@ -50,6 +50,15 @@ const clearViewer = () => {
   delete v.dataset.sig;
   return v;
 };
+// docPanel frames what is not a job — a PR, the saved list, a saved review —
+// in the same panel the job detail uses, and returns the part that scrolls.
+const docPanel = () => {
+  const box = el('div', 'job doc');
+  const body = el('div', 'job-body');
+  box.append(body);
+  clearViewer().append(box);
+  return body;
+};
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -397,7 +406,7 @@ function openPR(key) {
   renderPRs();
   renderJobs();
 
-  const v = clearViewer();
+  const v = docPanel();
 
   const head = el('div', 'viewer-head');
   const grow = el('div', 'grow');
@@ -595,11 +604,15 @@ async function openSaved(name) {
   renderSaved();
   try {
     const data = await api('/api/reviews/' + encodeURIComponent(name));
-    const v = clearViewer();
+    const v = docPanel();
+    const entry = state.saved.find((x) => x.name === name);
     const head = el('div', 'viewer-head');
     const grow = el('div', 'grow');
-    grow.append(el('h2', null, data.name));
-    head.append(grow);
+    grow.append(el('div', 'kicker', [entry && entry.agent, data.name].filter(Boolean).join(' · ')),
+      el('h2', null, (entry && entry.title) || data.name));
+    const back = el('button', 'btn small ghost', '← all saved');
+    back.addEventListener('click', () => { state.activeSaved = null; renderSaved(); });
+    head.append(grow, back);
     v.append(head);
     const md = el('div', 'md');
     md.innerHTML = data.html;
@@ -609,7 +622,6 @@ async function openSaved(name) {
 
     // A saved review stays publishable: closing Bazel before sending it to the
     // PR can't cost the agent's work.
-    const entry = state.saved.find((x) => x.name === name);
     if (entry && entry.repo && entry.publishable === false) {
       const nota = el('p', 'dim');
       nota.style.marginTop = '28px';
@@ -617,7 +629,7 @@ async function openSaved(name) {
       v.append(nota);
     } else if (entry && entry.repo) {
       const bar = el('div', 'viewer-actions');
-      const pub = el('button', 'btn primary', 'publish inline review');
+      const pub = el('button', 'btn solid', 'Publish inline review');
       pub.title = `runs the post skill and publishes to ${entry.repo}#${entry.number} with inline comments`;
       pub.addEventListener('click', () => publishSaved(name, pub));
       const cm = el('button', 'btn ghost', 'or paste as a comment');
@@ -1464,15 +1476,16 @@ function renderSaved() {
   const rail = $('#rail');
   rail.innerHTML = '';
   if (!state.saved.length) {
-    clearViewer().append(el('p', 'empty', 'no saved reviews yet'));
+    docPanel().append(el('p', 'empty', 'no saved reviews yet'));
     return;
   }
   if (!state.activeSaved) {
-    const v = clearViewer();
-    const list = el('div');
+    const v = docPanel();
+    const list = el('div', 'saved-list');
     for (const s of state.saved) {
       const row = el('div', 'saved');
-      row.append(el('div', null, s.title || s.name), el('div', 'name', `${s.name} · ${new Date(s.mod_time).toLocaleString()}`));
+      row.append(el('div', 'saved-title', s.title || s.name),
+        el('div', 'name', [s.agent, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
       list.append(row);
     }
