@@ -9,3 +9,7 @@ coverage.out
 
 # macOS
 .DS_Store
+
+# local drafts (PRDs, specs) that live only in this clone
+docs/prd/
+docs/superpowers/
