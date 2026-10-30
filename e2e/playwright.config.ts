@@ -20,6 +20,8 @@ export default defineConfig({
   use: {
     ...devices['Desktop Chrome'],
     headless: true,
+    // A service worker's requests would not go through the harness's route.
+    serviceWorkers: 'block',
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     viewport: { width: 1440, height: 900 },

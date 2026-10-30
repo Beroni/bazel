@@ -59,6 +59,19 @@ export const test = base.extend<Fixtures>({
     }
   },
 
+  // No page of the test may leave the origins of this Bazel. On the context, so
+  // that it covers every page, and on the parsed URL: the text of a URL says
+  // little about its host (http://127.0.0.1:7777@attacker.invalid/).
+  context: async ({ context, bazel }, use) => {
+    await context.route('**/*', (route) => {
+      const url = route.request().url();
+      if (bazel.mayVisit(url)) return route.continue();
+      bazel.blocked.push(url);
+      return route.abort();
+    });
+    await use(context);
+  },
+
   dialogs: async ({}, use) => {
     await use({ accept: true, messages: [] });
   },
@@ -70,8 +83,6 @@ export const test = base.extend<Fixtures>({
       dialogs.messages.push(d.message());
       return dialogs.accept ? d.accept() : d.dismiss();
     });
-    // Belt and braces: the page must never leave 127.0.0.1.
-    await page.route(/^(?!http:\/\/127\.0\.0\.1:)/, (route) => route.abort());
     await page.goto(bazel.url + '/');
     // The PR list loads after /api/state, asynchronously. Acting before it is
     // there (ticking "select all" on an empty list) is a race that only shows

@@ -143,6 +143,10 @@ export class Bazel {
   /** This test's own copy of the gh fixtures: mutate it with updatePR / setGh. */
   readonly fixturesDir: string;
   port = 0;
+  /** Other origins a test serves itself, such as a proxy in front of this server. */
+  readonly extraOrigins = new Set<string>();
+  /** URLs the browser tried and the harness aborted. */
+  readonly blocked: string[] = [];
   private proc?: ChildProcess;
   private exited?: Promise<number | null>;
 
@@ -163,6 +167,12 @@ export class Bazel {
 
   get url(): string {
     return `http://127.0.0.1:${this.port}`;
+  }
+
+  /** Whether a page may load this URL: only from this server's origin. */
+  mayVisit(url: string): boolean {
+    const u = new URL(url);
+    return !u.username && !u.password && (u.origin === this.url || this.extraOrigins.has(u.origin));
   }
 
   get reviewsDir(): string {
@@ -340,8 +350,12 @@ export class Bazel {
     return (await this.api('GET', `/api/jobs/${id}`)).json;
   }
 
-  /** Polls a job until pred holds; returns the last view. */
-  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 25_000): Promise<any> {
+  /**
+   * Polls a job until pred holds; returns the last view. The budget has room for
+   * a clone: the fake gh builds the origin with some 15 git processes, which
+   * took over 20s with the load average at 80.
+   */
+  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 40_000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any;
     while (Date.now() < deadline) {
@@ -423,4 +437,3 @@ export class Bazel {
     return { isError: !!r.isError, text: r.content?.[0]?.text ?? '', out: r.structuredContent };
   }
 }
-
