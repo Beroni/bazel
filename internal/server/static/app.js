@@ -347,6 +347,7 @@ function upsertJob(job) {
   }
   renderJobs();
   if (state.activeJob === job.id) renderViewer();
+  syncReviewingTags();
 
   // A finished review changes the PR's badge in the list: reload from the
   // server cache (which costs no GitHub call) so the ✓ shows up right away.
@@ -366,6 +367,7 @@ function dropJob(id) {
   delete state.splits[id];
   delete state.picks[pickKey('job', id)];
   delete state.logs[id];
+  syncReviewingTags();
   delete state.views[id];
   delete state.logFilter[id];
   if (state.activeJob === id) {
@@ -1328,8 +1330,18 @@ function logPanel(job) {
   return wrap;
 }
 
+// syncFilterMenu lights the filter icon when one of the filters it hides is on,
+// so a narrowed list never looks like a short one.
+function syncFilterMenu() {
+  const on = state.scope !== 'all' || state.hideDrafts || !!state.ownerFilter || !!state.repoFilter;
+  const b = $('#filter-btn');
+  b.classList.toggle('on', on);
+  b.title = on ? 'filters on — click to see or change them' : 'more filters: whose PRs, drafts, owner and repository';
+}
+
 function renderStats() {
   syncSelectAll();
+  syncFilterMenu();
   const total = state.prs.length;
   const shown = visiblePRs().length;
   const marked = markedPRs().length;
@@ -1394,33 +1406,26 @@ function renderPRs() {
     // and ticking for review has a target of its own.
     row.addEventListener('click', () => openPR(pr.key));
 
-    // Title first, the way the eye scans a list; under it the repository and
-    // number with the state tags on the right, and the size of the change.
+    // Two lines, as the design draws them: the title, then the repository and
+    // number with one state tag on the right — reviewing, changed or
+    // reviewed. Everything else about the PR (author, size, age, draft,
+    // approvals) is in the row's tooltip and in its Overview.
     const main = el('div', 'pr-main');
     const sub = el('div', 'pr-sub');
     sub.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
-    const tags = el('span', 'pr-tags');
-    if (pr.draft) tags.append(el('span', 'tag draft', 'draft'));
-    if (pr.mine) tags.append(el('span', 'tag mine', 'you'));
-    if (pr.review_decision === 'APPROVED') tags.append(el('span', 'tag approved', 'approved'));
-    if (pr.review_decision === 'CHANGES_REQUESTED') tags.append(el('span', 'tag changes', 'changes'));
-    for (const t of reviewTags(pr)) tags.append(t);
-    sub.append(tags);
-
-    const meta = el('div', 'meta');
-    meta.append(
-      el('span', null, '@' + pr.author),
-      el('span', 'add', '+' + pr.additions),
-      el('span', 'del', '−' + pr.deletions),
-      el('span', null, `${pr.changed_files} files`),
-      el('span', null, pr.age),
-    );
-
+    const tag = prStateTag(pr);
+    if (tag) sub.append(tag);
     // The title is the keyboard way in: the row's click opens the PR, and the
     // checkbox next to it stays its own control.
     const title = operable(el('span', 'title', pr.title), `open ${pr.key}: ${pr.title}`, () => openPR(pr.key));
-    title.title = pr.title;
-    main.append(title, sub, meta);
+    row.title = [
+      pr.title,
+      `${pr.key} · @${pr.author} · +${pr.additions} −${pr.deletions} · ${pr.changed_files} files · ${pr.age}`,
+      [pr.draft && 'draft', pr.mine && 'yours',
+        pr.review_decision === 'APPROVED' && 'approved', pr.review_decision === 'CHANGES_REQUESTED' && 'changes requested']
+        .filter(Boolean).join(' · '),
+    ].filter(Boolean).join('\n');
+    main.append(title, sub);
     row.append(box, main);
     list.append(row);
   }
@@ -1439,14 +1444,14 @@ const ago = (age) => (age === 'just now' ? age : age + ' ago');
 function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
-    const t = tid(el('span', 'tag stale', '⟳ changed'), 'pr-review-tag', { state: 'changed' });
+    const t = tid(el('span', 'tag stale', 'changed'), 'pr-review-tag', { state: 'changed' });
     // A stale review that already went to the PR is the case worth flagging.
     t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
       + (pr.review_posted ? ', published on the PR' : '')
       + ', and the PR got new commits afterwards';
     return [t];
   }
-  const t = tid(el('span', 'tag reviewed', '✓ ' + pr.reviewed_at + (pr.review_posted ? ' ↑' : '')),
+  const t = tid(el('span', 'tag reviewed', 'reviewed ' + (pr.reviewed_at === 'just now' ? 'now' : pr.reviewed_at)),
     'pr-review-tag', { state: pr.review_posted ? 'published' : 'reviewed' });
   t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
     + (pr.review_posted ? ', and published on the PR' : '');
@@ -1460,6 +1465,26 @@ function selectVisible(on) {
   for (const pr of visiblePRs()) {
     if (on) state.selected.add(pr.key); else state.selected.delete(pr.key);
   }
+}
+
+// syncReviewingTags redraws the PR list when the set of PRs with a live job
+// changes, so a row says "reviewing" while one runs over it — and only then:
+// the list is not rebuilt on every job event.
+function syncReviewingTags() {
+  const sig = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running')
+    .map((j) => j.pr.key).sort().join(' ');
+  if (sig === state.liveSig) return;
+  state.liveSig = sig;
+  renderPRs();
+}
+
+// prStateTag is the one tag a PR row carries: "reviewing" while a job of this
+// session runs over it, else what reviewTags says (changed, or reviewed with
+// its age).
+function prStateTag(pr) {
+  const live = state.jobs.some((j) => j.pr.key === pr.key && (j.state === 'queued' || j.state === 'running'));
+  if (live) return tid(el('span', 'tag reviewing', 'reviewing'), 'pr-review-tag', { state: 'reviewing' });
+  return reviewTags(pr)[0] || null;
 }
 
 function toggle(key, on) {
@@ -1510,6 +1535,12 @@ function renderQuota() {
   renderQuotaParts();
   const box = $('#quota');
   box.dataset.level = box.querySelector('.hot') ? 'crit' : box.querySelector('.warn') ? 'warn' : 'ok';
+  // The bar carries only "N% of session used"; the rest lives in the popover.
+  const short = $('#quota-short');
+  const l = state.limits;
+  const pct = l && l.session ? Math.round((l.session.utilization || 0) * 100) : null;
+  short.textContent = pct === null ? 'Claude usage' : `${pct}% of session used`;
+  short.className = 'meter-short' + (pct >= 90 ? ' hot' : pct >= 75 ? ' warn' : '');
 }
 
 function renderQuotaParts() {
@@ -1598,22 +1629,23 @@ function renderJobs() {
     x.setAttribute('aria-label', 'drop from the queue');
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
     top.append(sp, x);
-    const title = el('div', 'title', job.pr.title);
-    title.title = job.pr.title;
-    card.append(top, title);
+    card.append(top, el('div', 'title', job.pr.title));
 
-    const meta = el('div', 'card-meta');
+    // The design's card is the dot, repo #n, ✕, the title and the bar. State,
+    // agent and spend go to the tooltip and to the detail; the state stays in
+    // the card as screen-reader text, so the card still says it out loud.
+    const meta = el('div', 'sr-only');
     meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
-    if (job.agent) meta.append(el('span', 'card-agent', job.agent + (job.pipeline ? ' ⛓' : '')));
-    if (job.publishing) meta.append(el('span', 'tag posts', '⇧ publishing'));
-    else if (job.posts) meta.append(el('span', 'tag posts', '⇧ publishes'));
-    else if (job.posted) meta.append(tid(el('span', 'tag reviewed', '✓ published'), 'job-published'));
+    if (job.agent) meta.append(el('span', null, ' · ' + job.agent));
+    if (job.posted) meta.append(tid(el('span', null, ' ✓ published'), 'job-published'));
     const custo = gasto(job);
-    if (custo) {
-      const g = tid(el('span', 'tokens', custo), 'job-tokens', { partial: !!job.tokens_partial });
-      g.title = gastoTitle(job);
-      meta.append(g);
-    }
+    if (custo) meta.append(tid(el('span', 'tokens', ' · ' + custo), 'job-tokens', { partial: !!job.tokens_partial }));
+    card.title = [
+      `${job.pr.key} — ${job.pr.title}`,
+      label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
+      job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
+      custo,
+    ].filter(Boolean).join('\n');
     card.append(meta, progressBar(job));
     rail.append(card);
   }
@@ -1731,10 +1763,10 @@ function tickViewer(job) {
     if (time) time.textContent = secs + 's';
     else if (secs) row.append(el('span', 'step-time', secs + 's'));
   });
-  const label_ = document.querySelector('#viewer .job-head .state');
-  if (label_) {
-    label_.textContent = '';
-    fillState(label_, job);
+  const pill = document.querySelector('#viewer .job-head .state-pill');
+  if (pill) {
+    pill.textContent = pillText(job);
+    pill.title = label(job);
   }
 }
 
@@ -1776,6 +1808,13 @@ function renderViewer() {
   if (view !== 'log') body.scrollTop = 0;
 }
 
+// pillText is the word in the detail's state pill, as the design writes it:
+// Running, Ready… The clock goes to its tooltip.
+function pillText(job) {
+  if (job.state === 'done') return waiting(job) ? 'Waiting on you' : 'Ready';
+  return { queued: 'Queued', running: 'Running', failed: 'Failed', canceled: 'Canceled' }[job.state] || job.state;
+}
+
 // jobHead names the PR (repo#n · author), its title, the state and the one
 // action that makes sense while the job is alive: cancel.
 function jobHead(job) {
@@ -1785,7 +1824,9 @@ function jobHead(job) {
   const link = prLink(job.pr);
   kicker.append(link, document.createTextNode(' · ' + job.pr.author));
   grow.append(kicker, el('h2', null, job.pr.title));
-  head.append(grow, fillState(el('span', 'state state-pill ' + job.state), job));
+  const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
+  pill.title = label(job);
+  head.append(grow, pill);
   if (job.state === 'queued' || job.state === 'running') {
     const b = tid(el('button', 'btn small', 'Cancel'), 'job-cancel');
     b.addEventListener('click', () => cancelJob(job.id));
@@ -2048,6 +2089,20 @@ function wire() {
     });
   });
   $('#toggle-prs').addEventListener('click', () => togglePRs(!state.prsHidden));
+  // The filter menu next to the search: whose PRs, drafts, owner and repo.
+  // It opens and closes on its button, and closes on Escape or a click
+  // anywhere outside it.
+  const fbtn = $('#filter-btn');
+  const fpop = $('#filter-pop');
+  const setPop = (open) => {
+    fpop.hidden = !open;
+    fbtn.setAttribute('aria-expanded', String(open));
+  };
+  fbtn.addEventListener('click', (e) => { e.stopPropagation(); setPop(fpop.hidden); });
+  document.addEventListener('click', (e) => {
+    if (!fpop.hidden && !fpop.contains(e.target) && e.target !== fbtn) setPop(false);
+  });
+  fpop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setPop(false); fbtn.focus(); } });
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
   $('#select-all').addEventListener('change', (e) => { selectVisible(e.target.checked); renderPRs(); });
   document.querySelectorAll('#scope button').forEach((b) => {

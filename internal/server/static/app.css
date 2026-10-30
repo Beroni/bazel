@@ -113,7 +113,29 @@ select.on { border-color: var(--accent-line); color: var(--accent); }
 .stats { color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
 /* The session spend sits next to the PR count: it is the number that answers
    "how much did this cost me today" without opening any review. */
-.spend, .quota { padding-left: 12px; border-left: 1px solid var(--line); }
+/* The meter: "N% of session used" in the bar; hovering or focusing it opens a
+   small card with the PR count, the session spend, both quota windows and
+   who you are. */
+.meter { position: relative; outline: none; padding: 4px 2px; cursor: default; }
+.meter-short { color: var(--dim); font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.meter-short.warn { color: var(--warn); }
+.meter-short.hot { color: var(--err); }
+.meter-pop {
+  display: none; position: absolute; right: 0; top: calc(100% + 6px); z-index: 20;
+  min-width: 240px; padding: 10px 12px; flex-direction: column; gap: 6px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.meter:hover .meter-pop, .meter:focus-visible .meter-pop, .meter:focus-within .meter-pop { display: flex; }
+.meter:focus-visible .meter-short { color: var(--text); }
+.meter-pop [hidden] { display: none; }
+.icon-btn {
+  width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: 6px; color: var(--dim); cursor: pointer; font-size: 15px;
+}
+.icon-btn:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.icon-btn:disabled { opacity: .4; cursor: default; }
+.icon-btn.on { color: var(--accent); }
 /* The Claude quota — the same windows as /usage. Stays quiet until it gets tight. */
 .quota .warn { color: var(--warn); }
 .quota .hot { color: var(--err); }
@@ -190,6 +212,19 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 /* Owner, repository, scope and drafts: the less used filters, on their own
    compact rows. Each selector asks for a readable minimum width, and the row
    wraps instead of squeezing them. */
+/* The filter menu: a small card under the search, over the list. */
+.pane-head { position: relative; }
+.fpop {
+  position: absolute; left: 11px; right: 11px; top: 52px; z-index: 15;
+  display: flex; flex-direction: column; gap: 9px; padding: 10px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--radius-md);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .45);
+}
+.fpop[hidden] { display: none; }
+#filter-btn.on::after {
+  content: ""; position: absolute; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); transform: translate(8px, -8px);
+}
 .filters { flex-wrap: wrap; }
 .filters select { flex: 1 1 110px; font-size: 12px; padding: 3px 6px; }
 .filters:not(:has(select:not([hidden]))):has(select) { display: none; }
@@ -254,7 +289,7 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .rail { display: flex; gap: 8px; padding: 8px 16px 12px; overflow-x: auto; flex: none; }
 .rail:empty { display: none; }
 .card {
-  width: 210px; flex: none; display: flex; flex-direction: column; gap: 4px;
+  position: relative; width: 210px; flex: none; display: flex; flex-direction: column; gap: 4px;
   background: var(--panel); border: 1px solid var(--line);
   border-radius: var(--radius-md); padding: 9px 11px 10px; cursor: pointer;
 }
@@ -268,6 +303,8 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .card.failed .card-top .dot { color: var(--err); }
 .card-ref { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .title { margin: 0; font-size: 12.5px; color: var(--dim); }
+/* Text only screen readers see: the state the card no longer prints. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 .card-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: 11.5px; color: var(--dim); }
 .card-meta .state { font-size: 10.5px; }
 .card-agent { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
@@ -321,8 +358,11 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .state-pill {
   text-transform: none; letter-spacing: 0; font-size: 12px; font-weight: 600;
   padding: 3px 10px; border-radius: 6px; white-space: nowrap;
-  background: color-mix(in srgb, currentColor 15%, transparent);
+  background: color-mix(in srgb, currentColor 15%, transparent); border: 1px solid transparent;
 }
+/* Ready is outlined in the accent, Running is filled, like the design. */
+.state-pill.done:not(.awaits) { color: var(--accent); background: transparent; border-color: var(--accent-line); }
+.state-pill.running { color: var(--text); background: var(--accent-soft-2); }
 .state.awaits { color: var(--warn); }
 
 .vtabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--line); }
@@ -494,8 +534,12 @@ main.no-prs .burger span { background: var(--accent); }
 .log-count { margin: auto 0 0; padding: 8px 9px 2px; font-size: 11px; }
 .log-stream {
   flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px;
+  display: flex; flex-direction: column;
   font: 12px/1.6 var(--mono); background: color-mix(in srgb, var(--bg) 55%, var(--panel));
 }
+/* Lines sit at the bottom and grow upward, like a terminal (and the design);
+   margin-top: auto keeps the top reachable once they overflow. */
+.log-stream > :first-child { margin-top: auto; }
 .log-empty { color: var(--dim); font-style: italic; font-size: 12px; margin: 0; }
 .log-line { display: flex; gap: 14px; }
 .log-line[hidden] { display: none; }
@@ -517,10 +561,13 @@ main.no-prs .burger span { background: var(--accent); }
 .c5 { color: #f472b6; }
 
 .tag.posts { color: var(--warn); }
-.tag.reviewed { color: var(--ok); }
+/* As the design colors them: reviewed is quiet, changed and reviewing carry
+   the accent. */
+.tag.reviewed { color: var(--dim); }
+.tag.reviewing { color: var(--accent); }
 /* Reviewed and changed afterwards: the warning is worth more than the ✓,
    because what is on GitHub is no longer what the agent read. */
-.tag.stale { color: var(--warn); }
+.tag.stale { color: var(--accent); }
 /* A PR that changed after its review, and a pipeline that stopped at publish
    (nothing went up yet, the choice is yours): the same warning box. */
 .stale-box, .awaits-note {

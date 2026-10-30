@@ -16,11 +16,18 @@
     <a href="#/config" data-page="config" data-testid="nav-config">Config</a>
   </nav>
   <div class="spacer"></div>
-  <div class="stats" id="stats" data-testid="pr-count">loading…</div>
-  <div class="stats spend" id="spend" data-testid="spend-total" hidden></div>
-  <div class="stats quota" id="quota" data-testid="quota" hidden></div>
-  <div class="who" id="who" data-testid="whoami"></div>
-  <button class="btn small ghost" id="refresh" data-testid="refresh" title="refresh the list from GitHub">↻ refresh</button>
+  <!-- The bar shows only the session quota, as the design does. PR count,
+       spend, the week window and who you are open on hover or focus. -->
+  <div class="meter" id="meter" tabindex="0" aria-describedby="meter-pop">
+    <span class="meter-short" id="quota-short" data-testid="quota-short">Claude usage</span>
+    <div class="meter-pop" id="meter-pop" role="tooltip">
+      <div class="stats" id="stats" data-testid="pr-count">loading…</div>
+      <div class="stats spend" id="spend" data-testid="spend-total" hidden></div>
+      <div class="stats quota" id="quota" data-testid="quota" hidden></div>
+      <div class="who" id="who" data-testid="whoami"></div>
+    </div>
+  </div>
+  <button class="icon-btn" id="refresh" data-testid="refresh" title="refresh the list from GitHub" aria-label="refresh the PR list">↻</button>
 </header>
 
 <div id="banner" data-testid="banner" class="banner" hidden></div>
@@ -35,23 +42,29 @@
           <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
           <input id="filter" data-testid="pr-filter" type="search" placeholder="Search title, repo, author" autocomplete="off">
         </label>
+        <button class="icon-btn" id="filter-btn" data-testid="pr-filter-menu" aria-haspopup="true" aria-expanded="false"
+                aria-controls="filter-pop" title="more filters: whose PRs, drafts, owner and repository">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
       </div>
-      <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
-        <button data-review="all" class="on" aria-pressed="true">All</button>
-        <button aria-pressed="false" data-review="none" title="not reviewed yet">New</button>
-        <button aria-pressed="false" data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
-        <button aria-pressed="false" data-review="changed" title="got new commits after the review">Changed</button>
-      </div>
-      <div class="row filters">
+      <div class="fpop" id="filter-pop" data-testid="pr-filter-pop" role="group" aria-label="more filters" hidden>
+        <div class="row filters">
         <div class="segmented" id="scope" role="group" aria-label="whose PRs" data-testid="pr-scope">
           <button data-scope="all" class="on" aria-pressed="true">everyone</button>
           <button data-scope="mine" aria-pressed="false">mine only</button>
         </div>
         <label class="check tiny"><input type="checkbox" id="hide-drafts" data-testid="pr-hide-drafts"> hide drafts</label>
       </div>
-      <div class="row filters">
+        <div class="row filters">
         <select id="owner-filter" data-testid="pr-owner-filter" title="show only the PRs of one owner"></select>
         <select id="repo-filter" data-testid="pr-repo-filter" title="show only the PRs of one repository"></select>
+      </div>
+      </div>
+      <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
+        <button data-review="all" class="on" aria-pressed="true">All</button>
+        <button aria-pressed="false" data-review="none" title="not reviewed yet">New</button>
+        <button aria-pressed="false" data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
+        <button aria-pressed="false" data-review="changed" title="got new commits after the review">Changed</button>
       </div>
     </div>
     <div id="pr-list" class="list"><p class="empty">loading PRs…</p></div>
