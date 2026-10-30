@@ -34,7 +34,12 @@ printf '{\n  "name": "bazel",\n  "description": "Skills that ship inside Bazel"\
 cp -R "$BUILTIN"/. "$PLUGIN/skills/"
 cp "$BUILTIN"/*/agents/*.md "$PLUGIN/agents/"
 
-# 3. The prompt, as config.defaultPrompt fills it.
+# 3. The PR's agent configuration leaves the working tree, as workspace.Neutralize
+#    does it: at any depth, in any case, no symlink followed.
+(cd "$CLONE" && find . -name .git -prune -o \
+  \( -iname .claude -o -iname .codex -o -iname .grok -o -iname .mcp.json \) -prune -exec rm -rf {} +)
+
+# 4. The prompt, as config.defaultPrompt fills it.
 META=$(cd "$CLONE" && gh pr view "$PR" --json title,author,url,headRefName,baseRefName,body)
 field() { jq -r "$1" <<<"$META"; }
 BODY=$(field .body); [ -n "$BODY" ] || BODY="(no description)"
@@ -55,10 +60,9 @@ $BODY
 Write only the final report to stdout, in Markdown.
 PROMPT
 
-# 4. The agent, with Bazel's default args and the flags confineClaude adds: the
-#    PR's .claude/settings.json hooks and .mcp.json servers never run.
-ARGS=(-p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent
-  --setting-sources user --strict-mcp-config --plugin-dir "$PLUGIN")
+# 5. The agent, with the flags confineClaude adds ahead of Bazel's default args.
+ARGS=(--setting-sources user --strict-mcp-config --plugin-dir "$PLUGIN"
+  -p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent)
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 START=$(date +%s)
 (cd "$CLONE" && claude "${ARGS[@]}" < "$WORK/prompt.md" > "$WORK/stream.jsonl" 2> "$WORK/stderr.log")
@@ -68,13 +72,13 @@ jq -rs 'map(select(.type=="result")) | last | .result // ""' "$WORK/stream.jsonl
 RESULTS=$(jq -s 'map(select(.type=="result")) | length' "$WORK/stream.jsonl")
 jq -rs 'map(select(.type=="result")) | last | "cost: $\(.total_cost_usd) · turns: \(.num_turns)"' "$WORK/stream.jsonl"
 
-# 5. The checks.
+# 6. The checks.
 FAIL=0
 check() { if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1"; FAIL=1; fi; }
 echo "checks:"
 check "report is not empty" '[ -s "$WORK/report.md" ]'
 check "the built-in skill loaded from the plugin" 'jq -e "select(.type==\"system\" and .subtype==\"init\") | .skills | map(tostring) | any(. == \"bazel:$SKILL\" or . == \"$SKILL\")" "$WORK/stream.jsonl" >/dev/null'
-check "nothing written into the clone" '[ -z "$(git -C "$CLONE" status --porcelain --ignored -uall)" ]'
+check "nothing written into the clone" '! git -C "$CLONE" status --porcelain --ignored -uall | grep -vq "^ D "'
 check "one turn, no progress notes before the report ($RESULTS results)" '[ "$RESULTS" = 1 ]'
 check "skill never asked a question" '! grep -q "\"name\":\"AskUserQuestion\"" "$WORK/stream.jsonl"'
 check "report starts with its header, no preamble" 'head -1 "$WORK/report.md" | grep -qE "^(<!-- (review-fleet|history-pr):v1|# )"'
