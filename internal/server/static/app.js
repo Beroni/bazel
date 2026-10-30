@@ -362,7 +362,7 @@ async function resync() {
 // also carry progress, and those must not rebuild what you are reading.
 function followPRPage(key) {
   const open = state.jobs.find((j) => j.id === state.activeJob);
-  if (state.activePR === key) openPR(key);
+  if (state.tab === 'queue' && state.activePR === key) openPR(key);
   else if (open && open.pr.key === key && jobView(open) === 'overview') redrawViewer();
 }
 
