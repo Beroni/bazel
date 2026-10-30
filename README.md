@@ -379,6 +379,12 @@ at the end of the list, log and all, and comes back to the review, now marked
 `✓ published`, when it finishes. Publishing is the end of a review, not a second
 job in the queue.
 
+`bazel-post-report` only takes a report it can check: every step of the review
+has to carry the `review-fleet:v1` header, which the built-in skills always
+print and `/review-fleet` of your own may not. Anything else is refused, the
+card says why, and nothing reaches the PR; use the second way below for those.
+It needs `jq`, and says so if it is missing.
+
 **2. Paste as a comment** ("or paste as a comment"). This is Bazel writing,
 with no agent: the review markdown becomes a single comment, immediately. No
 inline anchors, but no agent spend either.
