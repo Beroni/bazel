@@ -2700,3 +2700,48 @@ func TestGuardEInstanciaJuntos(t *testing.T) {
 		t.Error("job ids must carry the instance")
 	}
 }
+
+// An event a slow client cannot take would leave its page wrong for good: the
+// client is cut off instead, so it reconnects and reads the state again. The
+// others go on, and leaving afterwards is harmless.
+func TestHubCortaClienteLento(t *testing.T) {
+	h := NewHub()
+	slow, fine := h.Subscribe(), h.Subscribe()
+	defer h.Unsubscribe(fine)
+	for i := range cap(slow) + 1 {
+		h.Broadcast("job", i)
+		<-fine
+	}
+	if h.Clients() != 1 {
+		t.Errorf("%d clients, want the fine one", h.Clients())
+	}
+	n := 0
+	for range slow {
+		n++
+	}
+	if n != cap(slow) {
+		t.Errorf("slow client got %d events before the close", n)
+	}
+	h.Unsubscribe(slow)
+}
+
+// The stream subscribes before the page can see it open: an event right after
+// the first bytes is not lost.
+func TestEventsAssinaAntesDeAbrir(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events", nil)
+	req.Host = "127.0.0.1:7777"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if srv.hub.Clients() != 1 {
+		t.Errorf("headers arrived with %d subscribers", srv.hub.Clients())
+	}
+}

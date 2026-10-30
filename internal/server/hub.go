@@ -44,8 +44,10 @@ func (h *Hub) Unsubscribe(ch chan []byte) {
 	h.mu.Unlock()
 }
 
-// Broadcast sends an event to everyone. A slow client is skipped instead of
-// holding up the worker that is publishing.
+// Broadcast sends an event to everyone. A slow client must not hold up the
+// worker that is publishing, and skipping an event would leave its page wrong
+// for good, so it is cut off: its EventSource reconnects and reads the state
+// again.
 func (h *Hub) Broadcast(kind string, data any) {
 	payload, err := json.Marshal(event{Type: kind, Data: data})
 	if err != nil {
@@ -57,6 +59,8 @@ func (h *Hub) Broadcast(kind string, data any) {
 		select {
 		case ch <- payload:
 		default:
+			delete(h.subs, ch)
+			close(ch)
 		}
 	}
 }

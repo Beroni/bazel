@@ -315,13 +315,21 @@ async function loadPRs(force) {
 // --- server events ---
 
 function connect() {
+  let greeted = false; // the first hello of this page
   const src = new EventSource('/api/events');
   src.onopen = () => { $('#conn').classList.add('on'); $('#conn').dataset.state = 'open'; };
   src.onerror = () => { $('#conn').classList.remove('on'); $('#conn').dataset.state = 'closed'; };
   src.onmessage = (msg) => {
     let ev;
     try { ev = JSON.parse(msg.data); } catch { return; }
-    if (ev.type === 'hello') adoptInstance(ev.data.instance);
+    if (ev.type === 'hello') {
+      // A later hello means the stream broke and came back. With a new instance
+      // adoptInstance starts over; with the same one the events of the gap are
+      // gone all the same, and only reading the state brings them back.
+      if (greeted && ev.data.instance === state.instance) resyncSoon();
+      greeted = true;
+      adoptInstance(ev.data.instance);
+    }
     if (ev.type === 'job') upsertJob(ev.data);
     if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
     // Another tab took this job off the queue: it goes away here too.
@@ -358,6 +366,20 @@ function adoptInstance(id) {
   resync();
 }
 
+// resyncSoon resyncs once a stream that came back settles, and no more than
+// every RESYNC_GAP however much it flaps: a resync reads the list too.
+const RESYNC_GAP = 5000;
+let resyncTimer = null;
+let resyncAt = 0;
+function resyncSoon() {
+  if (resyncTimer) return;
+  resyncTimer = setTimeout(() => {
+    resyncTimer = null;
+    resyncAt = Date.now();
+    resync();
+  }, Math.max(300, resyncAt + RESYNC_GAP - Date.now()));
+}
+
 // resync redoes what the server restart made stale: the session queue, the PR
 // list with its badges, and the Saved tab.
 async function resync() {
@@ -368,13 +390,21 @@ async function resync() {
     state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
     renderQuota();
     applyAgents(st.agents || []);
+    // The job on screen may have ended, or gone, while nothing was listening.
+    const open = state.jobs.find((j) => j.id === state.activeJob);
+    if (state.activeJob && !open) {
+      state.activeJob = null;
+      if (state.tab === 'queue' && !state.activePR && !state.activeSaved) clearViewer();
+    }
     renderJobs();
     if (state.tab === 'queue') renderViewer();
+    if (open && open.has_body && !state.bodies[open.id]) openJob(open.id);
   } catch (err) {
     banner('Could not reach the server: ' + err.message);
     return;
   }
-  loadPRs(false);
+  await loadPRs(false);
+  if (state.activePR) followPRPage(state.activePR);
   if (state.tab === 'saved') loadSaved();
 }
 
@@ -1428,6 +1458,7 @@ function renderPRs() {
   const had = list.contains(document.activeElement) ? document.activeElement : null;
   const hadRow = had && had.closest('.pr') ? had.closest('.pr').dataset.prKey : null;
   const hadBox = !!(had && had.type === 'checkbox');
+  const top = list.scrollTop;
   list.innerHTML = '';
   queueMicrotask(() => {
     if (!hadRow) return;
@@ -1435,6 +1466,7 @@ function renderPRs() {
     const target = row && row.querySelector(hadBox ? 'input[type=checkbox]' : '.title');
     if (target) target.focus({ preventScroll: true });
   });
+  queueMicrotask(() => { list.scrollTop = top; });
   if (!prs.length) {
     list.append(el('p', 'empty', state.prs.length ? 'nothing matches the filter' : 'no open PRs'));
     renderStats();
