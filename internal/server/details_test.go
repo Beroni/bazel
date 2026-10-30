@@ -297,6 +297,17 @@ func TestLimiteGlobalDoGitHub(t *testing.T) {
 		t.Errorf("an old good page beats a refusal: %d, %d calls", code, calls)
 	}
 
+	// The page is not left without reads by forced refreshes, nor the other
+	// way round: they have a budget of their own, charged per gh process.
+	oldList := listReadsPerMin
+	listReadsPerMin = 3
+	t.Cleanup(func() { listReadsPerMin = oldList })
+	srv.detMu.Lock()
+	first, second, third := srv.listReadLocked(now, 2), srv.listReadLocked(now, 2), srv.listReadLocked(now.Add(time.Minute), 5)
+	srv.detMu.Unlock()
+	if !first || second || !third {
+		t.Errorf("list budget: %v %v %v", first, second, third)
+	}
 	srv.prsAt = time.Now()
 	at := srv.prsAt
 	if _, _, got, err := srv.loadPRs(context.Background(), true); err != nil || !got.Equal(at) {
@@ -410,8 +421,8 @@ func TestPRDetailsLeituraEmVoo(t *testing.T) {
 	}
 }
 
-// The tab that started a read may go away: the read goes on, its result is
-// kept, and a canceled read never lands in the cache as a failure.
+// The tab that started a read may go away: the read goes on and its result is
+// kept, so that never lands in the cache as a failure.
 func TestPRDetailsLeituraCancelada(t *testing.T) {
 	srv := newTestServer(t)
 	srv.prs = []gh.PR{testPR(482)}
@@ -438,18 +449,10 @@ func TestPRDetailsLeituraCancelada(t *testing.T) {
 	if seen != nil {
 		t.Errorf("the tab leaving reached the read: %v", seen)
 	}
-	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
-		return gh.Details{}, context.Canceled
-	}
 	srv.detMu.Lock()
-	delete(srv.details, "acme/api-core#482")
-	srv.detMu.Unlock()
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
-	srv.detMu.Lock()
-	_, kept := srv.details["acme/api-core#482"]
-	srv.detMu.Unlock()
-	if kept {
-		t.Error("a canceled read must not be cached")
+	defer srv.detMu.Unlock()
+	if e := srv.details["acme/api-core#482"]; e.err != "" || e.sha == "" && e.at.IsZero() {
+		t.Errorf("the read must be kept: %+v", e)
 	}
 }
 
@@ -513,5 +516,31 @@ func TestHistoryAvisaPassoCustom(t *testing.T) {
 		if !strings.Contains(w.Body.String(), `"history_custom":true`) && !strings.Contains(w.Body.String(), `"custom":true`) {
 			t.Errorf("%s does not say the step is custom: %s", path, w.Body)
 		}
+	}
+}
+
+// Forced refreshes that wait on one another are one: the list that landed in
+// the meantime answers them, at no cost.
+func TestRefreshEmFilaNaoRelê(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Repos = []string{"acme/api-core"}
+	srv.prsAt = time.Now()
+	srv.fetchMu.Lock()
+	done := make(chan time.Time)
+	go func() {
+		_, _, at, _ := srv.loadPRs(context.Background(), true)
+		done <- at
+	}()
+	time.Sleep(50 * time.Millisecond)
+	srv.prMu.Lock()
+	srv.prsAt = time.Now()
+	landed := srv.prsAt
+	srv.prMu.Unlock()
+	srv.fetchMu.Unlock()
+	if at := <-done; !at.Equal(landed) {
+		t.Errorf("got the list of %v, want the one that landed", at)
+	}
+	if len(srv.listReads) != 0 {
+		t.Errorf("a refresh that did not run was charged: %d", len(srv.listReads))
 	}
 }

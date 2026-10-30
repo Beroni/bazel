@@ -27,9 +27,11 @@ type detailsEntry struct {
 // not retried before detailsErrTTL, unless someone clicks Retry (retry=1):
 // that one goes to GitHub, at most once every detailsRetryGap, so a held-down
 // click or a script cannot turn it into a loop. Whatever reaches GitHub from
-// here, or from a forced refresh of the list, also counts against
-// ghReadsPerMin, because with GitHub failing is when more calls hurt most: past
-// it the last good page is served, or a 429. At most detailsMax entries
+// here also counts against ghReadsPerMin, because with GitHub failing is when
+// more calls hurt most: past it the last good page is served, or a 429. A
+// forced refresh of the list has a budget of its own, listReadsPerMin, so a
+// client looping on it cannot leave the page without its reads; it is charged
+// per gh process, one for each repository. At most detailsMax entries
 // are kept, the oldest going first. A PR that is not in the list is only read
 // when the page asks for it explicitly (offlist=1), and at most offListPerMin
 // times a minute: the list bounds what the page needs, and nothing else
@@ -40,7 +42,9 @@ var (
 	detailsMax    = 256
 	offListPerMin = 6
 	ghReadsPerMin = 60
-	timeNow       = time.Now
+
+	listReadsPerMin = 60
+	timeNow         = time.Now
 
 	detailsRetryGap    = 5 * time.Second
 	detailsReadTimeout = time.Minute
@@ -143,12 +147,9 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 	} else {
 		read.entry.view = detailsViewOf(d)
 	}
-	// A canceled read says nothing about the PR.
-	if !errors.Is(err, context.Canceled) {
-		s.detMu.Lock()
-		s.putDetails(key, read.entry)
-		s.detMu.Unlock()
-	}
+	s.detMu.Lock()
+	s.putDetails(key, read.entry)
+	s.detMu.Unlock()
 	return read.entry.answer()
 }
 
@@ -169,6 +170,20 @@ func (s *Server) ghReadLocked(now time.Time, offList bool) error {
 	}
 	s.ghReads = append(s.ghReads, now)
 	return nil
+}
+
+// listReadLocked takes n gh processes of a forced refresh from their budget. A
+// refresh bigger than the whole budget still goes when nothing else ran. Call
+// with detMu held.
+func (s *Server) listReadLocked(now time.Time, n int) bool {
+	s.listReads = lastMinute(s.listReads, now)
+	if len(s.listReads) > 0 && len(s.listReads)+n > listReadsPerMin {
+		return false
+	}
+	for range n {
+		s.listReads = append(s.listReads, now)
+	}
+	return true
 }
 
 // lastMinute drops the times older than a minute.
