@@ -695,10 +695,12 @@ starts a server, or a command that runs one when it expands. Three things stop
 that, in layers, and the first is the one that does not depend on knowing which
 CLI is running:
 
-- **It is not there.** Before every step, of any CLI, Bazel removes every
-  `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
+- **It is not there.** Right before each step starts, of any CLI, Bazel removes
+  every `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
   clone's working tree, at any depth (Claude Code also finds a nested
-  `.claude/skills`), without following symlinks. The job's log says what went.
+  `.claude/skills`) and in any spelling the disk folds into those names (on
+  macOS, `.CLAUDE` is `.claude`), without following symlinks. The job's log says
+  what went.
   They stay in git, so a review still sees them in the diff and with
   `git show HEAD:<path>`, and the agent is told so. If they cannot be removed,
   the review stops.
@@ -710,9 +712,10 @@ CLI is running:
   from outside the clone. This recognition is best effort: a wrapper called
   `cc`, or `node cli.js`, is treated as another CLI, with the first layer only.
 - **Nothing points back into the clone.** Every step is checked before the clone
-  is even made, and one bad step refuses the whole job. Another
-  `--setting-sources` is refused, and so is `--settings`, `--mcp-config`,
-  `--plugin-dir`, `--add-dir`, `--append-system-prompt-file` or
+  is even made, and again right before it starts, with symlinks resolved: an
+  earlier step can turn a safe path into a link. One bad step refuses the whole
+  job. Another `--setting-sources` is refused, and so is `--settings`,
+  `--mcp-config`, `--plugin-dir`, `--add-dir`, `--append-system-prompt-file` or
   `--system-prompt-file` with anything but an absolute path outside the clone.
 
 What is still on you:
@@ -724,6 +727,9 @@ What is still on you:
   `~/.claude`: your skills, agents, plugins and hooks load, and your hooks run
   with the hostile clone as their working directory. A hook that calls a
   formatter, `npx` or `make` runs the PR's config or scripts with your login.
+- **A step can leave something running.** The checks run right before each
+  agent starts, but a background process an earlier step left behind can still
+  write to the clone after them.
 - **The agent still reads what the PR says.** A confined Claude Code does not
   load the PR's `CLAUDE.md`, but an unrecognized wrapper does, and any agent
   reads the PR's code and comments. That is prompt injection, not execution, but
