@@ -34,9 +34,9 @@ var md = goldmark.New(
 // reviewMD converts a review that may go to the PR. Raw HTML there is not
 // omitted as in md: the text goes to the PR verbatim, so it would vanish from
 // the screen and still be published. rawHTMLAsText shows it as escaped text
-// instead: what is on screen is what would be published, and none of it
-// becomes an element. The PR description keeps md, since it is the author's
-// text and GitHub hides its raw HTML anyway.
+// instead, and none of it becomes an element. That does not make the screen the
+// whole of the text: see hiddenText. The PR description keeps md, since it is
+// the author's text and GitHub hides its raw HTML anyway.
 var reviewMD = goldmark.New(
 	goldmark.WithExtensions(
 		extension.GFM,
@@ -290,8 +290,12 @@ func renderReview(body string) string {
 // footnoteDefRe is one footnote definition, with its indented continuation.
 var footnoteDefRe = regexp.MustCompile(`(?m)^ {0,3}\[\^([^\]\n]+)\]:.*(?:\n[ \t]+.*)*`)
 
-// hiddenText is what the markdown of one part carries and no screen shows, but
-// GitHub receives and the post agent reads: link reference definitions that no
+// hiddenText flags some of what the markdown of one part carries and no screen
+// shows, but GitHub receives and the post agent reads. It is best effort: this
+// is a list of known forms, and markdown has more ways to hide text than any
+// list (a table's extra cell, a fence's info string, invisible characters), so
+// no warning does not mean nothing is hidden. The forms: link reference
+// definitions that no
 // link here uses, such as the `[//]: # (comment)` idiom, the titles of those
 // that are used, and footnotes nothing refers to. Each part is rendered alone,
 // so a definition used only by another part counts as hidden here: the screen
@@ -326,9 +330,8 @@ func hiddenText(src string) []string {
 	return out
 }
 
-// hiddenNote warns, above the report, about the text only the markdown has, and
-// shows it: what is published has to be what was read. It is our HTML, with the
-// agent's text escaped.
+// hiddenNote warns, above the report, about the hidden text hiddenText found,
+// and shows it. It is our HTML, with the agent's text escaped.
 func hiddenNote(parts []store.Part) string {
 	var items []string
 	for _, p := range parts {
@@ -338,7 +341,7 @@ func hiddenNote(parts []store.Part) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(`<aside class="hidden-text" data-testid="review-hidden"><p>This text is in the report's markdown and shows nowhere else. If the report is published it goes along, and the post agent reads it:</p>`)
+	b.WriteString(`<aside class="hidden-text" data-testid="review-hidden"><p>Hidden text found in this report's markdown. If the report is published it goes along. The post agent reads the report as data, and there may be more that Bazel did not flag:</p>`)
 	for _, it := range items {
 		b.WriteString("<pre>" + html.EscapeString(it) + "</pre>")
 	}

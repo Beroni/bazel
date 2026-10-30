@@ -787,9 +787,12 @@ function skipNote(skip) {
     goes = `\n\nGoes to the PR: ${all - skip.length} of ${all} finding${all === 1 ? '' : 's'} (whole bodies)`
       + (md.querySelector('.rsummary > :not(.hidden-text)') ? ', the summary' : '')
       + (extra ? ` and ${extra} more section${extra === 1 ? '' : 's'} of the report` : '') + '.';
-    const unseen = md.querySelectorAll('.hidden-text pre').length;
-    if (unseen) goes += ` It also carries ${unseen} piece${unseen === 1 ? '' : 's'} of text that only the warning on top shows.`;
   }
+  // Looked up apart: a report with no findings is not compact and can still
+  // carry hidden text.
+  const unseen = document.querySelectorAll('#viewer .hidden-text pre').length;
+  if (unseen) goes += `\n\nIt carries ${unseen} piece${unseen === 1 ? '' : 's'} of hidden text, flagged on top.`;
+  goes += '\n\nNot everything in the markdown shows on screen: some hidden text is flagged, and the post agent reads the report as data.';
   if (!skip.length) return goes;
   return goes + `\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
 }

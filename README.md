@@ -562,13 +562,14 @@ with the same ticks. **keep it here** drops the wait, not the review.
 
 The screen shows what goes, as Bazel renders it. Raw HTML in the review is
 shown as escaped text (in a block of its own for HTML blocks) instead of being
-interpreted or hidden, so what you see is the text that would be published. The
-one exception is the `<!-- finding … -->` comment right after a finding's `###`:
+interpreted or hidden. One exception is the `<!-- finding … -->` comment right after a finding's `###`:
 it is metadata for the post agent that GitHub does not show either, so it is
-left out, as long as it has the fleet's keys and short values. Text that only
-the markdown carries, such as a `[//]: # (comment)` or a footnote nothing refers
-to, shows in a warning on top of the report, because it goes along when you
-publish. (The PR description is the author's text, not something Bazel
+left out, as long as every attribute is one the fleet's report format defines,
+in its form. Not everything in the markdown shows on screen, and Bazel cannot
+list all of it: some hidden text, such as a `[//]: # (comment)` or a footnote
+nothing refers to, is flagged on top of the report, and the rest may go along
+when you publish. The report is data for the post agent, not instructions to
+it. (The PR description is the author's text, not something Bazel
 publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
 not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
 the checkboxes live only in the part under *goes to the PR*.

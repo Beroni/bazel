@@ -167,6 +167,14 @@ func TestRenderReviewAvisaTextoInvisivel(t *testing.T) {
 	if strings.Contains(got, "<pre>[used]") || strings.Contains(got, "<pre>[^1]") {
 		t.Errorf("what shows on screen is not hidden text:\n%s", got)
 	}
+	// A report with no finding gets the warning too.
+	if alone := renderReview("Just prose.\n\n[//]: # (HIDDEN)\n"); !strings.Contains(alone, "review-hidden") {
+		t.Errorf("no warning with a single part:\n%s", alone)
+	}
+	// The title of a definition that is used does not show either.
+	if titled := renderReview("See [a][r].\n\n[r]: https://x.example \"HIDDEN\"\n"); !strings.Contains(titled, "&#34;HIDDEN&#34;") {
+		t.Errorf("a used definition's title:\n%s", titled)
+	}
 	// The agent's text stays text.
 	if evil := renderReview("[//]: # (<script>alert(1)</script>)\n"); strings.Contains(evil, "<script") {
 		t.Errorf("%s", evil)
