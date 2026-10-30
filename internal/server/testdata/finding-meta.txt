@@ -82,7 +82,7 @@
 <!-- finding severity=minor class=pr-mismatch lenses=senior-code-reviewer path=src/pkg/file.go line=943 side=RIGHT confidence=9 -->
 <!-- finding severity=minor class=pr-mismatch lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=68 side=RIGHT -->
 <!-- finding severity=minor class=quality lenses=exploit-digger path=src/pkg/file.go line=40 side=RIGHT -->
-<!-- finding severity=minor class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=624 side=RIGHT confidence=9 ref=go:S107 -->
+<!-- finding severity=minor class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=624 side=RIGHT confidence=9 ref=CWE-20 -->
 <!-- finding severity=minor class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=975 side=RIGHT confidence=8 -->
 <!-- finding severity=minor class=race lenses=exploit-digger path=- line=- side=RIGHT -->
 <!-- finding severity=minor class=regression lenses=exploit-digger path=src/pkg/file.go line=13 side=RIGHT confidence=high -->
@@ -149,3 +149,5 @@
 <!-- finding severity=nit class=validation lenses=exploit-digger path=src/pkg/file.go line=21 side=RIGHT confidence=high -->
 <!-- finding severity=nit class=validation lenses=exploit-digger path=src/pkg/file.go line=412 side=RIGHT confidence=medium -->
 <!-- finding severity=nit class=yagni lenses=lazy-senior-dev path=src/pkg/file.go line=593 side=RIGHT lines_saved=4 -->
+<!-- finding severity=major class=authz lenses=senior-code-reviewer path=src/pkg/file.go line=7 side=RIGHT confidence=9 ref=CWE-639,OWASP-A01 -->
+<!-- finding severity=major class=injection lenses=exploit-digger path=src/pkg/file.go line=7 side=RIGHT confidence=high ref=CVE-2024-3094,GHSA-fxph-hxgv-c2wc,OWASP-A03:2021 -->

@@ -176,7 +176,8 @@ func isFindingMeta(blk *ast.HTMLBlock, text string) bool {
 
 // metaValues is the shape of each attribute of that comment, as the fleet's
 // report format defines it: a closed set of keys, each value from a vocabulary
-// or a narrow form with no room for a sentence.
+// or a narrow form. Only path has room for words strung together, since a path
+// can be anything; the server cannot tell whether it exists.
 var metaValues = map[string]*regexp.Regexp{
 	"severity": regexp.MustCompile(`^(critical|major|minor|nit|high|medium|low|info)$`),
 	"class": regexp.MustCompile(`^(injection|authz|validation|secrets|crypto|web3|logic|error-handling|regression|test-gap|test-validity|assumption|` +
@@ -190,8 +191,12 @@ var metaValues = map[string]*regexp.Regexp{
 	"start_side":  regexp.MustCompile(`^(LEFT|RIGHT)$`),
 	"confidence":  regexp.MustCompile(`^(10|[0-9]|high|medium|low)$`),
 	"lines_saved": regexp.MustCompile(`^[0-9]{1,6}$`),
-	"ref":         regexp.MustCompile(`^[A-Za-z0-9:.#-]{1,40}$`),
+	"ref":         regexp.MustCompile(`^` + refID + `(,` + refID + `){0,3}$`),
 }
+
+// refID is one identifier a lens may cite, in the forms of the bodies that issue
+// them, so that a ref cannot spell anything else.
+const refID = `(CWE-[0-9]{1,5}|CVE-[0-9]{4}-[0-9]{4,7}|GHSA-[0-9a-z]{4}-[0-9a-z]{4}-[0-9a-z]{4}|OWASP-(A|API|M)[0-9]{1,2}(:[0-9]{4})?)`
 
 // validFindingMeta reports whether text is that comment and nothing more: each
 // key once, each value in its shape, plain ASCII. Anything else may be text
@@ -208,8 +213,12 @@ func validFindingMeta(text string) bool {
 	if inner == "" {
 		return true
 	}
+	attrs, ok := strings.CutPrefix(inner, " ")
+	if !ok {
+		return false
+	}
 	seen := map[string]bool{}
-	for _, f := range strings.Split(strings.TrimPrefix(inner, " "), " ") {
+	for _, f := range strings.Split(attrs, " ") {
 		key, value, _ := strings.Cut(f, "=")
 		shape, known := metaValues[key]
 		if !known || seen[key] || !shape.MatchString(value) {
