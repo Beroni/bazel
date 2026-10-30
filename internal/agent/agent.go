@@ -301,16 +301,59 @@ func neutralizedNote(paths []string) string {
 		strings.Join(paths, ", ") + ". They are still in git and still part of the review: the diff shows them, and `git show HEAD:<path>` reads them."
 }
 
-// runsClaude says whether a step runs Claude Code: the `claude` command, or
-// any command whose output is Claude's stream-json.
+// claudePackage is the npm package of Claude Code, the one a launcher names:
+// `npx @anthropic-ai/claude-code`, `bunx @anthropic-ai/claude-code@latest`.
+const claudePackage = "@anthropic-ai/claude-code"
+
+// runsClaude says whether a step runs Claude Code: the `claude` command, under
+// any name that resolves to it; a launcher that names its package; or a step
+// that speaks its stream-json. A command that shows none of this is treated as
+// another CLI, and so is a shell: `sh -c '…'` runs a script, and flags before
+// or after the -c never reach what it calls. workspace.Neutralize is what
+// protects those runs, not the flags.
 func runsClaude(step config.ResolvedAgent) bool {
-	if filepath.Base(step.Command) == "claude" {
+	if isShell(step.Command) {
+		return false
+	}
+	if isClaudeBinary(step.Command) || claudePackageArg(step.Args) >= 0 {
 		return true
 	}
-	if step.Format != "" {
-		return step.Format == "claude-stream"
+	return step.Format == "claude-stream" || isStreamJSON(step.Args)
+}
+
+// isClaudeBinary says whether command is Claude Code itself, looking through
+// PATH and symlinks: a `ai -> claude` link keeps the real program.
+func isClaudeBinary(command string) bool {
+	if filepath.Base(command) == "claude" {
+		return true
 	}
-	return isStreamJSON(step.Args)
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	return filepath.Base(real) == "claude" || strings.Contains(real, claudePackage)
+}
+
+// claudePackageArg returns the index of the arg a launcher runs Claude Code
+// with — its npm package, or `claude` itself (`env claude`, `mise exec --
+// claude`) — or -1.
+func claudePackageArg(args []string) int {
+	return slices.IndexFunc(args, func(a string) bool {
+		return strings.Contains(a, claudePackage) || filepath.Base(a) == "claude"
+	})
+}
+
+// isShell says whether command is a shell.
+func isShell(command string) bool {
+	switch filepath.Base(command) {
+	case "sh", "bash", "zsh", "dash", "ksh", "fish":
+		return true
+	}
+	return false
 }
 
 // runsClaudeAnywhere says whether any step of the choice runs Claude Code.
@@ -349,41 +392,47 @@ func newRuntime() (string, error) {
 //   - --plugin-dir: the embedded skills, which --setting-sources user would
 //     otherwise hide along with the clone's .claude/skills.
 //
-// A flag already in args is not repeated. A --setting-sources that also reads
-// the project is refused: there is no safe way to honor it.
+// The flags go first — right after the package, when a launcher runs it — and
+// never at the end: after a `--`, anything is plain text to the CLI, and an
+// appended flag would look added and do nothing. For the same reason a flag
+// found after a `--` does not count as already there. A --setting-sources that
+// also reads the project is refused wherever it is: there is no safe way to
+// honor it.
 func confineClaude(args []string, plugin string) ([]string, error) {
-	out := append([]string(nil), args...)
-	sources, strict := false, false
 	for i, a := range args {
-		value, isSources := "", false
+		value, found := "", false
 		switch {
 		case a == "--setting-sources":
-			isSources = true
+			found = true
 			if i+1 < len(args) {
 				value = args[i+1]
 			}
 		case strings.HasPrefix(a, "--setting-sources="):
-			isSources, value = true, strings.TrimPrefix(a, "--setting-sources=")
-		case a == "--strict-mcp-config":
-			strict = true
+			found, value = true, strings.TrimPrefix(a, "--setting-sources=")
 		}
-		if isSources {
-			if strings.TrimSpace(value) != "user" {
-				return nil, fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
-			}
-			sources = true
+		if found && strings.TrimSpace(value) != "user" {
+			return nil, fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
 		}
 	}
-	if !sources {
-		out = append(out, "--setting-sources", "user")
+
+	start := claudePackageArg(args) + 1
+	own := args[start:]
+	if end := slices.Index(own, "--"); end >= 0 {
+		own = own[:end]
 	}
-	if !strict {
-		out = append(out, "--strict-mcp-config")
+	var flags []string
+	if !slices.ContainsFunc(own, func(a string) bool {
+		return a == "--setting-sources" || strings.HasPrefix(a, "--setting-sources=")
+	}) {
+		flags = append(flags, "--setting-sources", "user")
+	}
+	if !slices.Contains(own, "--strict-mcp-config") {
+		flags = append(flags, "--strict-mcp-config")
 	}
 	if plugin != "" {
-		out = append(out, "--plugin-dir", plugin)
+		flags = append(flags, "--plugin-dir", plugin)
 	}
-	return out, nil
+	return slices.Concat(args[:start], flags, args[start:]), nil
 }
 
 // builtinSemClone returns the step that calls an embedded skill without a clone

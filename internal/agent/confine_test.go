@@ -13,16 +13,17 @@ import (
 )
 
 func TestConfineClaude(t *testing.T) {
+	guard := []string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}
+
 	base := []string{"-p", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
 	got, err := confineClaude(base, "/rt/x")
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := append(slices.Clone(base), "--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x")
-	if !slices.Equal(got, want) {
-		t.Errorf("default args:\n got %q\nwant %q", got, want)
+	if want := slices.Concat(guard, base); !slices.Equal(got, want) {
+		t.Errorf("the flags go first:\n got %q\nwant %q", got, want)
 	}
-	if len(base) != 6 {
+	if len(base) != 6 || base[0] != "-p" {
 		t.Error("the step's own args must not be modified in place")
 	}
 
@@ -32,7 +33,7 @@ func TestConfineClaude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(strings.Join(got, " "), "setting-sources") != 1 || strings.Count(strings.Join(got, " "), "--strict-mcp-config") != 1 {
+	if joined := strings.Join(got, " "); strings.Count(joined, "setting-sources") != 1 || strings.Count(joined, "--strict-mcp-config") != 1 {
 		t.Errorf("flags already in the args were repeated: %q", got)
 	}
 	if !slices.Contains(got, "--plugin-dir") {
@@ -41,7 +42,7 @@ func TestConfineClaude(t *testing.T) {
 
 	// Without a plugin dir (no embedded skill to load), the guard flags still go.
 	got, _ = confineClaude([]string{"-p"}, "")
-	if !slices.Equal(got, []string{"-p", "--setting-sources", "user", "--strict-mcp-config"}) {
+	if !slices.Equal(got, []string{"--setting-sources", "user", "--strict-mcp-config", "-p"}) {
 		t.Errorf("no plugin: %q", got)
 	}
 
@@ -51,6 +52,7 @@ func TestConfineClaude(t *testing.T) {
 		{"-p", "--setting-sources=project"},
 		{"-p", "--setting-sources", "local"},
 		{"-p", "--setting-sources"},
+		{"-p", "--", "--setting-sources", "project"},
 	} {
 		if _, err := confineClaude(bad, "/rt"); err == nil || !strings.Contains(err.Error(), "--setting-sources user only") {
 			t.Errorf("%q should be refused with a clear message, got %v", bad, err)
@@ -58,18 +60,81 @@ func TestConfineClaude(t *testing.T) {
 	}
 }
 
+// After a `--` everything is positional: the flags must come before it, and a
+// flag found after it is text, not a flag already set.
+func TestConfineClaudeDoubleDash(t *testing.T) {
+	got, err := confineClaude([]string{"-p", "--", "some text"}, "/rt/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sep := slices.Index(got, "--"); sep < 0 || slices.Index(got, "--setting-sources") > sep || slices.Index(got, "--strict-mcp-config") > sep || slices.Index(got, "--plugin-dir") > sep {
+		t.Errorf("every flag must sit before the --: %q", got)
+	}
+
+	got, err = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sep := slices.Index(got, "--")
+	if !slices.Contains(got[:sep], "--strict-mcp-config") || !slices.Contains(got[:sep], "--setting-sources") {
+		t.Errorf("a flag after the -- is text and does not count: %q", got)
+	}
+}
+
+// A launcher takes its own options before the package: the flags have to reach
+// Claude Code, so they go right after it.
+func TestConfineClaudeLauncher(t *testing.T) {
+	for _, args := range [][]string{
+		{"-y", "@anthropic-ai/claude-code", "-p"},
+		{"-y", "@anthropic-ai/claude-code@2.1.312", "-p"},
+		{"--", "@anthropic-ai/claude-code", "-p"},
+		{"exec", "--", "claude", "-p"},
+	} {
+		got, err := confineClaude(args, "/rt/x")
+		if err != nil {
+			t.Fatal(err)
+		}
+		pkg := claudePackageArg(got)
+		if got[pkg+1] != "--setting-sources" || got[len(got)-1] != "-p" {
+			t.Errorf("the flags belong right after the package: %q", got)
+		}
+	}
+}
+
 func TestRunsClaude(t *testing.T) {
+	bin := t.TempDir()
+	real := filepath.Join(bin, "claude")
+	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, filepath.Join(bin, "ai")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bin, "unrelated"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
 	cases := []struct {
 		step config.ResolvedAgent
 		want bool
 	}{
 		{config.ResolvedAgent{Command: "claude", Args: []string{"-p"}}, true},
 		{config.ResolvedAgent{Command: "/opt/bin/claude", Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "ai", Format: "plain"}, true}, // a link to claude
 		{config.ResolvedAgent{Command: "my-claude", Format: "claude-stream"}, true},
 		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format", "stream-json"}}, true},
+		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format=stream-json"}, Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "npx", Args: []string{"-y", "@anthropic-ai/claude-code", "-p"}, Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "bunx", Args: []string{"@anthropic-ai/claude-code@latest"}, Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "env", Args: []string{"FOO=1", "claude", "-p"}, Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "mise", Args: []string{"exec", "--", "claude", "-p"}, Format: "plain"}, true},
+		// A shell takes no flags for what it runs: Neutralize protects this one.
+		{config.ResolvedAgent{Command: "sh", Args: []string{"-c", "claude -p"}, Format: "claude-stream"}, false},
 		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, false},
 		{config.ResolvedAgent{Command: "grok", Format: "grok-stream"}, false},
 		{config.ResolvedAgent{Command: "echo", Args: []string{"report"}}, false},
+		{config.ResolvedAgent{Command: "unrelated", Format: "plain"}, false},
 	}
 	for _, c := range cases {
 		if got := runsClaude(c.step); got != c.want {
@@ -124,7 +189,7 @@ func TestReviewConfinesClaude(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	for _, want := range []string{"ARG --model", "ARG --setting-sources\nARG user", "ARG --strict-mcp-config", "HAS_MANIFEST", "HAS_POST_SKILL"} {
+	for _, want := range []string{"ARG --model", "ARG --setting-sources\nARG user\nARG --strict-mcp-config\nARG --plugin-dir", "ARG --strict-mcp-config", "HAS_MANIFEST", "HAS_POST_SKILL"} {
 		if !strings.Contains(res.Body, want) {
 			t.Errorf("the agent did not get %q:\n%s", want, res.Body)
 		}

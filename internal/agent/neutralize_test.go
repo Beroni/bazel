@@ -87,7 +87,7 @@ func TestNoAgentSeesThePRConfig(t *testing.T) {
 		confine bool
 	}{
 		{"unknown wrapper, plain", config.AgentDef{Command: "wrapper", Args: []string{"-p"}, Format: "plain"}, false},
-		{"npx, plain", config.AgentDef{Command: "npx", Args: []string{"-y", "@anthropic-ai/claude-code", "-p"}, Format: "plain"}, false},
+		{"npx, plain", config.AgentDef{Command: "npx", Args: []string{"-y", "@anthropic-ai/claude-code", "-p"}, Format: "plain"}, true},
 		{"claude, plain", config.AgentDef{Command: "claude", Args: []string{"-p"}, Format: "plain"}, true},
 		{"codex", config.AgentDef{Command: "codex", Args: []string{"exec", "--json", "-"}, Format: "codex-json"}, false},
 		{"grok", config.AgentDef{Command: "grok", Args: []string{"--prompt-file", "/dev/stdin"}, Format: "grok-stream"}, false},
