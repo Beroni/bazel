@@ -105,11 +105,40 @@ function gastoTitle(job) {
     : "tokens this review's agents consumed, sub-agents included";
 }
 
+// The banner carries two kinds of message. Routine ones — the config warning,
+// a repository error — are rewritten by every refresh of the list. An error
+// from an action you took (a publish that failed) is an alert: it stays until
+// you dismiss it or act again, because the refresh that follows a failed
+// publish used to wipe it before anyone could read it.
 function banner(msg) {
+  state.bannerMsg = msg || '';
+  drawBanner();
+}
+
+function alertError(msg) {
+  state.alert = msg || '';
+  drawBanner();
+}
+
+function clearAlert() {
+  if (state.alert) alertError('');
+}
+
+function drawBanner() {
   const b = $('#banner');
-  if (!msg) { b.hidden = true; return; }
-  b.textContent = msg;
-  b.hidden = false;
+  const msg = state.alert || state.bannerMsg;
+  b.textContent = '';
+  b.hidden = !msg;
+  if (!msg) return;
+  b.classList.toggle('alert', !!state.alert);
+  b.append(el('span', null, msg));
+  if (state.alert) {
+    const x = el('button', 'banner-x', '✕');
+    x.title = 'dismiss';
+    x.setAttribute('aria-label', 'dismiss this message');
+    x.addEventListener('click', clearAlert);
+    b.append(x);
+  }
 }
 
 // --- loading ---
@@ -305,6 +334,7 @@ async function removeJob(id, btn) {
 // --- actions ---
 
 function startReview() {
+  clearAlert();
   return reviewRefs(markedPRs());
 }
 
@@ -452,7 +482,9 @@ async function publishJob(id, btn) {
   if (!job) return;
   const skip = skipList(pickKey('job', id));
   if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}`)) return;
+  const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
+  clearAlert();
   try {
     const view = await api(`/api/jobs/${encodeURIComponent(id)}/publish`, { method: 'POST', body: JSON.stringify({ skip }) });
     upsertJob(view);
@@ -462,9 +494,9 @@ async function publishJob(id, btn) {
     renderViewer();
   } catch (err) {
     const recusa = err.status === 409 || err.status === 404;
-    banner(recusa ? conflictNote(err) : err.message);
+    alertError(recusa ? conflictNote(err) : err.message);
     if (recusa) refreshJob(id);
-    if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 
@@ -492,11 +524,12 @@ async function refreshJob(id) {
 // waiting, and nothing goes to the PR. The saved review stays in the Saved tab.
 async function dismissJob(id, btn) {
   if (btn) btn.disabled = true;
+  clearAlert();
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }));
   } catch (err) {
     const recusa = err.status === 409 || err.status === 404;
-    banner(recusa ? `Could not keep it here: ${err.message}.` : err.message);
+    alertError(recusa ? `Could not keep it here: ${err.message}.` : err.message);
     if (recusa) refreshJob(id);
     if (btn) btn.disabled = false;
   }
@@ -512,6 +545,7 @@ async function postJob(id, btn) {
   if (!confirm(aviso + skipNote(skip))) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
+  clearAlert();
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
   } catch (err) {
@@ -519,7 +553,7 @@ async function postJob(id, btn) {
     // not finished, not publishable, gone): the card on screen is stale. Only
     // a 502 is GitHub failing to take the comment.
     const recusa = err.status === 409 || err.status === 404;
-    banner(recusa ? conflictNote(err) : 'failed to publish: ' + err.message);
+    alertError(recusa ? conflictNote(err) : 'failed to publish: ' + err.message);
     if (recusa) refreshJob(id);
     if (btn) { btn.disabled = false; btn.textContent = label; }
   }
@@ -591,6 +625,7 @@ async function publishSaved(name, btn) {
   const skip = skipList(pickKey('saved', name));
   if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}`)) return;
   btn.disabled = true;
+  clearAlert();
   try {
     const job = await api('/api/reviews/' + encodeURIComponent(name) + '/publish', { method: 'POST', body: JSON.stringify({ skip }) });
     upsertJob(job);
@@ -601,7 +636,7 @@ async function publishSaved(name, btn) {
     renderJobs();
     renderViewer();
   } catch (err) {
-    banner(err.message);
+    alertError(err.message);
     btn.disabled = false;
   }
 }
@@ -615,12 +650,13 @@ async function commentSaved(name, btn) {
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
+  clearAlert();
   try {
     await api('/api/reviews/' + encodeURIComponent(name) + '/comment', { method: 'POST', body: JSON.stringify({ skip }) });
     btn.textContent = '✓ commented on ' + alvo;
     loadPRs(false);
   } catch (err) {
-    banner('failed to publish: ' + err.message);
+    alertError('failed to publish: ' + err.message);
     btn.disabled = false;
     btn.textContent = antes;
   }
