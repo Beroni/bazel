@@ -2348,3 +2348,52 @@ func TestRespostasRecusamFrame(t *testing.T) {
 		}
 	}
 }
+
+// A write under /api/jobs/ from a page of another server process is refused
+// with 409 and does nothing; with this server's instance, or with no header
+// at all (MCP, curl), it goes through.
+func TestInstanciaVelhaNaoMexeNoJob(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	do := func(method, path, instance string) (int, string) {
+		r := httptest.NewRequest(method, "http://127.0.0.1:7777"+path, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		if instance != "" {
+			r.Header.Set("X-Bazel-Instance", instance)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	a, _ := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	b, _ := srv.jobs.Enqueue(testPR(483), false, cfg.DefaultChoice())
+	waitFor(t, ch, a.ID, StateRunning)
+
+	if code, body := do("POST", "/api/jobs/"+a.ID+"/cancel", "old-instance"); code != http.StatusConflict || !strings.Contains(body, `"stale":true`) {
+		t.Errorf("cancel from a stale page: %d %s, want 409 stale", code, body)
+	}
+	if code, _ := do("DELETE", "/api/jobs/"+a.ID, "old-instance"); code != http.StatusConflict {
+		t.Errorf("remove from a stale page: %d, want 409", code)
+	}
+	if v, ok := srv.jobs.View(a.ID, false); !ok || v.State != StateRunning {
+		t.Fatalf("a refused request must not touch the job: %+v %v", v, ok)
+	}
+	if code, body := do("POST", "/api/jobs/"+a.ID+"/cancel", srv.instance); code != http.StatusOK {
+		t.Errorf("cancel with this instance: %d %s", code, body)
+	}
+	if code, body := do("DELETE", "/api/jobs/"+b.ID, ""); code != http.StatusOK {
+		t.Errorf("remove with no header: %d %s", code, body)
+	}
+	if code, _ := do("GET", "/api/jobs/"+a.ID, "old-instance"); code != http.StatusOK {
+		t.Errorf("reads are never refused: %d", code)
+	}
+}

@@ -56,14 +56,25 @@ const el = (tag, cls, text) => {
 };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  // Every write names the server instance this page knows: after a restart the
+  // job ids start over, and the server refuses an action meant for a job of
+  // the old process instead of applying it to the new one with the same id.
+  if (opts.method && opts.method !== 'GET' && state.instance) headers['X-Bazel-Instance'] = state.instance;
+  const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    // The page is from another server process: say so, and bring the queue,
+    // the PRs and the saved list up to date before anything else is tried.
+    if (res.status === 409 && body.stale) {
+      err.stale = true;
+      // Kept as the page's warning, so the refreshes that follow keep it on.
+      state.warning = 'the server restarted — this page is stale; reload';
+      banner(state.warning);
+      api('/api/state').then((st) => adoptInstance(st.instance)).catch(() => {});
+    }
     throw err;
   }
   return body;

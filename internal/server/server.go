@@ -169,7 +169,32 @@ func (s *Server) Handler() http.Handler {
 	// running an agent, just spoken by machine.
 	mux.HandleFunc("/mcp", s.handleMCP)
 
-	return secureHeaders(s.guard(mux))
+	return secureHeaders(s.guard(s.sameInstance(mux)))
+}
+
+// instanceHeader carries the server instance the page was loaded from.
+const instanceHeader = "X-Bazel-Instance"
+
+// sameInstance refuses an action on a job sent by a page of another server
+// process. Job ids start again at j1 on every restart: in the seconds before
+// the page hears the new instance, a stale tab could publish, comment on or
+// cancel a different j3 — with skip indices from another review. The page
+// sends the instance it knows on every write under /api/jobs/; a mismatch is
+// 409 and nothing happens. A request without the header (MCP, curl, tests)
+// goes through as before.
+func (s *Server) sameInstance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/jobs/") {
+			if got := r.Header.Get(instanceHeader); got != "" && got != s.instance {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error": "the server restarted — this page is stale; reload",
+					"stale": true,
+				})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // secureHeaders goes on every response, the guard's refusals included. The
