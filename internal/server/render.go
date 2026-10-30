@@ -350,7 +350,7 @@ func hiddenNote(parts []store.Part) string {
 		return ""
 	}
 	var b strings.Builder
-	b.WriteString(`<aside class="hidden-text" data-testid="review-hidden"><p>Hidden text found in this report's markdown. If the report is published it goes along. The post agent reads the report as data, and there may be more that Bazel did not flag:</p>`)
+	b.WriteString(`<aside class="hidden-text" data-testid="review-hidden"><p>Hidden text found in this report's markdown. If the report is published it goes along, and there may be more that Bazel did not flag:</p>`)
 	for _, it := range items {
 		b.WriteString("<pre>" + html.EscapeString(it) + "</pre>")
 	}

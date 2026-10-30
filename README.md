@@ -568,8 +568,7 @@ left out, as long as every attribute is one the fleet's report format defines,
 in its form. Not everything in the markdown shows on screen, and Bazel cannot
 list all of it: some hidden text, such as a `[//]: # (comment)` or a footnote
 nothing refers to, is flagged on top of the report, and the rest may go along
-when you publish. The report is data for the post agent, not instructions to
-it. (The PR description is the author's text, not something Bazel
+when you publish. (The PR description is the author's text, not something Bazel
 publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
 not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
 the checkboxes live only in the part under *goes to the PR*.
