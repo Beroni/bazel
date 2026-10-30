@@ -284,6 +284,22 @@ func TestNeutralizeFailsClosed(t *testing.T) {
 	}
 }
 
+// A folder with nothing that could fold is skipped by the disk check and by
+// nothing else: its subfolders are still swept, node_modules and all.
+func TestNeutralizeSkipsNoFolder(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "node_modules", "pkg", "lib", ".claude", "settings.json"), "evil")
+	touch(t, filepath.Join(dir, "plain", "only", "files.go"), "code")
+	touch(t, filepath.Join(dir, "\u00e9t\u00e9", ".mcp.json"), "{}")
+	removed, err := Neutralize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 2 {
+		t.Errorf("removed %q", removed)
+	}
+}
+
 func TestNeutralizeCleanTree(t *testing.T) {
 	removed, err := Neutralize(t.TempDir())
 	if err != nil || len(removed) != 0 {
