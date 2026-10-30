@@ -669,14 +669,13 @@ async function openSaved(name) {
       v.append(nota);
     } else if (entry && entry.repo) {
       const bar = el('div', 'viewer-actions');
-      const pub = tid(el('button', 'btn solid', 'Publish inline review'), 'saved-publish');
+      const pub = tid(el('button', 'btn primary', '↗ Publish'), 'saved-publish');
       pub.title = `runs the post skill and publishes to ${entry.repo}#${entry.number} with inline comments`;
       pub.addEventListener('click', () => publishSaved(name, pub));
-      const cm = tid(el('button', 'btn ghost', 'or paste as a comment'), 'saved-comment');
+      const cm = tid(el('button', 'btn ghost', 'As comment'), 'saved-comment');
       cm.title = `pastes this review as a single comment on ${entry.repo}#${entry.number}`;
       cm.addEventListener('click', () => commentSaved(name, cm));
-      bar.append(pub, cm);
-      if (total) bar.append(pickSummary(key, total));
+      bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'), cm, pub);
       v.append(bar);
     }
     v.scrollTop = 0;
@@ -755,39 +754,130 @@ function skipNote(skip) {
 
 // decorateFindings puts the checkbox on each finding of the review drawn in md
 // and returns how many findings there are.
-// findingTitle is a short " (title)" for a finding's accessible name: its ###
-// heading, or the bold line that opens it, trimmed to about 60 characters.
+// findingHead pulls a finding's title node and severity out of its section:
+// the ### heading, the bold line that opens a numbered finding, or the first
+// line of a doubt's list item. The severity is the word the agent puts in the
+// heading (high, medium, low…); it becomes the row's dot.
+const SEVERITIES = [
+  ['crit', /\b(critical|blocker)\b/i],
+  ['high', /\b(high|major|severe)\b/i],
+  ['med', /\b(medium|moderate)\b/i],
+  ['low', /\b(low|minor|nit|info)\b/i],
+];
+function findingHead(sec) {
+  const node = sec.querySelector(':scope > h1, :scope > h2, :scope > h3, :scope > h4')
+    || sec.querySelector(':scope > p:first-of-type > strong:first-child')
+    || sec.querySelector(':scope > ul > li, :scope > ol > li');
+  let text = node ? node.textContent.replace(/\s+/g, ' ').trim() : '';
+  if (node && node.tagName === 'LI') text = text.split(/(?<=[.?!])\s/)[0];
+  const sev = (SEVERITIES.find(([, re]) => re.test(text)) || ['none'])[0];
+  // "1. Title · medium" → "Title": the number and the severity have their own place.
+  const title = text.replace(/^\d+[.)]\s*/, '').replace(/\s*[·—–-]\s*(critical|blocker|high|major|severe|medium|moderate|low|minor|nit|info)\s*$/i, '').trim();
+  return { node, title: title || 'finding', sev };
+}
+
+// findingTitle is a short " (title)" for a finding's accessible name.
 function findingTitle(sec) {
-  const h = sec.querySelector('h1, h2, h3, h4, strong');
-  let t = h ? h.textContent.replace(/\s+/g, ' ').trim().replace(/^\d+[.)]\s*/, '') : '';
+  let t = findingHead(sec).title;
   if (t.length > 60) t = t.slice(0, 59).trimEnd() + '…';
   return t ? ` (${t})` : '';
 }
 
+// decorateFindings turns each finding of a rendered report into one compact
+// row, the way the design lists them: the "report" checkbox (unticked, it is
+// left out of what goes to the PR), a severity dot and the title; a click on
+// the title opens the body (the first one starts open). The section keeps its
+// data-finding index, the one publish receives in skip.
 function decorateFindings(md, key) {
-  const secs = md.querySelectorAll('section.finding');
+  const secs = [...md.querySelectorAll('section.finding')];
   const out = skipped(key);
-  secs.forEach((sec) => {
+  secs.forEach((sec, n) => {
     const idx = Number(sec.dataset.finding);
+    const { node, title, sev } = findingHead(sec);
     const label = el('label', 'finding-pick');
     const box = document.createElement('input');
     box.type = 'checkbox';
     box.checked = !out.has(idx);
     tid(box, 'finding-pick', { findingIndex: idx });
-    // Every box shows the same word, "report"; the accessible name says which
-    // finding it is, so a screen reader can tell them apart.
+    // Every box looks the same; the accessible name says which finding it is.
     box.setAttribute('aria-label', `include finding ${idx + 1}${findingTitle(sec)} in what goes to the PR`);
     box.title = 'untick to leave this finding out of what goes to the PR';
-    label.append(box, el('span', null, 'report'));
+    label.append(box);
+
+    const body = el('div', 'fbody');
+    for (const child of [...sec.childNodes]) body.append(child);
+    // The title moves to the row; a list item keeps its text in the body,
+    // since the title is only its first sentence.
+    if (node && node.tagName !== 'LI') {
+      const holder = node.tagName === 'STRONG' ? node.parentElement : node;
+      if (node.tagName === 'STRONG') node.remove();
+      else holder.remove();
+      if (holder !== node && !holder.textContent.trim()) holder.remove();
+    }
+    const head = el('div', 'fhead');
+    const toggle = el('button', 'ftitle', title);
+    toggle.setAttribute('aria-expanded', String(n === 0));
+    toggle.addEventListener('click', () => {
+      const open = !sec.classList.contains('open');
+      sec.classList.toggle('open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+    });
+    head.append(label, el('span', 'sev ' + sev), toggle);
+    if (sev !== 'none') head.lastChild.title = sev;
+    sec.append(head, body);
+    sec.classList.add('frow');
+    sec.classList.toggle('open', n === 0);
     sec.classList.toggle('skipped', out.has(idx));
     box.addEventListener('change', () => {
       if (box.checked) out.delete(idx); else out.add(idx);
       sec.classList.toggle('skipped', !box.checked);
       refreshPickSummary();
     });
-    sec.prepend(label);
   });
+  compactReport(md);
   return secs.length;
+}
+
+// compactReport lays the report out like the design: the prose summary on
+// top, then each group of findings (Findings, Cuts, Needs human verification)
+// as a short list under a small label. Whatever else the report has (coverage,
+// verdict…) stays below, folded, so nothing it said is lost.
+function compactReport(md) {
+  const kids = [...md.children];
+  const firstSec = kids.findIndex((k) => k.matches('section.finding'));
+  if (firstSec < 0) return;
+  const groupOf = new Map();
+  let h2 = null;
+  for (const k of kids) {
+    if (/^H[12]$/.test(k.tagName)) h2 = k;
+    else if (k.matches('section.finding') && h2) groupOf.set(h2, true);
+  }
+  let start = kids.findIndex((k) => groupOf.has(k));
+  if (start < 0 || start > firstSec) start = firstSec;
+  const summary = el('div', 'rsummary');
+  const rest = el('div', 'rrest');
+  kids.slice(0, start).forEach((k) => { if (k.tagName !== 'H1') summary.append(k); else k.remove(); });
+  let inGroup = false;
+  const groups = el('div', 'rgroups');
+  for (const k of kids.slice(start)) {
+    if (/^H[12]$/.test(k.tagName)) {
+      inGroup = groupOf.has(k);
+      if (inGroup) { k.className = 'rgroup-label'; groups.append(k); } else rest.append(k);
+    } else if (k.matches('section.finding') || inGroup) {
+      groups.append(k);
+    } else {
+      rest.append(k);
+    }
+  }
+  md.innerHTML = '';
+  md.classList.add('compact');
+  if (summary.childNodes.length) md.append(summary);
+  md.append(groups);
+  if (rest.childNodes.length) {
+    const more = el('details', 'rmore');
+    more.append(el('summary', null, 'More from the report'), rest);
+    md.append(more);
+  }
 }
 
 // pickSummary is the line next to the publish buttons: how many findings go,
@@ -819,9 +909,10 @@ function refreshPickSummary(s = document.querySelector('#viewer .pick-summary'))
   const out = skipped(s.dataset.key).size;
   const kept = total - out;
   const txt = s.firstChild;
-  if (!out) txt.textContent = `${total} finding${total === 1 ? '' : 's'} · all ticked`;
-  else if (!kept) txt.textContent = `all ${total} findings unticked — only the rest of the review goes out`;
-  else txt.textContent = `${kept} of ${total} findings ticked · ${out} left out`;
+  // "N of M findings", the design's footer: how many go out of how many.
+  txt.textContent = `${kept} of ${total} finding${total === 1 ? '' : 's'}`;
+  txt.title = !kept ? 'every finding unticked — only the rest of the review goes out'
+    : out ? `${out} left out of what goes to the PR` : 'every finding goes to the PR';
   s.children[1].disabled = !out;
   s.children[2].disabled = !kept;
 }
@@ -1863,6 +1954,7 @@ function renderReportView(v, job) {
   // The actions come after the review, in a bar pinned to the panel's bottom:
   // what goes to the PR is decided by reading, and each action still asks a
   // confirm() that lists what stays out.
+  let actionBar = null;
   if (!job.publishing && job.publishable === false) {
     // An agent that produces no review has nowhere to publish. Saying so here
     // beats showing nothing: you have just read the report and the next
@@ -1870,13 +1962,12 @@ function renderReportView(v, job) {
     v.append(el('p', 'dim end-note', `This is not a review — what "${job.agent}" produces stays in Bazel.`
       + ' Run a reviewing agent over this PR when you want something to publish.'));
   } else if (!job.publishing) {
+    // The design's footer: "N of M findings" on the left, the two ways to the
+    // PR on the right — a plain comment, and Publish with inline comments.
     const bar = el('div', 'viewer-actions');
-    const pub = tid(el('button', 'btn solid', 'Publish inline review'), 'publish-inline');
-    pub.title = 'runs the post skill and publishes to the PR with inline comments';
-    pub.addEventListener('click', () => publishJob(job.id, pub));
-    bar.append(pub);
+    bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'));
     if (waiting(job)) {
-      const keep = tid(el('button', 'btn', 'Keep it here'), 'keep-here');
+      const keep = tid(el('button', 'btn ghost', 'Keep it here'), 'keep-here');
       keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
       keep.addEventListener('click', () => dismissJob(job.id, keep));
       bar.append(keep);
@@ -1884,12 +1975,16 @@ function renderReportView(v, job) {
     if (job.posted) {
       bar.append(tid(el('span', 'state done', '✓ already on the PR'), 'already-published'));
     } else {
-      const cm = tid(el('button', 'btn ghost', 'or paste as a comment'), 'paste-comment');
+      const cm = tid(el('button', 'btn ghost', 'As comment'), 'paste-comment');
+      cm.title = 'pastes the review as a single comment on the PR, no agent';
       cm.addEventListener('click', () => postJob(job.id, cm));
       bar.append(cm);
     }
-    if (total) bar.append(pickSummary(key, total));
-    v.append(bar);
+    const pub = tid(el('button', 'btn primary', '↗ Publish'), 'publish-inline');
+    pub.title = 'runs the post skill and publishes to the PR with inline comments';
+    pub.addEventListener('click', () => publishJob(job.id, pub));
+    bar.append(pub);
+    actionBar = bar;
   }
   if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));
 
@@ -1901,6 +1996,8 @@ function renderReportView(v, job) {
     .filter(Boolean).join(' · ');
   if (custo) foot.title = gastoTitle(job);
   v.append(foot);
+  // The footer bar goes last: pinned to the panel's bottom edge.
+  if (actionBar) v.append(actionBar);
 }
 
 // --- bindings ---

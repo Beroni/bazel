@@ -336,6 +336,11 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .vtab:disabled { opacity: .45; cursor: default; }
 .job-body { flex: 1; min-height: 0; overflow-y: auto; padding: 18px 20px 28px; }
 .job-body.log { padding: 0; display: flex; flex-direction: column; overflow: hidden; }
+/* The report is a column so its footer bar can sit on the panel's bottom edge
+   even when the findings are few. */
+.job-body.report { display: flex; flex-direction: column; }
+.job-body.report > * { flex: none; }
+.job-body.report > .viewer-actions { margin-top: auto; }
 
 .facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; margin: 8px 0 4px; font-size: 13px; }
 .facts dt { color: var(--dim); }
@@ -530,8 +535,8 @@ main.no-prs .burger span { background: var(--accent); }
    listed — not the scroll position. */
 .viewer-actions {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  margin-top: 28px; padding: 14px 0 0; border-top: 1px solid var(--line);
-  position: sticky; bottom: -28px; background: var(--panel); padding-bottom: 14px;
+  margin: 28px -20px -28px; padding: 11px 20px; border-top: 1px solid var(--line);
+  position: sticky; bottom: -28px; background: var(--panel); z-index: 1;
 }
 
 /* When only part of the report goes to the PR, both parts get a label. What
@@ -545,18 +550,45 @@ main.no-prs .burger span { background: var(--accent); }
 
 /* The checkbox of each finding: unticked, it is left behind on publishing.
    What dims is the content, not the box — the box is what brings it back. */
-.finding { margin-top: 18px; padding: 2px 0 2px 14px; border-left: 2px solid var(--accent-line); }
-.finding > h3 { margin-top: 4px; }
-.finding-pick {
-  display: flex; align-items: center; gap: 6px; width: fit-content;
-  font-size: 12px; color: var(--dim); cursor: pointer; user-select: none;
+/* --- the report as the design draws it ---
+   Prose summary on top, then each group of findings as a compact list: one
+   row per finding — checkbox, severity dot, title — that opens to its body.
+   What is unticked dims and is struck through; it stays out of the PR. */
+.md.compact { max-width: 84ch; }
+.rsummary { font-size: 14.5px; line-height: 1.6; margin-bottom: 18px; }
+.rsummary > :first-child { margin-top: 0; }
+.rgroups { display: flex; flex-direction: column; gap: 2px; }
+.md .rgroup-label {
+  font-size: 11.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--dim); margin: 18px 0 6px; padding: 0; border: 0;
 }
-.finding-pick input { accent-color: var(--accent); margin: 0; }
-.finding-pick:hover { color: var(--accent); }
-.finding.skipped { border-left-color: transparent; }
-.finding.skipped > :not(.finding-pick) { opacity: .4; }
-.finding.skipped > h3, .finding.skipped > p:first-of-type > strong:first-child { text-decoration: line-through; }
-.pick-summary { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-left: auto; }
+.md .rgroup-label:first-child { margin-top: 0; }
+.finding.frow { margin: 0; padding: 0; border: 0; }
+.fhead { display: flex; align-items: center; gap: 12px; padding: 6px 8px; border-radius: var(--radius-md); }
+.fhead:hover { background: var(--hover); }
+.finding-pick { display: flex; align-items: center; cursor: pointer; }
+.finding-pick input { accent-color: var(--accent); margin: 0; width: 15px; height: 15px; }
+.sev { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--dim); }
+.sev.crit, .sev.high { background: var(--err); }
+.sev.med { background: var(--warn); }
+.sev.low { background: var(--blue); }
+.ftitle {
+  flex: 1; min-width: 0; text-align: left; background: transparent; border: 0; padding: 0;
+  font-size: 14px; font-weight: 600; color: var(--text); cursor: pointer;
+}
+.ftitle:hover { color: var(--accent); }
+.fbody { display: none; padding: 0 8px 10px 54px; color: color-mix(in srgb, var(--text) 82%, transparent); }
+.finding.open > .fbody { display: block; }
+.fbody > :first-child { margin-top: 2px; }
+.fbody > :last-child { margin-bottom: 0; }
+.fbody h3, .fbody h4 { font-size: 13.5px; }
+.finding.skipped .ftitle { text-decoration: line-through; color: var(--dim); }
+.finding.skipped > .fbody { opacity: .45; }
+.rmore { margin-top: 22px; color: var(--dim); }
+.rmore > summary { cursor: pointer; font-size: 12.5px; }
+.rmore > div { margin-top: 10px; color: var(--text); }
+.pick-summary { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.pick-summary > span:first-child { color: var(--text); }
 
 /* --- agents and skills in the config --- */
 .agent-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
