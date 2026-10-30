@@ -116,7 +116,7 @@ not of the producer. Who produced it is in `lenses_ran`.
 | Key | Value | What `bazel-post-report` does with it |
 |---|---|---|
 | `repo` | `owner/name` | Confirms it is publishing to the right repo. |
-| `pr` | a number, or `none` | The target PR. `none` → the publisher asks. |
+| `pr` | a number, or `none` | The target PR. `none` → the publisher takes the PR from Bazel's header line; without one, it stops and says so. |
 | `base` | the base branch name | On the record; goes into the review body. |
 | `head_sha` | 40 hex, full | Compared against the PR's current HEAD. Different → no inline anchoring. |
 | `scope_cmd` | the command, one line | Goes into the review body, and proves the scope was resolved. |
