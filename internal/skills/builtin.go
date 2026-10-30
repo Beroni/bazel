@@ -29,13 +29,6 @@ const builtinRoot = "builtin"
 // calling `/bazel-post-report`.
 const PluginName = "bazel"
 
-// AgentsSubdir is where Claude Code looks for a project's subagents. A
-// built-in skill that fires lenses keeps their definitions in its own
-// `agents/` folder, and they are copied here as well: a subagent is found by
-// name, not by the skill that uses it. A project agent wins over one of the
-// same name in ~/.claude/agents, so the lens that runs is the one Bazel ships.
-const AgentsSubdir = ".claude/agents"
-
 // Builtin lists the embedded skills, in alphabetical order.
 func Builtin() []Skill {
 	entries, err := builtinFS.ReadDir(builtinRoot)

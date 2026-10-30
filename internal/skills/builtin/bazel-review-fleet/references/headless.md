@@ -102,31 +102,9 @@ apply to the report, which is a code artifact read by the team.
 
 When the review cannot run (empty scope, wrong repository, a required tool denied, a lens that
 does not exist), print a report that says so instead of a half review or an apology in chat.
-It uses the normal header, with `files: 0`, so nothing downstream mistakes it for a clean
-review: `bazel-post-report` refuses to publish a report whose `files` is `0`.
-
-```markdown
-<!-- review-fleet:v1
-repo: owner/name
-pr: 123
-base: develop
-head_sha: a1b2c3d4e5f67890abcdef1234567890abcdef12
-scope_cmd: git diff origin/develop...HEAD
-files: 0
-lenses_ran: senior-code-reviewer, exploit-digger, lazy-senior-dev
-lenses_skipped: none
-verdict: comment
--->
-
-# Review Fleet — PR #123 · Add transfer endpoint
-
-**Verdict:** comment · no findings
-**Scope:** `git diff origin/develop...HEAD` — 0 files · base `develop` · head `a1b2c3d`
-**Lenses:** senior-code-reviewer, exploit-digger, lazy-senior-dev
-
-Review not performed: `git diff origin/develop...HEAD` and `gh pr diff 123` both returned no
-files. Check that the PR still has changes against `develop` and run the review again.
-```
+It is a normal report with `files: 0` and `verdict: comment` in the header, the title block with
+`no findings`, and one paragraph after it starting `Review not performed:`, so nothing downstream
+mistakes it for a clean review: `bazel-post-report` refuses a report with no files.
 
 The paragraph says what failed, what you tried and what would fix it. Fill the header with the
 real values you have; use `-` only for a value you could not obtain at all.

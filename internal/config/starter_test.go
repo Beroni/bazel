@@ -68,7 +68,7 @@ func TestLoadOrInitSeedsStarterAgents(t *testing.T) {
 func TestLoadOrInitLeavesExistingConfig(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("BAZEL_HOME", home)
-	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("repos: [acme/api]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(home, "config.yaml"), []byte("repos: []\nagents: []\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, created, err := LoadOrInit()

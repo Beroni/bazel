@@ -159,9 +159,4 @@ the section out.
 
 - Quote reviewers verbatim for the ask; summarize everything else.
 - One timestamp format, UTC, throughout.
-- Commits sorted by committer date; flag any commit whose author date is more than a day
-  earlier (rebased).
-- Every causal claim carries its evidence level.
-- No findings, no severities, no verdict. This report does not review code — if it starts
-  making correctness claims, that is `bazel-review-fleet`'s job and this one is doing it without
-  the lenses.
+- No findings, no severities, no verdict: this report does not review code.

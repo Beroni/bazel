@@ -79,19 +79,7 @@ that is a `bazel-post-report` rule.
 The first thing in the file, **line 1**, before any prose. One key per line, `key: value`, in
 this order, with no blank line in between:
 
-```markdown
-<!-- review-fleet:v1
-repo: owner/name
-pr: 123
-base: develop
-head_sha: a1b2c3d4e5f67890abcdef1234567890abcdef12
-scope_cmd: git diff origin/develop...HEAD
-files: 12
-lenses_ran: senior-code-reviewer, exploit-digger, lazy-senior-dev
-lenses_skipped: none
-verdict: request_changes
--->
-```
+The complete example at the end of this file shows it.
 
 The marker is `review-fleet:v1` **in single-lens reports too** — it is the name of the format,
 not of the producer. Who produced it is in `lenses_ran`.
@@ -119,15 +107,7 @@ this is where that lives.
 ## The title and summary block
 
 Right after the header, separated by one blank line. **Exactly** one H1 and three lines, in
-this order, with no blank line between them and no fourth line:
-
-```markdown
-# Review Fleet — PR #123 · Add transfer endpoint
-
-**Verdict:** request_changes · 2 findings (1 critical, 1 minor) · 1 cut (−27 lines)
-**Scope:** `git diff origin/develop...HEAD` — 12 files · base `develop` · head `a1b2c3d`
-**Lenses:** senior-code-reviewer, exploit-digger, lazy-senior-dev
-```
+this order, with no blank line between them and no fourth line: The complete example at the end of this file shows them.
 
 **H1** — `<Producer> — <target>`, with the producer written like this:
 
@@ -266,8 +246,7 @@ everything.
   review *found*; the header already records what it *covered*, through `scope_cmd`, `files`
   and `lenses_ran`.
 - `out-of-scope` is a finding like any other: it goes in `## Findings` with
-  `class=out-of-scope`, in a standalone `lazy-senior-dev` report. In the fleet it is discarded
-  during the merge and never reaches the file.
+  `class=out-of-scope`. In the fleet it stays too, unless another lens raised the same thing.
 
 ### Who may emit what
 

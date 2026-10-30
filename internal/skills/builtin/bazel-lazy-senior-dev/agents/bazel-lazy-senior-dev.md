@@ -139,8 +139,7 @@ JSON object, no prose before or after, no markdown fence:
       "replacement": "src/text.ts already exports slugify — import it from there",
       "lines_saved": 27
     }
-  ],
-  "verdict": "comment"
+  ]
 }
 ```
 
@@ -161,8 +160,6 @@ JSON object, no prose before or after, no markdown fence:
 - `cut` + `replacement`: one line each. What goes and what takes its place — concrete, naming
   the specific helper/stdlib/native element. No hedging.
 - Order from the biggest cut to the smallest (`lines_saved` descending).
-- `verdict`: `comment` if there is any cut, `approve` if the diff is already at the minimum
-  that works (already lean, ship it).
 - `findings: []` is a legitimate and frequent answer. Do not invent cuts to look useful.
 - **Write every prose field in English** (`cut`, `replacement`), no matter what language
   this prompt, the orchestrator's scope block, the repo, or the user's request is written

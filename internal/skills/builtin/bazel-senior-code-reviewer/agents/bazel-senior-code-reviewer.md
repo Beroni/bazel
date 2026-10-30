@@ -179,8 +179,7 @@ object, no prose before or after, no markdown fence:
       "fix": "db.query('... WHERE email = ?', [email])",
       "ref": "CWE-89,OWASP-A03"
     }
-  ],
-  "verdict": "request_changes"
+  ]
 }
 ```
 
@@ -219,8 +218,6 @@ object, no prose before or after, no markdown fence:
   verbatim into the report's metadata, where a space breaks it; `null` when it does not apply.
 - Order by severity (`critical` → `major` → `minor` → `nit`), and within it by descending
   confidence.
-- `verdict`: `request_changes` if there is any `critical`; `comment` if there are only
-  `major`/`minor`/`nit`; `approve` if there is no finding at all.
 - `findings: []` is a legitimate answer. Do not invent findings to look useful.
 - **Write every prose field in English** (`body`, `fix`, `ref`), no matter what language
   this prompt, the orchestrator's scope block, the repo, or the user's request is written

@@ -140,6 +140,38 @@ func TestCatalogRelativePathsExist(t *testing.T) {
 	}
 }
 
+// `bazel:<name>` is how the skills call a lens: a wrong name fails in silence,
+// into the sequential path, and loses the lenses' independence.
+func TestCatalogPluginNames(t *testing.T) {
+	dir := t.TempDir()
+	if err := Materialize(dir); err != nil {
+		t.Fatal(err)
+	}
+	ref := regexp.MustCompile(`\bbazel:(bazel-[a-z-]*[a-z])`)
+	seen := 0
+	err := fs.WalkDir(builtinFS, builtinRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		data, _ := builtinFS.ReadFile(p)
+		for _, m := range ref.FindAllStringSubmatch(string(data), -1) {
+			seen++
+			_, agent := os.Stat(filepath.Join(dir, "agents", m[1]+".md"))
+			_, skill := os.Stat(filepath.Join(dir, "skills", m[1], "SKILL.md"))
+			if agent != nil && skill != nil {
+				t.Errorf("%s names %s, which the plugin does not have", p, m[0])
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if seen < 6 {
+		t.Errorf("only %d plugin names found", seen)
+	}
+}
+
 // Each lens agent is named after its file, which is the name the fleet passes
 // as subagent_type.
 func TestCatalogAgents(t *testing.T) {

@@ -25,7 +25,7 @@ reviews are all managed from the page.
 
 ## Highlights
 
-- **Agents are your own skills.** The agent list starts empty; you build it from
+- **Agents are skills.** A new config comes with Bazel's own review skills; add
   the [Claude Code skills](#agents-are-your-skills) installed on your machine.
 - **Reviews outlive the tab.** Each review is a server-side job. Close the
   browser, come back later, it's still there.
@@ -496,8 +496,8 @@ agent:
     {{task}}
     ...
 
-# The lenses the selector offers. Starts empty — the page fills it from your
-# installed skills. The first one is the default.
+# The lenses the selector offers. A new config comes with Bazel's own; the page
+# adds your installed skills. The first one is the default.
 agents: []
 
 # Sequences run over the same clone. Built in the page, under "config".
