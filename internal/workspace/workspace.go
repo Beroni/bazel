@@ -91,9 +91,19 @@ func ensurePRBase(ctx context.Context, dir, base string) error {
 	return nil
 }
 
+// cloneEnv keeps the machine's git config out of the clone and the checkout.
+// They run before Neutralize and write the PR's files to disk: a filter or LFS
+// set up globally would run over them, with a .gitattributes and an .lfsconfig
+// the PR chose, and hooksPath would run from here too. gh brings its own
+// credentials with -c, so nothing needs that config to reach GitHub.
+func cloneEnv() []string {
+	return append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+}
+
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = cloneEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -128,6 +138,7 @@ func (w *Workspace) Remove() {
 func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = cloneEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on

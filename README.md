@@ -748,6 +748,11 @@ CLI is running:
   before the clone: they decide what to run from the working directory, and the
   PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
   `command` at an installed binary, and set variables with `env:`.
+- **The clone ignores your git config.** The clone and the checkout run with
+  `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` set, so a filter, LFS or
+  `core.hooksPath` from your machine does not run over the PR's files, which is
+  before the sweep. `gh` brings its own credentials. A global `url.insteadOf` or
+  `http.proxy` does not apply to that clone; use `HTTPS_PROXY` for a proxy.
 - **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
   `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
   `core.fsmonitor=false` and `core.hooksPath=/dev/null` through `GIT_CONFIG_*`,

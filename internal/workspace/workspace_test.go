@@ -141,3 +141,37 @@ func writeCommand(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 }
+
+// The clone and the checkout write the PR's files before Neutralize runs: a
+// filter or LFS configured on the machine must not run over them.
+func TestPrepareIgnoresTheMachinesGitConfig(t *testing.T) {
+	bin := t.TempDir()
+	log := filepath.Join(t.TempDir(), "commands.log")
+	script := `
+printf '%s global=%s nosystem=%s\n' "$0" "$GIT_CONFIG_GLOBAL" "$GIT_CONFIG_NOSYSTEM" >> "$BAZEL_TEST_LOG"
+`
+	writeCommand(t, bin, "gh", script)
+	writeCommand(t, bin, "git", script)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BAZEL_TEST_LOG", log)
+
+	ws, err := Prepare(context.Background(), gh.PR{Repo: "acme/api", Number: 42, BaseRefName: "main"})
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	defer ws.Remove()
+	data, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("expected the clone, the checkout and the fetch: %q", lines)
+	}
+	want := "global=" + os.DevNull + " nosystem=1"
+	for _, line := range lines {
+		if !strings.HasSuffix(line, want) {
+			t.Errorf("%q does not end in %q", line, want)
+		}
+	}
+}
