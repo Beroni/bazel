@@ -243,13 +243,79 @@ func TestPRDetailsLimites(t *testing.T) {
 	// The cache keeps at most detailsMax entries.
 	detailsMax, offListPerMin = 3, 100
 	for n := 300; n < 310; n++ {
+		now = now.Add(time.Second)
 		get(fmt.Sprintf("/api/prs/acme/api-core/%d/details?offlist=1", n))
 	}
 	srv.detMu.Lock()
-	size := len(srv.details)
+	defer srv.detMu.Unlock()
+	if len(srv.details) != 3 {
+		t.Errorf("cache holds %d entries, want 3", len(srv.details))
+	}
+	for _, n := range []int{307, 308, 309} {
+		if _, ok := srv.details[fmt.Sprintf("acme/api-core#%d", n)]; !ok {
+			t.Errorf("#%d is among the newest and was evicted", n)
+		}
+	}
+}
+
+// Everything that reaches GitHub shares one budget: past it a PR with a good
+// page keeps that page, one without gets 429, and a forced refresh of the list
+// stops forcing. Retry's gap outlives its cache entry.
+func TestLimiteGlobalDoGitHub(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Repos = nil
+	srv.prs = []gh.PR{testPR(1), testPR(2), testPR(3)}
+	calls, fail := 0, false
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls++
+		if fail {
+			return gh.Details{}, errors.New("HTTP 502")
+		}
+		return gh.Details{HeadRefOid: "aaa"}, nil
+	}
+	now := time.Unix(1_000_000, 0)
+	timeNow = func() time.Time { return now }
+	old := ghReadsPerMin
+	ghReadsPerMin = 2
+	t.Cleanup(func() { timeNow = time.Now; ghReadsPerMin = old })
+	srv.cfg.Repos = []string{"acme/api-core"}
+	h := srv.Handler()
+	get := func(n int, query string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", fmt.Sprintf("http://127.0.0.1:7777/api/prs/acme/api-core/%d/details%s", n, query), nil))
+		return w.Code
+	}
+	if c1, c2 := get(1, ""), get(2, ""); c1 != http.StatusOK || c2 != http.StatusOK || calls != 2 {
+		t.Fatalf("within the budget: %d %d, %d calls", c1, c2, calls)
+	}
+	if code := get(3, ""); code != http.StatusTooManyRequests || calls != 2 {
+		t.Errorf("past the budget: %d, %d calls", code, calls)
+	}
+	now = now.Add(detailsTTL + time.Second)
+	ghReadsPerMin = 0
+	if code := get(1, ""); code != http.StatusOK || calls != 2 {
+		t.Errorf("an old good page beats a refusal: %d, %d calls", code, calls)
+	}
+
+	srv.prsAt = time.Now()
+	at := srv.prsAt
+	if _, _, got, err := srv.loadPRs(context.Background(), true); err != nil || !got.Equal(at) {
+		t.Errorf("a refresh past the budget must serve the fresh list: %v %v", got, err)
+	}
+
+	ghReadsPerMin = 100
+	fail = true
+	get(3, "")
+	now = now.Add(time.Second)
+	if code := get(3, "?retry=1"); code != http.StatusBadGateway {
+		t.Fatalf("first Retry: %d", code)
+	}
+	retryCalls := calls
+	srv.detMu.Lock()
+	delete(srv.details, "acme/api-core#3")
 	srv.detMu.Unlock()
-	if size > 3 {
-		t.Errorf("cache holds %d entries, want at most 3", size)
+	if code := get(3, "?retry=1"); code != http.StatusTooManyRequests || calls != retryCalls {
+		t.Errorf("second Retry: %d, %d calls", code, calls)
 	}
 }
 

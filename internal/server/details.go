@@ -20,15 +20,16 @@ type detailsEntry struct {
 	at   time.Time
 	view detailsView
 	err  string
-	// retried is when the page last asked to read past this failure.
-	retried time.Time
 }
 
 // The details cache. Checks and reviews change without a new commit, so even
 // at the same head an entry is read again after detailsTTL. A failed read is
 // not retried before detailsErrTTL, unless someone clicks Retry (retry=1):
 // that one goes to GitHub, at most once every detailsRetryGap, so a held-down
-// click or a script cannot turn it into a loop. At most detailsMax entries
+// click or a script cannot turn it into a loop. Whatever reaches GitHub from
+// here, or from a forced refresh of the list, also counts against
+// ghReadsPerMin, because with GitHub failing is when more calls hurt most: past
+// it the last good page is served, or a 429. At most detailsMax entries
 // are kept, the oldest going first. A PR that is not in the list is only read
 // when the page asks for it explicitly (offlist=1), and at most offListPerMin
 // times a minute: the list bounds what the page needs, and nothing else
@@ -38,6 +39,7 @@ var (
 	detailsErrTTL = 30 * time.Second
 	detailsMax    = 256
 	offListPerMin = 6
+	ghReadsPerMin = 60
 	timeNow       = time.Now
 
 	detailsRetryGap    = 5 * time.Second
@@ -85,22 +87,10 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 
 	s.detMu.Lock()
 	e, ok := s.details[key]
+	retry := r.URL.Query().Get("retry") == "1"
 	if ok && (!listed || e.sha == pr.HeadRefOid || e.err != "") {
-		if e.err != "" && now.Sub(e.at) < detailsErrTTL {
-			wait := detailsRetryGap - now.Sub(e.retried)
-			if r.URL.Query().Get("retry") != "1" {
-				s.detMu.Unlock()
-				return e.answer()
-			}
-			if wait > 0 {
-				s.detMu.Unlock()
-				return detailsView{}, http.StatusTooManyRequests, fmt.Errorf("%s — try again in %ds", e.err, (wait+time.Second-1)/time.Second)
-			}
-			// Stamped before the read: a second click while it runs is refused.
-			e.retried = now
-			s.details[key] = e
-		}
-		if e.err == "" && now.Sub(e.at) < detailsTTL {
+		failed := e.err != "" && now.Sub(e.at) < detailsErrTTL && !retry
+		if failed || e.err == "" && now.Sub(e.at) < detailsTTL {
 			s.detMu.Unlock()
 			return e.answer()
 		}
@@ -114,11 +104,19 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 			return detailsView{}, http.StatusBadGateway, r.Context().Err()
 		}
 	}
-	if !listed {
-		if err := s.offListReadLocked(now); err != nil {
-			s.detMu.Unlock()
-			return detailsView{}, http.StatusTooManyRequests, err
+	if wait := detailsRetryGap - now.Sub(s.retried[key]); retry && wait > 0 {
+		s.detMu.Unlock()
+		return detailsView{}, http.StatusTooManyRequests, fmt.Errorf("just retried — try again in %ds", (wait+time.Second-1)/time.Second)
+	}
+	if err := s.ghReadLocked(now, !listed); err != nil {
+		s.detMu.Unlock()
+		if ok && e.err == "" {
+			return e.answer()
 		}
+		return detailsView{}, http.StatusTooManyRequests, err
+	}
+	if retry {
+		s.noteRetryLocked(key, now)
 	}
 	read := &detailsRead{done: make(chan struct{}), entry: detailsEntry{err: "the read of this PR failed"}}
 	s.reading[key] = read
@@ -141,7 +139,7 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 	// come back already expired.
 	read.entry = detailsEntry{sha: pr.HeadRefOid, at: timeNow()}
 	if err != nil {
-		read.entry.err, read.entry.retried = err.Error(), e.retried
+		read.entry.err = err.Error()
 	} else {
 		read.entry.view = detailsViewOf(d)
 	}
@@ -154,21 +152,47 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 	return read.entry.answer()
 }
 
-// offListReadLocked takes one read of a PR outside the list from this minute's
-// budget, or says it is spent.
-func (s *Server) offListReadLocked(now time.Time) error {
-	recent := s.offList[:0]
-	for _, t := range s.offList {
+// ghReadLocked takes one call to GitHub from this minute's budget, and one
+// from the budget of reads outside the list when it is one, or says which is
+// spent. Call with detMu held.
+func (s *Server) ghReadLocked(now time.Time, offList bool) error {
+	s.ghReads = lastMinute(s.ghReads, now)
+	s.offList = lastMinute(s.offList, now)
+	if len(s.ghReads) >= ghReadsPerMin {
+		return errors.New("too many reads from GitHub; wait a minute")
+	}
+	if offList {
+		if len(s.offList) >= offListPerMin {
+			return errors.New("too many reads of PRs outside the list; wait a minute")
+		}
+		s.offList = append(s.offList, now)
+	}
+	s.ghReads = append(s.ghReads, now)
+	return nil
+}
+
+// lastMinute drops the times older than a minute.
+func lastMinute(times []time.Time, now time.Time) []time.Time {
+	recent := times[:0]
+	for _, t := range times {
 		if now.Sub(t) < time.Minute {
 			recent = append(recent, t)
 		}
 	}
-	s.offList = recent
-	if len(s.offList) >= offListPerMin {
-		return errors.New("too many reads of PRs outside the list; wait a minute")
+	return recent
+}
+
+// noteRetryLocked marks the Retry of a PR. It lives apart from the cache so
+// that evicting the entry does not reset the gap, and only what is within the
+// gap is kept. Call with detMu held. The token is taken first: a refused read
+// costs no wait.
+func (s *Server) noteRetryLocked(key string, now time.Time) {
+	for k, t := range s.retried {
+		if now.Sub(t) >= detailsRetryGap {
+			delete(s.retried, k)
+		}
 	}
-	s.offList = append(s.offList, now)
-	return nil
+	s.retried[key] = now
 }
 
 // putDetails stores an entry, dropping the oldest when the cache is full.
@@ -383,7 +407,7 @@ func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
 		return pr, 0, nil
 	}
 	s.detMu.Lock()
-	err = s.offListReadLocked(timeNow())
+	err = s.ghReadLocked(timeNow(), true)
 	s.detMu.Unlock()
 	if err != nil {
 		return gh.PR{}, http.StatusTooManyRequests, err

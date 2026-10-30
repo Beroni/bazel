@@ -91,6 +91,8 @@ type Server struct {
 	details      map[string]detailsEntry
 	reading      map[string]*detailsRead // reads under way, by the same key
 	offList      []time.Time             // reads of PRs outside the list, last minute
+	ghReads      []time.Time             // every read counted by ghReadLocked, last minute
+	retried      map[string]time.Time    // when each PR last got a Retry, within the gap
 	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
 }
 
@@ -116,6 +118,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		instance:     instance,
 		details:      map[string]detailsEntry{},
 		reading:      map[string]*detailsRead{},
+		retried:      map[string]time.Time{},
 		fetchDetails: gh.GetDetails,
 		cfg:          cfg,
 		me:           me,
@@ -506,6 +509,13 @@ func statusMatches(st store.Status, want string) bool {
 // loadPRs queries gh, with a cache: each listing fires a `gh pr list` per
 // repository and the page reloads more than the API deserves.
 func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoError, time.Time, error) {
+	// A forced refresh past the budget is an ordinary read: the list while it
+	// is fresh.
+	if force {
+		s.detMu.Lock()
+		force = s.ghReadLocked(timeNow(), false) == nil
+		s.detMu.Unlock()
+	}
 	s.prMu.RLock()
 	fresh := time.Since(s.prsAt) < prTTL && !s.prsAt.IsZero()
 	prs, errs, at := s.prs, s.prErrs, s.prsAt
