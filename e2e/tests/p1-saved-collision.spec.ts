@@ -5,6 +5,9 @@ import { test, expect } from '../harness/fixtures';
 // second used to get the same <repo>-<number>-<YYYYMMDD-HHMMSS>.md, and the
 // second overwrote the first. Now O_EXCL with a -2, -3… suffix.
 test.describe('P1 · saved reviews', () => {
+  // Two reviews landing in one second depends on the clock: when they do not,
+  // the test proved nothing, so it fails below and tries again.
+  test.describe.configure({ retries: 3 });
   test.use({
     bazelOptions: {
       config: {
@@ -26,6 +29,8 @@ test.describe('P1 · saved reviews', () => {
     const ja = await bazel.waitJob(a, (j) => j.state === 'done');
     const jb = await bazel.waitJob(b, (j) => j.state === 'done');
 
+    const stamp = (file: string) => /-(\d{8}-\d{6})(-\d+)?\.md$/.exec(file)![1];
+    expect(stamp(ja.saved_to), 'both saved in the same second').toBe(stamp(jb.saved_to));
     expect(ja.saved_to).not.toBe(jb.saved_to);
     expect(bazel.savedReviews()).toHaveLength(2);
     expect(fs.readFileSync(ja.saved_to, 'utf8')).toContain('E2E-FINDING-ONE');
