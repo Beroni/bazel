@@ -815,11 +815,12 @@ function decorateFindings(md, key) {
       if (holder !== node && !holder.textContent.trim()) holder.remove();
     }
     const head = el('div', 'fhead');
-    const toggle = el('button', 'ftitle', title);
+    const toggle = tid(el('button', 'ftitle', title), 'finding-toggle');
     toggle.setAttribute('aria-expanded', String(n === 0));
     toggle.addEventListener('click', () => {
       const open = !sec.classList.contains('open');
       sec.classList.toggle('open', open);
+      sec.dataset.open = String(open);
       toggle.setAttribute('aria-expanded', String(open));
     });
     head.append(label, el('span', 'sev ' + sev), toggle);
@@ -827,6 +828,7 @@ function decorateFindings(md, key) {
     sec.append(head, body);
     sec.classList.add('frow');
     sec.classList.toggle('open', n === 0);
+    tid(sec, 'finding-row', { findingIndex: idx, severity: sev, open: n === 0 });
     sec.classList.toggle('skipped', out.has(idx));
     box.addEventListener('change', () => {
       if (box.checked) out.delete(idx); else out.add(idx);
