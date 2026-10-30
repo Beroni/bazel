@@ -154,6 +154,28 @@ func TestNeutralizeSweepsSubfolders(t *testing.T) {
 	}
 }
 
+// On a case-insensitive disk `.Claude/` is the folder a CLI opens as `.claude/`:
+// the name matches in any case, with Unicode case folding too (`ſ` folds to s).
+func TestNeutralizeIgnoresCase(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, ".Claude", "settings.json"), "evil")
+	touch(t, filepath.Join(dir, "pkg", ".CODEX", "config.toml"), "evil")
+	touch(t, filepath.Join(dir, ".MCP.JSON"), "{}")
+	touch(t, filepath.Join(dir, "pkg", ".mcp.j\u017fon"), "{}")
+	touch(t, filepath.Join(dir, "claude.md"), "text")
+
+	removed, err := Neutralize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(removed) != 4 {
+		t.Errorf("removed %q, want all four spellings", removed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "claude.md")); err != nil {
+		t.Error("a name that only looks close stays")
+	}
+}
+
 func TestNeutralizeCleanTree(t *testing.T) {
 	removed, err := Neutralize(t.TempDir())
 	if err != nil || len(removed) != 0 {

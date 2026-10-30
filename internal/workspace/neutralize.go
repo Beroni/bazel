@@ -5,6 +5,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 )
 
 // untrustedConfig are the names that make an agent CLI run something: Claude
@@ -12,7 +14,14 @@ import (
 // carry hooks of their own; the same for Codex and Grok. Whole folders go, not
 // a list of files inside them: what a CLI executes from its folder changes
 // between versions, and a list only has to miss one.
-var untrustedConfig = map[string]bool{".claude": true, ".codex": true, ".grok": true, ".mcp.json": true}
+var untrustedConfig = []string{".claude", ".codex", ".grok", ".mcp.json"}
+
+// isUntrusted says whether name is one of untrustedConfig, ignoring case: on a
+// case-insensitive disk, the default on macOS, a PR's `.Claude/` is the folder
+// a CLI opens as `.claude/`.
+func isUntrusted(name string) bool {
+	return slices.ContainsFunc(untrustedConfig, func(c string) bool { return strings.EqualFold(c, name) })
+}
 
 // Neutralize removes untrustedConfig from the clone at dir, at any depth, before
 // an agent runs there, and returns what it removed, relative to dir. It is what
@@ -34,7 +43,7 @@ func Neutralize(dir string) ([]string, error) {
 		if d.IsDir() && d.Name() == ".git" {
 			return filepath.SkipDir
 		}
-		if !untrustedConfig[d.Name()] {
+		if !isUntrusted(d.Name()) {
 			return nil
 		}
 		if err := os.RemoveAll(path); err != nil {
