@@ -138,6 +138,22 @@ func Materialize(dir string) error {
 	return nil
 }
 
+// PublishFailure reads what bazel-post-report's script left in the plugin folder
+// and returns its message when nothing reached the PR. An agent's exit code says
+// nothing about that: the script refusing is a successful run for the model.
+// No file means the script did not run in this step, and that is no failure.
+func PublishFailure(plugin string) string {
+	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
+	if err != nil {
+		return ""
+	}
+	status, msg, _ := strings.Cut(string(data), "\n")
+	if status == "published" {
+		return ""
+	}
+	return strings.TrimSpace(msg)
+}
+
 // writeFile writes data to path, creating the folders on the way.
 func writeFile(path string, data []byte, mode fs.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

@@ -247,7 +247,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			}
 			removed, err := workspace.Neutralize(workdir)
 			if err != nil {
-				return "", fmt.Errorf("%w: neutralizing the PR's agent configuration: %w", errRefused, err)
+				return "", fmt.Errorf("%w to start the agent: neutralizing the PR's agent configuration: %w", errRefused, err)
 			}
 			if len(removed) > 0 {
 				for _, rel := range removed {
@@ -261,7 +261,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				err = checkClaudeConfigDir(step, workdir)
 			}
 			if err != nil {
-				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
+				return "", fmt.Errorf("%w to start the agent: `%s`: %w", errRefused, step.Name, err)
 			}
 			return neutralizedNote(len(neutralized)), nil
 		}
@@ -294,6 +294,13 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			func(l Limits) {
 				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
+		// The publishing script says how it went, in a file: an agent's exit code
+		// and its own words say nothing about what reached the PR.
+		if err == nil && plugin != "" {
+			if msg := skills.PublishFailure(plugin); msg != "" {
+				err = refusal(msg)
+			}
+		}
 		// A refused step ends the job: it must not turn into one failed section
 		// of a review that can still be published.
 		if errors.Is(err, errRefused) {
@@ -444,9 +451,15 @@ func gitGuardEnv(env []string, clone string) []string {
 // exited or been killed.
 const agentGrace = 5 * time.Second
 
+// refusal is an errRefused that reads as its own message: the one the page shows.
+type refusal string
+
+func (r refusal) Error() string        { return string(r) }
+func (r refusal) Is(target error) bool { return target == errRefused }
+
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
-var errRefused = errors.New("refused to start the agent")
+var errRefused = errors.New("refused")
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,

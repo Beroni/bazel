@@ -52,7 +52,7 @@ type Config struct {
 	PostAgent AgentDef `yaml:"post_agent"`
 	// HistoryAgent writes a PR's story for the History tab — what it does,
 	// the decisions taken and what is still open — on demand. Empty is the
-	// default, /history-pr; point its task at another skill to change it.
+	// default, /bazel-history-pr; point its task at another skill to change it.
 	HistoryAgent AgentDef `yaml:"history_agent,omitempty"`
 	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
 	// When off, the MCP surface does not offer publishing — neither as a tool
@@ -1492,7 +1492,7 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 
 // defaultHistoryTask is the skill the History tab runs unless history_agent
 // names another one.
-const defaultHistoryTask = "/history-pr {{number}}"
+const defaultHistoryTask = "/bazel-history-pr {{number}}"
 
 // HistoryChoice is the agent that writes a PR's history, ready to run. It
 // reads the clone (git log, the diff), and what it writes never goes to the

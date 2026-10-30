@@ -50,6 +50,7 @@ type world struct {
 	dir    string
 	clone  string
 	script string
+	plugin string
 }
 
 func newWorld(t *testing.T) *world {
@@ -64,6 +65,7 @@ func newWorld(t *testing.T) *world {
 	if err := skills.Materialize(plugin); err != nil {
 		t.Fatal(err)
 	}
+	w.plugin = plugin
 	w.script = filepath.Join(plugin, "skills", "bazel-post-report", "scripts", "publish.sh")
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(fakeGH), 0o755); err != nil {
@@ -226,15 +228,18 @@ func TestGatesAreDefaultDeny(t *testing.T) {
 		"another PR":             bazelFile(strings.Replace(header("approve", 1), "pr: 7", "pr: 8", 1)),
 		"another repo":           bazelFile(strings.Replace(header("approve", 1), "repo: o/r", "repo: o/x", 1)),
 		"one step of two failed": bazelFile(failedThenClean),
-		"text before the header": bazelFile("Here you go.\n\n" + header("approve", 1)),
+		"a step with no header":  bazelFile("## a\n\n" + header("approve", 1) + "\n\n---\n\n## b\n\nLooks fine to me.\n"),
 	}
 	for name, report := range cases {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
 			w.write("review.md", report)
 			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
-			if code != 3 || !strings.Contains(out, "REFUSED") {
-				t.Errorf("want a refusal, got exit %d:\n%s", code, out)
+			if code != 3 || !strings.Contains(out, "REFUSED") || !strings.Contains(out, "paste as a comment") {
+				t.Errorf("want a refusal that points at the paste, got exit %d:\n%s", code, out)
+			}
+			if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "paste as a comment") {
+				t.Errorf("Bazel should read the refusal from the plugin folder, got %q", msg)
 			}
 			if w.wrote() {
 				t.Error("a refused review writes nothing")
@@ -325,6 +330,58 @@ func TestNoFalseAllClear(t *testing.T) {
 			t.Errorf("commit_id = %q, want the reviewed sha", p.CommitID)
 		}
 	})
+}
+
+// A fence in a finding is prose: its fix often has one, and a heading or a marker
+// inside it is text.
+func TestFenceInAFinding(t *testing.T) {
+	w := newWorld(t)
+	prose := "Bad.\n\n```go\n### not a finding\n<!-- review-fleet:v1\n---\n```\n\nAfter the fence."
+	work := w.prepare(bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, prose)))
+	if out, code := w.run("publish", work); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if p := w.payload(0); len(p.Comments) != 1 || !strings.Contains(p.Comments[0].Body, "After the fence.") {
+		t.Errorf("%+v", p)
+	}
+}
+
+// Narration before the header is how a personal skill writes: it goes to the PR in
+// the open, and it never clears one.
+func TestTextBeforeTheHeaderIsKept(t *testing.T) {
+	w := newWorld(t)
+	work := w.prepare(bazelFile("I reviewed it, here is the report.\n\n" + header("approve", 3) + "\n---\n\nThe report was not saved to disk.\n"))
+	if out, code := w.run("publish", work); code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	p := w.payload(0)
+	if strings.Contains(p.Body, "all-clear") || !strings.Contains(p.Body, "I reviewed it") || !strings.Contains(p.Body, "not saved to disk") {
+		t.Errorf("%s", p.Body)
+	}
+}
+
+// Bazel reads how it went from a file, not from the model.
+func TestOutcomeFile(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+
+	w := newWorld(t)
+	work := w.prepare(report)
+	w.run("publish", work)
+	if msg := skills.PublishFailure(w.plugin); msg != "" {
+		t.Errorf("a published review is no failure: %q", msg)
+	}
+	w.run("publish", work) // the same again finds nothing to do, and that is fine
+	if msg := skills.PublishFailure(w.plugin); msg != "" {
+		t.Errorf("a second run must not undo the first: %q", msg)
+	}
+
+	w = newWorld(t)
+	work = w.prepare(bazelFile(header("request_changes", 3)))
+	w.run("publish", work)
+	if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "Nothing published") {
+		t.Errorf("nothing posted must not read as published: %q", msg)
+	}
+
 }
 
 // A step joined with others still counts, and the strongest verdict wins.

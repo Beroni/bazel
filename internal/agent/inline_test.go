@@ -155,3 +155,40 @@ func TestRunCutsPreambleOnlyForBuiltins(t *testing.T) {
 		t.Errorf("someone else's output is left alone: %q", res.Body)
 	}
 }
+
+// When the publishing script refuses, the model's run is a success and the review
+// is not published: the job has to say so, in the script's words.
+func TestRefusedPublishIsNoSuccess(t *testing.T) {
+	for name, outcome := range map[string]string{
+		"refused": "refused\nNot published: no header. To post it as it is, use paste.\n",
+		"nothing": "nothing\nNothing published: already there.\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			hostileClone(t)
+			bin := t.TempDir()
+			script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --plugin-dir ] && dir=$2; shift; done\ncat >/dev/null\nprintf '" +
+				strings.ReplaceAll(outcome, "\n", "\\n") + "' > \"$dir/publish-outcome\"\necho 'All published, everything went fine.'\n"
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cfg := config.Default()
+			cfg.PostAgent.Checkout = nil
+			cfg.Agent.Checkout = true
+			cfg.Agent.TimeoutSeconds = 30
+			cfg.PostAgent.Format = "plain"
+			cfg.PostAgent.Args = []string{"-p"}
+			cfg.PostAgent.Command = "claude"
+			pr := testPR()
+			pr.BaseRefName = ""
+			_, err := New(cfg).Publish(context.Background(), pr, cfg.PostChoice(), "/r/x.md", "body", nil)
+			if err == nil {
+				t.Fatal("the review did not reach the PR, so Publish must not succeed")
+			}
+			want := strings.Split(outcome, "\n")[1]
+			if err.Error() != want {
+				t.Errorf("error = %q, want the script's message %q", err, want)
+			}
+		})
+	}
+}

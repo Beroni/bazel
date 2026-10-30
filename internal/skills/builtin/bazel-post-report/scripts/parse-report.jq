@@ -16,6 +16,12 @@ def emit($l):
   elif ($l | strip) != "" then .extra += [$l]
   else . end;
 
+# A named step (`## name`, as Bazel joins a pipeline) that ends with no header gives
+# the whole review away as unproven. Text with no name is prose around the report.
+def endstep:
+  if .loose and .step != null then .deny += ["a step has no review-fleet header"] else . end
+  | .loose = false | .step = null;
+
 def section_of($title):
   ($title | lower | sub("^[0-9. ]+"; "")) as $t
   | if ($t | startswith("finding")) then "findings"
@@ -27,18 +33,21 @@ def line($l):
   ($l | strip) as $t
   | if .mode == "header" then
       if $t == "-->" then .headers += [.hdr] | .hdr = null | .mode = "body" | .after_header = true
-      else (try ($l | capture("^(?<k>[a-z_]+): (?<v>.*)$")) catch null) as $kv
+      else ([$l | capture("^(?<k>[a-z_]+): (?<v>.*)$")] | first) as $kv
         | if $kv then .hdr[$kv.k] = ($kv.v | strip) else .deny += ["a header line is not `key: value`"] end
       end
     elif .fence then
-      emit($l) | if ($t | startswith(.fence)) then .fence = null else . end
+      .fence as $open | emit($l) | if ($t | startswith($open)) then .fence = null else . end
     elif $t == "<!-- review-fleet:v1" then
-      flush | .section = null | .expect = false | .mode = "header" | .hdr = {}
+      flush | .section = null | .expect = false | .loose = false | .step = null | .mode = "header" | .hdr = {}
     elif .expect then
-      if $t == "" or $t == "---" then .
-      elif ($t | test("^## ")) then .step = ($t | sub("^## +"; ""))
-      elif ($t | startswith("> ✗ failed")) then .failed += [.step // "a step"]
-      else .deny += ["there is text where a report header should be"] | .expect = false | emit($l) end
+      # Text around a report is kept: narration, usually, and it goes to the PR in
+      # the open, where it also rules out an all-clear.
+      if $t == "" then .
+      elif $t == "---" then endstep
+      elif ($t | test("^## ")) then endstep | .step = ($t | sub("^## +"; ""))
+      elif ($t | startswith("> ✗ failed")) then .failed += [.step // "a step"] | .step = null | .loose = false
+      else .loose = true | .extra += [$l] end
     elif $t == "---" then
       flush | .section = null | .expect = true | .after_header = false
     elif ($t | startswith("```")) or ($t | startswith("~~~")) then
@@ -60,13 +69,14 @@ def line($l):
 (. | split("\n")) as $all
 | ($all | index("---")) as $sep
 | ($all[0] // "") as $first
-| (try ($first | capture("^# (?<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?<n>[0-9]+)( |$)")) catch null) as $target
+| ([$first | capture("^# (?<repo>[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)#(?<n>[0-9]+)( |$)")] | first) as $target
 | ([$all[0:($sep // 0)][] | select(startswith("- Head sha: ")) | sub("^- Head sha: "; "") | strip] | first // "") as $sha
 | reduce ($all[(($sep // -1) + 1):][]) as $l (
-    {mode: "body", expect: true, after_header: false, fence: null, section: null, cur: null, step: null,
+    {mode: "body", expect: true, loose: false, after_header: false, fence: null, section: null, cur: null, step: null,
      hdr: null, headers: [], findings: [], human: [], extra: [], failed: [], deny: []};
     line($l))
 | flush
+| endstep
 | if .mode == "header" then .deny += ["a report header is not closed"] else . end
 | ($target.repo // "") as $repo
 | ($target.n // "") as $n

@@ -14,11 +14,34 @@ set -uo pipefail
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLUGIN=$(cd "$HERE/../../.." && pwd)
 
-refuse() { printf 'REFUSED, nothing was published: %s\n' "$1"; exit 3; }
-fail() { printf 'FAILED: %s\n' "$1"; exit 1; }
+# What happened goes in a file Bazel reads, as well as to the agent: Bazel reports
+# this, not what a model says about it. "published" is never overwritten: a second
+# run that finds the review already there must not turn it into a failure.
+outcome() {
+  [ "$(head -1 "$PLUGIN/publish-outcome" 2>/dev/null)" = published ] && return 0
+  printf '%s\n%s\n' "$1" "$2" > "$PLUGIN/publish-outcome"
+}
+
+refuse() {
+  printf 'REFUSED, nothing was published: %s\n' "$1"
+  outcome refused "Not published: $1"
+  exit 3
+}
+fail() {
+  printf 'FAILED: %s\n' "$1"
+  outcome failed "Publishing failed: $1"
+  exit 1
+}
+nothing() {
+  printf 'Nothing published: %s\n' "$1"
+  outcome nothing "Nothing published: $1"
+}
+
+# A report in no format this skill can trust still has a way to the PR, as text.
+PASTE='To post it as it is, use "or paste as a comment".'
 
 for tool in jq gh git; do
-  command -v "$tool" >/dev/null || refuse "$tool is not installed"
+  command -v "$tool" >/dev/null || refuse "$tool is not installed, and publishing needs it. Install it and try again. $PASTE"
 done
 
 # The clone's own repository, from its remote; the PR's text has no say in this.
@@ -39,9 +62,12 @@ prepare() {
   work=$(mktemp -d "$PLUGIN/publish.XXXXXX") || fail "cannot create a work folder"
 
   jq -Rs -f "$HERE/parse-report.jq" "$file" > "$work/report.json" || fail "cannot read the review file"
+  # A reader that printed nothing proved nothing: that is a refusal too.
+  jq -e '.deny | type == "array"' "$work/report.json" >/dev/null 2>&1 ||
+    refuse "this is not a report Bazel can check: it could not be read. $PASTE"
   local deny
   deny=$(jq -r '.deny | unique | join("; ")' "$work/report.json")
-  [ -z "$deny" ] || refuse "$deny"
+  [ -z "$deny" ] || refuse "this is not a report Bazel can check: $deny. $PASTE"
 
   local repo number
   repo=$(jq -r .repo "$work/report.json")
@@ -119,11 +145,11 @@ publish() {
   kind=$(jq -r .kind "$work/decided.json")
   case "$kind" in
     nothing)
-      printf 'Nothing published: %s.\n' "$(jq -r .why "$work/decided.json")"
+      nothing "$(jq -r .why "$work/decided.json")."
       return 0 ;;
     all-clear)
       if jq -e --arg sha "$reviewed" 'any(.own_bodies[]; contains("all-clear @ " + $sha))' "$work/plan.json" >/dev/null; then
-        echo "Nothing published: this account already posted an all-clear for this commit."
+        nothing "this account already posted an all-clear for this commit."
         return 0
       fi ;;
   esac
@@ -133,7 +159,7 @@ publish() {
   print=$(jq -c '[.body, .comments]' "$work/decided.json" | git hash-object --stdin) || fail "cannot fingerprint the review"
   marker="<!-- bazel-review: $reviewed $print -->"
   if jq -e --arg m "$marker" 'any(.own_bodies[]; contains($m))' "$work/plan.json" >/dev/null; then
-    echo "Nothing published: this account already posted this same review for this commit."
+    nothing "this account already posted this same review for this commit."
     return 0
   fi
 
@@ -156,6 +182,7 @@ publish() {
     fi
   fi
 
+  outcome published "Published."
   local failed_reactions=0 id
   for id in $(jq -r '.reactions[]' "$work/decided.json"); do
     gh api -X POST "repos/$REPO/pulls/comments/$id/reactions" -f content=+1 >/dev/null 2>&1 ||

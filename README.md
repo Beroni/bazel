@@ -509,10 +509,10 @@ post_agent:
   task: /bazel-post-report {{review_file}}
   posts: true
 
-# Who writes the History tab. Optional: the default runs /history-pr {{number}}
+# Who writes the History tab. Optional: the default runs /bazel-history-pr {{number}}
 # with the factory prompt, not your agent.prompt.
 # history_agent:
-#   task: /history-pr {{number}}
+#   task: /my-history {{number}}
 ```
 
 ### The History tab
