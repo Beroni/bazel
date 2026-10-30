@@ -216,6 +216,7 @@ func TestGatesAreDefaultDeny(t *testing.T) {
 	failedThenClean := "## a\n\n" + header("comment", 0) + "\n\n---\n\n## b\n\n" + header("approve", 3)
 	cases := map[string]string{
 		"no Bazel header":        header("approve", 3),
+		"nothing in it":          bazelFile(""),
 		"no first line":          "x\n\n---\n\n" + header("approve", 3),
 		"not the format":         bazelFile("## Findings\n\n### a bug\n\nSomething.\n"),
 		"plain text":             bazelFile("Looks good to me.\n"),
