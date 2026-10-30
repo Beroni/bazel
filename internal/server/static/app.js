@@ -69,6 +69,19 @@ const tid = (node, id, data = {}) => {
   for (const [k, v] of Object.entries(data)) node.dataset[k] = String(v);
   return node;
 };
+// operable makes a clickable element reachable and usable by keyboard: in the
+// tab order, announced as a button with its name, and Enter or Space doing what
+// the click does. For rows that hold other controls, where a real <button>
+// can't wrap them.
+const operable = (node, name, fn) => {
+  node.tabIndex = 0;
+  node.setAttribute('role', 'button');
+  node.setAttribute('aria-label', name);
+  node.addEventListener('keydown', (e) => {
+    if (e.target === node && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); fn(); }
+  });
+  return node;
+};
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -1238,7 +1251,18 @@ function syncSelectAll() {
 function renderPRs() {
   const list = $('#pr-list');
   const prs = visiblePRs();
+  // A rebuild must not drop the keyboard focus: note which row's title or
+  // checkbox had it and give it back afterwards.
+  const had = list.contains(document.activeElement) ? document.activeElement : null;
+  const hadRow = had && had.closest('.pr') ? had.closest('.pr').dataset.prKey : null;
+  const hadBox = !!(had && had.type === 'checkbox');
   list.innerHTML = '';
+  queueMicrotask(() => {
+    if (!hadRow) return;
+    const row = [...list.querySelectorAll('.pr')].find((r) => r.dataset.prKey === hadRow);
+    const target = row && row.querySelector(hadBox ? 'input[type=checkbox]' : '.title');
+    if (target) target.focus({ preventScroll: true });
+  });
   if (!prs.length) {
     list.append(el('p', 'empty', state.prs.length ? 'nothing matches the filter' : 'no open PRs'));
     renderStats();
@@ -1283,7 +1307,9 @@ function renderPRs() {
       el('span', null, pr.age),
     );
 
-    const title = el('span', 'title', pr.title);
+    // The title is the keyboard way in: the row's click opens the PR, and the
+    // checkbox next to it stays its own control.
+    const title = operable(el('span', 'title', pr.title), `open ${pr.key}: ${pr.title}`, () => openPR(pr.key));
     title.title = pr.title;
     main.append(title, sub, meta);
     row.append(box, main);
@@ -1557,6 +1583,7 @@ function renderSaved() {
       row.append(el('div', 'saved-title', s.title || s.name),
         el('div', 'name', [s.agent, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
+      operable(row, `open saved review ${s.title || s.name}`, () => openSaved(s.name));
       list.append(row);
     }
     v.append(list);

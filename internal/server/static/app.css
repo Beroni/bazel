@@ -219,6 +219,8 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .pr input { margin: 3px 0 0; flex: none; }
 .pr-main { min-width: 0; flex: 1; }
 .pr .title { display: block; font-weight: 500; font-size: 13.5px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The title is the row's keyboard target; its box clips, so the ring goes inside. */
+.pr .title:focus-visible, .saved:focus-visible { outline-offset: -2px; border-radius: 4px; }
 .pr-sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
 .pr-sub .repo { color: var(--dim); font-size: 12px; white-space: nowrap; }
 /* A PR can carry several tags at once (draft, you, approved, ⟳ changed). They
