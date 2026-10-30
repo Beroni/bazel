@@ -67,6 +67,12 @@ button, input[type=search], input[type=text] { font: inherit; }
   border-bottom: 1px solid var(--line);
   white-space: pre-wrap;
 }
+/* An alert — the error of something you did — keeps its place until you
+   dismiss it: a red tone and a ✕, where routine notices come and go. */
+.banner.alert { display: flex; align-items: flex-start; gap: 10px; color: #fca5a5; background: #1e1113; }
+.banner.alert > span { flex: 1; }
+.banner-x { background: transparent; border: 0; color: inherit; cursor: pointer; font-size: 13px; padding: 0 2px; opacity: .8; }
+.banner-x:hover { opacity: 1; }
 
 /* --- layout --- */
 main { flex: 1; display: flex; min-height: 0; }

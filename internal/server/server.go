@@ -665,7 +665,7 @@ func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Cancel(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -679,7 +679,10 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
 	if err != nil {
-		status := http.StatusBadGateway
+		// 502 is only for gh failing to post. A request Bazel turns down —
+		// unknown job, not finished, not publishable, busy, already posted — is
+		// the client's (BUG-QA-05).
+		status := refusalStatus(err, http.StatusBadGateway)
 		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
 			status = http.StatusConflict
 		}
@@ -694,7 +697,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -712,7 +715,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		// Unknown job is 404, like /post; every other refusal is 409.
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -778,15 +782,17 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	repo := strings.TrimSpace(req.Repo)
-	if !strings.Contains(strings.TrimPrefix(repo, "https://github.com/"), "/") {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid repository: %q (use owner/repo)", repo))
+	// Exactly owner/name (BUG-QA-03): "acme/" used to go in as "acme", and a PR
+	// URL as "acme/web-app/pull/7", because only the slash was checked.
+	repo, err := config.NormalizeRepo(req.Repo)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
 	s.cfgMu.Lock()
 	added := s.cfg.AddRepo(repo)
-	err := s.cfg.Save()
+	err = s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {

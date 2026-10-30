@@ -440,6 +440,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if err != nil {
 		return "", Usage{}, err
 	}
+	// The done line prices the run with the same table the Runner settles on.
+	switch a := adapter.(type) {
+	case *claudeAdapter:
+		a.pricing = r.PricingTable
+	case *grokAdapter:
+		a.pricing = r.PricingTable
+	}
 	createdHome, err := isolateGrok(&step)
 	if err != nil {
 		return "", Usage{}, err
