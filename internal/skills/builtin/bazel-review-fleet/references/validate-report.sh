@@ -126,6 +126,10 @@ state == "want-lenses" {
 # ---------- body ----------
 state != "body" { next }
 
+# A fence is prose: a `# comment` in a code block is no heading.
+/^ *(```|~~~)/ { infence = !infence; next }
+infence { next }
+
 /^# / { err(NR, "there may be only one H1, at the top") ; next }
 
 /^## / {
@@ -182,6 +186,7 @@ pending_meta == NR - 1 {
   if (("line" in got) && got["line"] !~ /^([0-9]+|-)$/)    err(NR, "line must be an integer or `-`")
   if (("path" in got) && ("line" in got) && ((got["path"] == "-") != (got["line"] == "-")))
     err(NR, "`path=-` and `line=-` always travel together")
+  if (cur == "Findings" && (got["severity"] == "critical" || got["severity"] == "major")) blocker = 1
   if (cur == "Cuts") {
     if (!("lines_saved" in got)) err(NR, "a finding in `## Cuts` needs `lines_saved`")
     else if (got["lines_saved"] !~ /^[0-9]+$/) err(NR, "`lines_saved` must be an integer")
@@ -238,6 +243,12 @@ pending_level && $0 != "" {
 END {
   close_finding()
   for (s in seen) if (!has_item[s]) err(0, "section `" s "` is empty — an empty section leaves the file")
+  if (HDR["verdict"] == "approve" && ("Needs human verification" in seen))
+    err(0, "`verdict: approve` with an open human-verification item")
+  if (blocker && HDR["verdict"] != "request_changes")
+    err(0, "a critical or major finding needs `verdict: request_changes`")
+  if (!blocker && HDR["verdict"] == "request_changes")
+    err(0, "`verdict: request_changes` needs a critical or major finding")
   if (HDR["verdict"] != "approve" && nfind == 0 && !("Needs human verification" in seen))
     err(0, "verdict `" HDR["verdict"] "` with no finding and no human-verification item")
   if (bad) { printf "\n%d problem(s) — %s\n", bad, FILE; exit 1 }

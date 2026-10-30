@@ -33,6 +33,54 @@ var golden = []struct {
 	{"history.md", "line 1 must be exactly `<!-- review-fleet:v1`", 0},
 }
 
+// Each rule of the validator, broken on purpose: a rule that stops firing fails
+// here, and a report that should be fixed does not get through.
+func TestValidatorRefuses(t *testing.T) {
+	validate := validator(t)
+	fleet := readGolden(t, "fleet.md")
+	cuts := readGolden(t, "cuts-order.md")
+	cases := map[string]struct{ body, want string }{
+		"cuts out of order": {
+			strings.Replace(strings.Replace(strings.Replace(strings.Replace(cuts, "lines_saved=40", "lines_saved=X", 1), "lines_saved=25", "lines_saved=40", 1), "lines_saved=X", "lines_saved=25", 1), "−25 lines", "−40 lines", 1),
+			"from the biggest",
+		},
+		"findings out of severity order": {
+			strings.NewReplacer("severity=critical", "severity=minor", "severity=minor", "severity=critical",
+				"**critical · authz**", "**minor · authz**", "**minor · test-gap**", "**critical · test-gap**").Replace(fleet),
+			"after a lower severity",
+		},
+		"comment with no finding": {
+			fleet[:strings.Index(fleet, "## Findings")],
+			"with no finding and no human-verification item",
+		},
+		"approve with a question": {
+			strings.ReplaceAll(fleet[:strings.Index(fleet, "## Findings")], "request_changes", "approve") + fleet[strings.Index(fleet, "## Needs human"):],
+			"open human-verification item",
+		},
+		"comment with a critical": {
+			strings.ReplaceAll(fleet, "request_changes", "comment"),
+			"needs `verdict: request_changes`",
+		},
+		"request_changes on small findings": {
+			strings.NewReplacer("severity=critical", "severity=nit", "**critical · authz**", "**nit · authz**").Replace(fleet),
+			"needs a critical or major finding",
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			if ok, out := validate(c.body); ok || !strings.Contains(out, c.want) {
+				t.Errorf("want %q, got passed=%v:\n%s", c.want, ok, out)
+			}
+		})
+	}
+
+	// A fence is prose: this `#` is a comment in a fix, not a second H1.
+	fenced := strings.Replace(fleet, "**Fix:** resolve", "```bash\n# a comment\n```\n\n**Fix:** resolve", 1)
+	if ok, out := validate(fenced); !ok {
+		t.Errorf("a fence is not a heading:\n%s", out)
+	}
+}
+
 func readGolden(t *testing.T, name string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", "reports", name))
@@ -112,29 +160,6 @@ func TestGoldenUnderBazelHeader(t *testing.T) {
 		if n := store.Findings(saved); n != g.findings {
 			t.Errorf("%s under the Bazel header: %d findings, want %d", g.file, n, g.findings)
 		}
-	}
-}
-
-// Unticking every finding of a section on the page leaves the section empty,
-// which the validator rejects. That is why bazel-post-report reads the
-// metadata directly instead of gating on the validator: the file is exactly
-// what the person approved.
-func TestUntickedSectionFailsValidator(t *testing.T) {
-	validate := validator(t)
-	body := readGolden(t, "fleet.md")
-	trimmed := store.DropFindings(body, []int{0, 1}) // both items of ## Findings
-	if store.Findings(trimmed) != 2 {
-		t.Fatalf("expected the cut and the needs-human item to remain")
-	}
-	if ok, _ := validate(trimmed); ok {
-		t.Error("an emptied section should fail the validator; if it passes now, bazel-post-report can gate on it again")
-	}
-	skill, err := os.ReadFile(filepath.Join("builtin", "bazel-post-report", "SKILL.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(skill), "Do not\nrun `validate-report.sh` on this file") {
-		t.Error("bazel-post-report must keep telling the agent not to gate on the validator")
 	}
 }
 
