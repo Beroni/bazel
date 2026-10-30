@@ -274,3 +274,34 @@ func TestHistoryRecusaAgentQuePublica(t *testing.T) {
 		t.Errorf("a refused history must not queue a job: %v", views)
 	}
 }
+
+// With the list behind GitHub (a push after it loaded) a good read still stays
+// in the cache; a newer list is what makes it old.
+func TestPRDetailsListaAtrasada(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	srv.prs[0].HeadRefOid = "old"
+	calls := 0
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls++
+		return gh.Details{HeadRefOid: "new"}, nil
+	}
+	h := srv.Handler()
+	get := func() {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/prs/acme/api-core/482/details", nil))
+		if w.Code != http.StatusOK {
+			t.Fatalf("details: %d %s", w.Code, w.Body)
+		}
+	}
+	for range 5 {
+		get()
+	}
+	if calls != 1 {
+		t.Errorf("the cache must answer with the list behind: %d calls", calls)
+	}
+	srv.prs[0].HeadRefOid = "new"
+	if get(); calls != 2 {
+		t.Errorf("a newer list reads again: %d calls", calls)
+	}
+}

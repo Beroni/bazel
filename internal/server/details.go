@@ -99,9 +99,11 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 	s.detMu.Unlock()
 
 	d, err := s.fetchDetails(r.Context(), repo, number)
-	entry := detailsEntry{sha: d.HeadRefOid, at: now}
+	// The sha is the list's, the one this entry is compared with: GitHub's head
+	// is newer when the list is behind, and then no read would ever match.
+	entry := detailsEntry{sha: pr.HeadRefOid, at: now}
 	if err != nil {
-		entry.sha, entry.err, entry.retried = pr.HeadRefOid, err.Error(), e.retried
+		entry.err, entry.retried = err.Error(), e.retried
 	} else {
 		entry.view = detailsViewOf(d)
 	}
