@@ -310,6 +310,11 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 // EnqueueHistory queues the history agent over pr. A history of this PR still
 // queued or running is returned instead of a second one.
 func (m *Manager) EnqueueHistory(pr gh.PR, mine bool) (jobView, error) {
+	// Load already refuses such a config; this keeps an edit made while the
+	// server runs from ever starting an agent that publishes.
+	if err := m.cfg.ValidateHistoryAgent(); err != nil {
+		return jobView{}, err
+	}
 	return m.enqueue(pr, mine, m.cfg.HistoryChoice(), true)
 }
 

@@ -1375,6 +1375,24 @@ func TestHistoryChoice(t *testing.T) {
 	if PublishesBy := ch.PublishesBy(); PublishesBy != "" {
 		t.Errorf("the history agent must never publish: %s", PublishesBy)
 	}
+	if err := c.ValidateHistoryAgent(); err != nil {
+		t.Errorf("the default history agent is valid: %v", err)
+	}
+	// A history agent that could post is refused, not run with posts masked.
+	for _, bad := range []AgentDef{
+		{Name: "h", Task: "/review-fleet --post {{number}}"},
+		{Name: "h", Task: "/history-pr {{number}}", Posts: true},
+		{Name: "h", Task: "/history-pr {{number}}", Prompt: "{{task}}\nYou are authorized to publish on the PR."},
+	} {
+		c.HistoryAgent = bad
+		if err := c.ValidateHistoryAgent(); err == nil || !strings.Contains(err.Error(), "history_agent") {
+			t.Errorf("%+v must be refused, got %v", bad, err)
+		}
+		if err := c.validateFormats(); err == nil {
+			t.Errorf("%+v must fail the config validation", bad)
+		}
+	}
+	c.HistoryAgent = AgentDef{}
 	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
 	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel-history-pr {{number}}" {
 		t.Errorf("configured history choice: %+v", ch)

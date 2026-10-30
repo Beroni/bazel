@@ -1007,6 +1007,20 @@ func (c *Config) validateFormats() error {
 	if err := validateFormat(c.PostAgent.Format); err != nil {
 		return fmt.Errorf("invalid format for post_agent: %w", err)
 	}
+	if err := validateFormat(c.HistoryAgent.Format); err != nil {
+		return fmt.Errorf("invalid format for history_agent: %w", err)
+	}
+	return c.ValidateHistoryAgent()
+}
+
+// ValidateHistoryAgent refuses a history_agent that could write to the PR:
+// posts: true, a task with --post, a prompt that authorizes publishing. The
+// History tab promises nothing goes to the PR, so such an agent is an error
+// in the config, never something to run with its flag quietly turned off.
+func (c *Config) ValidateHistoryAgent() error {
+	if how := c.HistoryChoice().PublishesBy(); how != "" {
+		return fmt.Errorf("history_agent %s — the History tab never publishes; drop posts, --post or the publishing prompt", how)
+	}
 	return nil
 }
 
@@ -1396,9 +1410,10 @@ func (c *Config) HistoryChoice() Choice {
 	if def.Checkout == nil {
 		ra.Checkout = true
 	}
-	ra.Posts = false
+	// Not a review: nothing of it is offered for publishing. Whether the agent
+	// could post on its own is not masked here — ValidateHistoryAgent refuses it.
 	ra.Publishable = false
-	return Choice{Name: ra.Name, Description: ra.Description, Steps: []ResolvedAgent{ra}}
+	return Choice{Name: ra.Name, Description: ra.Description, Posts: ra.Posts, Steps: []ResolvedAgent{ra}}
 }
 
 // PostChoice is the publishing agent, ready to run.
