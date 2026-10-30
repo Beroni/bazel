@@ -315,6 +315,17 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
+		// A GET needs no Origin to reach the API from another site: an <img>
+		// is enough to spend the machine's GitHub quota. The browser says where
+		// a request comes from, and only this page has a reason to call. A
+		// client without the header (curl, MCP, an old browser) goes on as
+		// before.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" || site == "same-site" {
+				http.Error(w, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if origin := r.Header.Get("Origin"); origin != "" {
 				u, err := url.Parse(origin)

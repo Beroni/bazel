@@ -2638,3 +2638,33 @@ func TestPostRecusadoE4xx(t *testing.T) {
 		t.Errorf("output that stays in Bazel: %d, want 409", code)
 	}
 }
+
+// The API answers only this page: a request the browser marks as coming from
+// another site is refused before it reaches gh, GET included. Same-origin
+// fetches, navigations and clients without the header go through.
+func TestGuardRecusaOutroSite(t *testing.T) {
+	h := newTestServer(t).Handler()
+	cases := []struct {
+		path, site string
+		want       int
+	}{
+		{"/api/prs?refresh=1", "cross-site", http.StatusForbidden},
+		{"/api/prs/acme/api-core/1/history", "cross-site", http.StatusForbidden},
+		{"/api/state", "same-site", http.StatusForbidden},
+		{"/api/state", "same-origin", http.StatusOK},
+		{"/api/state", "none", http.StatusOK},
+		{"/api/state", "", http.StatusOK},
+		{"/", "cross-site", http.StatusOK},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "http://127.0.0.1:7777"+c.path, nil)
+		if c.site != "" {
+			r.Header.Set("Sec-Fetch-Site", c.site)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != c.want {
+			t.Errorf("%s from %q: %d, want %d", c.path, c.site, w.Code, c.want)
+		}
+	}
+}
