@@ -2163,13 +2163,13 @@ function renderHistoryView(body, job) {
   const box = tid(el('div', 'history'), 'history', { prKey: pr.key });
   body.append(box);
   if (!got) { box.append(el('p', 'dim', 'loading the history…')); return; }
+  // A failed read still leaves the way to write one.
+  const h = got.view || { agent: 'the history agent' };
   if (got.error) {
     const e = el('div', 'error-box', 'Could not read the history: ' + got.error + ' ');
     e.append(retryButton('histories', pr.key, redraw));
     box.append(e);
-    return;
   }
-  const h = got.view;
   if (h.custom && !job.history) box.append(historyCustomNote());
 
   const generate = (label) => {
@@ -2194,6 +2194,7 @@ function renderHistoryView(body, job) {
     return b;
   };
 
+  if (got.error) { box.append(generate('Generate')); return; }
   if (h.job) {
     const p = el('p', 'dim');
     p.append(document.createTextNode(`Writing the history with ${h.agent}… `));

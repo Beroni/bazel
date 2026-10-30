@@ -544,3 +544,116 @@ func TestRefreshEmFilaNaoRelê(t *testing.T) {
 		t.Errorf("a refresh that did not run was charged: %d", len(srv.listReads))
 	}
 }
+
+// The read has a limit of its own, and the failure window starts when it ends:
+// a gh that took long to fail does not come back already expired.
+func TestPRDetailsTempoDaLeitura(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	now := time.Unix(1_000_000, 0)
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	calls := 0
+	srv.fetchDetails = func(ctx context.Context, _ string, _ int) (gh.Details, error) {
+		calls++
+		if _, ok := ctx.Deadline(); !ok {
+			t.Error("the read has no timeout")
+		}
+		now = now.Add(detailsErrTTL + time.Second)
+		return gh.Details{}, errors.New("HTTP 502")
+	}
+	h := srv.Handler()
+	for range 2 {
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "http://127.0.0.1:7777/api/prs/acme/api-core/482/details", nil))
+	}
+	if calls != 1 {
+		t.Errorf("a slow failure must stay cached: %d calls", calls)
+	}
+}
+
+// A Retry refused by a budget did not read anything, so it does not start the
+// gap; and a POST for a PR outside the list spends the same budget as a GET.
+func TestRecusaNaoConsomeRetry(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	now := time.Unix(1_000_000, 0)
+	timeNow = func() time.Time { return now }
+	oldGh, oldOff := ghReadsPerMin, offListPerMin
+	t.Cleanup(func() { timeNow = time.Now; ghReadsPerMin, offListPerMin = oldGh, oldOff })
+	calls := 0
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls++
+		return gh.Details{}, errors.New("HTTP 502")
+	}
+	h := srv.Handler()
+	do := func(method, path string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, "http://127.0.0.1:7777"+path, nil))
+		return w.Code
+	}
+	retry := "/api/prs/acme/api-core/482/details?retry=1"
+	do("GET", "/api/prs/acme/api-core/482/details")
+	ghReadsPerMin = 0
+	if code := do("GET", retry); code != http.StatusTooManyRequests || calls != 1 {
+		t.Errorf("past the budget: %d, %d calls", code, calls)
+	}
+	ghReadsPerMin = 100
+	if code := do("GET", retry); code != http.StatusBadGateway || calls != 2 {
+		t.Errorf("the refused Retry took the gap: %d, %d calls", code, calls)
+	}
+	offListPerMin = 0
+	if code := do("POST", "/api/prs/acme/api-core/999/history"); code != http.StatusTooManyRequests {
+		t.Errorf("POST outside the list: %d", code)
+	}
+}
+
+// Who waits on a read: the tab that leaves stops waiting, a Retry joins the
+// read under way instead of being refused or starting another, and if the read
+// blows up the others get an error, not an empty page.
+func TestPRDetailsQuemEspera(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	path := "http://127.0.0.1:7777/api/prs/acme/api-core/482/details"
+	started, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls.Add(1)
+		close(started)
+		<-release
+		panic("boom")
+	}
+	h := srv.Handler()
+	leader := make(chan struct{})
+	go func() {
+		defer close(leader)
+		defer func() { _ = recover() }()
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
+	}()
+	<-started
+
+	gone, leave := context.WithCancel(context.Background())
+	leave()
+	left := make(chan struct{})
+	go func() {
+		defer close(left)
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil).WithContext(gone))
+	}()
+	select {
+	case <-left:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a waiter whose tab left keeps waiting")
+	}
+
+	codes := make(chan int, 1)
+	go func() {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", path+"?retry=1", nil))
+		codes <- w.Code
+	}()
+	time.Sleep(50 * time.Millisecond) // the Retry reaches the wait
+	close(release)
+	<-leader
+	if code := <-codes; code != http.StatusBadGateway || calls.Load() != 1 {
+		t.Errorf("waiter after the read blew up: %d, %d calls", code, calls.Load())
+	}
+}

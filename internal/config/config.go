@@ -1083,7 +1083,7 @@ func (c *Config) HistoryCustom() bool {
 
 // publishCommandRe matches, in flattened text, the flag and the gh commands
 // that write to a PR. --post=false is the flag turned off.
-var publishCommandRe = regexp.MustCompile(`(^|\s)--post(=true)?(\s|$)|\bgh (pr (comment|review|merge|edit|close)|issue comment)\b`)
+var publishCommandRe = regexp.MustCompile(`(^|\s)--post(=(true|yes|on|1))?(\s|$)|\bgh (pr (comment|review|merge|edit|close)|issue comment)\b`)
 
 // mentionsPublishing says whether the text calls the built-in post skill, which
 // only publishes, passes --post or runs a gh command that writes to the PR.

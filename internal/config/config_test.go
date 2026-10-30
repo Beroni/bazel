@@ -1403,6 +1403,7 @@ func TestValidateHistoryAgent(t *testing.T) {
 		{Task: "/x '--post'"},
 		{Task: "/x --POST"},
 		{Task: "/x --post=true"},
+		{Task: "/x --post=1"},
 		{Task: "/bazel-post-report {{review_file}}"},
 		{Task: "/BAZEL-POST-REPORT {{number}}"},
 		{Task: "/history-pr {{number}}, then gh pr comment {{number}}"},
