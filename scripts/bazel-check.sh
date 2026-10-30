@@ -26,11 +26,13 @@ echo "workdir: $WORK"
 gh repo clone "$REPO" "$CLONE" -- --filter=blob:none -q || exit 1
 (cd "$CLONE" && gh pr checkout "$PR" >/dev/null 2>&1) || { echo "gh pr checkout $PR failed" >&2; exit 1; }
 
-# 2. The built-in skills, as skills.Materialize writes them.
-mkdir -p "$CLONE/.claude/skills" "$CLONE/.claude/agents"
-cp -R "$BUILTIN"/. "$CLONE/.claude/skills/"
-cp "$BUILTIN"/*/agents/*.md "$CLONE/.claude/agents/"
-echo ".claude/" >> "$CLONE/.git/info/exclude"
+# 2. The built-in skills, as skills.Materialize writes them: a plugin in a
+#    folder of its own, outside the clone. Nothing is written into the clone.
+PLUGIN=$WORK/plugin
+mkdir -p "$PLUGIN/.claude-plugin" "$PLUGIN/skills" "$PLUGIN/agents"
+printf '{\n  "name": "bazel",\n  "description": "Skills that ship inside Bazel"\n}\n' > "$PLUGIN/.claude-plugin/plugin.json"
+cp -R "$BUILTIN"/. "$PLUGIN/skills/"
+cp "$BUILTIN"/*/agents/*.md "$PLUGIN/agents/"
 
 # 3. The prompt, as config.defaultPrompt fills it.
 META=$(cd "$CLONE" && gh pr view "$PR" --json title,author,url,headRefName,baseRefName,body)
@@ -53,8 +55,10 @@ $BODY
 Write only the final report to stdout, in Markdown.
 PROMPT
 
-# 4. The agent, with Bazel's default args.
-ARGS=(-p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent)
+# 4. The agent, with Bazel's default args and the flags confineClaude adds: the
+#    PR's .claude/settings.json hooks and .mcp.json servers never run.
+ARGS=(-p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent
+  --setting-sources user --strict-mcp-config --plugin-dir "$PLUGIN")
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 START=$(date +%s)
 (cd "$CLONE" && claude "${ARGS[@]}" < "$WORK/prompt.md" > "$WORK/stream.jsonl" 2> "$WORK/stderr.log")
@@ -69,6 +73,8 @@ FAIL=0
 check() { if eval "$2"; then echo "  ok   $1"; else echo "  FAIL $1"; FAIL=1; fi; }
 echo "checks:"
 check "report is not empty" '[ -s "$WORK/report.md" ]'
+check "the built-in skill loaded from the plugin" 'jq -e "select(.type==\"system\" and .subtype==\"init\") | .skills | map(tostring) | any(. == \"bazel:$SKILL\" or . == \"$SKILL\")" "$WORK/stream.jsonl" >/dev/null'
+check "nothing written into the clone" '[ -z "$(git -C "$CLONE" status --porcelain --ignored -uall)" ]'
 check "one turn, no progress notes before the report ($RESULTS results)" '[ "$RESULTS" = 1 ]'
 check "skill never asked a question" '! grep -q "\"name\":\"AskUserQuestion\"" "$WORK/stream.jsonl"'
 check "report starts with its header, no preamble" 'head -1 "$WORK/report.md" | grep -qE "^(<!-- (review-fleet|history-pr):v1|# )"'
