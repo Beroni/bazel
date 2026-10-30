@@ -714,18 +714,22 @@ CLI is running:
   is even made, and again right before it starts, with symlinks resolved: an
   earlier step can turn a safe path into a link. One bad step refuses the whole
   job. Another `--setting-sources` is refused, and so is `--settings`,
-  `--mcp-config`, `--plugin-dir`, `--add-dir`, and the other flags that read
-  configuration, with anything but an absolute path outside the clone.
+  `--mcp-config`, `--plugin-dir`, `--add-dir`, the other flags that read
+  configuration, and `CLAUDE_CONFIG_DIR`, with anything but an absolute path
+  outside the clone.
 - **No launchers in the clone.** With checkout on, `npx`, `bunx`, `npm`, `pnpm`,
   `yarn`, `uvx`, `pipx`, `env` and relative paths are refused as a `command`,
   before the clone: they decide what to run from the working directory, and the
   PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
   `command` at an installed binary, and set variables with `env:`.
-- **Git stays out of it.** Every agent with a clone gets
-  `safe.bareRepository=explicit`, `core.fsmonitor=false` and
-  `core.hooksPath=/dev/null` through `GIT_CONFIG_*`, after your own entries, so
-  a repository the PR nests in a folder cannot run its `core.fsmonitor` on a
-  `git status`.
+- **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
+  `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
+  `core.fsmonitor=false` and `core.hooksPath=/dev/null` through `GIT_CONFIG_*`,
+  after your own entries. A repository the PR nests in a folder would otherwise
+  run its own config on an ordinary `git diff` or `git status`. `gh` and `git -C`
+  work as usual; a test suite that creates repositories of its own will not.
+  The pin works on any git; 2.38 or newer is recommended, because
+  `safe.bareRepository` does nothing before that.
 
 What is still on you:
 
@@ -738,8 +742,9 @@ What is still on you:
   formatter, `npx` or `make` runs the PR's config or scripts with your login.
 - **A step can leave something running only by leaving on purpose.** Each agent
   runs in a process group of its own, killed when the step ends, however it ends,
-  and when Bazel shuts down. A process that starts its own session with `setsid`
-  escapes that, and could still write to the clone.
+  and when Bazel shuts down, closing the terminal included. A process that
+  starts its own session with `setsid` escapes that, and could still write to
+  the clone.
 - **The agent still reads what the PR says.** A confined Claude Code does not
   load the PR's `CLAUDE.md`, but an unrecognized wrapper does, and any agent
   reads the PR's code and comments. That is prompt injection, not execution, but
