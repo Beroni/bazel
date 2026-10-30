@@ -312,6 +312,10 @@ function adoptInstance(id) {
   state.bodies = {};
   state.splits = {};
   state.logs = {};
+  // Details and histories may name jobs of the old server (a history being
+  // written), so they are fetched again rather than waiting on loadPRs.
+  state.details = {};
+  state.histories = {};
   // The tab and the log filter are per job id too: a new j1 must not open on
   // the old j1's tab, nor hide its log behind the old one's agent.
   state.views = {};
