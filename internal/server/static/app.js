@@ -1444,25 +1444,25 @@ function renderPRs() {
 // a crooked "ago".
 const ago = (age) => (age === 'just now' ? age : age + ' ago');
 
-// reviewTags is the PR's history in the list: whether it was reviewed, when, and
+// reviewTag is the PR's history in the list: whether it was reviewed, when, and
 // — what matters most — whether it got a new commit after that. A reviewed PR
 // that changed is worth a warning, not a ✓: what is on GitHub is no longer what
 // the agent read.
-function reviewTags(pr) {
-  if (!pr.reviewed) return [];
+function reviewTag(pr) {
+  if (!pr.reviewed) return null;
   if (pr.changed_since_review) {
     const t = tid(el('span', 'tag stale', 'changed'), 'pr-review-tag', { state: 'changed' });
     // A stale review that already went to the PR is the case worth flagging.
     t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
       + (pr.review_posted ? ', published on the PR' : '')
       + ', and the PR got new commits afterwards';
-    return [t];
+    return t;
   }
   const t = tid(el('span', 'tag reviewed', 'reviewed ' + (pr.reviewed_at === 'just now' ? 'now' : pr.reviewed_at)),
     'pr-review-tag', { state: pr.review_posted ? 'published' : 'reviewed' });
   t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
     + (pr.review_posted ? ', and published on the PR' : '');
-  return [t];
+  return t;
 }
 
 // selectVisible is "select all": it ticks, or unticks, only the PRs the filter
@@ -1489,12 +1489,12 @@ function syncReviewingTags() {
 const reviewing = (j) => !j.history && (j.state === 'queued' || j.state === 'running');
 
 // prStateTag is the one tag a PR row carries: "reviewing" while a job of this
-// session runs over it, else what reviewTags says (changed, or reviewed with
+// session runs over it, else what reviewTag says (changed, or reviewed with
 // its age).
 function prStateTag(pr) {
   const live = state.jobs.some((j) => j.pr.key === pr.key && reviewing(j));
   if (live) return tid(el('span', 'tag reviewing', 'reviewing'), 'pr-review-tag', { state: 'reviewing' });
-  return reviewTags(pr)[0] || null;
+  return reviewTag(pr);
 }
 
 function toggle(key, on) {
