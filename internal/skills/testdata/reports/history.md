@@ -17,8 +17,6 @@ generated_at: 2026-10-29T12:00:00Z
 
 Commits read: 4
 
-# History — PR #26 · Translate comments to English
-
 ## What it does
 
 **Stated:** translate every Go comment to English.

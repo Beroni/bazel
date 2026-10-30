@@ -53,7 +53,7 @@ and their shape is exact:
 ## Sections, in this order
 
 Right after the header block, one line `Commits read: N` (the commits you actually listed),
-a blank line, then the H1 `# History — PR #<N> · <title>`.
+then the sections. No H1: the page already shows the PR's title.
 
 ### 1. `## What it does`
 
@@ -85,10 +85,12 @@ behind an httpOnly cookie. Confirmed: the message cites the thread.
 - Rejected: token in memory — lost on reload, raised in T2.
 ```
 
-- **`- Commit:`** — the short sha (7 hex) of the commit that carries the decision, then ` · `,
+- **`- Commit:`** — **one** short sha (7 hex), the commit that carries the decision, then ` · `,
   then where the reason comes from: `description`, `commit message`, `thread with @login
   (T<n>)`, `review by @login`, or `diff` when nothing written explains it. Leave the line out
-  when no commit carries the decision (agreed in a thread, never pushed).
+  when no commit carries the decision (agreed in a thread, never pushed). A decision spread over
+  several commits names the main one here and the others in the body; a list of shas on this
+  line is not read.
 - **The body** says what was decided and why, and spells out the evidence level of every
   causal link (**confirmed** / **inferred** / **unanswered**, see the SKILL). Never write "fixed
   in `abc123`" for an inferred link.
@@ -101,8 +103,9 @@ Describe, do not appraise. This report gets read by the people it describes.
 
 ### 3. `## Still open`
 
-What a reader still has to deal with, one `- ` item each: unresolved threads (with ids),
-failing checks, questions asked and never answered, review requests never fulfilled. If the
+A **flat** list, one `- ` item per open thing — no paragraph before it, no nested items (the
+page reads each line as an item). What a reader still has to deal with: unresolved threads
+(with ids), failing checks, questions asked and never answered, review requests never fulfilled. If the
 PR is merged, this lists what was open **when it landed** — merging does not resolve anything.
 Nothing open → `- Nothing open.`
 
