@@ -643,7 +643,7 @@ async function openSaved(name) {
     md.innerHTML = data.html;
     v.append(md);
     const key = pickKey('saved', name);
-    const total = decorateFindings(md, key);
+    const total = decorateFindings(md, key, !entry || entry.publishable !== false);
 
     // A saved review stays publishable: closing Bazel before sending it to the
     // PR can't cost the agent's work.
@@ -733,8 +733,19 @@ const skipList = (key) => [...skipped(key)].sort((a, b) => a - b);
 
 // skipNote is the reminder in the publish confirm: what was left unticked doesn't go.
 function skipNote(skip) {
-  if (!skip.length) return '';
-  return `\n\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
+  // What goes, said in the confirm: the ticked findings with their full
+  // bodies (folded or not), and the summary and other sections of the report.
+  const md = document.querySelector('#viewer .md.compact');
+  let goes = '';
+  if (md) {
+    const all = md.querySelectorAll('section.finding').length;
+    const extra = md.querySelectorAll('.rmore h2, .rmore h3').length;
+    goes = `\n\nGoes to the PR: ${all - skip.length} of ${all} finding${all === 1 ? '' : 's'} (whole bodies)`
+      + (md.querySelector('.rsummary') ? ', the summary' : '')
+      + (extra ? ` and ${extra} more section${extra === 1 ? '' : 's'} of the report` : '') + '.';
+  }
+  if (!skip.length) return goes;
+  return goes + `\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
 }
 
 // decorateFindings puts the checkbox on each finding of the review drawn in md
@@ -773,7 +784,7 @@ function findingTitle(sec) {
 // left out of what goes to the PR), a severity dot and the title; a click on
 // the title opens the body (the first one starts open). The section keeps its
 // data-finding index, the one publish receives in skip.
-function decorateFindings(md, key) {
+function decorateFindings(md, key, publishable = true) {
   const secs = [...md.querySelectorAll('section.finding')];
   const out = skipped(key);
   secs.forEach((sec, n) => {
@@ -821,7 +832,7 @@ function decorateFindings(md, key) {
       refreshPickSummary();
     });
   });
-  compactReport(md);
+  compactReport(md, publishable);
   return secs.length;
 }
 
@@ -829,7 +840,7 @@ function decorateFindings(md, key) {
 // top, then each group of findings (Findings, Cuts, Needs human verification)
 // as a short list under a small label. Whatever else the report has (coverage,
 // verdict…) stays below, folded, so nothing it said is lost.
-function compactReport(md) {
+function compactReport(md, publishable) {
   const kids = [...md.children];
   const firstSec = kids.findIndex((k) => k.matches('section.finding'));
   if (firstSec < 0) return;
@@ -843,7 +854,7 @@ function compactReport(md) {
   if (start < 0 || start > firstSec) start = firstSec;
   const summary = el('div', 'rsummary');
   const rest = el('div', 'rrest');
-  kids.slice(0, start).forEach((k) => { if (k.tagName !== 'H1') summary.append(k); else k.remove(); });
+  kids.slice(0, start).forEach((k) => summary.append(k));
   let inGroup = false;
   const groups = el('div', 'rgroups');
   for (const k of kids.slice(start)) {
@@ -861,8 +872,13 @@ function compactReport(md) {
   if (summary.childNodes.length) md.append(summary);
   md.append(groups);
   if (rest.childNodes.length) {
-    const more = el('details', 'rmore');
-    more.append(el('summary', null, 'More from the report'), rest);
+    // Whatever the report says besides the findings goes to the PR with them:
+    // when it does, the fold is open and says so (review F5).
+    const more = tid(el('details', 'rmore'), 'review-more', { publishes: !!publishable });
+    more.open = !!publishable;
+    const sum = el('summary', null, 'More from the report');
+    if (publishable) sum.append(el('span', 'rmore-goes', 'also goes to the PR'));
+    more.append(sum, rest);
     md.append(more);
   }
 }
@@ -2220,7 +2236,7 @@ function renderReportView(v, job) {
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = html;
     v.append(md);
-    total = decorateFindings(md, key);
+    total = decorateFindings(md, key, job.publishable !== false);
   }
 
   // The actions come after the review, in a bar pinned to the panel's bottom:
