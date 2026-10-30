@@ -663,7 +663,8 @@ agents:
 > [Security model](#security-model)). The other CLIs have their own rules:
 > Codex loads a project's `.codex/` layers (config, hooks, rules) only when the
 > project is trusted, and the clone is a fresh temporary path — do not mark a
-> parent of your temp directory as trusted in `~/.codex/config.toml`. Grok runs
+> parent of your temp directory as trusted in `~/.codex/config.toml`. Bazel also
+> removes `.codex/` and `.grok/` from the clone either way. Grok runs
 > with Bazel's own `GROK_HOME`, with Claude and Cursor compatibility (skills,
 > agents, hooks, MCP, rules) turned off. Codex still reads the PR's `AGENTS.md`
 > as instructions, and any CLI reads the PR's files: a review of an untrusted PR
@@ -690,15 +691,28 @@ without authentication in front.
 **The PR's own agent configuration never runs.** The agent works inside the
 clone of someone else's PR, and a PR can ship a `.claude/settings.json` whose
 hooks run shell commands — with your `gh` login at hand — or a `.mcp.json`
-that starts a server. So every Claude Code step runs with
-`--setting-sources user --strict-mcp-config --plugin-dir <runtime>`, added by
-Bazel to whatever `args` you configured: only your own settings apply, MCP
-servers come only from a `--mcp-config` you pass, and the built-in skills
-arrive as a plugin from outside the clone. An agent whose `args` set another
-`--setting-sources` is refused. Your own skills, agents and plugins under
-`~/.claude` still load. Codex and Grok steps are not covered by these flags:
-Grok runs with an isolated `GROK_HOME` (see below); for Codex, see
-[Using another agent CLI](#using-another-agent-cli).
+that starts a server. Three things stop that, in layers:
+
+- **It is not there.** Before every step, of any CLI, Bazel removes `.claude/`,
+  `.codex/`, `.grok/` and `.mcp.json` from the clone's working tree, without
+  following symlinks, and the job's log says what went. They stay in git, so a
+  review still sees them in the diff and with `git show HEAD:<path>`, and the
+  agent is told so. If they cannot be removed, the review stops.
+- **Claude Code is told to ignore it.** Every step that runs Claude Code —
+  `claude` under any name, a launcher like `npx @anthropic-ai/claude-code`, or
+  a step that speaks stream-json — gets `--setting-sources user
+  --strict-mcp-config --plugin-dir <runtime>` ahead of your `args`: only your
+  own settings apply, and the built-in skills arrive as a plugin from outside
+  the clone. Your own skills, agents and plugins under `~/.claude` still load.
+  An agent whose `args` set another `--setting-sources` is refused. A shell
+  (`sh -c '…'`) cannot take flags for what it calls, so it has only the first
+  layer.
+- **Nothing points back into the clone.** A step whose `args` carry
+  `--settings`, `--mcp-config`, `--plugin-dir`, `--add-dir`,
+  `--append-system-prompt-file` or `--system-prompt-file` with anything but an
+  absolute path outside the clone is refused before it starts.
+
+For Grok and Codex, see [Using another agent CLI](#using-another-agent-cli).
 
 ## Development
 
