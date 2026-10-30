@@ -149,8 +149,10 @@ The orchestrator always hands you the scope — the diff command, the file list,
 block at the top of your prompt. **Use exactly that** and nothing else: every lens must review
 the identical diff, or their findings cannot be compared or deduplicated. Never resolve a scope
 of your own, never guess a base branch, and never drop a path from it (`.claude/` and other
-agent configuration included). No scope block → return your JSON with no findings and say so
-in a `needs_human_verification` item (or in `body`, if your contract has no such list).
+agent configuration included). Those configuration files are not in the working tree — Bazel
+removes them so that no agent CLI runs them —: read them with `git show HEAD:<path>`. No scope
+block → return your JSON with no findings and say so in a `needs_human_verification` item (or
+in `body`, if your contract has no such list).
 
 ## Output contract
 

@@ -55,6 +55,12 @@ Rules that keep that honest:
   `.github/` or any other agent or CI configuration is the PR's own change, and it is
   **security-relevant by default**: a hook or an MCP server there runs code on the machine of
   whoever opens the repository with an agent. Never drop a path from the change set.
+- **Read that configuration through git.** Before you ran, Bazel removed every `.claude/`,
+  `.codex/`, `.grok/` and `.mcp.json` from the working tree, at any depth, so that no agent CLI
+  runs them; the prompt lists what went. They are still in the commits: `git diff` shows them,
+  and `git show HEAD:<path>` reads them. A missing file is not a finding, and `git status`
+  showing them as deleted is Bazel's doing, not the PR's: only the diff between commits says
+  what the PR changed.
 - **An empty change set is a failure, not a clean diff.** If `git diff --name-only` comes back
   empty, try `gh pr diff <N> --name-only` once. Still empty → failure report (section 5).
 
