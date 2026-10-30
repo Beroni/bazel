@@ -1,17 +1,15 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { openJob, ui } from '../harness/ui';
 
 // R1: a failed "paste as a comment" (gh fails → POST /post answers 502) showed
 // "failed to publish: …" in the banner, and the refresh that follows the job
 // event (upsertJob → loadPRs → banner(state.warning)) wiped it within
 // 0.4–3 s. R1b: the button came back labelled "publish to the PR" instead of
-// its own label. Fixed on feat/redesign 9fe9fef and fix/qa-bugs 6ae5391: user
-// action errors become an alert that only goes on ✕ or on the next action.
+// its own label. Fixed in #27: user action errors become an alert that only goes on ✕ or on the next action.
 test.describe('P1 · a failed publish stays on screen', () => {
   test.use({ bazelOptions: { config: { agents: [{ name: 'review-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings' } }] } } });
 
   test('the error survives the refresh that follows, the button keeps its label, ✕ clears it', async ({ app, bazel }) => {
-    knownBug('R1', 'failed-publish banner wiped by the next refresh');
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     bazel.setGh({ fail: { comment: 'HTTP 403: Resource not accessible by integration' } });

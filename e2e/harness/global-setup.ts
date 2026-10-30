@@ -10,6 +10,8 @@ import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, OUT, REPO, SAFE_PATH, SPECS,
 // never on the server's PATH — git is linked in by itself.
 export default async function globalSetup() {
   fs.rmSync(BIN, { recursive: true, force: true });
+  // A failed test keeps its root for debugging, until the next run.
+  fs.rmSync(path.join(OUT, 'runs'), { recursive: true, force: true });
   fs.mkdirSync(BIN, { recursive: true });
 
   // The three builds run in parallel; Go's build cache makes a warm run cheap.

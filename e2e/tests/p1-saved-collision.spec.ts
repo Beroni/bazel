@@ -1,11 +1,9 @@
 import fs from 'node:fs';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 
-// BUG-QA-02: store.Save names the file <repo>-<number>-<YYYYMMDD-HHMMSS>.md
-// and writes it with os.WriteFile. Two reviews of the same PR that finish in
-// the same second (two agents, --jobs 2) get the same path: the second
-// overwrites the first, and both cards point at one file. Fixed on
-// fix/qa-bugs (d5190e2): O_EXCL with a -2, -3… suffix.
+// BUG-QA-02, fixed in #27: two reviews of the same PR finishing in the same
+// second used to get the same <repo>-<number>-<YYYYMMDD-HHMMSS>.md, and the
+// second overwrote the first. Now O_EXCL with a -2, -3… suffix.
 test.describe('P1 · saved reviews', () => {
   test.use({
     bazelOptions: {
@@ -19,10 +17,9 @@ test.describe('P1 · saved reviews', () => {
   });
 
   test('two reviews of one PR finishing in the same second keep two files', async ({ bazel }) => {
-    knownBug('BUG-QA-02', 'same-second reviews of one PR overwrite each other');
     const a = await bazel.enqueue('acme/api-core#101', 'fleet-gated');
     const b = await bazel.enqueue('acme/api-core#101', 'plain-gated');
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await expect.poll(() => bazel.agentCalls().length, { timeout: 25_000 }).toBe(2);
     // Release right after a second boundary so both land in the same second.
     while (Date.now() % 1000 > 100) await new Promise((r) => setTimeout(r, 5));
     bazel.release('release-gate');

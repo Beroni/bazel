@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { filterByReview, openFilters, selectByLabel, ui } from '../harness/ui';
 
 test.describe('P1 · list filters', () => {
@@ -87,15 +87,11 @@ test.describe('P2 · authors and drafts from the config', () => {
   });
 });
 
-// BUG-QA-06: ticking "select all" while the PR list is still loading leaves
-// the box checked with nothing selected (it selects visiblePRs() of an empty
-// list and the box is never re-synced on render). The run button stays
-// disabled under a checked box. Under load it is also what made the built-in
-// skill specs time out (the test ticked before /api/prs answered).
-// Expected: the box reflects the selection — checked ⇒ the visible PRs ticked.
+// BUG-QA-06, fixed in #27: ticking "select all" while the PR list was loading
+// left the box checked with nothing selected and the run button disabled.
+// The box has to reflect the selection.
 test.describe('P2 · select all during load', () => {
   test('a "select all" ticked before the list arrives does not lie', async ({ page, bazel }) => {
-    knownBug('BUG-QA-06', 'select-all checked while nothing is selected');
     await page.route('**/api/prs*', async (r) => { await new Promise((x) => setTimeout(x, 1500)); await r.continue(); });
     await page.goto(bazel.url + '/');
     await ui.filter(page).fill('rate limiter');

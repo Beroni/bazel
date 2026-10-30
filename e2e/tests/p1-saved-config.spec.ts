@@ -55,14 +55,11 @@ test.describe('P1 · config through the API', () => {
     expect((await bazel.api('POST', '/api/repos', { repo: 'just-a-name' })).status).toBe(400);
   });
 
-  // BUG-QA-03: handleRepoAdd only checks that the text has a "/" somewhere.
-  // "acme/" is accepted and stored as "acme" (AddRepo trims the slash), and a
-  // PR URL is stored as "acme/web-app/pull/7". Both end up in config.yaml and
-  // in every `gh search prs` as a bogus repo:… term; the second cannot even be
-  // removed through DELETE /api/repos/{owner}/{name}. Expected: 400 for
-  // anything that is not owner/name (or normalize the URL to owner/name).
+  // BUG-QA-03, fixed in #27: handleRepoAdd only checked that the text had a "/" somewhere.
+  // "acme/" was stored as "acme" and a PR URL as "acme/web-app/pull/7": both
+  // reached config.yaml and every `gh search prs` as a bogus repo:… term, and
+  // the second could not be removed. Now: 400 unless it reduces to owner/name.
   test('a repo must be exactly owner/name', async ({ bazel }) => {
-    knownBug('BUG-QA-03', 'malformed repos accepted');
     for (const repo of ['acme/', 'https://github.com/acme/web-app/pull/7', '/web-app', 'a/b/c']) {
       const r = await bazel.api('POST', '/api/repos', { repo });
       const stored = r.json.repos ?? [];

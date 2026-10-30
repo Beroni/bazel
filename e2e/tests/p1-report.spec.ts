@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { expandFindings, openJob, showMeters, ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
@@ -66,12 +66,9 @@ test.describe('P1 · report and findings', () => {
     expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user'))).toEqual([]);
   });
 
-  // BUG-QA-05: POST /api/jobs/{id}/post answers 502 Bad Gateway for refusals
-  // that are the client's fault ("does not go to the PR", "has not finished"),
-  // the same status as a real gh failure. The page shows "failed to publish"
-  // either way. Expected a 4xx (409 like /publish). Remove the knownBug line once fixed.
+  // BUG-QA-05, fixed in #27: a refusal that is the client's fault used to answer
+  // 502, the same as a real gh failure.
   test('refusing to post a non-publishable or unfinished review is a 4xx, not 502', async ({ bazel }) => {
-    knownBug('BUG-QA-05', '/post refusals answer 502');
     const id = await bazel.enqueue('acme/api-core#101', 'history');
     await bazel.waitJob(id, (j) => j.state === 'done');
     expect((await bazel.api('POST', `/api/jobs/${id}/post`, {})).status).toBe(409);

@@ -7,14 +7,12 @@ import { FAKE_CLAUDE, FAKE_WRAPPER } from '../harness/paths';
 // SEC-01: `claude -p` used to run the hooks of the PR's .claude/settings.json
 // and the servers of its .mcp.json: code from the PR, on this machine, with the
 // user's gh login at hand. Bazel now confines every Claude Code step and hands
-// it the built-in skills as a plugin outside the clone
-// and removes .claude, .codex, .grok and .mcp.json from the clone before every
-// step of any CLI (fix/untrusted-repo-config). A real agent cannot run here, so
+// it the built-in skills as a plugin outside the clone, and removes .claude,
+// .codex, .grok and .mcp.json from the clone before every step of any CLI
+// (#29). A real agent cannot run here, so
 // these tests pin what makes that true: the argv it gets and what it finds.
 //
-// knownBug, not test.skip: on a base without the fix these fail on purpose, and
-// if the confinement is ever lost the suite goes red instead of skipping.
-const SEC = () => knownBug('SEC-01', "the PR's Claude Code config can run");
+// These never skip: if the confinement is ever lost the suite goes red.
 const STREAM = ['-p', '--output-format', 'stream-json', '--verbose'];
 const CONFINED = ['--setting-sources', 'user', '--strict-mcp-config'];
 const REMOVED = '· removed from the clone, so that no agent runs them: ';
@@ -94,7 +92,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   test.use({ bazelOptions: { config: { agents: AGENTS, pipelines: PIPELINES } } });
 
   test('a claude-stream review is confined, and nothing is written to the clone', async ({ bazel }) => {
-    SEC();
     const { job } = await reviewRuns(bazel, 'review-fleet');
     expect(job.state).toBe('done');
     const [call] = bazel.agentCalls();
@@ -112,7 +109,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('the post agent is confined too, gets the skill from the plugin and still publishes', async ({ bazel }) => {
-    SEC();
     const { id } = await reviewRuns(bazel, 'review-fleet');
     expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [1] })).status).toBe(202);
     const job = await bazel.waitJob(id, (j) => j.posted || !!j.post_error, 25_000);
@@ -128,7 +124,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test("a hostile PR's hooks, MCP servers and fake skill never reach the agent, and the log says so", async ({ bazel }) => {
-    SEC();
     bazel.updatePR('acme/api-core#101', { files: HOSTILE });
     const { id, job } = await reviewRuns(bazel, 'review-fleet');
     expect(job.state).toBe('done');
@@ -154,7 +149,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('every CLI gets the same clean tree: wrapper, shell, plain, codex and grok', async ({ bazel }) => {
-    SEC();
     bazel.updatePR('acme/api-core#101', { files: HOSTILE });
     for (const agent of ['wrapper', 'shell', 'plain-lens', 'codex', 'grok']) {
       const { id, job } = await reviewRuns(bazel, agent);
@@ -169,11 +163,10 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     }
   });
 
-  // SEC-04: a launcher decides inside the clone what to run (package.json,
+  // SEC-04, fixed in #29: a launcher decides inside the clone what to run (package.json,
   // node_modules, .npmrc), and so does a relative path. With checkout they are
   // refused before the clone; the flags could not protect them.
   test('a launcher or a relative command is refused with checkout on, before any clone', async ({ bazel }) => {
-    knownBug('SEC-04', 'a launcher resolves what it runs from the clone');
     for (const [agent, message] of [
       ['launcher', 'not supported with checkout on'],
       ['launcher-path', 'not supported with checkout on'],
@@ -202,10 +195,9 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(bazel.agentCalls().every((c) => c.plugin_dir === '')).toBe(true);
   });
 
-  // SEC-05: a folder the PR versions can be a repository of its own, whose
+  // SEC-05, fixed in #29: a folder the PR versions can be a repository of its own, whose
   // config a `git status` inside it obeys (core.fsmonitor runs a command).
   test('every agent with a clone gets the git guard, on top of the user\'s settings', async ({ bazel }) => {
-    knownBug('SEC-05', 'git obeys config the PR versions');
     for (const agent of ['review-fleet', 'plain-lens', 'codex', 'git-user']) await reviewRuns(bazel, agent);
     for (const call of bazel.agentCalls()) {
       expect(call.git_config).toMatchObject({
@@ -218,7 +210,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   // F8: a path is the PR's text; in the prompt, in Bazel's voice, it would be an
   // instruction. The prompt gives the count; the log the names, capped and quoted.
   test("the PR's file names stay out of the prompt, and cannot fake a log line", async ({ bazel }) => {
-    SEC();
     const files: Record<string, string> = { 'a\nE2E-FAKE-LINE/.claude/x': 'x' };
     for (let i = 0; i < 24; i++) files[`d${String(i).padStart(2, '0')}/.claude/x`] = 'x';
     bazel.updatePR('acme/api-core#101', { files: { ...files, '.mcp.json': '{}' } });
@@ -236,7 +227,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('a step that brings the files back does not hand them to the next one', async ({ bazel }) => {
-    SEC();
     bazel.updatePR('acme/api-core#101', { files: HOSTILE });
     const { id, job } = await reviewRuns(bazel, 'restores');
     expect(job.state).toBe('done');
@@ -246,7 +236,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('a symlink in place of .claude or .mcp.json goes, and its target is not touched', async ({ bazel }) => {
-    SEC();
     const outside = path.join(bazel.root, 'outside');
     fs.mkdirSync(path.join(outside, 'dir', 'skills'), { recursive: true });
     fs.writeFileSync(path.join(outside, 'dir', 'settings.json'), 'KEEP-SETTINGS');
@@ -268,7 +257,7 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(fs.readFileSync(path.join(outside, 'mcp.json'), 'utf8')).toBe('KEEP-MCP');
   });
 
-  // SEC-02: a sweep that compares names exactly misses these, and on a
+  // SEC-02, fixed in #29: a sweep that compares names exactly misses these, and on a
   // case-insensitive disk (APFS, the macOS default) `.claude/settings.json` then
   // opens the PR's `.CLAUDE/settings.json`. The fake opens the lower-case path,
   // as a CLI would. The last two are the ones APFS folds and a ToLower would not
@@ -283,7 +272,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     ['long s', '.mcp.j\u017fon', '.mcp.j\u017fon', '.mcp.json'],
   ]) {
     test(`agent config in another case is removed: ${what}`, async ({ bazel }) => {
-      knownBug('SEC-02', 'the sweep compares agent config names exactly');
       bazel.updatePR('acme/api-core#101', { files: { [file]: HOSTILE['.claude/settings.json'], 'src/main.go': 'package main' } });
       const { id, job } = await reviewRuns(bazel, 'review-fleet');
       expect(job.state).toBe('done');
@@ -299,7 +287,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   }
 
   test('a config path that points into the clone is refused before any agent runs', async ({ bazel }) => {
-    SEC();
     bazel.updatePR('acme/api-core#101', { files: HOSTILE });
     for (const agent of ['mcp-in-clone', 'settings-in-clone']) {
       const { job } = await reviewRuns(bazel, agent);
@@ -312,7 +299,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('a --setting-sources that reads the project is refused before anything runs', async ({ bazel }) => {
-    SEC();
     for (const agent of ['sources-project', 'sources-equals']) {
       const { job } = await reviewRuns(bazel, agent);
       expect(job.state, agent).toBe('failed');
@@ -323,7 +309,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('flags already in the args are not repeated', async ({ bazel }) => {
-    SEC();
     await reviewRuns(bazel, 'already-set');
     const { argv } = bazel.agentCalls()[0];
     expect(argv.filter((a) => a === '--setting-sources')).toHaveLength(1);
@@ -332,14 +317,12 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('the command being `claude` is enough, whatever the output format', async ({ bazel }) => {
-    SEC();
     const { job } = await reviewRuns(bazel, 'named-claude');
     expect(job.state).toBe('done');
     expectConfined(bazel, bazel.agentCalls()[0], ['-p']);
   });
 
   test('in a mixed pipeline only the Claude step is confined', async ({ bazel }) => {
-    SEC();
     await reviewRuns(bazel, 'mixed');
     const [first, second] = bazel.agentCalls();
     expect(first.argv).toEqual([]);
@@ -347,7 +330,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   });
 
   test('the plugin folder goes when a review fails or is cancelled', async ({ bazel }) => {
-    SEC();
     const { job } = await reviewRuns(bazel, 'broken-claude');
     expect(job.state).toBe('failed');
     const failed = bazel.agentCalls()[0];
@@ -364,7 +346,6 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(bazel.runtimes()).toEqual([]);
   });
 
-  // Not knownBug: true before and after the fix.
   test('agents that are not Claude Code get their args untouched', async ({ bazel }) => {
     for (const agent of ['plain-lens', 'codex', 'grok']) await reviewRuns(bazel, agent);
     expect(bazel.agentCalls().map((c) => c.argv)).toEqual([
@@ -400,7 +381,6 @@ test.describe('P0 · a step cannot turn a later step into a reader of the clone'
 
   // The control: a --settings outside the clone is fine, and the step runs.
   test('a valid --settings outside the clone reaches the step', async ({ bazel }) => {
-    SEC();
     prepare(bazel);
     const { job } = await reviewRuns(bazel, 'no-swap');
     expect(job.state).toBe('done');
@@ -408,11 +388,10 @@ test.describe('P0 · a step cannot turn a later step into a reader of the clone'
     expectConfined(bazel, victim, [...STREAM, '--settings', settings(bazel)]);
   });
 
-  // SEC-03 (H2-2): --settings is checked once, before the steps. Step 1 runs in
-  // the clone and replaces the valid file with a symlink into it; step 2 then
-  // reads the PR's content as configuration. Expected: checked before each step.
+  // SEC-03 (H2-2), fixed in #29: --settings has to be checked before every step.
+  // Step 1 runs in the clone and replaces the valid file with a symlink into it;
+  // step 2 would then read the PR's content as configuration.
   test('a --settings swapped for a link into the clone refuses the next step', async ({ bazel }) => {
-    knownBug('SEC-03', 'path flags are checked once, not before every step');
     prepare(bazel);
     const { job } = await reviewRuns(bazel, 'swap-then-run');
     expect(fs.lstatSync(settings(bazel)).isSymbolicLink()).toBe(true); // the swap did happen
@@ -435,7 +414,6 @@ test.describe("P0 · the PR's Claude Code config never runs (no format set)", ()
   });
 
   test('stream-json in the args is enough to be confined', async ({ bazel }) => {
-    SEC();
     await reviewRuns(bazel, 'review-fleet');
     expectConfined(bazel, bazel.agentCalls()[0], STREAM);
   });

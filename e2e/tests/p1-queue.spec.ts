@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
@@ -64,14 +64,10 @@ test.describe('P1 · queue', () => {
     expect(bazel.savedReviews()).toEqual([]);
   });
 
-  // BUG-QA-04: Manager.Remove deletes a running job and broadcasts job_gone,
-  // but the worker then hits finish() → publish(job) and broadcasts a "job"
-  // event for the job it no longer has. The page upserts it back: a ghost
-  // "canceled" card whose ✕ answers 404. The comment in Remove says marking
-  // the state "prevents it from republishing", but finish never checks.
-  // Expected: no "job" event for an id after its job_gone.
+  // BUG-QA-04, fixed in #27: the worker of a removed job used to broadcast a
+  // "job" event after job_gone, and the page upserted it back as a ghost
+  // "canceled" card whose ✕ answered 404.
   test('a removed job does not come back as a ghost card', async ({ app, bazel }) => {
-    knownBug('BUG-QA-04', 'job event after job_gone resurrects the card');
     const sse = bazel.events();
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
     await bazel.waitJob(id, (j) => j.state === 'running');

@@ -33,11 +33,12 @@ specs stay the same, only the binary under test changes:
 ```sh
 git worktree add --detach ../bases/redesign <branch-or-commit>
 make e2e E2E_BAZEL_SRC=../bases/redesign
-make e2e E2E_BAZEL_SRC=../bases/fixes E2E_FIXED=BUG-QA-01,BUG-QA-02
+make e2e E2E_BAZEL_SRC=../bases/fixes E2E_FIXED=BUG-QA-07,BUG-QA-08,SEC-06
 ```
 
-`SEC-01` (Claude Code confined to user settings) is one of those ids: use
-`knownBug`, never a skip, for a security guard, so losing it turns the suite red.
+Use `knownBug`, never a skip, for a security guard, so losing it turns the
+suite red. `tests/p0-confine.spec.ts` (the PR's agent config never runs) has
+neither any more: since #29 it simply has to pass.
 `E2E_FIXED` lists the known bugs that base has fixed: their `knownBug(...)`
 tests must then pass instead of fail. The selectors in `harness/ui.ts` work on
 both UIs (testids first, master's role/text second), so a UI difference shows
