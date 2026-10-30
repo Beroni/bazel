@@ -349,6 +349,14 @@ function upsertJob(job) {
   }
   renderJobs();
   if (state.activeJob === job.id) renderViewer();
+  // A history that just finished: the tab reads it again.
+  if (job.history && job.state !== 'queued' && job.state !== 'running' && state.histories) {
+    delete state.histories[job.pr.key];
+    if (state.activeJob && jobView(state.jobs.find((x) => x.id === state.activeJob) || {}) === 'history') {
+      delete $('#viewer').dataset.sig;
+      renderViewer();
+    }
+  }
   syncReviewingTags();
 
   // A finished review changes the PR's badge in the list: reload from the
@@ -1712,7 +1720,7 @@ function viewerSignature(job) {
     // here" has to redraw the viewer even though state is still done.
     waiting(job) ? 'w' : '', job.publishable === false ? 'n' : '',
     state.bodies[job.id] ? 'b' : '',
-    jobView(job), jobView(job) === 'history' ? state.saved.length : '',
+    jobView(job),
   ].join('|');
 }
 
@@ -1819,7 +1827,6 @@ function jobTabs(job, view) {
     b.addEventListener('click', () => {
       state.views[job.id] = key;
       if (key === 'log') pollLog(job.id);
-      if (key === 'history') refreshSavedList();
       renderViewer();
     });
     bar.append(b);
@@ -2025,47 +2032,127 @@ function renderLogView(body, job) {
   pollLog(job.id);
 }
 
-// renderHistoryView lists the other reviews of the same PR: the ones in this
-// session's queue and the ones saved on disk. Nothing new on the server — it is
-// the queue and the Saved list, narrowed to this PR.
+// renderHistoryView is the PR's story, on demand: the history agent writes
+// what the PR does, the decisions taken (with the commit and the source of
+// each, and what was rejected) and what is still open. Nothing runs until you
+// ask: "Generate" queues it as a job, and the result is kept per PR and head.
 function renderHistoryView(body, job) {
-  const mesmo = (repo, n) => repo && repo.toLowerCase() === job.pr.repo.toLowerCase() && n === job.pr.number;
-  const sessao = state.jobs.filter((j) => j.id !== job.id && mesmo(j.pr.repo, j.pr.number));
-  const salvos = state.saved.filter((s) => mesmo(s.repo, s.number));
+  const pr = job.pr;
+  const redraw = () => { if (state.activeJob === job.id && jobView(job) === 'history') { delete $('#viewer').dataset.sig; renderViewer(); } };
+  const h = historyOf(pr, redraw);
+  const box = tid(el('div', 'history'), 'history', { prKey: pr.key });
+  body.append(box);
+  if (!h) { box.append(el('p', 'dim', 'loading the history…')); return; }
+  if (h.error) { box.append(el('div', 'error-box', 'Could not read the history: ' + h.error)); return; }
 
-  body.append(el('p', 'section-label', 'this session'));
-  if (!sessao.length) body.append(el('p', 'dim', 'No other review of this PR in the queue.'));
-  for (const j of sessao) {
-    const row = el('button', 'history-row');
-    row.append(fillState(el('span', 'state ' + j.state), j), el('span', null, j.agent || 'agent'), el('span', 'dim', j.id));
-    row.addEventListener('click', () => openJob(j.id));
-    body.append(row);
-  }
-  body.append(el('p', 'section-label', 'saved on disk'));
-  if (!salvos.length) body.append(el('p', 'dim', 'No saved review of this PR yet.'));
-  for (const s of salvos) {
-    const row = el('button', 'history-row');
-    row.append(el('span', null, s.agent || 'review'), el('span', 'dim', new Date(s.mod_time).toLocaleString()), el('span', 'dim', s.name));
-    row.addEventListener('click', () => {
-      state.tab = 'saved';
-      state.activeSaved = s.name;
-      renderTabs();
-      openSaved(s.name);
+  const generate = (label) => {
+    const b = tid(el('button', label === 'Generate' ? 'btn primary' : 'btn small ghost link', label),
+      label === 'Generate' ? 'history-generate' : 'history-regenerate');
+    b.title = `runs ${h.agent} over this PR — a job in the queue; nothing goes to the PR`;
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      clearAlert();
+      try {
+        const view = await api(`/api/prs/${pr.repo.split('/').map(encodeURIComponent).join('/')}/${pr.number}/history`, { method: 'POST' });
+        upsertJob(view);
+        delete state.histories[pr.key];
+        redraw();
+      } catch (err) {
+        alertError('Could not start the history: ' + err.message);
+        b.disabled = false;
+      }
     });
-    body.append(row);
+    return b;
+  };
+
+  if (h.job) {
+    const p = el('p', 'dim');
+    p.append(document.createTextNode(`Writing the history with ${h.agent}… `));
+    const a = el('button', 'btn small ghost link', 'watch its live log');
+    a.addEventListener('click', () => { state.views[h.job.id] = 'log'; openJob(h.job.id); });
+    p.append(a);
+    box.append(p);
+    if (!h.found) return;
+  }
+  if (!h.found) {
+    const empty = el('div', 'history-empty');
+    empty.append(el('p', null, 'No history for this PR yet.'),
+      el('p', 'dim', `${h.agent} reads the commits, the description and the review threads, and writes what the PR does, the decisions taken along the way and what is still open.`),
+      generate('Generate'));
+    box.append(empty);
+    return;
+  }
+
+  const head = el('div', 'history-head');
+  const lab = sectionLabel('What it does', ` ${h.agent}` + (h.commits_read ? ` · ${h.commits_read} commits read` : ''));
+  head.append(lab, el('div', 'spacer'));
+  if (!h.job) head.append(generate('Regenerate'));
+  box.append(head);
+  if (h.stale) box.append(el('p', 'stale-box', 'Written at an older head of this PR — the commits since are not in it. Regenerate to bring it up to date.'));
+  if (h.what_html) {
+    const what = el('div', 'md history-what');
+    what.innerHTML = h.what_html;
+    box.append(what);
+  }
+  if (h.decisions.length) {
+    box.append(sectionLabel('Decisions'));
+    const list = el('ol', 'decisions');
+    for (const d of h.decisions) {
+      const li = tid(el('li', 'decision'), 'history-decision', { n: d.n });
+      li.append(el('span', 'dnum', String(d.n)));
+      const main = el('div', 'dmain');
+      const t = el('div', 'dtitle');
+      t.append(el('b', null, d.title));
+      if (d.sha || d.source) t.append(el('span', 'dmeta', [d.sha, d.source].filter(Boolean).join(' · ')));
+      main.append(t);
+      if (d.body_html) {
+        const b = el('div', 'md dbody');
+        b.innerHTML = d.body_html;
+        main.append(b);
+      }
+      for (const r of d.rejected) {
+        const p = el('p', 'drej');
+        p.append(el('span', null, 'Rejected: '), document.createTextNode(r));
+        main.append(p);
+      }
+      li.append(main);
+      list.append(li);
+    }
+    box.append(list);
+  }
+  if (h.still_open_html.length) {
+    box.append(sectionLabel('Still open'));
+    for (const q of h.still_open_html) {
+      const row = el('div', 'open-q');
+      const txt = el('div', 'md');
+      txt.innerHTML = q;
+      row.append(el('span', 'qmark', '?'), txt);
+      box.append(row);
+    }
+  }
+  if (h.rest_html) {
+    const more = el('details', 'rmore');
+    const rest = el('div', 'md');
+    rest.innerHTML = h.rest_html;
+    more.append(el('summary', null, 'More from the history'), rest);
+    box.append(more);
   }
 }
 
-// refreshSavedList fetches the saved reviews without touching the Saved tab's
-// screen — the History tab only needs the list.
-async function refreshSavedList() {
-  try {
-    await fetchSaved();
-    if (state.tab === 'queue') renderViewer();
-  } catch {
-    // The history is a convenience: without the list it shows the session only.
-  }
+// historyOf returns a PR's history view if loaded, and loads it otherwise.
+function historyOf(pr, onReady) {
+  state.histories = state.histories || {};
+  const have = state.histories[pr.key];
+  if (have && have.view) return have.view;
+  if (have && have.error) return { error: have.error };
+  if (have && have.loading) return null;
+  state.histories[pr.key] = { loading: true };
+  api(`/api/prs/${pr.repo.split('/').map(encodeURIComponent).join('/')}/${pr.number}/history`)
+    .then((view) => { state.histories[pr.key] = { view }; onReady(); })
+    .catch((err) => { state.histories[pr.key] = { error: err.message }; onReady(); });
+  return null;
 }
+
 
 function renderReportView(v, job) {
   const html = state.bodies[job.id];

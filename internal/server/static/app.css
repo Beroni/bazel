@@ -805,7 +805,7 @@ main.no-prs .burger span { background: var(--accent); }
 .agent-row + .agent-row { border-top: 1px solid var(--line); }
 .agent-list > .none { padding: 10px 12px; margin: 0; }
 .agent-name { font-size: 14px; font-weight: 600; }
-.agent-top .btn.link { color: var(--accent); }
+.btn.link { color: var(--accent); }
 .badge {
   display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; padding: 1px 7px;
   border-radius: 5px; background: var(--hover-2); color: var(--text);
@@ -839,3 +839,31 @@ main.no-prs .burger span { background: var(--accent); }
 .pipe-node .pipe-node-note { display: none; }
 .pipe-node.reserved { border-color: var(--accent-line); border-style: solid; }
 .pipe-node.reserved .pipe-node-name { color: var(--text); }
+
+/* --- the History tab ---
+   What it does in larger text; decisions numbered in small circles down a
+   rail, each with its sha · source, the explanation and what was rejected;
+   still-open questions with a "?". */
+.history { max-width: 84ch; }
+.history-head { display: flex; align-items: center; }
+.history-head .plabel { margin: 0; }
+.history-what { font-size: 15px; line-height: 1.6; margin: 8px 0 4px; }
+.history-empty { padding: 30px 0; text-align: center; }
+.history-empty p { margin: 0 0 8px; }
+.history-empty .dim { max-width: 60ch; margin: 0 auto 16px; }
+.decisions { list-style: none; margin: 0; padding: 0 0 0 4px; border-left: 1px solid var(--line); }
+.decision { display: flex; gap: 12px; padding: 6px 0 10px; margin-left: -12px; }
+.dnum {
+  flex: none; width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--panel); box-shadow: inset 0 0 0 1px var(--hover-2); font-size: 11px; font-weight: 600;
+}
+.dmain { min-width: 0; }
+.dtitle { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; font-size: 14px; }
+.dmeta { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+.dbody { font-size: 13.5px; margin-top: 2px; }
+.dbody > p { margin: 4px 0; }
+.drej { margin: 2px 0 0; font-size: 13px; color: var(--dim); }
+.drej > span { color: color-mix(in srgb, var(--dim) 80%, var(--text)); }
+.open-q { display: flex; gap: 10px; align-items: baseline; }
+.qmark { color: var(--accent); font-weight: 600; }
+.open-q .md > p { margin: 4px 0; }
