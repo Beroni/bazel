@@ -115,8 +115,11 @@ export function scrub(raw, { home = process.env.HOME || '' } = {}) {
     }
     return clean(v);
   };
-  for (const line of raw.split('\n')) {
+  for (const [i, line] of raw.split('\n').entries()) {
     if (!line.trim()) continue;
+    // A capture is data. The fake agent runs `#!` lines, so one that came in a
+    // capture would be its author's code on this machine: nothing to keep.
+    if (line.trimStart().startsWith('#!')) throw new Error(`line ${i + 1} is a replay directive, and a capture holds none: ${line.slice(0, 60)}`);
     let e;
     try {
       e = JSON.parse(line);
