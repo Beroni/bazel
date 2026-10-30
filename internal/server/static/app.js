@@ -49,6 +49,27 @@ const redrawViewer = () => {
   renderViewer();
 };
 
+// viewerPlace notes where the reader is in the panel — its scroll and the
+// element with the focus — and returns what puts them back after a redraw of
+// the same thing. The focus goes by its testid or tag and position, since the
+// element itself is rebuilt.
+const viewerPlace = () => {
+  const v = $('#viewer');
+  const body = v.querySelector('.job-body');
+  const top = body ? body.scrollTop : 0;
+  const had = v.contains(document.activeElement) ? document.activeElement : null;
+  const sel = had && (had.dataset.testid ? `[data-testid="${had.dataset.testid}"]` : had.tagName);
+  const at = had ? [...v.querySelectorAll(sel)].indexOf(had) : -1;
+  return () => {
+    const now = v.querySelector('.job-body');
+    if (now) now.scrollTop = top;
+    if (at >= 0) {
+      const target = v.querySelectorAll(sel)[at];
+      if (target) target.focus({ preventScroll: true });
+    }
+  };
+};
+
 // clearViewer empties the right panel and forgets the signature of what was
 // drawn in it. Without that forgetting, going back to the queue tab fell into
 // the renderViewer shortcut — "already drawn" — and the panel kept what the
@@ -482,8 +503,7 @@ function openPR(key) {
   if (!pr) return;
   // Drawn again over itself (a read landed, a job moved), it stays where you
   // were reading.
-  const shown = $('#viewer .job-body');
-  const top = state.activePR === key && shown ? shown.scrollTop : 0;
+  const back = state.activePR === key ? viewerPlace() : null;
   state.activePR = key;
   state.activeJob = null;
   state.activeSaved = null;
@@ -513,7 +533,7 @@ function openPR(key) {
   // reviewers, labels and checks. Reviews of this PR in the session are in its
   // timeline, and open from there.
   renderPRPage(v, pr, null, () => { if (state.activePR === key) openPR(key); });
-  v.scrollTop = top;
+  if (back) back(); else v.scrollTop = 0;
 }
 
 async function openJob(id) {
@@ -1820,10 +1840,14 @@ function renderViewer() {
     tickViewer(job);
     return;
   }
+  const view = jobView(job);
+  // The same job on the same tab, drawn again: the reader stays put. The log
+  // keeps its own place at the bottom.
+  const back = view !== 'log' && v.dataset.jobId === job.id && v.dataset.view === view ? viewerPlace() : null;
   v.innerHTML = '';
   v.dataset.sig = sig;
   v.dataset.jobId = job.id;
-  const view = jobView(job);
+  v.dataset.view = view;
   const box = el('div', 'job');
   box.append(jobHead(job), jobTabs(job, view));
   const body = el('div', 'job-body ' + view);
@@ -1833,7 +1857,8 @@ function renderViewer() {
   else renderOverview(body, job);
   box.append(body);
   v.append(box);
-  if (view !== 'log') body.scrollTop = 0;
+  if (back) back();
+  else if (view !== 'log') body.scrollTop = 0;
 }
 
 // pillText is the word in the detail's state pill, as the design writes it:
