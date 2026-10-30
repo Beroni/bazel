@@ -168,7 +168,7 @@ func SaveHistory(dir, repo string, number int, sha, md string) (string, error) {
 // there is one, else the newest at any head, with stale=true. found=false
 // means none was ever generated.
 func LoadHistory(dir, repo string, number int, sha string) (md string, stale, found bool) {
-	if data, err := os.ReadFile(filepath.Join(historyDir(dir), historyName(repo, number, sha))); err == nil && sha != "" {
+	if data, err := os.ReadFile(filepath.Join(historyDir(dir), historyName(repo, number, sha))); err == nil {
 		return string(data), false, true
 	}
 	prefix := fmt.Sprintf("%s-%d-", sanitize(repo), number)

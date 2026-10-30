@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/store"
 )
 
 // detailsEntry is one PR's page as served, and the head sha it was read at.
@@ -201,4 +202,116 @@ func checkState(status, conclusion, state string) string {
 		return "passed"
 	}
 	return "pending"
+}
+
+// --- the History tab ---
+
+// historyView is a PR's history as the History tab draws it, with the
+// markdown parts already rendered and sanitized.
+type historyView struct {
+	Found       bool           `json:"found"`
+	Stale       bool           `json:"stale,omitempty"`
+	CommitsRead int            `json:"commits_read,omitempty"`
+	Agent       string         `json:"agent"`
+	WhatHTML    string         `json:"what_html,omitempty"`
+	Decisions   []decisionView `json:"decisions"`
+	StillOpen   []string       `json:"still_open_html"`
+	RestHTML    string         `json:"rest_html,omitempty"`
+	Job         *jobView       `json:"job,omitempty"`
+}
+
+type decisionView struct {
+	N        int      `json:"n"`
+	Title    string   `json:"title"`
+	Sha      string   `json:"sha,omitempty"`
+	Source   string   `json:"source,omitempty"`
+	BodyHTML string   `json:"body_html,omitempty"`
+	Rejected []string `json:"rejected"`
+}
+
+// prOf finds a watched PR by repo and number: from the list when it is
+// there, from gh otherwise.
+func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
+	repo := r.PathValue("owner") + "/" + r.PathValue("name")
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil || number <= 0 {
+		return gh.PR{}, http.StatusBadRequest, errors.New("invalid PR number")
+	}
+	if !s.watched(repo) {
+		return gh.PR{}, http.StatusNotFound, errors.New("not a watched repository")
+	}
+	s.prMu.RLock()
+	for _, pr := range s.prs {
+		if pr.Number == number && strings.EqualFold(pr.Repo, repo) {
+			s.prMu.RUnlock()
+			return pr, 0, nil
+		}
+	}
+	s.prMu.RUnlock()
+	pr, err := gh.Get(r.Context(), repo, number)
+	if err != nil {
+		return gh.PR{}, http.StatusBadGateway, err
+	}
+	return pr, 0, nil
+}
+
+func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
+	pr, code, err := s.prOf(r)
+	if err != nil {
+		writeErr(w, code, err)
+		return
+	}
+	v := historyView{Agent: s.historyAgentName(), Decisions: []decisionView{}, StillOpen: []string{}}
+	if j, ok := s.jobs.HistoryJob(pr.Key()); ok {
+		v.Job = &j
+	}
+	md, stale, found := store.LoadHistory(s.reviewsDir, pr.Repo, pr.Number, pr.HeadRefOid)
+	if found {
+		h := store.ParseHistory(md)
+		v.Found, v.Stale, v.CommitsRead = true, stale, h.CommitsRead
+		if h.WhatItDoes != "" {
+			v.WhatHTML = renderMarkdown(h.WhatItDoes)
+		}
+		for _, d := range h.Decisions {
+			dv := decisionView{N: d.N, Title: d.Title, Sha: d.Sha, Source: d.Source, Rejected: d.Rejected}
+			if d.Body != "" {
+				dv.BodyHTML = renderMarkdown(d.Body)
+			}
+			v.Decisions = append(v.Decisions, dv)
+		}
+		for _, q := range h.StillOpen {
+			v.StillOpen = append(v.StillOpen, renderMarkdown(q))
+		}
+		if h.Rest != "" {
+			v.RestHTML = renderMarkdown(h.Rest)
+		}
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+// handleHistoryGenerate runs the history agent over the PR, as a job like
+// any other: it shows in the queue with its live log, and its result lands in
+// the History tab.
+func (s *Server) handleHistoryGenerate(w http.ResponseWriter, r *http.Request) {
+	pr, code, err := s.prOf(r)
+	if err != nil {
+		writeErr(w, code, err)
+		return
+	}
+	view, err := s.jobs.EnqueueHistory(pr, strings.EqualFold(pr.Author.Login, s.me))
+	if err != nil {
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, view)
+}
+
+func (s *Server) historyAgentName() string {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	ch := s.cfg.HistoryChoice()
+	if len(ch.Steps) > 0 && ch.Steps[0].Task != "" {
+		return strings.Fields(ch.Steps[0].Task)[0]
+	}
+	return ch.Name
 }

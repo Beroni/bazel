@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 	"testing"
 
 	"github.com/beroni/bazel/internal/pricing"
@@ -1358,5 +1360,31 @@ func TestNormalizeRepo(t *testing.T) {
 	_, err := NormalizeRepo("https://github.com/acme/web-app/pull/7")
 	if err == nil || !strings.Contains(err.Error(), "pull request") || !strings.Contains(err.Error(), "acme/web-app") {
 		t.Errorf("a PR URL must be refused naming its repository, got %v", err)
+	}
+}
+
+// The History tab's agent: /history-pr by default, never publishable, with a
+// clone; history_agent in the config replaces the task, and an untouched one
+// is not written to config.yaml.
+func TestHistoryChoice(t *testing.T) {
+	c := Default()
+	ch := c.HistoryChoice()
+	if len(ch.Steps) != 1 || ch.Steps[0].Task != defaultHistoryTask || ch.Publishable || ch.Posts || !ch.Steps[0].Checkout {
+		t.Errorf("default history choice: %+v", ch)
+	}
+	if PublishesBy := ch.PublishesBy(); PublishesBy != "" {
+		t.Errorf("the history agent must never publish: %s", PublishesBy)
+	}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
+	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel-history-pr {{number}}" {
+		t.Errorf("configured history choice: %+v", ch)
+	}
+	c.HistoryAgent = AgentDef{}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "history_agent") {
+		t.Errorf("an untouched history_agent should not be written:\n%s", data)
 	}
 }

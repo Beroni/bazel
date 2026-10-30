@@ -108,6 +108,8 @@ type jobView struct {
 	// AwaitsPublish marks the pipeline that ended in a `publish` step and
 	// waits for you to choose what goes to the PR.
 	AwaitsPublish bool `json:"awaits_publish,omitempty"`
+	// History is a job writing the PR's history for the History tab.
+	History bool `json:"history,omitempty"`
 	// Publishing marks the job that is carrying an already-read review to the
 	// PR — the review's own card while the post agent runs, or the card of a
 	// publication coming from disk.
@@ -185,6 +187,7 @@ func (j *Job) view() jobView {
 		v.Publishing = true
 	}
 	v.AwaitsPublish = j.AwaitsPublish
+	v.History = j.History
 	if !j.StartedAt.IsZero() {
 		t := j.StartedAt
 		v.StartedAt = &t

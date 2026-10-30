@@ -150,6 +150,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/prs", s.handlePRs)
 	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/details", s.handlePRDetails)
+	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/history", s.handleHistory)
+	mux.HandleFunc("POST /api/prs/{owner}/{name}/{number}/history", s.handleHistoryGenerate)
 	mux.HandleFunc("POST /api/reviews", s.handleReview)
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)

@@ -49,6 +49,10 @@ type Config struct {
 	// other road to the PR: instead of choosing an agent that publishes on its
 	// own, you run the fleet, read the result and only then order it published.
 	PostAgent AgentDef `yaml:"post_agent"`
+	// HistoryAgent writes a PR's story for the History tab — what it does,
+	// the decisions taken and what is still open — on demand. Empty is the
+	// default, /history-pr; point its task at another skill to change it.
+	HistoryAgent AgentDef `yaml:"history_agent,omitempty"`
 	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
 	// When off, the MCP surface does not offer publishing — neither as a tool
 	// nor by choosing an agent that publishes on its own. "You are the PR
@@ -1368,6 +1372,33 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 		}
 	}
 	return AgentDef{}, false
+}
+
+// defaultHistoryTask is the skill the History tab runs unless history_agent
+// names another one.
+const defaultHistoryTask = "/history-pr {{number}}"
+
+// HistoryChoice is the agent that writes a PR's history, ready to run. It
+// reads the clone (git log, the diff), and what it writes never goes to the
+// PR: it is the History tab's, not a review.
+func (c *Config) HistoryChoice() Choice {
+	def := c.HistoryAgent
+	if strings.TrimSpace(def.Name) == "" {
+		def.Name = "history"
+	}
+	if strings.TrimSpace(def.Task) == "" {
+		def.Task = defaultHistoryTask
+	}
+	if def.Description == "" {
+		def.Description = "the PR's story: what it does, the decisions taken, what is still open"
+	}
+	ra := c.resolve(def)
+	if def.Checkout == nil {
+		ra.Checkout = true
+	}
+	ra.Posts = false
+	ra.Publishable = false
+	return Choice{Name: ra.Name, Description: ra.Description, Steps: []ResolvedAgent{ra}}
 }
 
 // PostChoice is the publishing agent, ready to run.

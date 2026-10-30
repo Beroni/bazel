@@ -139,6 +139,10 @@ type Job struct {
 	// not publish on its own, it waits for you to choose what goes to the PR
 	// and send it.
 	AwaitsPublish bool
+	// History marks the job that writes a PR's history for the History tab.
+	// Its output is kept per PR and head (store.SaveHistory), not saved as a
+	// review: the PR is not marked reviewed and nothing of it can be published.
+	History bool
 	// posting is set under the lock while Post is inside gh.Comment, which
 	// runs without the lock: a second click in that window is refused.
 	posting bool
@@ -300,6 +304,29 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 // cloning the repository twice — with another agent it is another review, and
 // it goes into the queue.
 func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, error) {
+	return m.enqueue(pr, mine, choice, false)
+}
+
+// EnqueueHistory queues the history agent over pr. A history of this PR still
+// queued or running is returned instead of a second one.
+func (m *Manager) EnqueueHistory(pr gh.PR, mine bool) (jobView, error) {
+	return m.enqueue(pr, mine, m.cfg.HistoryChoice(), true)
+}
+
+// HistoryJob is the history job of a PR still queued or running, if any.
+func (m *Manager) HistoryJob(key string) (jobView, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, id := range m.order {
+		j := m.jobs[id]
+		if j.History && strings.EqualFold(j.PR.Key(), key) && (j.State == StateQueued || j.State == StateRunning) {
+			return j.view(), true
+		}
+	}
+	return jobView{}, false
+}
+
+func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history bool) (jobView, error) {
 	if len(choice.Steps) == 0 {
 		choice = m.cfg.DefaultChoice()
 	}
@@ -311,7 +338,7 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 	m.mu.Lock()
 	for _, id := range m.order {
 		j := m.jobs[id]
-		if j.PR.Key() == pr.Key() && j.Choice.Name == choice.Name &&
+		if j.PR.Key() == pr.Key() && j.Choice.Name == choice.Name && j.History == history &&
 			(j.State == StateQueued || j.State == StateRunning) {
 			v := j.view()
 			m.mu.Unlock()
@@ -336,6 +363,7 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 		Steps:    steps,
 		State:    StateQueued,
 		QueuedAt: time.Now(),
+		History:  history,
 	}
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
@@ -478,7 +506,7 @@ func (m *Manager) run(q queued) {
 
 	// fresh is a review that just ran, as opposed to a publish. Captured
 	// before the in-place branch below clears job.publish.
-	fresh := job.publish == nil
+	fresh := job.publish == nil && !job.History
 
 	// A publish report does not become a file: the review is already saved, and
 	// this job only records what went to the PR.
@@ -489,13 +517,17 @@ func (m *Manager) run(q queued) {
 	if fresh {
 		path, saveErr = store.Save(m.reviewsDir, res, m.runner.PricingTable)
 	}
+	if job.History {
+		path, saveErr = store.SaveHistory(m.reviewsDir, res.PR.Repo, res.PR.Number, res.PR.HeadRefOid, res.Body)
+	}
 
 	// The PR enters the index: it is the ✓ in the list, and the commit
 	// recorded here is what later flags a change to the PR after the review.
 	var markErr error
-	if fresh {
+	switch {
+	case fresh:
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
-	} else {
+	case job.publish != nil:
 		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
 	}
 
