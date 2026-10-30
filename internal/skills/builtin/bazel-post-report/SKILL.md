@@ -1,7 +1,7 @@
 ---
 name: bazel-post-report
 description: Publishes to GitHub a review Bazel has already produced and a person has already
-  read on screen — the markdown whose path comes in the prompt. A script does the writing: one
+  read on screen — the markdown whose path comes in the prompt. A script does the writing — one
   review with inline comments, a 👍 on what is already on the PR, what the PR already settled
   listed instead of repeated, and an all-clear only for a clean report. Ships inside Bazel; not
   the same as a `post-report` you may have installed, which asks before posting.

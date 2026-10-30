@@ -7,6 +7,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // catalog is what Bazel ships. A skill added to builtin/ without a line here
@@ -51,6 +53,18 @@ func TestCatalogFrontmatter(t *testing.T) {
 			t.Fatal(err)
 		}
 		fm := frontmatter(t, string(data))
+		// Strict YAML, as Claude Code reads it: a `: ` in a plain description drops
+		// the whole skill, while Bazel's own lenient reader still lists it.
+		var meta struct {
+			Name        string `yaml:"name"`
+			Description string `yaml:"description"`
+		}
+		if err := yaml.Unmarshal([]byte(fm), &meta); err != nil {
+			t.Errorf("%s: the frontmatter is not valid YAML: %v", s.Name, err)
+		}
+		if meta.Name != s.Name || meta.Description == "" {
+			t.Errorf("%s: frontmatter reads as %+v", s.Name, meta)
+		}
 		if name := filepath.Base(s.Dir); s.Name != name {
 			t.Errorf("%s: frontmatter name %q differs from its folder", name, s.Name)
 		}
