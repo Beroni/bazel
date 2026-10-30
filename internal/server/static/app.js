@@ -356,8 +356,19 @@ async function resync() {
   if (state.tab === 'saved') loadSaved();
 }
 
+// followPRPage draws again the page open on this PR, if any: its timeline
+// lists the PR's jobs. A job's own Overview shows the same page; the other
+// tabs have nothing of the sort. Only a change of state gets here: job events
+// also carry progress, and those must not rebuild what you are reading.
+function followPRPage(key) {
+  const open = state.jobs.find((j) => j.id === state.activeJob);
+  if (state.activePR === key) openPR(key);
+  else if (open && open.pr.key === key && jobView(open) === 'overview') redrawViewer();
+}
+
 function upsertJob(job) {
   const i = state.jobs.findIndex((j) => j.id === job.id);
+  const moved = i < 0 || state.jobs[i].state !== job.state;
   if (i >= 0) state.jobs[i] = job;
   else state.jobs.unshift(job);
 
@@ -365,11 +376,13 @@ function upsertJob(job) {
   if (job.state === 'done' && !state.bodies[job.id]) {
     if (state.activeJob === job.id || (!state.activeJob && !state.activePR)) openJob(job.id);
   }
+  // A job of this PR that just ended changes its page (a review in the
+  // timeline) or its history: both are read again. The page stays on screen
+  // meanwhile, so it neither blinks nor loses its scroll.
+  if (job.state !== 'queued' && job.state !== 'running' && state.details[job.pr.key]) state.details[job.pr.key].stale = true;
   renderJobs();
   if (state.activeJob === job.id) renderViewer();
-  // A job of this PR that just ended changes its page (a review in the
-  // timeline) or its history: both are read again.
-  if (job.state !== 'queued' && job.state !== 'running') delete state.details[job.pr.key];
+  else if (moved) followPRPage(job.pr.key);
   if (job.history && job.state !== 'queued' && job.state !== 'running') {
     delete state.histories[job.pr.key];
     if (state.activeJob && jobView(state.jobs.find((x) => x.id === state.activeJob) || {}) === 'history') {
@@ -389,9 +402,9 @@ function upsertJob(job) {
 // dropJob forgets a job: it leaves the queue and, if it was the one open, the
 // right panel goes back to the start.
 function dropJob(id) {
-  const antes = state.jobs.length;
+  const gone = state.jobs.find((j) => j.id === id);
   state.jobs = state.jobs.filter((j) => j.id !== id);
-  if (state.jobs.length === antes) return;
+  if (!gone) return;
   delete state.bodies[id];
   delete state.splits[id];
   delete state.picks[pickKey('job', id)];
@@ -405,6 +418,7 @@ function dropJob(id) {
   }
   renderJobs();
   if (state.tab === 'queue') renderViewer();
+  followPRPage(gone.pr.key);
 }
 
 // removeJob takes the job off the queue on the server. A review still alive
@@ -466,6 +480,10 @@ async function reviewRefs(refs) {
 function openPR(key) {
   const pr = state.prs.find((p) => p.key === key);
   if (!pr) return;
+  // Drawn again over itself (a read landed, a job moved), it stays where you
+  // were reading.
+  const shown = $('#viewer .job-body');
+  const top = state.activePR === key && shown ? shown.scrollTop : 0;
   state.activePR = key;
   state.activeJob = null;
   state.activeSaved = null;
@@ -495,7 +513,7 @@ function openPR(key) {
   // reviewers, labels and checks. Reviews of this PR in the session are in its
   // timeline, and open from there.
   renderPRPage(v, pr, null, () => { if (state.activePR === key) openPR(key); });
-  v.scrollTop = 0;
+  v.scrollTop = top;
 }
 
 async function openJob(id) {
@@ -1896,16 +1914,17 @@ const prPath = (pr) => `/api/prs/${pr.repo.split('/').map(encodeURIComponent).jo
 // {error} — or null while it loads; onReady runs when it settles. A failure
 // stays in the cache until someone asks again (the Retry button): a redraw
 // never refetches by itself, so a PR GitHub can't serve can't loop gh calls
-// (review F1).
+// (review F1). An entry marked stale is read again, and what it had stays in
+// use until the new read lands.
 function lazy(cache, key, url, onReady) {
-  const have = cache[key];
-  if (have && (have.view || have.error)) return have;
-  if (have && have.loading) return null;
-  cache[key] = { loading: true };
+  const have = cache[key] || {};
+  if (have.loading) return have.view ? have : null;
+  if (!have.stale && (have.view || have.error)) return have;
+  cache[key] = { loading: true, view: have.view };
   api(url)
     .then((view) => { cache[key] = { view }; onReady(); })
     .catch((err) => { cache[key] = { error: err.message }; onReady(); });
-  return null;
+  return have.view ? cache[key] : null;
 }
 
 // retryButton forgets a failed read and draws again, which reads it again.
