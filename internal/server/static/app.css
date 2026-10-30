@@ -82,14 +82,16 @@ input[type=search], input[type=text] {
   border: 1px solid var(--line); border-radius: var(--radius-md);
 }
 input[type=search]:hover, input[type=text]:hover { border-color: var(--hover-2); }
-input[type=search]:focus, input[type=text]:focus { outline: none; border-color: var(--accent-line); }
+/* The focus ring is the full accent (about 6:1 on the panel): the half-tone
+   line used at rest would sit below the 3:1 a focus indicator needs. */
+input[type=search]:focus, input[type=text]:focus { outline: none; border-color: var(--accent); }
 select {
   font-size: 12.5px; background: var(--panel-2);
   border: 1px solid var(--line); border-radius: var(--radius-md);
   padding: 5px 8px; min-width: 0; cursor: pointer;
 }
 select:hover { border-color: var(--hover-2); }
-select:focus { outline: none; border-color: var(--accent-line); }
+select:focus { outline: none; border-color: var(--accent); }
 /* An active filter looks visibly active: otherwise the list disappears and
    nobody knows why. */
 select.on { border-color: var(--accent-line); color: var(--accent); }

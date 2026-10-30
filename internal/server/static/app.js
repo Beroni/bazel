@@ -1165,6 +1165,9 @@ function fillLogAgents(col, id) {
   const st = logState(id);
   const count = new Map();
   for (const l of st.lines) count.set(agentName(l), (count.get(agentName(l)) || 0) + 1);
+  // Rebuilt on every poll with new lines: the agent button that had the
+  // keyboard focus gets it back (review F7).
+  const had = col.contains(document.activeElement) ? document.activeElement.dataset.agent : null;
   col.innerHTML = '';
   const pick = (who) => {
     state.logFilter = state.logFilter || {};
@@ -1189,6 +1192,10 @@ function fillLogAgents(col, id) {
   const foot = el('p', 'log-count dim', logCountLabel(id));
   foot.id = 'log-count';
   col.append(foot);
+  if (had) {
+    const b = [...col.querySelectorAll('.log-agent')].find((x) => x.dataset.agent === had);
+    if (b) b.focus({ preventScroll: true });
+  }
 }
 
 // appendLog sends the new lines to the stream and refreshes the column.
