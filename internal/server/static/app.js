@@ -282,6 +282,10 @@ function adoptInstance(id) {
   state.bodies = {};
   state.splits = {};
   state.logs = {};
+  // The tab and the log filter are per job id too: a new j1 must not open on
+  // the old j1's tab, nor hide its log behind the old one's agent.
+  state.views = {};
+  state.logFilter = {};
   for (const key of Object.keys(state.picks)) {
     if (key.startsWith('job:')) delete state.picks[key];
   }
@@ -341,6 +345,8 @@ function dropJob(id) {
   delete state.splits[id];
   delete state.picks[pickKey('job', id)];
   delete state.logs[id];
+  delete state.views[id];
+  delete state.logFilter[id];
   if (state.activeJob === id) {
     state.activeJob = null;
     clearViewer();
