@@ -120,6 +120,40 @@ func TestNeutralizeNeverFollowsSymlinks(t *testing.T) {
 	}
 }
 
+// Claude Code discovers a nested .claude/skills when it reads a file there, so
+// the sweep goes all the way down, and a link in the way is not walked through.
+func TestNeutralizeSweepsSubfolders(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, "pkg", "a", ".claude", "skills", "x", "SKILL.md"), "evil")
+	touch(t, filepath.Join(dir, "pkg", ".mcp.json"), "{}")
+	touch(t, filepath.Join(dir, "pkg", "keep.go"), "package pkg")
+	touch(t, filepath.Join(dir, ".git", "config"), "kept")
+	touch(t, filepath.Join(dir, ".git", ".claude", "x"), "git's own, not walked")
+
+	outside := t.TempDir()
+	touch(t, filepath.Join(outside, ".claude", "settings.json"), "keep me")
+	if err := os.Symlink(outside, filepath.Join(dir, "linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := Neutralize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"pkg/.mcp.json", "pkg/a/.claude"}; !slices.Equal(removed, want) {
+		t.Errorf("removed %v, want %v", removed, want)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "pkg", "keep.go")); err != nil {
+		t.Error("code stays")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", "config")); err != nil {
+		t.Error(".git is not touched")
+	}
+	if data, err := os.ReadFile(filepath.Join(outside, ".claude", "settings.json")); err != nil || string(data) != "keep me" {
+		t.Errorf("the walk went through a link: %q, %v", data, err)
+	}
+}
+
 func TestNeutralizeCleanTree(t *testing.T) {
 	removed, err := Neutralize(t.TempDir())
 	if err != nil || len(removed) != 0 {
