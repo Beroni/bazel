@@ -197,10 +197,11 @@ restart.
 
 One entry in that list is marked **in Bazel** and is never `✗`:
 `bazel-post-report`, the skill that takes a review you have read to the PR. It
-travels inside the binary and is written into the PR's throwaway clone —
-`.claude/skills/bazel-post-report/` — right before the agent runs, which is
-where Claude Code looks for a project's skills. Nothing is installed on your
-machine, and nothing is left behind when the clone goes.
+travels inside the binary and, right before a Claude Code agent runs, is
+written as a Claude Code plugin into a folder of Bazel's —
+`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone — that the agent loads with
+`--plugin-dir`. Nothing is installed on your machine, and the folder is removed
+when the review ends, however it ends.
 
 This is what makes **publish** true on a machine that has never installed a
 skill. Before it existed, the default `post_agent` called a `/post-report` that
@@ -657,6 +658,17 @@ agents:
 > out the scope. The agent runs in a throwaway clone and review skills are
 > read-only: they report, they don't fix.
 
+> **The PR's own agent configuration.** For Claude Code, Bazel adds
+> `--setting-sources user --strict-mcp-config` to every step (see
+> [Security model](#security-model)). The other CLIs have their own rules:
+> Codex loads a project's `.codex/` layers (config, hooks, rules) only when the
+> project is trusted, and the clone is a fresh temporary path — do not mark a
+> parent of your temp directory as trusted in `~/.codex/config.toml`. Grok runs
+> with Bazel's own `GROK_HOME`, with Claude and Cursor compatibility (skills,
+> agents, hooks, MCP, rules) turned off. Codex still reads the PR's `AGENTS.md`
+> as instructions, and any CLI reads the PR's files: a review of an untrusted PR
+> is a run over untrusted text.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -674,6 +686,19 @@ loopback, rejects a `Host` that isn't local (blocking DNS rebinding) and rejects
 `POST` from another origin (blocking a random tab from firing reviews in your
 name). `/mcp` sits behind the same checks. Don't put this behind a public IP
 without authentication in front.
+
+**The PR's own agent configuration never runs.** The agent works inside the
+clone of someone else's PR, and a PR can ship a `.claude/settings.json` whose
+hooks run shell commands — with your `gh` login at hand — or a `.mcp.json`
+that starts a server. So every Claude Code step runs with
+`--setting-sources user --strict-mcp-config --plugin-dir <runtime>`, added by
+Bazel to whatever `args` you configured: only your own settings apply, MCP
+servers come only from a `--mcp-config` you pass, and the built-in skills
+arrive as a plugin from outside the clone. An agent whose `args` set another
+`--setting-sources` is refused. Your own skills, agents and plugins under
+`~/.claude` still load. Codex and Grok steps are not covered by these flags:
+Grok runs with an isolated `GROK_HOME` (see below); for Codex, see
+[Using another agent CLI](#using-another-agent-cli).
 
 ## Development
 
