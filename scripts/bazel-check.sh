@@ -62,15 +62,18 @@ PROMPT
 
 # 5. The agent, with the git guard the Runner sets and the flags confineClaude
 #    adds ahead of Bazel's default args.
-export GIT_CONFIG_COUNT=3
-export GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit
-export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
-export GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null
 ARGS=(--setting-sources user --strict-mcp-config --plugin-dir "$PLUGIN"
   -p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent)
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")
 START=$(date +%s)
-(cd "$CLONE" && claude "${ARGS[@]}" < "$WORK/prompt.md" > "$WORK/stream.jsonl" 2> "$WORK/stderr.log")
+(
+  cd "$CLONE" || exit 1
+  export GIT_DIR=$CLONE/.git GIT_WORK_TREE=$CLONE GIT_CONFIG_COUNT=3
+  export GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit
+  export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
+  export GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null
+  claude "${ARGS[@]}" < "$WORK/prompt.md" > "$WORK/stream.jsonl" 2> "$WORK/stderr.log"
+)
 echo "agent exit: $? in $(( $(date +%s) - START ))s"
 # Bazel keeps the last result event (internal/agent/stream.go); so does this.
 jq -rs 'map(select(.type=="result")) | last | .result // ""' "$WORK/stream.jsonl" > "$WORK/report.md"
