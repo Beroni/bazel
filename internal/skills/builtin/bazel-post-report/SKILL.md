@@ -17,8 +17,10 @@ Takes to the PR a review that **already exists and a human already approved**. B
 agent, saved the markdown, showed it on screen, and the person clicked publish. Your job starts
 there: turn that file into a review on GitHub.
 
-`.claude/skills/bazel-review-fleet/references/headless.md` applies: nobody answers, and you
-write to stdout what you did. The `gh` commands and the exact shape of every comment are in
+From `.claude/skills/bazel-review-fleet/references/headless.md`, sections 1 (nobody answers)
+and 4 (English) apply. Its sections 2, 3, 5 and 6 do not: you publish a review that already
+exists, you never run the validator, and what you print is what you did (Step 6), not a
+report. The `gh` commands and the exact shape of every comment are in
 `.claude/skills/bazel-post-report/references/publishing.md`; read it before Step 2.
 
 ## What was decided before you

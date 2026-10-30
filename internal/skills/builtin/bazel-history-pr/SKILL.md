@@ -17,9 +17,9 @@ author tried to solve it**, and **how the review↔fix loop actually went**. It 
 *process*, not at whether the code is right — that is `bazel-review-fleet`.
 
 **Read `.claude/skills/bazel-review-fleet/references/headless.md` first** and follow its
-sections 1 (nobody answers), 3 (the report is your final output), 4 (English) and 6 (write
-nothing else). Its scope rules do not apply: this skill reads the PR through the API, not the
-diff.
+sections 1 (nobody answers), 3 (the report is your final output — only its first two bullets:
+a history is not a review report and is never validated), 4 (English) and 6 (write nothing
+else). Its section 2 does not apply: this skill reads the PR through the API, not the diff.
 
 It is **read-only**. Every `gh` call is a read. Its output is not a review — no findings, no
 severities, no verdict — and it must never be published: in Bazel this agent is marked not

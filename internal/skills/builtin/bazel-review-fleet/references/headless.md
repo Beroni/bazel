@@ -1,7 +1,10 @@
 # Running under Bazel (headless)
 
 Every skill that ships inside Bazel follows this file. It is the contract between Bazel and
-the skill. When a `SKILL.md` and this file disagree about how to run, this file wins.
+the skill. When a `SKILL.md` and this file disagree, this file wins — except where the
+`SKILL.md` names the section it narrows. Two skills do, because they do not print a review:
+`bazel-history-pr` prints a history (its own format, never validated) and `bazel-post-report`
+prints what it published.
 
 Bazel clones the PR into a throwaway directory, checks the PR out, writes its built-in skills
 into `.claude/skills/` (and the lens agents into `.claude/agents/`), and runs one agent
@@ -52,11 +55,13 @@ Rules that keep that honest:
   running"): each turn you end is a result, and Bazel keeps the last one. Wait for subagents
   in the foreground (`run_in_background: false`), and print nothing before the report.
 - Print the **whole report** as your final message, as plain markdown. Its **first
-  characters** are the report's first line (`<!-- review-fleet:v1` or `<!-- history-pr:v1`):
+  characters** are the report's first line (`<!-- review-fleet:v1`, or `<!-- history-pr:v1`
+  for a history):
   no "here is the report", no "validated, printing it now", in any language. Do not wrap it in a
   ```` ```markdown ```` fence, do not add a sentence before or after it, do not end with the
   path of a file. Whatever you print is what Bazel shows and what can go to the PR.
-- Review reports follow `.claude/skills/bazel-review-fleet/references/report-format.md`
+- The rest of this section is for **review reports** (`bazel-review-fleet` and the lenses).
+  They follow `.claude/skills/bazel-review-fleet/references/report-format.md`
   exactly. That format is also what Bazel uses to put a checkbox next to each finding:
   every `###` under `## Findings` or `## Cuts`, and every bullet under
   `## Needs human verification`. A heading outside those sections gets no checkbox.
