@@ -18,19 +18,19 @@ import (
 // shows up here before it shows up on a PR.
 var golden = []struct {
 	file     string
-	valid    bool // validate-report.sh exits 0
-	findings int  // parts SplitFindings marks as findings
+	wantErr  string // a line validate-report.sh must print; "" = it must pass
+	findings int    // parts SplitFindings marks as findings
 }{
-	{"fleet.md", true, 4},               // 2 findings, 1 cut, 1 needs-human item
-	{"exploit-needs-human.md", true, 3}, // 1 finding, 2 needs-human items
+	{"fleet.md", "", 4},               // 2 findings, 1 cut, 1 needs-human item
+	{"exploit-needs-human.md", "", 3}, // 1 finding, 2 needs-human items
 	// Cuts go by lines_saved alone: a major cut after a bigger minor one.
-	{"cuts-order.md", true, 5},
-	{"single-lens-clean.md", true, 0},
+	{"cuts-order.md", "", 5},
+	{"single-lens-clean.md", "", 0},
 	// A failure report must never pass as a review: files: 0 is rejected on
 	// purpose, and there is nothing to tick.
-	{"failure.md", false, 0},
+	{"failure.md", "`files: 0` is a scope-resolution failure", 0},
 	// A PR history is not a review: not the review format, no checkboxes.
-	{"history.md", false, 0},
+	{"history.md", "line 1 must be exactly `<!-- review-fleet:v1`", 0},
 }
 
 func readGolden(t *testing.T, name string) string {
@@ -79,8 +79,12 @@ func TestGoldenReports(t *testing.T) {
 	for _, g := range golden {
 		t.Run(g.file, func(t *testing.T) {
 			body := readGolden(t, g.file)
-			if ok, out := validate(body); ok != g.valid {
-				t.Errorf("validate-report.sh passed=%v, want %v:\n%s", ok, g.valid, out)
+			ok, out := validate(body)
+			if g.wantErr == "" && !ok {
+				t.Errorf("validate-report.sh should pass:\n%s", out)
+			}
+			if g.wantErr != "" && (ok || !strings.Contains(out, g.wantErr)) {
+				t.Errorf("validate-report.sh should fail with %q, got passed=%v:\n%s", g.wantErr, ok, out)
 			}
 			parts := store.SplitFindings(body)
 			if n := countFindings(parts); n != g.findings {
