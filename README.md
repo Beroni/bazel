@@ -170,6 +170,10 @@ installed skills · ~/.claude/skills
   /exploit-digger   Adversarial sweep of a diff                   [use] [⇧ publishes]
 ```
 
+With more than eight skills, the ones that read as reviewing come first, along
+with those already in use, and the rest fold under *Other skills*; the search
+box looks through all of them.
+
 - **use** creates the agent `review-fleet`, with the task
   `/review-fleet {{number}}`: it hands the review back to you to read.
 - **⇧ publishes** creates `review-fleet-post`, with `--post` and the prompt

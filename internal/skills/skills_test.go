@@ -91,3 +91,28 @@ func TestTaskSkill(t *testing.T) {
 		}
 	}
 }
+
+// The ones that review are told from the rest by what they say they do. It
+// orders a list, so a miss costs a click.
+func TestReviews(t *testing.T) {
+	for _, s := range []Skill{
+		{Name: "review-fleet"},
+		{Name: "pr-review-resolver"},
+		{Name: "exploit-digger", Description: "Runs the adversarial RECALL lens over a diff"},
+		{Name: "smart-contract-auditor", Description: "Security audits"},
+		{Name: "x", Description: "Reviews the diff"},
+	} {
+		if !Reviews(s) {
+			t.Errorf("%+v reviews", s)
+		}
+	}
+	for _, s := range []Skill{
+		{Name: "changelog-generator", Description: "Generate CHANGELOG.md from Conventional Commits"},
+		{Name: "war-room", Description: "Multi-persona deliberation"},
+		{Name: "preview-builder", Description: "Builds a preview"},
+	} {
+		if Reviews(s) {
+			t.Errorf("%+v does not review", s)
+		}
+	}
+}
