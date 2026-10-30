@@ -10,26 +10,26 @@ import (
 	"strings"
 )
 
-// builtinFS são as skills que viajam dentro do binário do Bazel.
+// builtinFS are the skills that travel inside the Bazel binary.
 //
-// A publicação precisava de uma skill instalada em ~/.claude/skills para
-// funcionar, e isso fazia o botão "publish" mentir em toda máquina que não
-// fosse a de quem escreveu a skill: o agente rodava, com autorização declarada
-// para escrever no PR, e sem instrução nenhuma. Embarcar é o que faz o padrão
-// de fábrica ser verdade em qualquer lugar.
+// Publishing needed a skill installed in ~/.claude/skills to work, and that
+// made the "publish" button lie on every machine other than the one belonging
+// to whoever wrote the skill: the agent ran, with declared permission to write
+// to the PR, and with no instructions at all. Embedding is what makes the
+// factory default true everywhere.
 //
 //go:embed builtin
 var builtinFS embed.FS
 
-// builtinRoot é a pasta dentro do embed.
+// builtinRoot is the folder inside the embed.
 const builtinRoot = "builtin"
 
-// SkillsSubdir é onde o Claude Code procura as skills de um projeto, relativo
-// ao diretório de trabalho do agente. Um nível só: `.claude/skills/<nome>/`
-// é descoberto, `.claude/skills/<grupo>/<nome>/` não.
+// SkillsSubdir is where Claude Code looks for a project's skills, relative
+// to the agent's working directory. One level only: `.claude/skills/<name>/`
+// is discovered, `.claude/skills/<group>/<name>/` is not.
 const SkillsSubdir = ".claude/skills"
 
-// Builtin lista as skills embarcadas, em ordem alfabética.
+// Builtin lists the embedded skills, in alphabetical order.
 func Builtin() []Skill {
 	entries, err := builtinFS.ReadDir(builtinRoot)
 	if err != nil {
@@ -50,9 +50,9 @@ func Builtin() []Skill {
 	return out
 }
 
-// IsBuiltin diz se um nome é de skill embarcada. É o que permite a página
-// mostrar essas como instaladas sem procurá-las no disco: elas estão no
-// binário, e não há o que instalar.
+// IsBuiltin says whether a name is an embedded skill. It is what lets the
+// page show these as installed without looking for them on disk: they are in
+// the binary, and there is nothing to install.
 func IsBuiltin(name string) bool {
 	name = strings.TrimPrefix(strings.TrimSpace(name), "/")
 	for _, s := range Builtin() {
@@ -63,13 +63,13 @@ func IsBuiltin(name string) bool {
 	return false
 }
 
-// Materialize escreve as skills embarcadas em <dir>/.claude/skills, que é onde
-// o Claude Code as encontra quando roda com dir como diretório de trabalho.
+// Materialize writes the embedded skills to <dir>/.claude/skills, which is
+// where Claude Code finds them when it runs with dir as its working directory.
 //
-// dir é o clone temporário do PR: a skill nasce e morre com ele, e a máquina
-// de quem roda o Bazel não ganha nada em ~/.claude/skills que a pessoa não
-// tenha pedido. Os arquivos também entram no exclude do clone, para não
-// aparecerem no `git status` de um agente que o consulte.
+// dir is the PR's temporary clone: the skill is born and dies with it, and the
+// machine running Bazel gains nothing in ~/.claude/skills that the person did
+// not ask for. The files also go into the clone's exclude, so they don't show
+// up in the `git status` of an agent that looks at it.
 func Materialize(dir string) error {
 	if strings.TrimSpace(dir) == "" {
 		return fmt.Errorf("no working directory to materialize the built-in skills into")
@@ -105,9 +105,9 @@ func Materialize(dir string) error {
 	return nil
 }
 
-// excludeClaude põe .claude/ no exclude do clone. É melhor esforço: o clone é
-// descartável, e um agente que roda `git status` não tem por que ver a skill
-// que o Bazel acabou de escrever ali. Sem repositório, não há o que fazer.
+// excludeClaude adds .claude/ to the clone's exclude. It is best effort: the
+// clone is disposable, and an agent that runs `git status` has no reason to
+// see the skill Bazel just wrote there. Without a repository, there is nothing to do.
 func excludeClaude(dir string) {
 	info := filepath.Join(dir, ".git", "info")
 	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {

@@ -1,4 +1,4 @@
-// Package gh conversa com o GitHub através do CLI `gh` já autenticado.
+// Package gh talks to GitHub through the already-authenticated `gh` CLI.
 package gh
 
 import (
@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// PR é um pull request achatado para uso na TUI.
+// PR is a flattened pull request for use in the TUI.
 type PR struct {
 	Repo         string    `json:"-"`
 	Number       int       `json:"number"`
@@ -27,8 +27,8 @@ type PR struct {
 	ChangedFiles int       `json:"changedFiles"`
 	UpdatedAt    time.Time `json:"updatedAt"`
 	HeadRefName  string    `json:"headRefName"`
-	// HeadRefOid é o commit do topo da branch do PR. É por ele que o Bazel
-	// sabe se o PR mudou depois do review.
+	// HeadRefOid is the commit at the tip of the PR's branch. It is how Bazel
+	// knows whether the PR changed after the review.
 	HeadRefOid  string `json:"headRefOid"`
 	BaseRefName string `json:"baseRefName"`
 	Author      struct {
@@ -37,10 +37,10 @@ type PR struct {
 	ReviewDecision string `json:"reviewDecision"`
 }
 
-// Key identifica um PR de forma única entre repositórios.
+// Key identifies a PR uniquely across repositories.
 func (p PR) Key() string { return fmt.Sprintf("%s#%d", p.Repo, p.Number) }
 
-// Slug é o nome curto do repositório, sem o owner.
+// Slug is the short name of the repository, without the owner.
 func (p PR) Slug() string {
 	if i := strings.LastIndex(p.Repo, "/"); i >= 0 {
 		return p.Repo[i+1:]
@@ -48,7 +48,7 @@ func (p PR) Slug() string {
 	return p.Repo
 }
 
-// Age devolve a idade do PR em formato curto ("3h", "2d").
+// Age returns the PR's age in short form ("3h", "2d").
 func (p PR) Age(now time.Time) string {
 	d := now.Sub(p.UpdatedAt)
 	switch {
@@ -65,7 +65,7 @@ func (p PR) Age(now time.Time) string {
 
 const prFields = "number,title,url,body,isDraft,additions,deletions,changedFiles,updatedAt,headRefName,headRefOid,baseRefName,author,reviewDecision"
 
-// CheckAuth confirma que o `gh` existe e está logado.
+// CheckAuth confirms that `gh` exists and is logged in.
 func CheckAuth(ctx context.Context) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("`gh` not found in PATH — install the GitHub CLI (brew install gh)")
@@ -79,7 +79,7 @@ func CheckAuth(ctx context.Context) error {
 	return nil
 }
 
-// CurrentUser devolve o login do usuário autenticado no `gh`.
+// CurrentUser returns the login of the user authenticated in `gh`.
 func CurrentUser(ctx context.Context) (string, error) {
 	out, err := run(ctx, "gh", "api", "user", "--jq", ".login")
 	if err != nil {
@@ -88,21 +88,21 @@ func CurrentUser(ctx context.Context) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// ListOptions filtra a busca de PRs.
+// ListOptions filters the PR search.
 type ListOptions struct {
 	Authors       []string
 	IncludeDrafts bool
 	Limit         int
 }
 
-// RepoError registra a falha de um repositório específico sem derrubar o resto.
+// RepoError records the failure of a specific repository without bringing down the rest.
 type RepoError struct {
 	Repo string
 	Err  error
 }
 
-// ListPRs busca os PRs abertos de todos os repos em paralelo.
-// Repositórios que falham viram RepoError em vez de abortar a listagem.
+// ListPRs fetches the open PRs of all repos in parallel.
+// Repositories that fail become RepoError instead of aborting the listing.
 func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []RepoError) {
 	if opts.Limit <= 0 {
 		opts.Limit = 100
@@ -110,9 +110,9 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 
 	authors := lowerSet(opts.Authors)
 
-	// Se há múltiplos repos, tenta uma busca única com `gh search prs`.
-	// Se falhar, cai de volta para o fan-out por repo (preserva compatibilidade).
-	// O erro da busca é propagado para que o chamador saiba que algo deu errado.
+	// With several repos, try a single search with `gh search prs`. If it
+	// fails, fall back to the per-repo fan-out (keeps compatibility). The
+	// search error is passed on so the caller knows something went wrong.
 	if len(repos) > 1 {
 		prs, err := searchRepoPRs(ctx, repos, opts)
 		if err == nil {
@@ -131,8 +131,9 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 			})
 			return all, nil
 		}
-		// BUG-04: propaga o erro da busca para que repositórios com erro não sumam silenciosamente.
-		// O fan-out abaixo ainda será tentado, mas o erro da busca única vai junto.
+		// BUG-04: pass the search error on so repositories with errors do not
+		// vanish silently. The fan-out below is still tried, but the single
+		// search's error goes along with it.
 		searchErr := err
 		var (
 			mu   sync.Mutex
@@ -169,7 +170,8 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 		}
 		wg.Wait()
 
-		// Adiciona o erro da busca única como erro global (repo vazio = erro geral).
+		// Add the single search's error as a global one (empty repo = general
+		// error).
 		if searchErr != nil {
 			errs = append(errs, RepoError{Repo: "", Err: fmt.Errorf("gh search prs fallback: %w", searchErr)})
 		}
@@ -275,7 +277,7 @@ func listRepoPRs(ctx context.Context, repo string, limit int) ([]PR, error) {
 	return prs, nil
 }
 
-// Diff devolve o diff unificado do PR, truncado em maxBytes.
+// Diff returns the PR's unified diff, truncated at maxBytes.
 func Diff(ctx context.Context, repo string, number int, maxBytes int) (string, bool, error) {
 	out, err := run(ctx, "gh", "pr", "diff", strconv.Itoa(number), "--repo", repo)
 	if err != nil {
@@ -287,7 +289,7 @@ func Diff(ctx context.Context, repo string, number int, maxBytes int) (string, b
 	return out, false, nil
 }
 
-// Comment publica um comentário no PR.
+// Comment posts a comment on the PR.
 func Comment(ctx context.Context, repo string, number int, body string) error {
 	cmd := exec.CommandContext(ctx, "gh", "pr", "comment", strconv.Itoa(number),
 		"--repo", repo, "--body-file", "-")
@@ -300,7 +302,7 @@ func Comment(ctx context.Context, repo string, number int, body string) error {
 	return nil
 }
 
-// ParseRef entende "owner/repo#12", "owner/repo 12" ou a URL do PR.
+// ParseRef understands "owner/repo#12", "owner/repo 12" or the PR URL.
 func ParseRef(ref string) (repo string, number int, err error) {
 	ref = strings.TrimSpace(ref)
 	if u := strings.TrimPrefix(ref, "https://github.com/"); u != ref {
@@ -324,7 +326,7 @@ func ParseRef(ref string) (repo string, number int, err error) {
 	return "", 0, fmt.Errorf("invalid reference: %q (use owner/repo#123 or the PR URL)", ref)
 }
 
-// Get busca um PR específico.
+// Get fetches a specific PR.
 func Get(ctx context.Context, repo string, number int) (PR, error) {
 	out, err := run(ctx, "gh", "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", prFields)
 	if err != nil {

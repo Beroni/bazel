@@ -8,14 +8,14 @@ import (
 	"github.com/beroni/bazel/internal/pricing"
 )
 
-// Usage é o que um agente consumiu do modelo. Vem do evento final do
-// stream-json, que já soma os sub-agentes que ele tiver disparado — um
-// executável que não fala esse formato devolve tudo zerado, e a interface
-// simplesmente não mostra gasto nenhum.
+// Usage is what an agent consumed from the model. It comes from the final
+// stream-json event, which already sums the sub-agents it may have fired — an
+// executable that does not speak that format returns everything zeroed, and
+// the interface simply shows no spend at all.
 //
-// Model é o nome do modelo principal que rodou. É o que a tabela de preços
-// usa para calcular o custo: um modelo desconhecido cai em tokens-only, sem
-// tentar adivinhar um número que pode enganar.
+// Model is the name of the main model that ran. It is what the price table
+// uses to compute the cost: an unknown model falls back to tokens-only,
+// without trying to guess a number that may mislead.
 type Usage struct {
 	InputTokens  int     `json:"input_tokens,omitempty"`
 	OutputTokens int     `json:"output_tokens,omitempty"`
@@ -25,19 +25,19 @@ type Usage struct {
 	Model        string  `json:"model,omitempty"`
 }
 
-// Total é tudo que passou pelo modelo. O cache entra na conta: lido ou
-// escrito, é contexto que o agente consumiu para fazer o review.
+// Total is everything that went through the model. The cache counts: read or
+// written, it's context the agent consumed to do the review.
 func (u Usage) Total() int {
 	return u.InputTokens + u.OutputTokens + u.CacheWrite + u.CacheRead
 }
 
-// Empty diz que não há gasto a mostrar.
+// Empty says there is no spend to show.
 func (u Usage) Empty() bool { return u.Total() == 0 && u.CostUSD == 0 }
 
-// add soma outro gasto a este — é como os passos de uma pipeline viram um
-// número só no fim do review. O Model acompanha a soma enquanto ela for de um
-// modelo só: somar passos de modelos diferentes zera o Model, porque nenhuma
-// linha da tabela precifica essa mistura.
+// add sums another spend into this one — it is how the steps of a pipeline
+// become a single number at the end of the review. Model follows the sum as
+// long as it comes from a single model: summing steps from different models
+// zeroes Model, because no table row prices that mix.
 func (u *Usage) add(o Usage) {
 	switch {
 	case u.Empty():
@@ -53,15 +53,15 @@ func (u *Usage) add(o Usage) {
 	u.CostUSD += o.CostUSD
 }
 
-// Plus é a soma de dois gastos, sem mexer em nenhum dos dois. Publicar um
-// review depois de produzi-lo é o mesmo card gastando duas vezes, e o número
-// que ele mostra tem de ser o das duas.
+// Plus is the sum of two spends, without touching either one. Publishing a
+// review after producing it is the same card spending twice, and the number it
+// shows has to be the total of both.
 func (u Usage) Plus(o Usage) Usage {
 	u.add(o)
 	return u
 }
 
-// String é o gasto em uma linha, do jeito que ele aparece no fim do review.
+// String is the spend on one line, the way it appears at the end of the review.
 func (u Usage) String() string {
 	if u.Empty() {
 		return ""
@@ -78,10 +78,11 @@ func (u Usage) String() string {
 	return s
 }
 
-// StringWithCost é o gasto em uma linha, garantindo que o custo apareça
-// mesmo se não veio do stream (usando pricing table). Um custo que já veio —
-// do provedor ou do Runner, que já passou pela tabela — não é refeito: aqui
-// só se preenche o que faltou.
+// StringWithCost is the spend in one line, making sure the cost shows up
+// even if it did not come from the stream (using the pricing table). A cost
+// that already came — from the provider or from the Runner, which already
+// went through the table — is not redone: here we only fill in what was
+// missing.
 func (u Usage) StringWithCost(pricing *pricing.Table) string {
 	if u.Empty() {
 		return ""
@@ -101,13 +102,13 @@ func (u Usage) StringWithCost(pricing *pricing.Table) string {
 	return s
 }
 
-// priced refaz o custo pela tabela de preços. byModel é o gasto separado por
-// modelo, quando o adapter o tem: uma rodada do Claude Code mistura modelos —
-// o principal, as lentes que rodaram como sub-agente, os auxiliares — e cada
-// um é cobrado pelo seu preço. Um modelo que a tabela não conhece fica com o
-// custo que o próprio provedor reportou para ele. Sem nenhum modelo conhecido
-// o custo do provedor fica como veio — zerá-lo apagaria o único número que
-// existe.
+// priced redoes the cost from the price table. byModel is the spend split
+// by model, when the adapter has it: a Claude Code run mixes models — the
+// main one, the lenses that ran as a sub-agent, the auxiliary ones — and
+// each one is charged its own price. A model the table does not know keeps
+// the cost the provider itself reported for it. With no known model at all,
+// the provider's cost stays as it came — zeroing it would erase the only
+// number that exists.
 func priced(u Usage, byModel []Usage, table *pricing.Table) Usage {
 	if table == nil {
 		return u
@@ -136,8 +137,8 @@ func priced(u Usage, byModel []Usage, table *pricing.Table) Usage {
 	return u
 }
 
-// FormatTokens abrevia a contagem: um review da frota queima milhões de
-// tokens, e "1,8M" se lê melhor do que os sete dígitos.
+// FormatTokens abbreviates the count: a fleet review burns millions of
+// tokens, and "1,8M" reads better than the seven digits.
 func FormatTokens(n int) string {
 	switch {
 	case n < 0:
@@ -151,7 +152,7 @@ func FormatTokens(n int) string {
 	}
 }
 
-// trimZero arredonda numa casa decimal, com vírgula, e some com o ",0".
+// trimZero rounds to one decimal place, with a comma, and drops the ",0".
 func trimZero(v float64) string {
 	s := strings.Replace(strconv.FormatFloat(v, 'f', 1, 64), ".", ",", 1)
 	return strings.TrimSuffix(s, ",0")

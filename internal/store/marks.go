@@ -13,42 +13,42 @@ import (
 	"github.com/beroni/bazel/internal/gh"
 )
 
-// marksFile é o índice do que já foi revisado, ao lado dos reviews.
+// marksFile is the index of what has already been reviewed, next to the reviews.
 const marksFile = "revisados.json"
 
-// maxMarks limita o índice: PR revisado há meses não muda mais nada na tela.
+// maxMarks caps the index: a PR reviewed months ago no longer changes anything on screen.
 const maxMarks = 500
 
-// marksMu serializa a leitura-modificação-escrita do índice. A interface web
-// termina dois reviews ao mesmo tempo e os dois querem gravar.
+// marksMu serializes the index's read-modify-write. The web interface
+// finishes two reviews at the same time and both want to write.
 var marksMu sync.Mutex
 
-// Mark é o registro de um review já feito sobre um PR.
+// Mark is the record of a review already done on a PR.
 type Mark struct {
 	Agent string    `json:"agent"`
 	At    time.Time `json:"at"`
-	// HeadOid é o commit que estava no topo do PR quando ele foi revisado —
-	// é a comparação com o de agora que denuncia mudança depois do review.
+	// HeadOid is the commit that was at the tip of the PR when it was reviewed —
+	// comparing it with the current one is what reveals a change after the review.
 	HeadOid string `json:"head_oid"`
 	File    string `json:"file,omitempty"`
 	Posted  bool   `json:"posted,omitempty"`
 }
 
-// Marks é o índice de reviews por chave de PR ("owner/repo#123").
+// Marks is the index of reviews by PR key ("owner/repo#123").
 type Marks map[string]Mark
 
-// Status é como um PR aparece na lista depois de revisado.
+// Status is how a PR shows up in the list after being reviewed.
 type Status struct {
 	Reviewed bool
 	At       time.Time
 	Agent    string
 	Posted   bool
-	// Changed diz que o PR ganhou commit novo depois do review — o que está
-	// no GitHub não é mais o que foi revisado.
+	// Changed says the PR got a new commit after the review — what is
+	// on GitHub is no longer what was reviewed.
 	Changed bool
 }
 
-// Status olha o índice para um PR.
+// Status looks up a PR in the index.
 func (m Marks) Status(pr gh.PR) Status {
 	mark, ok := m[pr.Key()]
 	if !ok {
@@ -59,13 +59,13 @@ func (m Marks) Status(pr gh.PR) Status {
 		At:       mark.At,
 		Agent:    mark.Agent,
 		Posted:   mark.Posted,
-		// Sem o commit registrado não dá para afirmar que mudou — melhor
-		// não alarmar do que alarmar errado.
+		// Without the recorded commit we can't claim it changed — better
+		// not to alarm than to alarm wrongly.
 		Changed: mark.HeadOid != "" && pr.HeadRefOid != "" && mark.HeadOid != pr.HeadRefOid,
 	}
 }
 
-// Age resume quando o review foi feito ("2h", "3d").
+// Age summarizes when the review was done ("2h", "3d").
 func (s Status) Age(now time.Time) string {
 	d := now.Sub(s.At)
 	switch {
@@ -80,8 +80,8 @@ func (s Status) Age(now time.Time) string {
 	}
 }
 
-// LoadMarks lê o índice. Arquivo inexistente ou corrompido é um índice vazio:
-// isto é enfeite de lista, não pode derrubar a listagem de PRs.
+// LoadMarks reads the index. A missing or corrupted file is an empty index:
+// this is list decoration, it must not bring down the PR listing.
 func LoadMarks(dir string) Marks {
 	marksMu.Lock()
 	defer marksMu.Unlock()
@@ -100,8 +100,8 @@ func loadMarksLocked(dir string) Marks {
 	return m
 }
 
-// MarkReviewed registra que um PR foi revisado, com o commit que estava no
-// topo na hora. file é o markdown salvo, se houver.
+// MarkReviewed records that a PR was reviewed, with the commit that was at the
+// tip at the time. file is the saved markdown, if any.
 func MarkReviewed(dir string, res agent.Result, file string) error {
 	return update(dir, res.PR.Key(), func(m Mark) Mark {
 		return Mark{
@@ -109,13 +109,13 @@ func MarkReviewed(dir string, res agent.Result, file string) error {
 			At:      time.Now(),
 			HeadOid: res.PR.HeadRefOid,
 			File:    file,
-			// Agente que publica sozinho já deixou o review no PR.
+			// An agent that publishes on its own has already left the review on the PR.
 			Posted: res.Posts || m.Posted,
 		}
 	})
 }
 
-// MarkPosted anota que o review daquele PR foi para o GitHub.
+// MarkPosted notes that the review for that PR went to GitHub.
 func MarkPosted(dir, key string) error {
 	return update(dir, key, func(m Mark) Mark {
 		m.Posted = true
@@ -144,8 +144,8 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	if err != nil {
 		return err
 	}
-	// Grava em arquivo temporário e renomeia: um review interrompido no meio
-	// da escrita não pode deixar o índice pela metade.
+	// Write to a temporary file and rename: a review interrupted in the middle
+	// of the write must not leave the index half-written.
 	tmp := filepath.Join(dir, marksFile+".tmp")
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
@@ -153,7 +153,7 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	return os.Rename(tmp, filepath.Join(dir, marksFile))
 }
 
-// trim descarta os registros mais velhos quando o índice passa do teto.
+// trim drops the oldest records when the index goes over the cap.
 func trim(m Marks) {
 	if len(m) <= maxMarks {
 		return

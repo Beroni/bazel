@@ -5,8 +5,8 @@ import (
 	"testing"
 )
 
-// TestEggAlignment garante que o overlay de rachaduras cai dentro do ovo:
-// todas as linhas precisam ter a mesma largura e conter a coluna da fissura.
+// TestEggAlignment ensures the crack overlay lands inside the egg:
+// all lines must have the same width and contain the fissure's column.
 func TestEggAlignment(t *testing.T) {
 	width := len([]rune(egg[0]))
 	for i, line := range egg {
@@ -27,7 +27,7 @@ func TestEggAlignment(t *testing.T) {
 	}
 }
 
-// TestLogoAlignment garante que o logo cabe no canvas da onda de choque.
+// TestLogoAlignment ensures the logo fits in the shockwave canvas.
 func TestLogoAlignment(t *testing.T) {
 	width := len([]rune(logo[0]))
 	for i, line := range logo {
@@ -40,8 +40,8 @@ func TestLogoAlignment(t *testing.T) {
 	}
 }
 
-// TestAllFramesRender roda a linha do tempo inteira procurando panics e
-// quadros vazios.
+// TestAllFramesRender runs the whole timeline looking for panics and
+// empty frames.
 func TestAllFramesRender(t *testing.T) {
 	for f := range endFrame {
 		out := model{frame: f}.View()
@@ -51,7 +51,7 @@ func TestAllFramesRender(t *testing.T) {
 	}
 }
 
-// TestUpdateTerminates confirma que a animação sempre chega ao fim.
+// TestUpdateTerminates confirms the animation always reaches the end.
 func TestUpdateTerminates(t *testing.T) {
 	m := model{}
 	for range endFrame * 2 {

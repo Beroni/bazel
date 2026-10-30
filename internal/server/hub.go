@@ -5,27 +5,27 @@ import (
 	"sync"
 )
 
-// event é uma mensagem do servidor para o navegador.
+// event is a message from the server to the browser.
 type event struct {
 	Type string `json:"type"`
 	Data any    `json:"data"`
 }
 
-// Hub distribui eventos para os navegadores abertos via SSE.
+// Hub fans events out to the open browsers over SSE.
 //
-// É o que substitui o loop do bubbletea: como o review roda fora da
-// requisição que o pediu, a página só descobre que ele terminou por aqui.
+// It is what replaces the bubbletea loop: since the review runs outside the
+// request that asked for it, this is the only way the page learns it finished.
 type Hub struct {
 	mu   sync.Mutex
 	subs map[chan []byte]struct{}
 }
 
-// NewHub cria um Hub vazio.
+// NewHub creates an empty Hub.
 func NewHub() *Hub {
 	return &Hub{subs: map[chan []byte]struct{}{}}
 }
 
-// Subscribe abre um canal de eventos para um cliente.
+// Subscribe opens an event channel for a client.
 func (h *Hub) Subscribe() chan []byte {
 	ch := make(chan []byte, 32)
 	h.mu.Lock()
@@ -34,7 +34,7 @@ func (h *Hub) Subscribe() chan []byte {
 	return ch
 }
 
-// Unsubscribe fecha o canal de um cliente que foi embora.
+// Unsubscribe closes the channel of a client that went away.
 func (h *Hub) Unsubscribe(ch chan []byte) {
 	h.mu.Lock()
 	if _, ok := h.subs[ch]; ok {
@@ -44,8 +44,8 @@ func (h *Hub) Unsubscribe(ch chan []byte) {
 	h.mu.Unlock()
 }
 
-// Broadcast manda um evento para todo mundo. Cliente lento é pulado em vez de
-// segurar o worker que está publicando.
+// Broadcast sends an event to everyone. A slow client is skipped instead of
+// holding up the worker that is publishing.
 func (h *Hub) Broadcast(kind string, data any) {
 	payload, err := json.Marshal(event{Type: kind, Data: data})
 	if err != nil {
@@ -61,7 +61,7 @@ func (h *Hub) Broadcast(kind string, data any) {
 	}
 }
 
-// Clients diz quantos navegadores estão ouvindo.
+// Clients says how many browsers are listening.
 func (h *Hub) Clients() int {
 	h.mu.Lock()
 	defer h.mu.Unlock()

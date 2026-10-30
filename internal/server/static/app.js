@@ -1,22 +1,22 @@
-// Interface do Bazel. Sem framework e sem CDN: o servidor é local e a página
-// precisa abrir offline, então tudo que ela usa está embutido no binário.
+// Bazel's interface. No framework and no CDN: the server is local and the page
+// has to open offline, so everything it uses is embedded in the binary.
 'use strict';
 
 const state = {
   me: '',
   prs: [],
   repoErrors: [],
-  jobs: [],          // mais novo primeiro
+  jobs: [],          // newest first
   saved: [],
   repos: [],
-  agents: [],         // escolhas do seletor: agents e pipelines
-  limits: null,       // cota do Claude: sessão (5h) e semana (7d)
-  skills: [],         // skills instaladas na máquina
-  pipeSteps: [],      // passos que o montador de pipeline está juntando
-  pipeName: '',       // nome que o montador vai dar à pipeline
-  warning: '',        // aviso de configuração que vale a sessão inteira
+  agents: [],         // picker choices: agents and pipelines
+  limits: null,       // Claude quota: session (5h) and week (7d)
+  skills: [],         // skills installed on the machine
+  pipeSteps: [],      // steps the pipeline builder is putting together
+  pipeName: '',       // name the builder will give the pipeline
+  warning: '',        // config warning that holds for the whole session
   skillsDir: '',
-  agent: '',          // nome do que roda no próximo review
+  agent: '',          // name of what runs in the next review
   selected: new Set(),
   scope: 'all',
   filter: '',
@@ -24,24 +24,24 @@ const state = {
   repoFilter: '',     // '' = every repo (of that owner); else its repoKey
   reviewFilter: 'all', // all | none | reviewed | changed
   hideDrafts: false,
-  prsHidden: false,   // lista de PRs recolhida, para ler o review em tela cheia
+  prsHidden: false,   // PR list collapsed, to read the review full screen
   tab: 'queue',
   activeJob: null,
   activeSaved: null,
-  activePR: null,      // chave do PR aberto no painel da direita
-  bodies: {},        // id do job -> html do review
-  splits: {},        // id do job -> {pub, ctx} quando só parte vai ao PR
-  picks: {},         // 'job:<id>' | 'saved:<name>' -> Set dos achados desmarcados
-  logs: {},          // id do job -> {next, lines, dropped, live, busy}
+  activePR: null,      // key of the PR open in the right-hand pane
+  bodies: {},        // job id -> review html
+  splits: {},        // job id -> {pub, ctx} when only part goes to the PR
+  picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
+  logs: {},          // job id -> {next, lines, dropped, live, busy}
   instance: null,    // id of the server process; changes when it restarts
 };
 
 const $ = (sel) => document.querySelector(sel);
 
-// clearViewer esvazia o painel da direita e esquece a assinatura do que estava
-// desenhado nele. Sem esse esquecimento, voltar para a aba da fila caía no
-// atalho do renderViewer — "já está desenhado" — e o painel ficava com o que
-// a outra aba tinha escrito.
+// clearViewer empties the right panel and forgets the signature of what was
+// drawn in it. Without that forgetting, going back to the queue tab fell into
+// the renderViewer shortcut — "already drawn" — and the panel kept what the
+// other tab had written.
 const clearViewer = () => {
   const v = $('#viewer');
   v.innerHTML = '';
@@ -78,8 +78,8 @@ function waiting(job) {
     && !job.posted && !job.publishing;
 }
 
-// fmtTokens abrevia a contagem do jeito que o servidor abrevia: um review da
-// frota queima milhões de tokens, e "1,8M" se lê melhor que sete dígitos.
+// fmtTokens abbreviates the count the way the server does: a fleet review
+// burns millions of tokens, and "1,8M" reads better than seven digits.
 function fmtTokens(n) {
   if (!n || n < 0) return '0';
   if (n < 1000) return String(n);
@@ -87,10 +87,10 @@ function fmtTokens(n) {
   return v.toFixed(1).replace('.0', '').replace('.', ',') + suf;
 }
 
-// gasto é a linha do que o review custou. O ~ marca a conta parcial de um
-// review em curso: ela só enxerga a conversa principal do agente, e as lentes
-// que ele rodou como sub-agente entram no fechamento. Agente que não fala
-// stream-json não reporta nada, e aí não há linha nenhuma.
+// gasto is the line for what the review cost. The ~ marks the partial count of
+// a review in progress: it only sees the agent's main conversation, and the
+// lenses it ran as sub-agents come in at the close. An agent that doesn't speak
+// stream-json reports nothing, and then there is no line at all.
 function gasto(job) {
   const partes = [];
   if (job.tokens) partes.push((job.tokens_partial ? '~' : '') + fmtTokens(job.tokens) + ' tokens');
@@ -98,7 +98,7 @@ function gasto(job) {
   return partes.join(' · ');
 }
 
-// gastoTitle explica o número onde ele aparece.
+// gastoTitle explains the number where it shows up.
 function gastoTitle(job) {
   return job.tokens_partial
     ? 'partial count — it closes when the agent finishes, with what its lenses spent'
@@ -112,7 +112,7 @@ function banner(msg) {
   b.hidden = false;
 }
 
-// --- carga ---
+// --- loading ---
 
 async function boot() {
   wire();
@@ -134,8 +134,8 @@ async function boot() {
     applyAgents(st.agents || []);
     state.repos = st.repos || [];
     renderRepoFilters();
-    // Um comando escrito no molde roda junto com todo agente que você escolher,
-    // e nada no resultado denuncia isso — só o gasto no fim.
+    // A command written in the template runs along with every agent you pick,
+    // and nothing in the result gives it away — only the spend at the end.
     if (st.stray_command) {
       state.warning = `Your agent.prompt has no {{task}} and runs ${st.stray_command} on its own —`
         + ` every agent you pick runs two commands, the one you chose and that one. Fix it in "config".`;
@@ -150,8 +150,8 @@ async function boot() {
     banner('Could not reach the server: ' + err.message);
     return;
   }
-  // A página só é escolhida depois que o estado chegou: abrir a aba direto em
-  // #/config precisa da lista de agentes para desenhar qualquer coisa.
+  // The page is only chosen after the state has arrived: opening the tab right
+  // at #/config needs the agent list to draw anything.
   await route();
   loadPRs(false);
 }
@@ -164,13 +164,13 @@ async function loadPRs(force) {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
     state.prs = data.prs || [];
     state.repoErrors = data.repo_errors || [];
-    // Sem erro de repositório o banner volta ao aviso de configuração, se
-    // houver um: limpar aqui apagava justamente o que a partida tinha a dizer.
+    // With no repository error the banner goes back to the config warning, if
+    // there is one: clearing here wiped exactly what startup had to say.
     banner(state.repoErrors.length
       ? state.repoErrors.map((e) => `⚠ ${e.repo}: ${e.error}`).join('\n')
       : state.warning);
-    // As contagens do filtro por repositório saem daqui, então ele é montado
-    // antes da lista.
+    // The repository filter counts come from here, so it is built before the
+    // list.
     renderRepoFilters();
     renderPRs();
   } catch (err) {
@@ -182,7 +182,7 @@ async function loadPRs(force) {
   }
 }
 
-// --- eventos do servidor ---
+// --- server events ---
 
 function connect() {
   const src = new EventSource('/api/events');
@@ -194,7 +194,7 @@ function connect() {
     if (ev.type === 'hello') adoptInstance(ev.data.instance);
     if (ev.type === 'job') upsertJob(ev.data);
     if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
-    // Outra aba tirou este job da fila: some daqui também.
+    // Another tab took this job off the queue: it goes away here too.
     if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
 }
@@ -245,23 +245,23 @@ function upsertJob(job) {
   if (i >= 0) state.jobs[i] = job;
   else state.jobs.unshift(job);
 
-  // O corpo do review não vem no evento; busca quando ficar pronto.
+  // The review body doesn't come in the event; fetch it when it is ready.
   if (job.state === 'done' && !state.bodies[job.id]) {
     if (state.activeJob === job.id || (!state.activeJob && !state.activePR)) openJob(job.id);
   }
   renderJobs();
   if (state.activeJob === job.id) renderViewer();
 
-  // Review terminado muda o selo do PR na lista: recarrega do cache do
-  // servidor (que não custa chamada ao GitHub) para o ✓ aparecer na hora.
+  // A finished review changes the PR's badge in the list: reload from the
+  // server cache (which costs no GitHub call) so the ✓ shows up right away.
   if ((job.state === 'done' || job.posted) && !state.reloadingPRs) {
     state.reloadingPRs = true;
     loadPRs(false).finally(() => { state.reloadingPRs = false; });
   }
 }
 
-// dropJob esquece um job: some da fila e, se era ele que estava aberto, o
-// painel da direita volta ao começo.
+// dropJob forgets a job: it leaves the queue and, if it was the one open, the
+// right panel goes back to the start.
 function dropJob(id) {
   const antes = state.jobs.length;
   state.jobs = state.jobs.filter((j) => j.id !== id);
@@ -278,8 +278,8 @@ function dropJob(id) {
   if (state.tab === 'queue') renderViewer();
 }
 
-// removeJob tira o job da fila no servidor. Um review ainda vivo morre junto,
-// e isso vale uma pergunta: é trabalho em andamento indo embora.
+// removeJob takes the job off the queue on the server. A review still alive
+// dies with it, and that is worth a question: it is work in progress going away.
 async function removeJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (job && (job.state === 'queued' || job.state === 'running')) {
@@ -295,7 +295,7 @@ async function removeJob(id, btn) {
   }
 }
 
-// --- ações ---
+// --- actions ---
 
 function startReview() {
   return reviewRefs(markedPRs());
@@ -303,8 +303,8 @@ function startReview() {
 
 async function reviewRefs(refs) {
   if (!refs.length) return;
-  // Escolher um agente que publica é escrever no PR de outra pessoa: vale uma
-  // pergunta antes, que é a mesma cerimônia do botão "publicar no PR".
+  // Picking an agent that publishes is writing on someone else's PR: it is worth
+  // a question first, the same ceremony as the "publish to the PR" button.
   const chosen = state.agents.find((a) => a.name === state.agent);
   if (chosen && chosen.posts) {
     const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
@@ -431,12 +431,12 @@ async function cancelJob(id) {
   catch (err) { banner(err.message); }
 }
 
-// publishJob manda o agente publicar o review que está na tela. É o caminho
-// "li e aprovei": diferente do postJob, que é o Bazel colando o markdown como
-// comentário, aqui roda a skill de post e o review sai com inline.
+// publishJob tells the agent to publish the review on screen. It is the "I read
+// it and approve" path: unlike postJob, which is Bazel pasting the markdown as a
+// comment, here the post skill runs and the review goes out with inline comments.
 //
-// A publicação acontece neste mesmo card — o card volta a rodar com o passo do
-// agente de post no fim — e não num segundo card na fila.
+// Publishing happens on this same card — the card goes back to running with the
+// post agent's step at the end — and not on a second card in the queue.
 async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
@@ -537,8 +537,8 @@ async function openSaved(name) {
     const key = pickKey('saved', name);
     const total = decorateFindings(md, key);
 
-    // Um review salvo continua publicável: fechar o Bazel antes de mandá-lo
-    // ao PR não pode custar o trabalho do agente.
+    // A saved review stays publishable: closing Bazel before sending it to the
+    // PR can't cost the agent's work.
     const entry = state.saved.find((x) => x.name === name);
     if (entry && entry.repo && entry.publishable === false) {
       const nota = el('p', 'dim');
@@ -563,8 +563,8 @@ async function openSaved(name) {
   }
 }
 
-// publishSaved manda o agente de publicação levar ao PR um review que está em
-// disco — o de uma sessão anterior, aberto aqui nos salvos.
+// publishSaved tells the publishing agent to take to the PR a review that is on
+// disk — one from a previous session, opened here in the saved list.
 async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
@@ -586,7 +586,7 @@ async function publishSaved(name, btn) {
   }
 }
 
-// commentSaved cola o review salvo no PR, sem agente.
+// commentSaved pastes the saved review on the PR, with no agent.
 async function commentSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
@@ -606,14 +606,14 @@ async function commentSaved(name, btn) {
   }
 }
 
-// --- a caixa de cada achado ---
+// --- the checkbox of each finding ---
 //
-// Cada achado do review chega do servidor numa <section class="finding"
-// data-finding="N">. A caixa é a decisão de levá-lo ao PR: desmarcada, o
-// achado sai do que qualquer um dos botões de publicar manda — é assim que um
-// falso positivo fica para trás sem ninguém editar o markdown. O N é o mesmo
-// índice que o servidor usa para cortar, e a escolha vive em state.picks
-// para sobreviver ao redesenho do painel.
+// Each review finding arrives from the server in a <section class="finding"
+// data-finding="N">. The checkbox is the decision to take it to the PR: unticked,
+// the finding drops out of what any of the publish buttons send — that is how a
+// false positive gets left behind without anyone editing the markdown. The N is
+// the same index the server uses to cut, and the choice lives in state.picks
+// to survive the panel being redrawn.
 const pickKey = (kind, id) => kind + ':' + id;
 
 function skipped(key) {
@@ -623,14 +623,14 @@ function skipped(key) {
 
 const skipList = (key) => [...skipped(key)].sort((a, b) => a - b);
 
-// skipNote é o lembrete no confirm de publicar: o que ficou desmarcado não vai.
+// skipNote is the reminder in the publish confirm: what was left unticked doesn't go.
 function skipNote(skip) {
   if (!skip.length) return '';
   return `\n\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
 }
 
-// decorateFindings põe a caixa em cada achado do review desenhado em md e
-// devolve quantos achados há.
+// decorateFindings puts the checkbox on each finding of the review drawn in md
+// and returns how many findings there are.
 function decorateFindings(md, key) {
   const secs = md.querySelectorAll('section.finding');
   const out = skipped(key);
@@ -653,8 +653,8 @@ function decorateFindings(md, key) {
   return secs.length;
 }
 
-// pickSummary é a linha ao lado dos botões de publicar: quantos achados vão,
-// quantos ficam, e os atalhos para marcar ou desmarcar todos de uma vez.
+// pickSummary is the line next to the publish buttons: how many findings go,
+// how many stay, and the shortcuts to tick or untick all of them at once.
 function pickSummary(key, total) {
   const s = el('span', 'pick-summary');
   s.dataset.key = key;
@@ -704,16 +704,16 @@ function visiblePRs() {
   });
 }
 
-// markedPRs é o que o botão "revisar" vai rodar: o que está marcado **e**
-// visível. Filtrar não desmarca nada — a marcação fica esperando o filtro
-// sair — mas revisar um PR que saiu da tela seria surpresa.
+// markedPRs is what the "run" button will run: what is ticked **and**
+// visible. Filtering doesn't untick anything — the tick waits for the filter to
+// go away — but reviewing a PR that left the screen would be a surprise.
 function markedPRs() {
   return visiblePRs().filter((pr) => state.selected.has(pr.key)).map((pr) => pr.key);
 }
 
-// matchesReview separa o que o Bazel já revisou do que ainda não viu. "mudou"
-// é o caso que importa: revisado, e com commit novo depois — o review que
-// está salvo já não é sobre este código.
+// matchesReview separates what Bazel already reviewed from what it hasn't seen
+// yet. "changed" is the case that matters: reviewed, and with a new commit
+// afterwards — the saved review is no longer about this code.
 function matchesReview(pr) {
   switch (state.reviewFilter) {
     case 'none': return !pr.reviewed;
@@ -827,21 +827,21 @@ function renderRepoFilters() {
     doDono.map(([k, r]) => [k, `${soNome ? repoName(r.label) : r.label} (${r.count})`]), state.repoFilter);
 }
 
-// renderAgents monta o seletor com os agents e pipelines do config.yaml.
-// selectableAgents são os que podem revisar. O agente de publicação também
-// vem do servidor — ele aparece na configuração — mas rodar ele sobre um PR
-// sem review pronto não faria nada.
+// renderAgents builds the picker with the agents and pipelines from config.yaml.
+// selectableAgents are the ones that can review. The publishing agent also
+// comes from the server — it shows up in the config — but running it on a PR
+// with no finished review wouldn't do anything.
 function selectableAgents() {
   return state.agents.filter((a) => !a.publisher);
 }
 
-// applyAgents guarda a lista que veio do servidor e mantém a escolha do
-// seletor válida: quem foi removido não pode continuar selecionado, e o
-// primeiro da lista é o padrão.
+// applyAgents stores the list that came from the server and keeps the picker's
+// choice valid: whoever was removed can't stay selected, and the first in the
+// list is the default.
 //
-// adotaPadrao troca a escolha atual pelo novo primeiro. É o que faz o botão
-// "tornar padrão" valer já na próxima revisão: sem isso ele mudaria o arquivo
-// e o seletor continuaria no agente de antes.
+// adotaPadrao swaps the current choice for the new first one. It is what makes
+// the "make default" button take effect on the very next review: without it the
+// file would change and the picker would stay on the previous agent.
 function applyAgents(list, adotaPadrao) {
   state.agents = list;
   const opcoes = selectableAgents();
@@ -881,8 +881,8 @@ function agentTitle(name) {
   ].filter(Boolean).join('\n') || a.name;
 }
 
-// stepsBox é a lista de passos de um job: quem terminou, quem está na vez e
-// quem ainda nem começou.
+// stepsBox is a job's list of steps: who finished, whose turn it is and who
+// hasn't even started.
 function stepsBox(job) {
   const box = el('div', 'steps');
   if (job.cloning) box.append(stepRow({ name: 'cloning the repository…', state: 'running' }));
@@ -902,8 +902,8 @@ function stepRow(st) {
   return row;
 }
 
-// stepSeconds conta o tempo do passo que está rodando a partir do started_at,
-// para o relógio andar entre um evento e outro do servidor.
+// stepSeconds counts the running step's time from started_at, so the clock
+// moves between one server event and the next.
 function stepSeconds(st) {
   if (st.state === 'running' && st.started_at) {
     return Math.max(0, Math.round((Date.now() - new Date(st.started_at)) / 1000));
@@ -911,11 +911,11 @@ function stepSeconds(st) {
   return st.seconds || 0;
 }
 
-// --- log dos agentes ---
+// --- agent log ---
 //
-// O log não vem pelo SSE: um agente falante escreve milhares de linhas e cada
-// uma acordaria todo navegador aberto. A página guarda o `next` e busca só o
-// que falta, uma vez por segundo enquanto o review roda.
+// The log doesn't come over SSE: a chatty agent writes thousands of lines and
+// each one would wake every open browser. The page keeps the `next` and fetches
+// only what is missing, once a second while the review runs.
 
 const maxLogLines = 500;
 
@@ -926,8 +926,8 @@ function logState(id) {
   return state.logs[id];
 }
 
-// noteAgents mantém a lista de quem já falou, na ordem em que apareceram — é
-// ela que dá a cor de cada terminal.
+// noteAgents keeps the list of who has already spoken, in the order they showed
+// up — it is what gives each terminal its color.
 function noteAgents(st, lines) {
   for (const l of lines) {
     const who = l.agent || 'agent';
@@ -952,25 +952,25 @@ async function pollLog(id) {
       appendLog(id, lines);
     }
   } catch {
-    // O log é acessório: falhar em buscá-lo não pode estragar a tela.
+    // The log is secondary: failing to fetch it can't break the screen.
   } finally {
     st.busy = false;
   }
 }
 
-// logLineEl monta uma linha com a assinatura de quem a escreveu. A cor da
-// etiqueta vem da ordem de aparição, para as lentes da frota se distinguirem
-// de relance mesmo intercaladas.
-// --- um terminal por agente ---
+// logLineEl builds a line with the signature of whoever wrote it. The label's
+// color comes from the order of appearance, so the fleet's lenses can be told
+// apart at a glance even when interleaved.
+// --- one terminal per agent ---
 //
-// A frota sobe as três lentes dentro do mesmo processo, em paralelo: num
-// fluxo só as linhas chegam intercaladas e não dá para seguir raciocínio
-// nenhum. Cada agente escreve no próprio terminal, com o próprio scroll.
+// The fleet starts the three lenses inside the same process, in parallel: in a
+// single stream the lines arrive interleaved and you can't follow any line of
+// reasoning. Each agent writes to its own terminal, with its own scroll.
 
 const maxTermLines = 300;
 
-// agentName é o nome que vai no cabeçalho do terminal. Linha sem assinatura é
-// do agente do passo — o servidor já manda esse nome preenchido.
+// agentName is the name that goes in the terminal header. An unsigned line
+// belongs to the step's agent — the server already sends that name filled in.
 function agentName(l) {
   return l.agent || 'agent';
 }
@@ -979,8 +979,8 @@ function logLineEl(l) {
   return el('div', 'log-line ' + (l.stream === 'stderr' ? 'stderr' : 'stdout'), l.text);
 }
 
-// termFor devolve o corpo do terminal de um agente, criando o terminal na
-// primeira linha que ele escreve. A ordem na tela é a ordem em que falaram.
+// termFor returns the body of an agent's terminal, creating the terminal on the
+// first line it writes. The order on screen is the order in which they spoke.
 function termFor(wrap, id, who) {
   if (!wrap._terms) wrap._terms = new Map();
   let body = wrap._terms.get(who);
@@ -1002,7 +1002,7 @@ function termFor(wrap, id, who) {
   return body;
 }
 
-// pushLine escreve no terminal do agente e rola se quem lê já estava no fim.
+// pushLine writes to the agent's terminal and scrolls if the reader was already at the end.
 function pushLine(wrap, id, l) {
   const body = termFor(wrap, id, agentName(l));
   const noFim = body.scrollHeight - body.scrollTop - body.clientHeight < 30;
@@ -1012,7 +1012,7 @@ function pushLine(wrap, id, l) {
   if (noFim) body.scrollTop = body.scrollHeight;
 }
 
-// logTerminals monta a grade com o que a página já tem em mãos.
+// logTerminals builds the grid with what the page already has on hand.
 function logTerminals(id) {
   const wrap = el('div', 'terms');
   wrap.id = 'log-terms';
@@ -1023,7 +1023,7 @@ function logTerminals(id) {
   return wrap;
 }
 
-// appendLog manda cada linha nova para o terminal de quem a escreveu.
+// appendLog sends each new line to the terminal of whoever wrote it.
 function appendLog(id, lines) {
   const wrap = $('#log-terms');
   if (!wrap || wrap.dataset.job !== id) return;
@@ -1034,8 +1034,8 @@ function appendLog(id, lines) {
   if (count) count.textContent = logCountLabel(id);
 }
 
-// total é o que o servidor diz ter — o painel de um review terminado só busca
-// as linhas quando alguém o abre, e até lá "0 linhas" seria mentira.
+// total is what the server says it has — the panel of a finished review only
+// fetches the lines when someone opens it, and until then "0 lines" would be a lie.
 function logCountLabel(id, total) {
   const st = logState(id);
   const n = Math.max(st.next, total || 0);
@@ -1054,7 +1054,7 @@ function logPanel(job, open) {
   sum.append(el('span', null, 'agent log'), document.createTextNode(' · '), count);
 
   wrap.append(sum, logTerminals(job.id));
-  // Log de review já terminado só é buscado quando alguém abre.
+  // The log of an already finished review is only fetched when someone opens it.
   wrap.addEventListener('toggle', () => { if (wrap.open) pollLog(job.id); });
   return wrap;
 }
@@ -1063,8 +1063,8 @@ function renderStats() {
   const total = state.prs.length;
   const shown = visiblePRs().length;
   const marked = markedPRs().length;
-  // Com filtro ligado o número que interessa é o do recorte — mas o total
-  // continua à vista, senão some a pista de que há um filtro escondendo PR.
+  // With a filter on, the number that matters is the slice's — but the total
+  // stays in view, otherwise the hint that a filter is hiding PRs disappears.
   const conta = shown === total
     ? `${total} PR${total === 1 ? '' : 's'}`
     : `${shown} of ${total} PRs`;
@@ -1090,8 +1090,8 @@ function renderPRs() {
     box.checked = state.selected.has(pr.key);
     box.addEventListener('click', (e) => e.stopPropagation());
     box.addEventListener('change', () => toggle(pr.key, box.checked));
-    // Linha abre, checkbox marca: quem clica no PR quer lê-lo, e marcar para
-    // revisar tem um alvo próprio.
+    // The row opens, the checkbox ticks: whoever clicks the PR wants to read it,
+    // and ticking for review has a target of its own.
     row.addEventListener('click', () => openPR(pr.key));
 
     const main = el('div', 'pr-main');
@@ -1124,10 +1124,10 @@ function renderPRs() {
 // a crooked "ago".
 const ago = (age) => (age === 'just now' ? age : age + ' ago');
 
-// reviewTags é o histórico do PR na lista: se já foi revisado, quando, e —
-// o que mais importa — se ele ganhou commit novo depois disso. Um PR revisado
-// que mudou vale um aviso, não um ✓: o que está no GitHub não é mais o que
-// o agente leu.
+// reviewTags is the PR's history in the list: whether it was reviewed, when, and
+// — what matters most — whether it got a new commit after that. A reviewed PR
+// that changed is worth a warning, not a ✓: what is on GitHub is no longer what
+// the agent read.
 function reviewTags(pr) {
   if (!pr.reviewed) return [];
   if (pr.changed_since_review) {
@@ -1160,9 +1160,9 @@ function updateReviewButton() {
   btn.textContent = n > 1 ? `run ${n}` : 'run';
 }
 
-// togglePRs recolhe a lista da esquerda até a faixa do hambúrguer e a traz de
-// volta. É o que dá a tela inteira ao review, e a escolha fica guardada no
-// navegador — recolher de novo a cada aba aberta seria trabalho repetido.
+// togglePRs collapses the left list down to the hamburger strip and brings it
+// back. It is what gives the whole screen to the review, and the choice is kept
+// in the browser — collapsing again on every opened tab would be repeated work.
 function togglePRs(hide) {
   state.prsHidden = hide;
   document.querySelector('main').classList.toggle('no-prs', hide);
@@ -1172,7 +1172,7 @@ function togglePRs(hide) {
   try {
     localStorage.setItem('bazel.prsHidden', hide ? '1' : '');
   } catch (err) {
-    // Navegador sem storage: a escolha vale só para esta sessão.
+    // Browser without storage: the choice holds only for this session.
   }
 }
 
@@ -1181,10 +1181,10 @@ function renderTabs() {
   if (state.tab === 'saved') loadSaved(); else renderJobs();
 }
 
-// renderQuota mostra a cota do Claude — as mesmas janelas do `/usage`: cinco
-// horas e sete dias. Ela não se consulta: chega de carona no stream de quem
-// está rodando, então o que está na tela é a última leitura, e o título diz de
-// quando ela é.
+// renderQuota shows the Claude quota — the same windows as `/usage`: five
+// hours and seven days. It isn't queried: it rides along on the stream of
+// whoever is running, so what is on screen is the last reading, and the title
+// says when it is from.
 function renderQuota() {
   const box = $('#quota');
   const l = state.limits;
@@ -1203,8 +1203,8 @@ function renderQuota() {
   ].filter(Boolean).join('\n');
 }
 
-// quotaPart pinta a janela conforme ela enche: amarelo aos 75%, vermelho aos
-// 90% — o número sozinho não avisa que a parede está perto.
+// quotaPart colors the window as it fills up: yellow at 75%, red at 90% —
+// the number alone doesn't warn that the wall is near.
 function quotaPart(nome, w) {
   const pct = Math.round((w && w.utilization ? w.utilization : 0) * 100);
   const cls = pct >= 90 ? 'hot' : pct >= 75 ? 'warn' : '';
@@ -1216,8 +1216,8 @@ function resetLine(nome, w) {
   return `${nome} resets at ${new Date(w.resets_at).toLocaleString()}`;
 }
 
-// renderSpend soma o que os reviews desta sessão consumiram. Fica na barra de
-// cima porque é a pergunta que se faz sem abrir nada: quanto já custou.
+// renderSpend adds up what this session's reviews consumed. It sits in the top
+// bar because it's the question asked without opening anything: what it cost.
 function renderSpend() {
   const tokens = state.jobs.reduce((n, j) => n + (j.tokens || 0), 0);
   const cost = state.jobs.reduce((n, j) => n + (j.cost_usd || 0), 0);
@@ -1282,8 +1282,9 @@ function renderJobs() {
       t.title = `what "${job.agent}" produces does not go to the PR`;
       actions.append(t);
     } else if (waiting(job)) {
-      // Terminou num `publish`: publicar daqui mandaria tudo sem você ver o
-      // que vai. O card só chama para o review, onde estão os tiques.
+      // It ended on a `publish`: publishing from here would send everything
+      // without you seeing what goes. The card only points to the review,
+      // where the ticks are.
       const r = el('button', 'btn small', 'choose what goes');
       r.title = 'opens the review with what goes to the PR, finding by finding';
       r.addEventListener('click', (e) => { e.stopPropagation(); openJob(job.id); });
@@ -1314,8 +1315,8 @@ function renderJobs() {
   rail.scrollLeft = scroll;
 }
 
-// jobSeconds conta do started_at enquanto o job roda, para o relógio não
-// congelar entre um evento e outro do servidor.
+// jobSeconds counts from started_at while the job runs, so the clock doesn't
+// freeze between one server event and the next.
 function jobSeconds(job) {
   if (job.state === 'running' && job.started_at) {
     return Math.max(0, Math.round((Date.now() - new Date(job.started_at)) / 1000));
@@ -1323,8 +1324,8 @@ function jobSeconds(job) {
   return job.seconds || 0;
 }
 
-// labelParts separa o estado do tempo que vem junto. O estado vai em caixa
-// alta pelo CSS; o tempo, não — "8S" não é oito segundos, é oito siemens.
+// labelParts splits the state from the time that comes with it. The state is
+// uppercased by CSS; the time isn't — "8S" isn't eight seconds, it's eight siemens.
 function labelParts(job) {
   switch (job.state) {
     case 'queued': return ['queued', ''];
@@ -1341,12 +1342,12 @@ function label(job) {
   return labelParts(job).filter(Boolean).join(' ');
 }
 
-// fillState escreve o estado dentro de um .state, com a unidade de tempo fora
-// da caixa alta. Não limpa o elemento: o ponto colorido do card já está lá.
+// fillState writes the state inside a .state, with the time unit outside the
+// uppercase. It doesn't clear the element: the card's colored dot is already there.
 function fillState(span, job) {
   const [texto, tempo] = labelParts(job);
-  // Esperando você publicar é um fim só pela metade: a cor de aviso é o que
-  // separa o card dos reviews que não pedem mais nada.
+  // Waiting for you to publish is only half an ending: the warning color is
+  // what sets the card apart from reviews that ask for nothing more.
   if (waiting(job)) span.classList.add('awaits');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
@@ -1373,9 +1374,9 @@ function renderSaved() {
   }
 }
 
-// viewerSignature é o que, mudando, exige redesenhar o painel. O tique de um
-// segundo passa por aqui: sem isso, refazer o DOM inteiro mataria a rolagem do
-// log e a seleção de texto de quem está lendo.
+// viewerSignature is what, when it changes, requires redrawing the panel. The
+// one-second tick goes through here: without it, rebuilding the whole DOM would
+// kill the log's scroll and the text selection of whoever is reading.
 function viewerSignature(job) {
   return [
     job.id, job.state, job.cloning ? 'c' : '',
@@ -1388,7 +1389,7 @@ function viewerSignature(job) {
   ].join('|');
 }
 
-// tickViewer atualiza só o que anda sozinho: os relógios dos passos e do job.
+// tickViewer updates only what moves on its own: the step and job clocks.
 function tickViewer(job) {
   const rows = document.querySelectorAll('#viewer .step');
   const steps = job.steps || [];
@@ -1473,16 +1474,16 @@ function renderViewer() {
     v.append(el('p', 'dim', 'loading review…'));
     return;
   }
-  // Terminou num `publish`: a pipeline não mandou nada, e é aqui que você
-  // escolhe o que vai. Dizer isso antes do review é o que faz a leitura ser
-  // a de quem decide, e não a de quem só confere.
+  // It ended on a `publish`: the pipeline sent nothing, and this is where you
+  // choose what goes. Saying so before the review is what makes you read it
+  // as the one who decides, not as someone who only checks.
   if (waiting(job)) {
     v.append(el('p', 'awaits-note', 'Nothing has gone to the PR yet. Untick the findings that should not go,'
       + ' then publish at the end, or keep it here.'));
   }
-  // Com parte dos passos fora do PR, a tela separa as duas coisas: os tiques
-  // ficam só no que sobe, na mesma numeração que o servidor usa para tirar
-  // os achados — no relatório inteiro, o número apontaria para outro achado.
+  // With some of the steps kept out of the PR, the screen separates the two: the
+  // ticks go only on what goes up, with the same numbering the server uses to drop
+  // findings — on the whole report, the number would point at another finding.
   const split = job.publishable !== false ? state.splits[job.id] : null;
   const key = pickKey('job', job.id);
   let total;
@@ -1508,12 +1509,12 @@ function renderViewer() {
   if (job.steps && job.steps.length > 1) v.append(stepsBox(job));
   if (job.log_lines) v.append(logPanel(job, false));
 
-  // As ações ficam depois do review, e não antes: é aqui que você chega
-  // quando terminou de ler — que é o momento de decidir se isso vai para o PR.
+  // The actions come after the review, not before: this is where you arrive
+  // when you're done reading — the moment to decide whether this goes to the PR.
   if (!job.publishing && job.publishable === false) {
-    // Agente que não produz review não tem para onde publicar. Dizer isso aqui
-    // é melhor do que não mostrar nada: você acabou de ler o relatório e a
-    // pergunta seguinte é sempre "e agora, isso vai pro PR?".
+    // An agent that produces no review has nowhere to publish. Saying so here
+    // beats showing nothing: you have just read the report and the next
+    // question is always "so, does this go to the PR?".
     const nota = el('p', 'dim');
     nota.style.marginTop = '28px';
     nota.textContent = `This is not a review — what "${job.agent}" produces stays in Bazel.`
@@ -1550,7 +1551,7 @@ function renderViewer() {
   if (job.post_error) v.append(el('div', 'error-box', 'failed to publish: ' + job.post_error));
   v.append(foot);
 
-  // O que o review custou, no fim dele — é onde você chega depois de ler.
+  // What the review cost, at its end — which is where you arrive after reading.
   const custo = gasto(job);
   if (custo) {
     const linha = el('p', 'dim tokens-foot', custo + ' · ' + jobSeconds(job) + 's');
@@ -1560,7 +1561,7 @@ function renderViewer() {
   v.scrollTop = 0;
 }
 
-// --- ligações ---
+// --- bindings ---
 
 function wire() {
   $('#refresh').addEventListener('click', () => loadPRs(true));
@@ -1569,15 +1570,15 @@ function wire() {
     state.agent = e.target.value;
     $('#agent').title = agentTitle(state.agent);
   });
-  // Os eventos do servidor chegam só nas bordas dos passos; este tique é o que
-  // faz o tempo do passo em curso andar na tela.
+  // Server events only arrive at step boundaries; this tick is what makes the
+  // time of the current step move on screen.
   setInterval(() => {
     if (!state.jobs.some((j) => j.state === 'running')) return;
     renderJobs();
     const active = state.jobs.find((j) => j.id === state.activeJob);
     if (!active) return;
     renderViewer();
-    // O log só é buscado do review que está aberto e ainda vivo.
+    // The log is only fetched for the review that is open and still alive.
     if (active.state === 'running' && logState(active.id).live && $('#log-terms')) pollLog(active.id);
   }, 1000);
   $('#filter').addEventListener('input', (e) => { state.filter = e.target.value; renderPRs(); });
@@ -1617,24 +1618,24 @@ function wire() {
   });
   window.addEventListener('hashchange', route);
   $('#repo-form').addEventListener('submit', addRepo);
-  // O arquivo inteiro, para levar a outra máquina. O servidor manda com
-  // Content-Disposition, então um link basta — sem Blob, sem cópia na memória.
+  // The whole file, to take to another machine. The server sends it with
+  // Content-Disposition, so a link is enough — no Blob, no copy in memory.
   $('#config-download').addEventListener('click', () => { window.location.href = '/api/config/file'; });
 
   document.addEventListener('keydown', (e) => {
-    // Escape na configuração volta ao dashboard: é o que o modal fazia, e o
-    // dedo de quem já usava o Bazel continua sabendo disso.
+    // Escape on the config goes back to the dashboard: it is what the modal did,
+    // and the fingers of those who already used Bazel still know it.
     if (e.key === 'Escape' && pageFromHash() === 'config') location.hash = '#/';
     if (e.key === '/' && document.activeElement !== $('#filter')) { e.preventDefault(); $('#filter').focus(); }
     if (e.key === 'r' && (e.metaKey || e.ctrlKey)) return;
   });
 }
 
-// renderAgentList é a lista de agentes da configuração: o que cada um chama,
-// se a skill está instalada, quem é o padrão e o botão de tirar da lista.
+// renderAgentList is the config's agent list: what each one calls, whether the
+// skill is installed, who is the default and the button to take it off the list.
 //
-// A lista começa vazia de propósito — é você que a monta, na seção de baixo, a
-// partir das skills que estão instaladas nesta máquina.
+// The list starts empty on purpose — you're the one who builds it, in the
+// section below, from the skills installed on this machine.
 function renderAgentList() {
   const box = $('#agent-list');
   box.innerHTML = '';
@@ -1653,8 +1654,8 @@ function renderAgentList() {
     if (a.publisher) top.append(el('span', 'tag', 'used when publishing'));
     else if (state.agent === a.name) top.append(el('span', 'tag mine', 'default'));
 
-    // O agente de publicação não é uma escolha da lista: ele é o que roda
-    // quando você manda publicar um review já lido, e não sai daqui.
+    // The publishing agent isn't a choice in the list: it is what runs when you
+    // send a review you've already read to be published, and it can't be taken off.
     if (!a.publisher) {
       top.append(el('div', 'spacer'));
       if (state.agent !== a.name) {
@@ -1663,9 +1664,9 @@ function renderAgentList() {
         d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
         top.append(d);
       }
-      // O tique da publicação. Agente que publica sozinho não aparece aqui:
-      // ele escreve no PR por conta própria, e desligar um botão não o
-      // impediria de nada — o jeito é tirá-lo da lista.
+      // The publishing tick. An agent that publishes on its own doesn't show here:
+      // it writes on the PR by itself, and turning off a button wouldn't
+      // stop it from anything — the way is to take it off the list.
       if (!a.posts && !a.pipeline) {
         const pb = el('button', 'btn small ghost',
           a.publishable === false ? 'output stays here' : '⇧ output can go to the PR');
@@ -1677,8 +1678,8 @@ function renderAgentList() {
           { publishable: a.publishable === false }));
         top.append(pb);
       }
-      // Pipeline e agente saem por portas diferentes: uma está em
-      // `pipelines:`, o outro em `agents:`.
+      // Pipeline and agent leave through different doors: one lives under
+      // `pipelines:`, the other under `agents:`.
       const base = a.pipeline ? '/api/pipelines/' : '/api/agents/';
       const rm = el('button', 'btn small ghost', 'remove');
       rm.addEventListener('click', () => agentAction(base + encodeURIComponent(a.name), 'DELETE', rm));
@@ -1705,15 +1706,15 @@ function renderAgentList() {
   }
 }
 
-// agentAction manda a mudança e redesenha tudo que depende da lista: o
-// seletor, a configuração e o yaml em disco, que também mudou.
+// agentAction sends the change and redraws everything that depends on the list:
+// the picker, the config and the yaml on disk, which changed too.
 async function agentAction(path, method, btn, body) {
   btn.disabled = true;
   try {
     const res = await api(path, body ? { method, body: JSON.stringify(body) } : { method });
     applyAgents(res.agents || [], path.endsWith('/default'));
-    // Esvaziar a lista de novo é voltar ao estado inicial: sem agente não há
-    // review, e quem está com a configuração aberta precisa saber.
+    // Emptying the list again is going back to the initial state: with no agent
+    // there is no review, and whoever has the config open needs to know.
     banner(selectableAgents().length ? '' : 'No agents configured — pick below which skills become agents.');
     await refreshConfig();
     return true;
@@ -1724,21 +1725,21 @@ async function agentAction(path, method, btn, body) {
   }
 }
 
-// --- montador de pipeline ---
+// --- pipeline builder ---
 //
-// A sequência é uma cadeia de cards ligados por setas: você arrasta um agente
-// da bandeja para dentro dela, e arrasta um card para mudar a ordem. Os passos
-// são agentes da lista de cima, não skills soltas — é o que garante que cada
-// passo já tem prompt, comando e o tique de publicação resolvidos, e é o que o
-// servidor exige.
+// The sequence is a chain of cards linked by arrows: you drag an agent from the
+// tray into it, and drag a card to change the order. The steps are agents from
+// the list above, not loose skills — that is what guarantees each step already
+// has its prompt, command and publishing tick resolved, and it is what the
+// server requires.
 //
-// O clique continua valendo em tudo que o arrastar faz: mouse preciso não pode
-// ser requisito para montar uma pipeline.
+// Clicking still works for everything dragging does: a precise mouse can't be a
+// requirement to build a pipeline.
 
-// arrasto guarda o que está sendo arrastado. `from` é o índice na cadeia
-// quando é um card que já está lá; `add` é o nome quando vem da bandeja.
+// arrasto holds what is being dragged. `from` is the index in the chain when it
+// is a card already there; `add` is the name when it comes from the tray.
 let arrasto = null;
-// alvo é a posição onde o passo cairia, e é o que desenha a fenda aberta.
+// alvo is the position where the step would land, and it is what draws the open gap.
 let alvo = null;
 
 const RESERVADOS = ['publish'];
@@ -1749,23 +1750,23 @@ function renderPipelineBuilder() {
   box.innerHTML = '';
 
   const disponiveis = state.agents.filter((a) => !a.publisher && !a.pipeline);
-  // Um agente já basta: `review-fleet → publish` é uma pipeline de um agente
-  // só, e é justamente a que existe para você escolher o que vai antes de mandar.
+  // One agent is enough: `review-fleet → publish` is a one-agent pipeline, and
+  // it is precisely the one that exists so you choose what goes before sending.
   if (!disponiveis.length) {
     box.append(el('p', 'none', 'add an agent above, and you can chain it into a pipeline here.'));
     state.pipeSteps = [];
     return;
   }
-  // Agente removido lá em cima não pode continuar no rascunho daqui. Os passos
-  // reservados ficam: eles não dependem da lista.
+  // An agent removed up there can't stay in the draft here. The reserved steps
+  // stay: they don't depend on the list.
   state.pipeSteps = state.pipeSteps.filter((n) =>
     ehReservado(n) || disponiveis.some((a) => a.name === n));
 
   box.append(cadeia(), bandeja(disponiveis), linhaDeCriar());
 }
 
-// cadeia é a sequência montada: cards e setas, e as fendas entre eles onde um
-// passo arrastado cai.
+// cadeia is the assembled sequence: cards and arrows, and the gaps between them
+// where a dragged step lands.
 function cadeia() {
   const fluxo = el('div', 'pipe-flow');
   if (!state.pipeSteps.length) fluxo.classList.add('empty');
@@ -1794,8 +1795,8 @@ function cadeia() {
   return fluxo;
 }
 
-// no é um passo na cadeia: o card arrastável, com o número da ordem e o que
-// ele é. O × tira; arrastar move.
+// no is a step in the chain: the draggable card, with the order number and what
+// it is. The × removes; dragging moves.
 function no(nome, i) {
   const card = el('div', 'pipe-node' + (ehReservado(nome) ? ' reserved' : '')
     + (arrasto && arrasto.from === i ? ' dragging' : ''));
@@ -1823,7 +1824,7 @@ function no(nome, i) {
   card.addEventListener('dragstart', (e) => {
     arrasto = { from: i };
     e.dataTransfer.effectAllowed = 'move';
-    // Firefox só começa o arrasto se houver dado no dataTransfer.
+    // Firefox only starts the drag if there is data in the dataTransfer.
     e.dataTransfer.setData('text/plain', nome);
     setTimeout(renderPipelineBuilder, 0);
   });
@@ -1831,8 +1832,8 @@ function no(nome, i) {
   return card;
 }
 
-// bandeja são os passos que dá para acrescentar: os agentes da lista e o
-// publish, que o Bazel executa por conta própria.
+// bandeja is the steps that can be added: the agents in the list and the
+// publish, which Bazel runs on its own.
 function bandeja(disponiveis) {
   const box = el('div', 'pipe-tray');
   const fechada = state.pipeSteps.includes('publish');
@@ -1853,7 +1854,7 @@ function bandeja(disponiveis) {
       e.dataTransfer.setData('text/plain', nome);
     });
     b.addEventListener('dragend', () => { arrasto = null; alvo = null; renderPipelineBuilder(); });
-    // Clicar acrescenta no fim: é o caminho de quem não quer arrastar.
+    // Clicking appends at the end: it is the path for those who don't want to drag.
     b.addEventListener('click', () => {
       state.pipeSteps.push(nome);
       renderPipelineBuilder();
@@ -1869,8 +1870,8 @@ function bandeja(disponiveis) {
   }
 
   box.append(el('span', 'pipe-sep', '·'));
-  // As mesmas regras que o servidor aplica — desabilitar aqui é dizer o porquê
-  // antes, em vez de recusar depois.
+  // The same rules the server applies — disabling here is saying why
+  // beforehand, instead of refusing afterwards.
   const semAgente = !state.pipeSteps.some((n) => !ehReservado(n));
   const nadaPublicavel = !state.pipeSteps.some((n) => {
     const a = state.agents.find((x) => x.name === n);
@@ -1884,8 +1885,8 @@ function bandeja(disponiveis) {
   return box;
 }
 
-// solte aplica o arrasto: mover um card de lugar, ou trazer um passo novo da
-// bandeja para a posição em que ele foi largado.
+// solte applies the drag: moving a card, or bringing a new step from the
+// tray to the position where it was dropped.
 function solte(pos) {
   if (!arrasto) return;
   if (arrasto.add) {
@@ -1893,8 +1894,8 @@ function solte(pos) {
   } else {
     const de = arrasto.from;
     const [x] = state.pipeSteps.splice(de, 1);
-    // Tirar o card antes de inserir encurta a cadeia: uma posição depois dele
-    // já não é mais a mesma.
+    // Removing the card before inserting shortens the chain: a position after it
+    // is no longer the same.
     state.pipeSteps.splice(de < pos ? pos - 1 : pos, 0, x);
   }
   arrasto = null;
@@ -1902,8 +1903,8 @@ function solte(pos) {
   renderPipelineBuilder();
 }
 
-// linhaDeCriar é o nome e o botão. O botão diz o que impede, em vez de só
-// ficar apagado.
+// linhaDeCriar is the name and the button. The button says what is blocking it,
+// instead of just being greyed out.
 function linhaDeCriar() {
   const linha = el('div', 'pipe-row');
   const nome = el('input');
@@ -1925,9 +1926,9 @@ function linhaDeCriar() {
     const n = (state.pipeName || '').trim();
     if (!n) { banner('give the pipeline a name.'); nome.focus(); return; }
     const ok = await agentAction('/api/pipelines', 'POST', criar, { name: n, steps: state.pipeSteps });
-    if (!ok) return; // o erro já está no banner e o rascunho continua de pé
-    // Criada, o rascunho zera: o próximo montar começa do vazio, e a pipeline
-    // que acabou de nascer já está na lista de cima.
+    if (!ok) return; // the error is already in the banner and the draft is still there
+    // Once created, the draft resets: the next build starts from empty, and the
+    // pipeline that was just born is already in the list above.
     state.pipeSteps = [];
     state.pipeName = '';
     renderPipelineBuilder();
@@ -1938,9 +1939,9 @@ function linhaDeCriar() {
   return linha;
 }
 
-// renderSkillList mostra o que está instalado de fato — a lista que manda, e
-// de onde saem os agentes. Cada skill vira um agente com um clique: "usar" é a
-// lente que você lê antes de publicar, "⇧ publica" é a que vai direto ao PR.
+// renderSkillList shows what is actually installed — the list that rules, and
+// where the agents come from. Each skill becomes an agent in one click: "use" is
+// the lens you read before publishing, "⇧ publishes" goes straight to the PR.
 function renderSkillList() {
   const box = $('#skill-list');
   box.innerHTML = '';
@@ -1949,11 +1950,11 @@ function renderSkillList() {
     box.append(el('p', 'none', `nothing in ${state.skillsDir || '~/.claude/skills'} — install a skill there to build an agent out of it.`));
     return;
   }
-  // As que já viraram agente vêm primeiro: são as que importam aqui.
+  // The ones that already became agents come first: they are what matters here.
   const usadas = new Set();
   for (const a of state.agents) for (const sk of a.skills || []) usadas.add(sk.name);
-  // Só os agentes da lista contam para "já está lá": o de publicação não é
-  // uma escolha do seletor, e é o que o servidor também ignora ao adicionar.
+  // Only the agents in the list count for "already there": the publishing one
+  // isn't a picker choice, and it is what the server also ignores when adding.
   const nomes = new Set(state.agents.filter((a) => !a.publisher).map((a) => a.name));
   const ordenadas = [...state.skills].sort((x, y) => (usadas.has(y.name) ? 1 : 0) - (usadas.has(x.name) ? 1 : 0));
 
@@ -1961,9 +1962,9 @@ function renderSkillList() {
     const row = el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : ''));
     row.append(el('span', 'skill-name', '/' + sk.name));
     if (sk.builtin) {
-      // Esta não está em disco: veio no binário e é escrita no clone antes de
-      // rodar. Dizer isso aqui é o que explica por que ela aparece numa
-      // máquina onde ninguém instalou skill nenhuma.
+      // This one isn't on disk: it came in the binary and is written into the
+      // clone before running. Saying so here is what explains why it shows up on
+      // a machine where nobody installed any skill.
       const t = el('span', 'tag', 'in Bazel');
       t.title = 'ships inside the Bazel binary — nothing to install, and it works on any machine';
       row.append(t);
@@ -1972,8 +1973,8 @@ function renderSkillList() {
 
     const acoes = el('span', 'skill-actions');
     if (sk.name === state.postSkill) {
-      // A de publicação não vira agente: sozinha ela roda sem o review e não
-      // posta nada. Ela entra pelo botão de publicar e pelo passo publish.
+      // The publishing one doesn't become an agent: alone it runs without the
+      // review and posts nothing. It comes in via the publish button and the publish step.
       const t = el('span', 'tag', 'runs as publish');
       t.title = 'publishes a review you have read — from the publish button or the publish step of a pipeline';
       acoes.append(t);
@@ -2012,12 +2013,12 @@ async function loadSkills() {
   }
 }
 
-// --- as duas páginas ---
+// --- the two pages ---
 //
-// A navegação é por hash e não recarrega nada: o SSE fica aberto, os jobs
-// continuam na memória e o review que você estava lendo está lá quando você
-// volta. Recarregar a aba em #/config abre direto na configuração, que é o que
-// se espera de uma página de verdade.
+// Navigation is by hash and reloads nothing: the SSE stays open, the jobs stay
+// in memory and the review you were reading is there when you come back.
+// Reloading the tab at #/config opens straight into the config, which is what
+// you expect from a real page.
 function pageFromHash() {
   return location.hash.replace(/^#\/?/, '') === 'config' ? 'config' : 'dashboard';
 }
@@ -2029,8 +2030,8 @@ async function showPage(nome) {
     a.classList.toggle('on', a.dataset.page === nome);
   }
   document.title = nome === 'config' ? 'Bazel · config' : 'Bazel';
-  // A configuração é lida do disco a cada visita: ela muda por fora — outra
-  // aba, um editor — e mostrar o que estava em memória seria mentir.
+  // The config is read from disk on every visit: it changes from outside —
+  // another tab, an editor — and showing what was in memory would be lying.
   if (nome === 'config') await refreshConfig();
 }
 
@@ -2038,9 +2039,9 @@ function route() {
   return showPage(pageFromHash());
 }
 
-// refreshConfig redesenha a configuração inteira a partir do disco. É chamada
-// ao abrir e depois de cada mudança na lista de agentes — o yaml na tela é o
-// arquivo, e ele acabou de mudar.
+// refreshConfig redraws the whole config from disk. It is called on opening
+// and after every change to the agent list — the yaml on screen is the file,
+// and it has just changed.
 async function refreshConfig() {
   try {
     const cfg = await api('/api/config');
@@ -2058,9 +2059,9 @@ async function refreshConfig() {
   renderSkillList();
 }
 
-// renderStray avisa, na página onde se conserta, que o molde de `agent` dispara
-// um comando sozinho. É o erro que mais engana: o agente roda, o relatório sai,
-// e só a conta de tokens denuncia que dois comandos rodaram.
+// renderStray warns, on the page where it gets fixed, that the `agent` template
+// fires a command on its own. It is the most misleading error: the agent runs,
+// the report comes out, and only the token count reveals that two commands ran.
 function renderStray(cmd) {
   const box = $('#stray');
   box.hidden = !cmd;

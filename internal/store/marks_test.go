@@ -16,8 +16,8 @@ func prFor(oid string) gh.PR {
 	return pr
 }
 
-// Revisado, o PR fica marcado; se ganhar commit novo depois, o marcado vira
-// aviso — é o que a lista mostra.
+// Once reviewed, the PR is marked; if it gets a new commit afterwards, the
+// mark turns into a warning — that is what the list shows.
 func TestMarkReviewedAndChangeDetection(t *testing.T) {
 	dir := t.TempDir()
 	pr := prFor("abc123")
@@ -39,16 +39,16 @@ func TestMarkReviewedAndChangeDetection(t *testing.T) {
 		t.Errorf("idade do review: %q", st.Age(time.Now()))
 	}
 
-	// Commit novo no topo do PR.
+	// New commit at the tip of the PR.
 	if got := LoadMarks(dir).Status(prFor("def456")); !got.Changed {
 		t.Error("commit novo devia acusar mudança depois do review")
 	}
-	// Sem o commit (PR vindo de uma consulta antiga), não se inventa aviso.
+	// Without the commit (PR from an old query), no warning is made up.
 	if got := LoadMarks(dir).Status(prFor("")); got.Changed {
 		t.Error("sem commit para comparar, não dá para afirmar que mudou")
 	}
 
-	// Publicar anota sem apagar o resto.
+	// Publishing records it without erasing the rest.
 	if err := MarkPosted(dir, pr.Key()); err != nil {
 		t.Fatalf("MarkPosted: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestMarkReviewedAndChangeDetection(t *testing.T) {
 	}
 }
 
-// Um agente que publica sozinho já deixa o review marcado como publicado.
+// An agent that publishes on its own already leaves the review marked as published.
 func TestMarkReviewedFromPostingAgent(t *testing.T) {
 	dir := t.TempDir()
 	pr := prFor("abc123")
@@ -71,8 +71,8 @@ func TestMarkReviewedFromPostingAgent(t *testing.T) {
 	}
 }
 
-// Índice ilegível é índice vazio: isto é enfeite de lista, não pode derrubar
-// a listagem de PRs.
+// An unreadable index is an empty index: this is list decoration, it must not
+// bring down the PR listing.
 func TestLoadMarksSurvivesGarbage(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, marksFile), []byte("{isso não é json"), 0o644); err != nil {
@@ -81,7 +81,7 @@ func TestLoadMarksSurvivesGarbage(t *testing.T) {
 	if got := LoadMarks(dir); len(got) != 0 {
 		t.Errorf("esperava índice vazio, veio %v", got)
 	}
-	// E dá para gravar por cima sem erro.
+	// And it can be overwritten without error.
 	if err := MarkReviewed(dir, agent.Result{PR: prFor("abc"), Agent: "x"}, ""); err != nil {
 		t.Fatalf("MarkReviewed sobre índice corrompido: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestLoadMarksSurvivesGarbage(t *testing.T) {
 	}
 }
 
-// O índice não cresce sem limite.
+// The index does not grow without limit.
 func TestMarksTrim(t *testing.T) {
 	m := Marks{}
 	base := time.Now().Add(-time.Hour * 10000)
@@ -101,7 +101,7 @@ func TestMarksTrim(t *testing.T) {
 	if len(m) != maxMarks {
 		t.Fatalf("esperava %d registros, ficaram %d", maxMarks, len(m))
 	}
-	// Os que sobraram são os mais novos.
+	// The ones left are the newest.
 	if _, ok := m[gh.PR{Repo: "acme/api", Number: 0}.Key()]; ok {
 		t.Error("o registro mais velho devia ter saído")
 	}
@@ -110,8 +110,8 @@ func TestMarksTrim(t *testing.T) {
 	}
 }
 
-// Um review salvo diz de que PR ele veio: é o que permite publicá-lo depois de
-// o servidor ter sido reiniciado.
+// A saved review says which PR it came from: that is what allows publishing
+// it after the server has been restarted.
 func TestPRFromTitleEReviewBody(t *testing.T) {
 	file := "# acme/api-core#482 — feat: rate limiting\n\n" +
 		"- Author: @maria\n- Spend: 1,2k tokens\n\n---\n\n# Verdict\n\nAll good.\n"
@@ -123,26 +123,26 @@ func TestPRFromTitleEReviewBody(t *testing.T) {
 	if repo != "acme/api-core" || number != 482 {
 		t.Errorf("PR do cabeçalho: %q #%d", repo, number)
 	}
-	// O que vai ao PR é o relatório, sem o cabeçalho que o Save escreveu.
+	// What goes to the PR is the report, without the header Save wrote.
 	if body := ReviewBody(file); body != "# Verdict\n\nAll good." {
 		t.Errorf("corpo inesperado: %q", body)
 	}
 
-	// Cabeçalho de outro formato não vira um PR inventado.
+	// A header in another format does not turn into a made-up PR.
 	for _, ruim := range []string{"", "um título qualquer", "semrepo#12", "acme/api#abc"} {
 		if r, n := PRFromTitle(ruim); r != "" || n != 0 {
 			t.Errorf("%q não devia virar PR: %q #%d", ruim, r, n)
 		}
 	}
-	// Arquivo sem separador é todo ele o relatório.
+	// A file without a separator is all report.
 	if got := ReviewBody("só o texto"); got != "só o texto" {
 		t.Errorf("sem separador o corpo é o arquivo: %q", got)
 	}
 }
 
-// Um review salvo carrega quem o escreveu. É o que permite, uma sessão depois,
-// saber se o que está no disco pode ir ao PR — o servidor reinicia, o arquivo
-// fica, e um relatório de história continua não sendo um review.
+// A saved review carries who wrote it. That is what lets you know, a session
+// later, whether what is on disk can go to the PR — the server restarts, the
+// file stays, and a history report is still not a review.
 func TestSavedEntryCarregaOAgente(t *testing.T) {
 	dir := t.TempDir()
 	pr := prFor("abc123")
@@ -165,8 +165,8 @@ func TestSavedEntryCarregaOAgente(t *testing.T) {
 	}
 }
 
-// Numa pipeline o Save escreve o tempo de cada passo depois do nome. O que
-// identifica a escolha é o nome, antes do travessão.
+// In a pipeline Save writes each step's time after the name. What
+// identifies the choice is the name, before the dash.
 func TestAgentFromLine(t *testing.T) {
 	casos := map[string]string{
 		"- Agent: review-fleet": "review-fleet",

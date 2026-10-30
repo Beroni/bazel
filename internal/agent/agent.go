@@ -1,4 +1,4 @@
-// Package agent executa os agentes de IA configurados sobre um pull request.
+// Package agent runs the configured AI agents over a pull request.
 package agent
 
 import (
@@ -21,113 +21,114 @@ import (
 	"github.com/beroni/bazel/internal/workspace"
 )
 
-// EventKind é o tipo de aviso que o Runner emite durante um review.
+// EventKind is the kind of notice the Runner emits during a review.
 type EventKind string
 
 const (
-	// EventClone é disparado antes de clonar o repositório do PR.
+	// EventClone is fired before cloning the PR's repository.
 	EventClone EventKind = "clone"
-	// EventStep marca o início de um passo.
+	// EventStep marks the start of a step.
 	EventStep EventKind = "step"
-	// EventStepDone marca o fim de um passo, com ou sem erro.
+	// EventStepDone marks the end of a step, with or without an error.
 	EventStepDone EventKind = "step_done"
-	// EventLog é uma linha que o agente escreveu enquanto rodava.
+	// EventLog is a line the agent wrote while it was running.
 	EventLog EventKind = "log"
-	// EventUsage é o gasto parcial do review, atualizado enquanto o agente
-	// trabalha. Só quem fala stream-json emite isto.
+	// EventUsage is the partial spend of the review, updated while the agent
+	// works. Only agents that speak stream-json emit this.
 	EventUsage EventKind = "usage"
-	// EventLimits é a cota do Claude, que vem de carona no stream de quem
-	// está rodando.
+	// EventLimits is Claude's quota, which rides along in the stream of whoever
+	// is running.
 	EventLimits EventKind = "limits"
 )
 
-// Event é o andamento de um review. É o que permite a TUI e a interface web
-// mostrarem qual agente está rodando agora em vez de um spinner cego.
+// Event is the progress of a review. It's what lets the TUI and the web
+// interface show which agent is running right now instead of a blind spinner.
 type Event struct {
 	Kind  EventKind
-	Index int // posição do passo, começando em 0
+	Index int // step position, starting at 0
 	Total int
 	Name  string
-	// Duration só vem preenchida no EventStepDone.
+	// Duration is only filled in on EventStepDone.
 	Duration time.Duration
 	Err      error
-	// Text e Stream ("stdout" ou "stderr") só vêm no EventLog. Agent é quem
-	// escreveu a linha: o agente do passo ou um sub-agente que ele disparou.
+	// Text and Stream ("stdout" or "stderr") only come on EventLog. Agent is who
+	// wrote the line: the step's agent or a sub-agent it spawned.
 	Text   string
 	Stream string
 	Agent  string
-	// Usage só vem no EventUsage: o gasto do review inteiro até agora,
-	// passos anteriores incluídos.
+	// Usage only comes on EventUsage: the spend of the whole review so far,
+	// previous steps included.
 	Usage Usage
-	// Limits só vem no EventLimits.
+	// Limits only comes on EventLimits.
 	Limits Limits
 }
 
-// StepResult é a saída de um passo do review.
+// StepResult is the output of one review step.
 type StepResult struct {
 	Name     string
 	Body     string
 	Duration time.Duration
-	// Usage é o que este passo gastou de modelo.
+	// Usage is how much model this step spent.
 	Usage Usage
 	Err   error
 }
 
-// Result é a saída de um review.
+// Result is the output of a review.
 type Result struct {
 	PR gh.PR
-	// Agent é o nome do agente ou pipeline que rodou.
+	// Agent is the name of the agent or pipeline that ran.
 	Agent string
-	// Posts diz se esse agente publica no PR por conta própria — quem for
-	// publicar de novo por cima precisa saber.
+	// Posts says whether this agent publishes to the PR on its own — whoever is
+	// going to publish again on top of it needs to know.
 	Posts bool
-	// Body é o relatório: a saída do passo único, ou os passos concatenados.
+	// Body is the report: the single step's output, or the steps concatenated.
 	Body  string
 	Steps []StepResult
-	// Usage é o gasto do review inteiro: a soma dos passos.
+	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
 	Truncated bool
-	// Workdir é o clone temporário onde os agentes rodaram. Vazio quando o
-	// checkout está desligado; só sobrevive ao review com KeepWorkspace.
+	// Workdir is the temporary clone where the agents ran. Empty when checkout
+	// is turned off; it only outlives the review with KeepWorkspace.
 	Workdir string
-	// StoppedAt é o índice do passo `publish` onde a execução parou. -1 quando
-	// a escolha rodou até o fim. O Runner não publica: publicar espera você
-	// escolher o que vai ao PR, e isso não é trabalho dele.
+	// StoppedAt is the index of the `publish` step where execution stopped. -1
+	// when the selection ran to the end. The Runner doesn't publish: publishing
+	// waits for you to choose what goes to the PR, and that isn't its job.
 	StoppedAt int
 }
 
-// Runner roda os agentes configurados.
+// Runner runs the configured agents.
 type Runner struct {
 	cfg *config.Config
-	// KeepWorkspace preserva o clone temporário depois do review.
+	// KeepWorkspace keeps the temporary clone after the review.
 	KeepWorkspace bool
-	// PricingTable é a tabela de preços usada para calcular o custo em USD.
-	// Se nil, o custo vem do campo total_cost_usd do stream-json (Claude Code).
+	// PricingTable is the price table used to compute the cost in USD.
+	// If nil, the cost comes from the total_cost_usd field of the stream-json
+	// (Claude Code).
 	PricingTable *pricing.Table
 }
 
-// New cria um Runner.
+// New creates a Runner.
 func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
 
-// Review prepara o material do PR e executa a escolha do usuário — um agente
-// sozinho ou uma pipeline inteira, sempre sobre o mesmo clone.
+// Review prepares the PR material and runs the user's selection — a single
+// agent or a whole pipeline, always on the same clone.
 //
-// Com checkout ligado, o repositório é clonado numa pasta temporária com o PR
-// em checkout e os agentes rodam lá dentro — é o que permite usar um agente
-// que navega no código (a skill review-fleet, por exemplo) em vez de só ler um
-// diff colado no prompt.
+// With checkout on, the repository is cloned into a temporary folder with the
+// PR checked out and the agents run inside it — that's what allows using an
+// agent that navigates the code (the review-fleet skill, for example) instead
+// of just reading a diff pasted into the prompt.
 //
-// onEvent, se não for nil, recebe o andamento passo a passo. É chamada da
-// goroutine do review, então quem escuta não pode bloquear nela.
+// onEvent, if not nil, receives the step-by-step progress. It's called from
+// the review's goroutine, so the listener must not block in it.
 func (r *Runner) Review(ctx context.Context, pr gh.PR, choice config.Choice, onEvent func(Event)) (Result, error) {
 	return r.run(ctx, pr, choice, nil, onEvent)
 }
 
-// Publish roda o agente de publicação sobre um review que já está pronto — o
-// que você leu na tela. O caminho do arquivo e o texto entram no prompt pelos
-// placeholders {{review_file}} e {{review}}; o agente não refaz o review,
-// publica esse.
+// Publish runs the publishing agent over a review that is already done — what
+// you read on screen. The file path and the text go into the prompt through
+// the {{review_file}} and {{review}} placeholders; the agent doesn't redo the
+// review, it publishes that one.
 func (r *Runner) Publish(ctx context.Context, pr gh.PR, choice config.Choice, reviewPath, reviewBody string, onEvent func(Event)) (Result, error) {
 	return r.run(ctx, pr, choice, map[string]string{
 		"{{review_file}}": reviewPath,
@@ -163,10 +164,10 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		workdir = ws.Dir
 	}
 
-	// Skill embarcada só existe dentro do binário; o Claude Code a acha em
-	// disco, no .claude/skills do diretório de trabalho. O lugar dela é o
-	// clone do PR: nasce e morre com ele, e a máquina de quem roda o Bazel
-	// não ganha nada em ~/.claude que ninguém pediu.
+	// An embedded skill only exists inside the binary; Claude Code finds it on
+	// disk, in the working directory's .claude/skills. Its place is the PR's
+	// clone: it's born and dies with it, and the machine of whoever runs Bazel
+	// doesn't get anything in ~/.claude that nobody asked for.
 	if step := builtinSemClone(choice); step != "" {
 		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel, which needs the PR clone to be found — turn checkout on for it, or point it at a skill of your own", step)
 	}
@@ -182,14 +183,15 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}
 
 	steps := make([]StepResult, 0, total)
-	// fechado é o gasto dos passos que já terminaram: o parcial de um passo
-	// em curso é somado a ele, para o número na tela ser o do review todo.
+	// fechado is the spend of the steps that have already finished: the partial
+	// of a step in progress is added to it, so the number on screen is the whole
+	// review's.
 	var fechado Usage
 	stopped := -1
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
-		// `publish` é do Bazel, não do Runner: devolve o que saiu e quem
-		// chamou mostra a você o que vai ao PR antes de mandar.
+		// `publish` belongs to Bazel, not to the Runner: it returns what came out
+		// and the caller shows you what goes to the PR before sending it.
 		if step.Reserved != "" {
 			stopped = i
 			break
@@ -198,7 +200,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 
 		dir := workdir
 		if !step.Checkout {
-			dir = "" // herda o diretório atual
+			dir = "" // inherits the current directory
 		}
 		stepStart := time.Now()
 		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir,
@@ -225,8 +227,8 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		steps = append(steps, res)
 		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: res.Duration, Err: res.Err})
 
-		// Cancelamento aborta a fila inteira: o clone já era, e insistir nos
-		// próximos passos só queima tempo de um review que ninguém quer mais.
+		// Cancellation aborts the whole queue: the clone is gone, and pushing on
+		// with the next steps only burns time on a review nobody wants anymore.
 		if errors.Is(res.Err, context.Canceled) || ctx.Err() != nil {
 			return Result{}, context.Canceled
 		}
@@ -256,7 +258,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}, nil
 }
 
-// usaBuiltin diz se algum passo chama uma skill que veio no binário.
+// usaBuiltin says whether any step calls a skill that shipped in the binary.
 func usaBuiltin(choice config.Choice) bool {
 	for _, s := range choice.Steps {
 		if skills.IsBuiltin(skills.TaskSkill(s.Task)) {
@@ -266,9 +268,10 @@ func usaBuiltin(choice config.Choice) bool {
 	return false
 }
 
-// builtinSemClone devolve o passo que chama uma skill embarcada sem ter clone
-// onde escrevê-la — sem diretório de trabalho do PR, ela não tem onde existir,
-// e escrevê-la na pasta de quem rodou o Bazel seria sujar um projeto alheio.
+// builtinSemClone returns the step that calls an embedded skill without a clone
+// to write it into — without the PR's working directory it has nowhere to
+// exist, and writing it into the folder of whoever ran Bazel would be littering
+// someone else's project.
 func builtinSemClone(choice config.Choice) string {
 	for _, s := range choice.Steps {
 		if !s.Checkout && skills.IsBuiltin(skills.TaskSkill(s.Task)) {
@@ -278,9 +281,10 @@ func builtinSemClone(choice config.Choice) string {
 	return ""
 }
 
-// material baixa o que o review precisa antes de rodar qualquer passo. O diff
-// só entra no prompt se algum molde pedir: com o clone em mãos, o agente lê o
-// que precisar e mandar centenas de KB junto só queima contexto.
+// material downloads what the review needs before running any step. The diff
+// only goes into the prompt if some template asks for it: with the clone at
+// hand, the agent reads what it needs, and sending hundreds of KB along only
+// burns context.
 func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (string, bool, error) {
 	wantsDiff := false
 	for _, step := range choice.Steps {
@@ -309,13 +313,14 @@ func (r *Runner) material(ctx context.Context, pr gh.PR, choice config.Choice) (
 	return diff, truncated, nil
 }
 
-// PublishableBody é o que vai ao PR: o corpo só dos passos cuja saída é
-// publicável. Numa pipeline `history-pr → review-fleet` a tela mostra as duas
-// coisas — é para isso que você encadeou — mas o PR recebe só o review. A
-// história é contexto para quem vai revisar, não um comentário para o autor.
+// PublishableBody is what goes to the PR: the body of only the steps whose
+// output is publishable. In a `history-pr → review-fleet` pipeline the screen
+// shows both — that's why you chained them — but the PR only gets the review.
+// The history is context for whoever is going to review, not a comment for the
+// author.
 //
-// O bool diz se sobrou algo de fora: com ele falso o relatório inteiro é o que
-// se publica, e o arquivo em disco já serve.
+// The bool says whether anything was left out: when it's false the whole report
+// is what gets published, and the file on disk already does the job.
 func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 	kept := stepsWhere(res, choice, true)
 	if len(kept) == len(res.Steps) {
@@ -331,8 +336,9 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 	return body, true, nil
 }
 
-// ContextBody é o avesso do PublishableBody: o corpo dos passos que ficam no
-// Bazel. É o que a tela mostra à parte, para ficar claro que não vai ao PR.
+// ContextBody is the flip side of PublishableBody: the body of the steps that
+// stay in Bazel. It's what the screen shows separately, to make clear it
+// doesn't go to the PR.
 func ContextBody(res Result, choice config.Choice) string {
 	kept := stepsWhere(res, choice, false)
 	if len(kept) == 0 {
@@ -340,8 +346,9 @@ func ContextBody(res Result, choice config.Choice) string {
 	}
 	body, err := joinSteps(kept)
 	if err != nil {
-		// Todos os passos que ficam no Bazel falharam. Sem esta nota a seção
-		// sumiria da tela, e a falha só apareceria na caixa de passos.
+		// Every step that stays in Bazel failed. Without this note the section
+		// would vanish from the screen, and the failure would only show up in the
+		// steps box.
 		notes := make([]string, 0, len(kept))
 		for _, s := range kept {
 			msg := "no output"
@@ -355,8 +362,8 @@ func ContextBody(res Result, choice config.Choice) string {
 	return body
 }
 
-// stepsWhere separa os passos que vão ao PR (publishes=true) dos que ficam no
-// Bazel (publishes=false).
+// stepsWhere splits the steps that go to the PR (publishes=true) from those
+// that stay in Bazel (publishes=false).
 func stepsWhere(res Result, choice config.Choice, publishes bool) []StepResult {
 	kept := make([]StepResult, 0, len(res.Steps))
 	for _, s := range res.Steps {
@@ -367,8 +374,9 @@ func stepsWhere(res Result, choice config.Choice, publishes bool) []StepResult {
 	return kept
 }
 
-// joinSteps monta o relatório final. Um passo só sai cru, como sempre saiu;
-// vários viram seções. Todos falharem é o review inteiro falhando.
+// joinSteps builds the final report. A single step comes out raw, as it always
+// has; several become sections. All of them failing is the whole review
+// failing.
 func joinSteps(steps []StepResult) (string, error) {
 	var ok int
 	for _, s := range steps {
@@ -407,16 +415,17 @@ func joinSteps(steps []StepResult) (string, error) {
 	return strings.TrimSpace(b.String()), nil
 }
 
-// exec roda um agente e vai entregando o que ele escreve, linha a linha, para
-// onLog. É o que alimenta o log ao vivo: com o stdout num buffer ninguém veria
-// nada até o processo morrer.
+// exec runs an agent and passes along what it writes, line by line, to onLog.
+// That's what feeds the live log: with stdout in a buffer nobody would see
+// anything until the process died.
 //
-// No modo stream-json o stdout é JSONL de eventos — o log recebe a versão
-// legível e o relatório sai do evento final. Em qualquer outro agente o stdout
-// é o próprio relatório, e vai cru para os dois.
-// O gasto de modelo sai junto do relatório — quem lê a saída é quem sabe
-// contá-lo — e vai saindo pelo caminho por onUsage, que é o que faz a conta
-// andar na tela em vez de aparecer só no fim.
+// In stream-json mode stdout is JSONL of events — the log gets the readable
+// version and the report comes from the final event. For any other agent
+// stdout is the report itself, and goes raw to both.
+// The model spend comes out along with the report — whoever reads the output
+// is who knows how to count it — and flows out along the way through onUsage,
+// which is what makes the count move on screen instead of only showing at the
+// end.
 func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
@@ -440,7 +449,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 
 	cmd := exec.CommandContext(ctx, step.Command, step.Args...)
-	cmd.Dir = workdir // vazio = herda o diretório atual
+	cmd.Dir = workdir // empty = inherits the current directory
 	cmd.Stdin = strings.NewReader(prompt)
 	if len(step.Env) > 0 {
 		cmd.Env = os.Environ()
@@ -479,8 +488,8 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
 			}
-			// A conta só sobe quando muda: uma chamada de ferramenta não
-			// gasta token nenhum e não precisa acordar o navegador.
+			// The count only goes up when it changes: a tool call doesn't
+			// spend any tokens and doesn't need to wake up the browser.
 			if gasto := adapter.usage(); onUsage != nil && gasto.Total() != visto {
 				visto = gasto.Total()
 				onUsage(gasto)
@@ -499,7 +508,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		})
 	}()
 
-	// Os pipes têm de chegar ao EOF antes do Wait: ele os fecha.
+	// The pipes have to reach EOF before Wait: it closes them.
 	wg.Wait()
 	err = cmd.Wait()
 
@@ -519,8 +528,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
 	}
-	// Com pricing table configurada, recalcula o custo a partir dos tokens
-	// e do modelo — é o que permite que o custo mude sem rebuild do binário.
+	// With a pricing table configured, recompute the cost from the tokens and
+	// the model — that is what lets the cost change without rebuilding the
+	// binary.
 	var byModel []Usage
 	if m, ok := adapter.(interface{ models() []Usage }); ok {
 		byModel = m.models()
@@ -535,8 +545,8 @@ func agentFailure(step config.ResolvedAgent, message string) error {
 	return fmt.Errorf("agent `%s` failed: %s", step.Command, message)
 }
 
-// eachLine chama fn para cada linha lida, sem limite de tamanho — um evento do
-// stream-json com um resultado de ferramenta grande estoura o bufio.Scanner.
+// eachLine calls fn for each line read, with no size limit — a stream-json
+// event with a large tool result overflows bufio.Scanner.
 func eachLine(r io.Reader, fn func(string)) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	for {
@@ -550,8 +560,8 @@ func eachLine(r io.Reader, fn func(string)) {
 	}
 }
 
-// lastLines guarda o fim do stderr, que é onde costuma estar a mensagem que
-// explica a falha.
+// lastLines keeps the tail of stderr, which is where the message explaining
+// the failure usually is.
 type lastLines struct {
 	lines []string
 }
@@ -574,14 +584,15 @@ func firstLine(s string) string {
 	return s
 }
 
-// buildPrompt substitui os placeholders do molde pelo conteúdo do PR.
-// workdir é o clone temporário, ou vazio se o checkout estiver desligado.
+// buildPrompt replaces the template's placeholders with the PR's content.
+// workdir is the temporary clone, or empty if checkout is turned off.
 //
-// task é a instrução da lente: entra no {{task}} do molde. Molde sem {{task}}
-// — um prompt customizado escrito antes dos agents nomeados — recebe a
-// instrução na primeira linha, que é onde ela estava quando o molde era um só.
-// extra traz os placeholders de um review já pronto, que só o agente de
-// publicação usa.
+// task is the lens's instruction: it goes into the template's {{task}}. A
+// template without {{task}} — a custom prompt written before the named agents
+// — gets the instruction on the first line, which is where it was when there
+// was only one template.
+// extra carries the placeholders of an already finished review, which only the
+// publishing agent uses.
 func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[string]string) string {
 	body := strings.TrimSpace(pr.Body)
 	if body == "" {
@@ -590,9 +601,9 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 	if workdir == "" {
 		workdir = "(no local clone)"
 	}
-	// A task entra no molde antes da substituição, e não como mais um par do
-	// Replacer: ela também tem placeholders ("/review-fleet {{number}}"), e o
-	// Replacer não reexpande o que acabou de inserir.
+	// The task goes into the template before the substitution, and not as one
+	// more Replacer pair: it has placeholders too ("/review-fleet {{number}}"),
+	// and the Replacer doesn't re-expand what it has just inserted.
 	task = strings.TrimSpace(task)
 	if task != "" && !strings.Contains(tmpl, "{{task}}") {
 		tmpl = "{{task}}\n\n" + tmpl
@@ -603,7 +614,7 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 	for k, v := range extra {
 		pairs = append(pairs, k, v)
 	}
-	// Os extras entram antes: o {{review_file}} pode estar dentro da task.
+	// The extras go in first: {{review_file}} may be inside the task.
 	if len(pairs) > 0 {
 		tmpl = strings.NewReplacer(pairs...).Replace(tmpl)
 	}

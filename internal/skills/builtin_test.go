@@ -7,8 +7,8 @@ import (
 	"testing"
 )
 
-// A skill de publicação viaja no binário: é o que faz o botão "publish"
-// funcionar numa máquina que nunca instalou skill nenhuma.
+// The publishing skill travels in the binary: it is what makes the "publish"
+// button work on a machine that never installed any skill.
 func TestBuiltinTrazAPostReport(t *testing.T) {
 	list := Builtin()
 	if len(list) == 0 {
@@ -38,8 +38,8 @@ func TestBuiltinTrazAPostReport(t *testing.T) {
 	}
 }
 
-// Materialize escreve no clone, onde o Claude Code procura as skills do
-// projeto. Um nível só abaixo de .claude/skills: aninhar não é descoberto.
+// Materialize writes into the clone, where Claude Code looks for the project's
+// skills. Only one level below .claude/skills: nesting is not discovered.
 func TestMaterializeEscreveNoClone(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
@@ -59,8 +59,8 @@ func TestMaterializeEscreveNoClone(t *testing.T) {
 		t.Error("o SKILL.md escrito devia ser o embarcado")
 	}
 
-	// O clone é descartável, mas um agente que roda `git status` nele não tem
-	// por que ver a skill que o Bazel acabou de escrever.
+	// The clone is disposable, but an agent that runs `git status` in it has no
+	// reason to see the skill Bazel just wrote.
 	exclude, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
 	if err != nil {
 		t.Fatalf("exclude: %v", err)
@@ -69,7 +69,7 @@ func TestMaterializeEscreveNoClone(t *testing.T) {
 		t.Errorf("o .claude devia entrar no exclude do clone: %q", exclude)
 	}
 
-	// Rodar de novo é idempotente: mesma skill, uma linha só no exclude.
+	// Running again is idempotent: same skill, a single line in the exclude.
 	if err := Materialize(dir); err != nil {
 		t.Fatalf("Materialize duas vezes: %v", err)
 	}
@@ -79,15 +79,15 @@ func TestMaterializeEscreveNoClone(t *testing.T) {
 	}
 }
 
-// Sem diretório de trabalho não há onde escrever, e escrever na pasta de quem
-// rodou o Bazel seria sujar um projeto alheio.
+// Without a working directory there is nowhere to write, and writing to the
+// folder of whoever ran Bazel would mean dirtying someone else's project.
 func TestMaterializeRecusaSemDiretorio(t *testing.T) {
 	if err := Materialize("  "); err == nil {
 		t.Error("Materialize sem diretório devia dar erro")
 	}
 }
 
-// Pasta sem repositório não quebra: o exclude é o melhor esforço.
+// A folder without a repository doesn't break: the exclude is best effort.
 func TestMaterializeSemGit(t *testing.T) {
 	dir := t.TempDir()
 	if err := Materialize(dir); err != nil {

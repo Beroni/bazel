@@ -24,7 +24,7 @@ body {
   flex-direction: column;
 }
 
-/* --- barra --- */
+/* --- bar --- */
 .bar {
   display: flex; align-items: center; gap: 14px;
   padding: 10px 16px;
@@ -33,15 +33,15 @@ body {
   flex: none;
 }
 .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; letter-spacing: .18em; color: var(--accent); }
-/* width/height no <img> seguram o espaço antes de a arte carregar; o CSS manda
-   no tamanho de verdade. */
+/* width/height on the <img> hold the space before the art loads; the CSS
+   sets the real size. */
 .logo { width: 26px; height: 26px; }
 .logo.big { width: 128px; height: 128px; margin: 0 auto 20px; }
 .stats { color: var(--dim); font-size: 12px; }
-/* O gasto da sessão fica ao lado da contagem de PRs: é o número que responde
-   "quanto isso me custou hoje" sem abrir review nenhum. */
+/* The session spend sits next to the PR count: it is the number that answers
+   "how much did this cost me today" without opening any review. */
 .spend { font-variant-numeric: tabular-nums; padding-left: 12px; border-left: 1px solid var(--line); }
-/* A cota do Claude — as mesmas janelas do /usage. Fica discreta até apertar. */
+/* The Claude quota — the same windows as /usage. Stays quiet until it gets tight. */
 .quota { font-variant-numeric: tabular-nums; padding-left: 12px; border-left: 1px solid var(--line); }
 .quota .warn { color: var(--warn); }
 .quota .hot { color: var(--err); }
@@ -70,16 +70,16 @@ button, input[type=search], input[type=text] { font: inherit; }
 
 /* --- layout --- */
 main { flex: 1; display: flex; min-height: 0; }
-/* Lista escondida: ela encolhe até virar uma faixa com o hambúrguer, e o
-   review ocupa o resto da tela. O botão continua onde sempre esteve — some a
-   lista, não o controle dela. */
+/* Hidden list: it shrinks down to a strip with the hamburger, and the
+   review takes the rest of the screen. The button stays where it always was —
+   the list goes away, not its control. */
 main.no-prs > .prs { width: 42px; }
 main.no-prs .prs > *:not(.pane-head) { display: none; }
 main.no-prs .pane-head { padding: 8px 6px; border-bottom: 0; }
 main.no-prs .pane-head > *:not(:first-child) { display: none; }
 main.no-prs .pane-head > :first-child > *:not(.burger) { display: none; }
-/* O convite a "marcar um PR à esquerda" some com a lista — apontaria para uma
-   faixa de 42px — e dá lugar ao aviso de como trazê-la de volta. */
+/* The prompt to "tick a PR on the left" goes away with the list — it would
+   point at a 42px strip — and makes room for the hint on how to bring it back. */
 .only-collapsed { display: none; }
 main.no-prs .only-collapsed { display: block; }
 main.no-prs .placeholder > p:first-of-type { display: none; }
@@ -105,15 +105,15 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .pane-foot {
   padding: 10px; border-top: 1px solid var(--line);
   display: flex; align-items: center; justify-content: space-between; gap: 10px;
-  /* Com o seletor de agente no meio, o pé pode não caber nos 400px do painel:
-     melhor quebrar linha do que estourar para fora. */
+  /* With the agent picker in the middle, the footer may not fit in the panel's
+     400px: better to wrap the line than to overflow. */
   flex-wrap: wrap;
 }
 
 .list { flex: 1; overflow-y: auto; }
 .empty { color: var(--dim); padding: 24px 16px; text-align: center; font-size: 13px; }
 
-/* --- item de PR --- */
+/* --- PR item --- */
 .pr {
   display: flex; gap: 9px; padding: 9px 11px;
   border-bottom: 1px solid var(--line);
@@ -121,7 +121,7 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 }
 .pr:hover { background: var(--panel-2); }
 .pr.sel { background: #1a1610; box-shadow: inset 3px 0 0 var(--accent); }
-/* aberto na direita ≠ marcado para revisar */
+/* open on the right ≠ ticked for review */
 .pr.active { background: var(--panel-2); }
 .pr.active.sel { background: #211a11; }
 .pr.active .title { color: var(--accent); }
@@ -143,7 +143,7 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .tag.approved { border-color: var(--ok); color: var(--ok); }
 .tag.changes { border-color: var(--err); color: var(--err); }
 
-/* --- fila --- */
+/* --- queue --- */
 .tabs { display: flex; align-items: center; gap: 4px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); flex: none; }
 .tab { background: transparent; border: 0; color: var(--dim); padding: 5px 10px; border-radius: 6px; cursor: pointer; }
 .tab.on { color: var(--accent); background: var(--panel-2); }
@@ -165,7 +165,7 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .card-actions { display: flex; gap: 6px; margin-top: 7px; }
 
 .state { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; }
-/* A unidade de tempo fica fora da caixa alta: "8S" não é oito segundos. */
+/* The time unit stays out of the uppercase: "8S" is not eight seconds. */
 .state .dur { text-transform: none; }
 .state.queued { color: var(--dim); }
 .state.running { color: var(--accent); }
@@ -176,7 +176,7 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .state.running .dot { animation: pulse 1.1s ease-in-out infinite; }
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
 
-/* --- visualizador --- */
+/* --- viewer --- */
 .viewer { flex: 1; overflow-y: auto; padding: 26px 34px 80px; }
 .placeholder { color: var(--dim); text-align: center; margin: 12vh auto 0; max-width: 460px; }
 .placeholder .dim { font-size: 12px; opacity: .75; }
@@ -208,16 +208,16 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .error-box { background: #1e1113; border: 1px solid #45222a; color: #fca5a5; border-radius: 8px; padding: 12px 14px; white-space: pre-wrap; }
 .dim { color: var(--dim); }
 
-/* --- salvos --- */
+/* --- saved --- */
 .saved { border-bottom: 1px solid var(--line); padding: 10px 13px; cursor: pointer; }
 .saved:hover { background: var(--panel-2); }
 .saved .name { font-size: 12px; color: var(--dim); }
 
-/* --- páginas --- */
-/* --- as duas páginas ---
-   O dashboard e a configuração são irmãos no mesmo documento, e a navegação é
-   por hash: trocar de página não recarrega nada, então o SSE continua aberto e
-   um review em andamento não perde o log ao você ir ver a config. */
+/* --- pages --- */
+/* --- the two pages ---
+   The dashboard and the config are siblings in the same document, and
+   navigation is by hash: switching pages reloads nothing, so the SSE stays open
+   and a running review doesn't lose its log when you go look at the config. */
 .page[hidden] { display: none; }
 .page.config { flex: 1; overflow: auto; min-height: 0; }
 .config-body { max-width: 900px; margin: 0 auto; padding: 20px 16px 60px; }
@@ -232,7 +232,7 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .nav a:hover { color: var(--fg); }
 .nav a.on { color: var(--accent); border-color: var(--line); background: var(--panel-2); }
 
-/* O caminho do config é um caminho, não um rótulo: nada de caixa alta. */
+/* The config path is a path, not a label: no uppercase. */
 .config-body #config-path { text-transform: none; letter-spacing: 0; word-break: break-all; }
 .config-body pre { margin: 0; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow: auto; font-size: 12.5px; }
 .config-body #repo-input { flex: 1; padding: 6px 9px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line); color: var(--text); }
@@ -249,14 +249,14 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 @media (max-width: 900px) {
   main { flex-direction: column; }
   .prs { width: auto; max-height: 45vh; border-right: 0; border-bottom: 1px solid var(--line); }
-  /* Empilhada, a lista recolhida vira uma faixa horizontal — largura fixa aqui
-     seria uma coluna de 42px em cima do review. */
+  /* Stacked, the collapsed list becomes a horizontal strip — a fixed width here
+     would be a 42px column on top of the review. */
   main.no-prs > .prs { width: auto; max-height: none; }
   .viewer { padding: 18px; }
 }
 
-/* O ✕ do card: discreto até o mouse chegar nele — tirar da fila é uma saída,
-   não a ação principal do card. */
+/* The card's ✕: quiet until the mouse gets to it — removing from the queue is
+   a way out, not the card's main action. */
 .card-x {
   background: transparent; border: 0; color: var(--dim);
   font-size: 12px; line-height: 1; padding: 2px 4px; margin: -2px -4px 0 4px;
@@ -266,9 +266,9 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .card-x:hover { color: var(--err); background: var(--panel-2); }
 .card-x:disabled { opacity: .4; cursor: not-allowed; }
 
-/* --- hambúrguer da lista --- */
-/* Recolher a lista é uma ação da lista: o botão fica nela, não na barra de
-   cima, e continua visível na faixa que sobra. */
+/* --- list hamburger --- */
+/* Collapsing the list is an action of the list: the button lives in it, not in
+   the top bar, and stays visible in the strip that remains. */
 .burger {
   flex: none; width: 30px; height: 30px; padding: 0;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
@@ -278,12 +278,12 @@ p.tiny { font-size: 12px; margin: -4px 0 8px; }
 .burger:hover { border-color: var(--accent); }
 .burger:hover span { background: var(--accent); }
 .burger:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-/* Recolhida, ela é o único elemento da faixa: centralizada e um pouco maior,
-   porque vira o alvo de clique de uma coluna inteira. */
+/* Collapsed, it is the only element in the strip: centered and a bit larger,
+   because it becomes the click target of a whole column. */
 main.no-prs .burger { width: 30px; margin: 0 auto; border-color: var(--accent); }
 main.no-prs .burger span { background: var(--accent); }
 
-/* --- seletores --- */
+/* --- pickers --- */
 /* Three selectors (owner, repository, review state) share a list that may be
    narrow: each asks for a readable minimum width, and the row wraps instead of
    squeezing all three. */
@@ -297,13 +297,13 @@ main.no-prs .burger span { background: var(--accent); }
 }
 .pane-head select:hover, select#agent:hover { border-color: var(--accent); }
 .pane-head select:focus, select#agent:focus { outline: none; border-color: var(--accent); }
-/* Filtro ligado fica visivelmente ligado: senão a lista some e não se sabe
-   por quê. */
+/* An active filter looks visibly active: otherwise the list disappears and
+   nobody knows why. */
 .pane-head select.on { border-color: var(--accent); color: var(--accent); }
 
-/* --- passos do review --- */
-/* Um passo por agente da escolha: é o que mostra qual lente está rodando
-   agora em vez de um "rodando" cego. */
+/* --- review steps --- */
+/* One step per agent in the choice: it is what shows which lens is running
+   now instead of a blind "running". */
 .steps { display: flex; flex-direction: column; gap: 3px; margin-top: 7px; }
 .card .steps { margin-top: 6px; }
 .step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
@@ -319,9 +319,9 @@ main.no-prs .burger span { background: var(--accent); }
 .viewer .steps { max-width: 520px; gap: 7px; margin-top: 14px; }
 .viewer .step { font-size: 13px; }
 
-/* --- log dos agentes --- */
-/* O painel é o que responde "o que ele está fazendo agora": as linhas que o
-   agente escreve chegam aqui enquanto o review roda. */
+/* --- agent log --- */
+/* The panel is what answers "what is it doing right now": the lines the
+   agent writes land here while the review runs. */
 .log-panel { margin-top: 18px; border: 1px solid var(--line); border-radius: 8px; background: #0d1014; }
 .log-panel > summary {
   cursor: pointer; padding: 8px 12px; font-size: 12px; color: var(--dim);
@@ -331,9 +331,9 @@ main.no-prs .burger span { background: var(--accent); }
 .log-panel > summary::before { content: "▸"; color: var(--accent); margin-right: 4px; }
 .log-panel[open] > summary::before { content: "▾"; }
 .log-panel > summary:hover { color: var(--text); }
-/* Um terminal por agente: a frota roda três lentes em paralelo dentro do
-   mesmo processo, e num fluxo só as linhas chegam intercaladas. Cada uma
-   escreve no próprio quadro, com o próprio scroll. */
+/* One terminal per agent: the fleet runs three lenses in parallel inside the
+   same process, and in a single stream the lines arrive interleaved. Each one
+   writes into its own frame, with its own scroll. */
 .terms {
   display: grid; gap: 10px; padding: 10px 12px 12px;
   grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
@@ -358,8 +358,8 @@ main.no-prs .burger span { background: var(--accent); }
 .log-empty { color: var(--dim); font-style: italic; font-size: 12px; padding: 4px 12px 12px; margin: 0; }
 
 .log-line {
-  /* pre-wrap preserva o alinhamento com que o agente escreve, sem deixar a
-     linha comprida escapar do quadro. */
+  /* pre-wrap keeps the alignment the agent writes with, without letting a
+     long line escape the frame. */
   white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text);
 }
 .log-line.stderr { color: var(--warn); }
@@ -373,8 +373,8 @@ main.no-prs .burger span { background: var(--accent); }
 
 .tag.posts { border-color: var(--warn); color: var(--warn); }
 .tag.reviewed { border-color: var(--ok); color: var(--ok); }
-/* Revisado e mexido depois: o aviso vale mais que o ✓, porque o que está no
-   GitHub não é mais o que o agente leu. */
+/* Reviewed and changed afterwards: the warning is worth more than the ✓,
+   because what is on GitHub is no longer what the agent read. */
 .tag.stale { border-color: var(--warn); color: var(--warn); }
 .stale-box {
   margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
@@ -382,21 +382,21 @@ main.no-prs .burger span { background: var(--accent); }
   border: 1px solid #4a3218; border-radius: 6px;
 }
 
-/* As ações ficam no fim do review, que é onde você está quando terminou de
-   ler — e ler antes de publicar é o ponto. */
+/* The actions sit at the end of the review, which is where you are when you
+   finish reading — and reading before publishing is the point. */
 .viewer-actions {
   display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
   margin-top: 28px; padding-top: 18px; border-top: 1px solid var(--line);
 }
 
-/* Pipeline que parou no publish: nada subiu ainda, e a escolha é sua. */
+/* Pipeline that stopped at publish: nothing went up yet, and the choice is yours. */
 .awaits-note {
   margin: 0 0 18px; padding: 9px 12px; font-size: 12px;
   background: #2a1b12; color: var(--warn);
   border: 1px solid #4a3218; border-radius: 6px;
 }
-/* Quando só parte do relatório vai ao PR, as duas partes ganham rótulo. O
-   que fica no Bazel vem apagado: é contexto para você, não para o autor. */
+/* When only part of the report goes to the PR, both parts get a label. What
+   stays in Bazel is dimmed: it is context for you, not for the author. */
 .section-label {
   margin: 28px 0 10px; font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
   color: var(--dim); border-bottom: 1px solid var(--line); padding-bottom: 6px;
@@ -404,8 +404,8 @@ main.no-prs .burger span { background: var(--accent); }
 .section-label:first-child { margin-top: 0; }
 .md.context { opacity: .7; }
 
-/* A caixa de cada achado: desmarcada, ele fica para trás na publicação.
-   O que apaga é o conteúdo, não a caixa — é ela que traz o achado de volta. */
+/* The checkbox of each finding: unticked, it is left behind on publishing.
+   What dims is the content, not the box — the box is what brings it back. */
 .finding { margin-top: 22px; padding-left: 14px; border-left: 2px solid var(--line); }
 .finding > h3 { margin-top: 4px; }
 .finding-pick {
@@ -419,7 +419,7 @@ main.no-prs .burger span { background: var(--accent); }
 .finding.skipped > h3, .finding.skipped > p:first-of-type > strong:first-child { text-decoration: line-through; }
 .pick-summary { display: flex; align-items: center; gap: 8px; font-size: 12px; margin-left: auto; }
 
-/* --- agentes e skills na configuração --- */
+/* --- agents and skills in the config --- */
 .agent-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
 .agent-row { border: 1px solid var(--line); border-radius: 6px; padding: 9px 11px; background: var(--panel-2); }
 .agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -428,8 +428,8 @@ main.no-prs .burger span { background: var(--accent); }
 .agent-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11px; }
 .skill-ref { padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
 .skill-ref.ok { color: var(--ok); }
-/* Skill que o agente chama e não existe na máquina: só se descobre na hora de
-   rodar, e aí é tarde. */
+/* A skill the agent calls that doesn't exist on the machine: you only find out
+   at run time, and by then it's too late. */
 .skill-ref.missing { color: var(--err); }
 
 .skill-list { max-height: 260px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; }
@@ -439,20 +439,20 @@ main.no-prs .burger span { background: var(--accent); }
 .skill-row.on .skill-name { color: var(--accent); }
 .skill-name { flex: none; width: 170px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .skill-desc { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Os botões que transformam a skill em agente. Ficam à direita da linha e só
-   aparecem inteiros no hover — a lista é longa e o que se lê nela é o nome. */
+/* The buttons that turn the skill into an agent. They sit at the row's right
+   and only show in full on hover — the list is long and what you read is the name. */
 .skill-actions { flex: none; display: flex; gap: 6px; align-items: center; opacity: .35; transition: opacity .12s; }
 .skill-row:hover .skill-actions, .skill-actions:focus-within { opacity: 1; }
 .skill-actions .btn { padding: 1px 7px; font-size: 11px; }
 
-/* O gasto do review: tokens e custo, no card e no fim do relatório. */
+/* The review spend: tokens and cost, on the card and at the end of the report. */
 .tokens { color: var(--dim); font-variant-numeric: tabular-nums; }
 .tokens-foot { margin-top: 6px; font-variant-numeric: tabular-nums; }
 
-/* --- montador de pipeline ---
-   A cadeia é um fluxo: cards ligados por setas, com uma fenda entre cada par.
-   A fenda é estreita até alguém arrastar algo por cima dela, e aí ela abre —
-   é o que mostra onde o passo vai cair antes de você soltar. */
+/* --- pipeline builder ---
+   The chain is a flow: cards linked by arrows, with a gap between each pair.
+   The gap is narrow until someone drags something over it, and then it opens —
+   that is what shows where the step will land before you let go. */
 .pipe-builder { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pipe-flow {
   display: flex; flex-wrap: wrap; align-items: stretch; gap: 2px; min-height: 56px;
@@ -492,15 +492,15 @@ main.no-prs .burger span { background: var(--accent); }
 .pipe-row { display: flex; gap: 8px; align-items: center; }
 .pipe-row input { flex: 1; min-width: 0; }
 
-/* --- salvar a configuração --- */
+/* --- saving the config --- */
 #config-download { white-space: nowrap; }
 #config-raw { margin-top: 10px; }
 #config-raw summary { cursor: pointer; }
 #config-raw pre { margin-top: 8px; }
 .state.awaits { color: var(--warn); }
 
-/* O aviso do molde que dispara comando sozinho. Fica no topo da configuração,
-   que é onde se conserta. */
+/* The warning about the template that fires a command on its own. It sits at
+   the top of the config, which is where it gets fixed. */
 .stray {
   border: 1px solid var(--warn); border-radius: 8px; padding: 10px 12px;
   margin-bottom: 20px; font-size: 12.5px; line-height: 1.6; color: var(--fg);

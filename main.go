@@ -1,8 +1,8 @@
-// Command bazel sobe a interface web que junta os pull requests dos
-// repositórios monitorados e dispara agentes de IA para revisá-los.
+// Command bazel starts the web interface that gathers the pull requests of
+// the watched repositories and dispatches AI agents to review them.
 //
-// Não há subcomando: o binário é o servidor. Repositórios, agentes e reviews
-// se gerenciam na página.
+// There is no subcommand: the binary is the server. Repositories, agents and
+// reviews are managed on the page.
 package main
 
 import (
@@ -25,7 +25,7 @@ import (
 	"github.com/beroni/bazel/internal/splash"
 )
 
-// version é sobrescrita no build via -ldflags "-X main.version=...".
+// version is overridden at build time via -ldflags "-X main.version=...".
 var version = "0.1.0"
 
 var (
@@ -83,11 +83,12 @@ Repositories, agents and reviews are all managed from the page.
 `)
 }
 
-// serve sobe o servidor e só volta quando o ctx morre.
+// serve starts the server and only returns when ctx dies.
 //
-// Mesma máquina de sempre — o `gh` autenticado, o mesmo ~/.bazel/config.yaml —
-// com HTTP na frente. Escuta em loopback porque quem chega aqui manda clonar
-// repositório e rodar agente com shell: não é porta para expor.
+// Same machinery as always — the authenticated `gh`, the same
+// ~/.bazel/config.yaml — with HTTP in front. Listens on loopback because
+// whoever reaches it can order a repository cloned and an agent run with a
+// shell: this is not a port to expose.
 func serve(ctx context.Context, args []string) error {
 	cfg, criado, err := config.LoadOrInit()
 	if err != nil {
@@ -127,10 +128,10 @@ func serve(ctx context.Context, args []string) error {
 
 	splash.Play()
 
-	// Fora do loopback não há autenticação nenhuma: quem alcança a porta
-	// clona repositórios e roda agentes com o seu `gh`. Não é proibido — há
-	// quem ponha um proxy com autenticação na frente —, mas não pode ser
-	// silencioso.
+	// Beyond loopback there is no authentication at all: whoever reaches the
+	// port clones repositories and runs agents with your `gh`. It is not
+	// forbidden — some put an authenticating proxy in front —, but it cannot
+	// be silent.
 	if srv.Exposed() {
 		fmt.Println(styErr.Render(fmt.Sprintf("  ⚠ listening on %s, beyond loopback, with no authentication —", addr)))
 		fmt.Println(styErr.Render("    anyone who reaches this port can clone repos and run agents as you."))
@@ -149,8 +150,8 @@ func serve(ctx context.Context, args []string) error {
 	if len(cfg.Repos) == 0 {
 		fmt.Println(styDim.Render("  no repositories watched — add one under \"config\", in the page"))
 	}
-	// A lista de agentes começa vazia: é montada na página, a partir das
-	// skills que o Claude Code tem instaladas nesta máquina.
+	// The agent list starts empty: it is built on the page, from the skills
+	// Claude Code has installed on this machine.
 	if len(cfg.Choices()) == 0 {
 		fmt.Println(styDim.Render("  no agents configured — build the list under \"config\", out of your skills"))
 	}
@@ -175,7 +176,8 @@ func openBrowser(url string) {
 	default:
 		cmd = "xdg-open"
 	}
-	// Abrir o navegador é conveniência: se falhar, a URL já está impressa.
+	// Opening the browser is a convenience: if it fails, the URL is already
+	// printed.
 	_ = exec.Command(cmd, url).Start()
 }
 

@@ -1,14 +1,15 @@
-// Package server serve a interface web do Bazel.
+// Package server serves Bazel's web interface.
 //
-// É a mesma máquina do CLI — config, gh, agent, workspace e store não mudam —
-// com HTTP no lugar do terminal. A diferença que importa: um review leva
-// minutos, então o handler enfileira e responde na hora, e o resultado chega
-// ao navegador pelo stream de /api/events.
+// It is the same machinery as the CLI — config, gh, agent, workspace and store
+// do not change — with HTTP in place of the terminal. The difference that
+// matters: a review takes minutes, so the handler enqueues and answers right
+// away, and the result reaches the browser through the stream of /api/events.
 //
-// É single-user por construção: usa o `gh` já autenticado da máquina e o
-// mesmo ~/.bazel/config.yaml do CLI. Por isso escuta em loopback e recusa
-// requisição que venha de outra origem — quem chega aqui manda clonar
-// repositório e rodar agente com shell.
+// It is single-user by construction: it uses the machine's
+// already-authenticated `gh` and the same ~/.bazel/config.yaml as the CLI.
+// That is why it listens on loopback and refuses requests coming from another
+// origin — whoever gets in here orders repositories cloned and agents with a
+// shell run.
 package server
 
 import (
@@ -41,10 +42,10 @@ import (
 //go:embed static
 var staticFS embed.FS
 
-// prTTL é quanto tempo a lista de PRs vale antes de consultar o gh de novo.
+// prTTL is how long the PR list is good for before querying gh again.
 const prTTL = 60 * time.Second
 
-// Options são os parâmetros do `bazel serve`.
+// Options are the parameters of `bazel serve`.
 type Options struct {
 	Addr        string
 	Concurrency int
@@ -52,7 +53,7 @@ type Options struct {
 	Version     string
 }
 
-// Server é a interface web.
+// Server is the web interface.
 type Server struct {
 	cfg        *config.Config
 	me         string
@@ -68,14 +69,14 @@ type Server struct {
 	// connection and to forget what it cached under the old ids.
 	instance string
 
-	// cfgMu protege os campos do config que a interface edita (repos).
+	// cfgMu protects the config fields the interface edits (repos).
 	cfgMu sync.Mutex
 
-	// bound é o endereço em que o Run de fato escuta — difere de opts.Addr
-	// quando a porta pedida é 0.
+	// bound is the address Run actually listens on — it differs from opts.Addr
+	// when the requested port is 0.
 	bound atomic.Pointer[string]
 
-	// fetchMu serializa as consultas ao gh; prMu protege o cache.
+	// fetchMu serializes the gh queries; prMu guards the cache.
 	fetchMu sync.Mutex
 	prMu    sync.RWMutex
 	prs     []gh.PR
@@ -83,8 +84,8 @@ type Server struct {
 	prsAt   time.Time
 }
 
-// New monta o servidor. ctx é o dono dos reviews em andamento: cancelou,
-// morreram junto.
+// New assembles the server. ctx owns the reviews in progress: cancel it and
+// they die with it.
 func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Server, error) {
 	reviewsDir, err := cfg.ResolvedReviewsDir()
 	if err != nil {
@@ -121,14 +122,15 @@ func newInstanceID() (string, error) {
 	return hex.EncodeToString(b[:]), nil
 }
 
-// Handler devolve as rotas já embrulhadas na checagem de origem.
+// Handler returns the routes already wrapped in the origin check.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 
-	// Os assets vão com no-store, como o index. Eles estão embutidos no
-	// binário: atualizar o Bazel muda o js e o css, e um navegador servindo a
-	// versão anterior contra um servidor novo é um bug que não se reproduz na
-	// máquina de quem escreveu. Não há banda a economizar aqui — é loopback.
+	// The assets go with no-store, like the index. They are embedded in the
+	// binary: updating Bazel changes the js and the css, and a browser serving
+	// the previous version against a new server is a bug that does not
+	// reproduce on the machine of whoever wrote it. There is no bandwidth to
+	// save here — it is loopback.
 	assets, _ := fs.Sub(staticFS, "static")
 	mux.Handle("GET /static/", http.StripPrefix("/static/", semCache(http.FileServer(http.FS(assets)))))
 	mux.HandleFunc("GET /{$}", s.handleIndex)
@@ -163,14 +165,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
 	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
 
-	// O /mcp passa pelo mesmo guard: é a mesma porta para clonar e rodar
-	// agente, só que falada por máquina.
+	// /mcp goes through the same guard: it is the same port for cloning and
+	// running an agent, just spoken by machine.
 	mux.HandleFunc("/mcp", s.handleMCP)
 
 	return s.guard(mux)
 }
 
-// semCache manda o navegador não guardar o que vem embutido no binário.
+// semCache tells the browser not to keep what comes embedded in the binary.
 func semCache(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -178,11 +180,11 @@ func semCache(next http.Handler) http.Handler {
 	})
 }
 
-// Run sobe o servidor e só volta quando o ctx morre.
+// Run starts the server and only returns when ctx dies.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
 		Handler: s.Handler(),
-		// Sem WriteTimeout: o SSE fica aberto o review inteiro.
+		// No WriteTimeout: the SSE stays open for the whole review.
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	ln, err := net.Listen("tcp", s.opts.Addr)
@@ -205,14 +207,15 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	// Solta os SSE antes do Shutdown, senão ele espera por eles até o fim.
+	// Release the SSE streams before Shutdown, otherwise it waits for them
+	// until the end.
 	close(s.done)
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return srv.Shutdown(shutCtx)
 }
 
-// URL é o endereço para abrir no navegador.
+// URL is the address to open in the browser.
 func (s *Server) URL(addr string) string {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
@@ -224,9 +227,9 @@ func (s *Server) URL(addr string) string {
 	return "http://" + net.JoinHostPort(host, port)
 }
 
-// webUI é o endereço da página, montado do que o servidor escuta e não do
-// Host da requisição: fora do loopback o Host não passa pelo guard, e quem
-// pergunta escolheria o link que recebe.
+// webUI is the page address, built from what the server listens on and not
+// from the request's Host: outside loopback the Host does not pass through
+// the guard, and whoever asks would pick the link they receive.
 func (s *Server) webUI() string {
 	addr := s.opts.Addr
 	if b := s.bound.Load(); b != nil {
@@ -237,9 +240,9 @@ func (s *Server) webUI() string {
 
 // --- middleware ---
 
-// guard fecha a porta para páginas de terceiros. Um servidor local que clona
-// repositórios e sobe agentes não pode aceitar um POST disparado por qualquer
-// site aberto em outra aba, nem um Host forjado apontando pra cá.
+// guard shuts the door on third-party pages. A local server that clones
+// repositories and starts agents cannot accept a POST fired by any site open
+// in another tab, nor a forged Host pointing here.
 func (s *Server) guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if s.loopback() && !localHost(r.Host) {
@@ -259,10 +262,10 @@ func (s *Server) guard(next http.Handler) http.Handler {
 	})
 }
 
-// Exposed diz que o servidor escuta além do loopback: um IP de rede, o
-// 0.0.0.0, ou um endereço sem host (`:7777`), que o net.Listen abre em todas
-// as interfaces. É diferente de loopback(), que decide a checagem de Host —
-// `:7777` continua só aceitando Host local, mas a porta está na rede.
+// Exposed says the server listens beyond loopback: a network IP, 0.0.0.0,
+// or an address without a host (`:7777`), which net.Listen opens on all
+// interfaces. It differs from loopback(), which decides the Host check —
+// `:7777` still only accepts a local Host, but the port is on the network.
 func (s *Server) Exposed() bool {
 	host, _, err := net.SplitHostPort(s.opts.Addr)
 	if err != nil {
@@ -339,11 +342,11 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		},
 		"agents": s.agentViews(),
 		"jobs":   s.jobViews(),
-		// Um molde de `agent` que dispara um comando por conta própria faz todo
-		// agente rodar dois: o escolhido e o do molde. A página avisa, porque
-		// nada no resultado denuncia isso — só o gasto.
+		// An `agent` template that fires off a command on its own makes every
+		// agent run two: the chosen one and the template's. The page warns,
+		// because nothing in the result gives it away — only the spend.
 		"stray_command": stray,
-		// A cota do Claude vem vazia até o primeiro review desta sessão.
+		// The Claude quota comes empty until the first review of this session.
 		"limits": s.jobs.Limits(),
 	})
 }
@@ -362,15 +365,15 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
-// prFilter é o recorte da lista de PRs. A página e o /mcp pedem a mesma
-// lista; só o MCP filtra por repositório e por estado do review, e só a
-// página precisa da descrição em HTML.
+// prFilter is the cut of the PR list. The page and /mcp ask for the same
+// list; only the MCP filters by repository and review state, and only the
+// page needs the description as HTML.
 type prFilter struct {
 	Refresh bool
 	Mine    bool
 	Author  string
 	Repo    string
-	// Status é "" (todos), "unreviewed", "reviewed", "changed" ou "posted".
+	// Status is "" (all), "unreviewed", "reviewed", "changed" or "posted".
 	Status string
 	HTML   bool
 }
@@ -390,8 +393,8 @@ func (s *Server) listPRs(ctx context.Context, f prFilter) (prList, error) {
 	repo := strings.TrimSpace(f.Repo)
 
 	now := time.Now()
-	// O índice de reviews é relido a cada listagem: um review que terminou
-	// em outra aba (ou no CLI) já aparece marcado aqui.
+	// The review index is reread on every listing: a review that finished in
+	// another tab (or in the CLI) already shows up marked here.
 	marks := store.LoadMarks(s.reviewsDir)
 	out := make([]prView, 0, len(prs))
 	for _, pr := range prs {
@@ -437,8 +440,8 @@ func statusMatches(st store.Status, want string) bool {
 	return true
 }
 
-// loadPRs consulta o gh, com cache: cada listagem sobe um `gh pr list` por
-// repositório e a página recarrega mais do que a API merece.
+// loadPRs queries gh, with a cache: each listing fires a `gh pr list` per
+// repository and the page reloads more than the API deserves.
 func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoError, time.Time, error) {
 	s.prMu.RLock()
 	fresh := time.Since(s.prsAt) < prTTL && !s.prsAt.IsZero()
@@ -451,7 +454,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	s.fetchMu.Lock()
 	defer s.fetchMu.Unlock()
 
-	// Outro request pode ter buscado enquanto esperávamos o lock.
+	// Another request may have fetched while we waited for the lock.
 	s.prMu.RLock()
 	fresh = time.Since(s.prsAt) < prTTL && !s.prsAt.IsZero()
 	prs, errs, at = s.prs, s.prErrs, s.prsAt
@@ -491,7 +494,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 
 type reviewRequest struct {
 	Refs []string `json:"refs"`
-	// Agent é o nome do agente ou pipeline escolhido. Vazio = o padrão.
+	// Agent is the name of the chosen agent or pipeline. Empty = the default.
 	Agent string `json:"agent"`
 }
 
@@ -519,7 +522,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
 }
 
-// resolveChoice acha o agente ou pipeline pelo nome. Vazio = o padrão.
+// resolveChoice finds the agent or pipeline by name. Empty = the default.
 func (s *Server) resolveChoice(name string) (config.Choice, error) {
 	s.cfgMu.Lock()
 	defer s.cfgMu.Unlock()
@@ -533,10 +536,10 @@ func (s *Server) resolveChoice(name string) (config.Choice, error) {
 	return choice, nil
 }
 
-// enqueueRefs põe na fila um review por referência. O que não deu certo volta
-// em errs, um por item — um ref ruim não derruba os outros.
+// enqueueRefs queues one review per reference. What went wrong comes back
+// in errs, one per item — a bad ref does not take down the others.
 func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
-	// Os PRs em cache evitam um `gh pr view` por item quando vieram da lista.
+	// Cached PRs avoid a `gh pr view` per item when they came from the list.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
 	for _, pr := range s.prs {
@@ -582,9 +585,10 @@ func (s *Server) handleJob(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// handleJobLog entrega o log de um review a partir de um ponto. O navegador
-// guarda o `next` da resposta anterior e só pede o que falta — é isso que
-// deixa o log andar ao vivo sem reenviar tudo a cada segundo.
+// handleJobLog delivers a review's log from a given point. The browser keeps
+// the `next` from the previous response and only asks for what is missing —
+// that is what lets the log move live without resending everything every
+// second.
 func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	from := 0
 	if v := r.URL.Query().Get("from"); v != "" {
@@ -603,8 +607,8 @@ func (s *Server) handleJobLog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// handleJobRemove tira o job da fila da sessão. Cancela antes, se ainda
-// estiver vivo.
+// handleJobRemove takes the job out of the session's queue. Cancels it first,
+// if it is still alive.
 func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Remove(r.PathValue("id")); err != nil {
 		writeErr(w, http.StatusNotFound, err)
@@ -650,10 +654,10 @@ func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, view)
 }
 
-// handlePublish manda o agente publicar no PR o review que o usuário leu. Roda
-// no card do próprio review — com passo e log próprios, porque é outro agente
-// rodando — e não num job à parte: publicar é o fim do review, não um trabalho
-// solto na fila.
+// handlePublish sends the agent to publish on the PR the review the user read.
+// It runs in the review's own card — with its own step and log, because it is
+// another agent running — and not in a separate job: publishing is the end of
+// the review, not a loose job in the queue.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	skip, err := readSkip(w, r)
 	if err != nil {
@@ -767,12 +771,12 @@ func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"repos": repos, "removed": removed})
 }
 
-// --- agentes ---
+// --- agents ---
 //
-// A lista de agentes começa vazia num config novo e é montada aqui, a partir
-// das skills que o Claude Code tem instaladas nesta máquina: cada agente é uma
-// skill rodando sobre o PR. Por isso não há lista de fábrica — ela apontaria
-// para skills que este computador pode nunca ter tido.
+// The agent list starts empty in a new config and is assembled here, from the
+// skills Claude Code has installed on this machine: each agent is a skill
+// running over the PR. That is why there is no factory list — it would point
+// to skills this computer may never have had.
 
 func (s *Server) handleAgentsList(w http.ResponseWriter, r *http.Request) {
 	s.writeAgents(w, http.StatusOK, nil)
@@ -788,9 +792,10 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A descrição vem da skill instalada, não do navegador: é o frontmatter
-	// dela que diz o que ela faz. Skill que não está na máquina nem entra —
-	// um agente assim só falharia na hora de rodar.
+	// The description comes from the installed skill, not from the browser: it
+	// is the skill's frontmatter that says what it does. A skill that is not
+	// on the machine does not even get in — an agent like that would only fail
+	// at run time.
 	name := strings.TrimPrefix(strings.TrimSpace(req.Skill), "/")
 	dir, list := s.installedSkills()
 	var found *skills.Skill
@@ -830,8 +835,8 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
-// handleAgentDefault põe um agente na frente da lista — o primeiro é o que
-// roda quando ninguém escolhe.
+// handleAgentDefault puts an agent at the front of the list — the first one is
+// what runs when nobody chooses.
 func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	ok := s.cfg.SetDefaultAgent(r.PathValue("name"))
@@ -848,9 +853,9 @@ func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
 	s.writeAgents(w, http.StatusOK, nil)
 }
 
-// handleAgentPublishable liga ou desliga a ida ao PR da saída de um agente.
-// É o tique do painel: nem toda skill produz review, e a que não produz não
-// tem por que oferecer um botão de publicar.
+// handleAgentPublishable turns on or off sending an agent's output to the PR.
+// It is the panel checkbox: not every skill produces a review, and one that
+// does not has no reason to offer a publish button.
 func (s *Server) handleAgentPublishable(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Publishable bool `json:"publishable"`
@@ -872,9 +877,9 @@ func (s *Server) handleAgentPublishable(w http.ResponseWriter, r *http.Request) 
 	s.writeAgents(w, http.StatusOK, nil)
 }
 
-// handlePipelineAdd encadeia agentes da lista numa sequência sobre o mesmo
-// clone. Os passos vêm por nome de agente — a página só deixa escolher entre
-// os que existem, e o config recusa o resto.
+// handlePipelineAdd chains agents from the list into a sequence over the same
+// clone. The steps come by agent name — the page only lets you choose among
+// the ones that exist, and the config refuses the rest.
 func (s *Server) handlePipelineAdd(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Name        string   `json:"name"`
@@ -910,9 +915,10 @@ func (s *Server) handlePipelineRemove(w http.ResponseWriter, r *http.Request) {
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
 }
 
-// handleConfigDownload entrega o config.yaml como arquivo. É o que se leva
-// para outra máquina: repos, agentes e pipelines são a configuração inteira, e
-// copiá-la é mais rápido do que remontá-la clique a clique do outro lado.
+// handleConfigDownload delivers config.yaml as a file. It is what you take to
+// another machine: repos, agents and pipelines are the whole configuration,
+// and copying it is faster than rebuilding it click by click on the other
+// side.
 func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
@@ -925,8 +931,8 @@ func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 	w.Write(data)
 }
 
-// writeAgents devolve a lista inteira depois de mexer nela: é o que a página
-// redesenha, do seletor à configuração.
+// writeAgents returns the whole list after changing it: it is what the page
+// redraws, from the selector to the configuration.
 func (s *Server) writeAgents(w http.ResponseWriter, status int, extra map[string]any) {
 	out := map[string]any{"agents": s.agentViews()}
 	for k, v := range extra {
@@ -935,9 +941,9 @@ func (s *Server) writeAgents(w http.ResponseWriter, status int, extra map[string
 	writeJSON(w, status, out)
 }
 
-// summarize corta a descrição de uma skill na primeira frase. O frontmatter
-// de uma skill é um parágrafo inteiro, com gatilhos e contraindicações; no
-// seletor cabe uma linha.
+// summarize cuts a skill's description at the first sentence. A skill's
+// frontmatter is a whole paragraph, with triggers and contraindications; the
+// selector fits one line.
 func summarize(s string) string {
 	s = strings.TrimSpace(strings.Join(strings.Fields(s), " "))
 	for _, end := range []string{". ", " — ", "; "} {
@@ -978,17 +984,17 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"dir": s.reviewsDir, "reviews": out})
 }
 
-// savedView é um review salvo mais o que só a configuração sabe dizer: se o
-// que está ali dentro pode ir ao PR.
+// savedView is a saved review plus what only the configuration can tell:
+// whether what is in there can go to the PR.
 type savedView struct {
 	store.Entry
 	Publishable bool `json:"publishable"`
 }
 
-// agentPublishes diz se a saída de um agente pode ir ao PR. Agente que não
-// está mais na lista continua publicável: o review em disco sobrevive à
-// configuração, e um nome que o Bazel não reconhece mais não é motivo para
-// trancar um review que já foi lido e aprovado.
+// agentPublishes says whether an agent's output can go to the PR. An agent no
+// longer in the list stays publishable: the review on disk outlives the
+// configuration, and a name Bazel no longer recognizes is no reason to lock up
+// a review that has already been read and approved.
 func (s *Server) agentPublishes(name string) bool {
 	if strings.TrimSpace(name) == "" {
 		return true
@@ -1015,14 +1021,14 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// --- publicar um review salvo ---
+// --- publishing a saved review ---
 //
-// Um review sobrevive ao servidor: está em markdown no disco. A chance de
-// levá-lo ao PR tem de sobreviver junto — antes, fechar o Bazel antes de
-// publicar deixava o texto lá e nenhuma forma de usá-lo.
+// A review outlives the server: it is in markdown on disk. The chance to take
+// it to the PR has to outlive it too — before, closing Bazel before publishing
+// left the text there and no way to use it.
 
-// savedReview é um review lido do disco, pronto para ir ao PR: o pull request
-// de onde ele veio, onde o arquivo está, o corpo e quem o escreveu.
+// savedReview is a review read from disk, ready to go to the PR: the pull
+// request it came from, where the file is, the body and who wrote it.
 type savedReview struct {
 	PR    gh.PR
 	Path  string
@@ -1030,9 +1036,9 @@ type savedReview struct {
 	Agent string
 }
 
-// savedPR relê um review salvo e devolve o PR de onde ele veio, junto com o
-// caminho, o corpo e o agente. O PR é buscado no GitHub: o arquivo guarda o
-// cabeçalho, não o estado atual dele.
+// savedPR rereads a saved review and returns the PR it came from, along with
+// the path, the body and the agent. The PR is fetched from GitHub: the file
+// keeps the header, not its current state.
 func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) {
 	file, err := store.Read(s.reviewsDir, name)
 	if err != nil {
@@ -1054,8 +1060,9 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	}, nil
 }
 
-// refusePublish barra o que não é review. Vale para o salvo como vale para o
-// job recém-terminado: a história de um PR não vira comentário nele.
+// refusePublish blocks what is not a review. It holds for the saved one as it
+// does for the just-finished job: a PR's history does not become a comment on
+// it.
 func (s *Server) refusePublish(w http.ResponseWriter, sr savedReview) bool {
 	if s.agentPublishes(sr.Agent) {
 		return false
@@ -1064,7 +1071,7 @@ func (s *Server) refusePublish(w http.ResponseWriter, sr savedReview) bool {
 	return true
 }
 
-// handleSavedPublish roda o agente de publicação sobre um review salvo.
+// handleSavedPublish runs the publishing agent over a saved review.
 func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 	skip, err := readSkip(w, r)
 	if err != nil {
@@ -1088,7 +1095,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, view)
 }
 
-// handleSavedComment cola um review salvo no PR, sem agente.
+// handleSavedComment pastes a saved review onto the PR, with no agent.
 func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	skip, err := readSkip(w, r)
 	if err != nil {
@@ -1113,10 +1120,10 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 
 // --- helpers ---
 
-// readSkip lê, do corpo de um pedido de publicação, os achados que o usuário
-// desmarcou na tela — os índices que o renderReview numerou. Corpo vazio é
-// "publica tudo": os quatro caminhos para o PR aceitam a lista e nenhum a
-// exige.
+// readSkip reads, from the body of a publish request, the findings the user
+// unticked on screen — the indices renderReview numbered. An empty body is
+// "publish everything": the four paths to the PR accept the list and none
+// requires it.
 func readSkip(w http.ResponseWriter, r *http.Request) ([]int, error) {
 	var req struct {
 		Skip []int `json:"skip"`
@@ -1137,12 +1144,12 @@ func (s *Server) jobViews() []jobView {
 	return s.jobs.Snapshot()
 }
 
-// agentViews é o seletor da página: os agents e pipelines do config.yaml, na
-// ordem em que estão lá. O primeiro é o padrão.
+// agentViews is the page's selector: the agents and pipelines of config.yaml,
+// in the order they are there. The first is the default.
 //
-// Cada um vai com a skill que a sua task invoca e se ela está instalada — um
-// agente que chama uma skill que você não tem falha só na hora de rodar, e
-// isso é tarde demais para descobrir.
+// Each one goes with the skill its task invokes and whether it is installed —
+// an agent that calls a skill you do not have fails only at run time, and that
+// is too late to find out.
 func (s *Server) agentViews() []map[string]any {
 	_, instaladas := s.installedSkills()
 	s.cfgMu.Lock()
@@ -1153,8 +1160,8 @@ func (s *Server) agentViews() []map[string]any {
 	for _, c := range choices {
 		out = append(out, s.agentView(c, instaladas, false))
 	}
-	// O agente de publicação não está no seletor, mas é um agente: quem abre
-	// a configuração quer vê-lo junto.
+	// The publishing agent is not in the selector, but it is an agent: whoever
+	// opens the configuration wants to see it alongside.
 	out = append(out, s.agentView(post, instaladas, true))
 	return out
 }
@@ -1168,8 +1175,9 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 		}
 		usadas = append(usadas, map[string]any{
 			"name": name,
-			// Skill embarcada está sempre disponível: ela viaja no binário, e
-			// não há o que instalar nem como faltar.
+			// An embedded skill is always available: it travels in the binary,
+			// and there is nothing to install nor any way for it to be
+			// missing.
 			"installed": skills.Has(instaladas, name) || skills.IsBuiltin(name),
 			"builtin":   skills.IsBuiltin(name),
 			"step":      step.Name,
@@ -1183,25 +1191,25 @@ func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher
 		"publishable": c.Publishable,
 		"steps":       c.StepNames(),
 		"skills":      usadas,
-		// publisher sai do seletor de review: ele roda depois, na publicação.
+		// publisher leaves the review selector: it runs later, at publication.
 		"publisher": publisher,
 	}
 }
 
-// handleSkills lista as skills instaladas na máquina — as que podem virar
-// agente. É a lista de onde a configuração monta a sua.
+// handleSkills lists the skills installed on the machine — the ones that can
+// become agents. It is the list the configuration builds its own from.
 func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	dir, list := s.installedSkills()
 	s.cfgMu.Lock()
 	post := s.cfg.PostSkill()
 	s.cfgMu.Unlock()
-	// post_skill vai junto para a página não oferecê-la como agente: ela só
-	// publica quando roda como o passo publish.
+	// post_skill goes along so the page does not offer it as an agent: it only
+	// publishes when it runs as the publish step.
 	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
 }
 
-// installedSkills lê as skills do disco a cada chamada: instalar uma skill não
-// devia exigir reiniciar o Bazel.
+// installedSkills reads the skills from disk on every call: installing a skill
+// should not require restarting Bazel.
 func (s *Server) installedSkills() (string, []skills.Skill) {
 	s.cfgMu.Lock()
 	dir := strings.TrimSpace(s.cfg.SkillsDir)
@@ -1209,10 +1217,10 @@ func (s *Server) installedSkills() (string, []skills.Skill) {
 	if dir == "" {
 		dir = skills.DefaultDir()
 	}
-	// As embarcadas entram na lista: elas viajam no binário, estão sempre
-	// disponíveis, e é a partir desta lista que a página deixa montar agentes
-	// e pipelines. Uma skill de disco com o mesmo nome perde — dentro do clone
-	// quem o Claude Code vai achar é a do projeto, que é a embarcada.
+	// The embedded ones join the list: they travel in the binary, are always
+	// available, and it is from this list that the page lets you build agents
+	// and pipelines. A disk skill with the same name loses — inside the clone,
+	// what Claude Code will find is the project's, which is the embedded one.
 	list := skills.Builtin()
 	for _, s := range skills.List(dir) {
 		if !skills.IsBuiltin(s.Name) {
@@ -1225,7 +1233,7 @@ func (s *Server) installedSkills() (string, []skills.Skill) {
 	return dir, list
 }
 
-// invalidatePRs força a próxima listagem a bater no gh.
+// invalidatePRs forces the next listing to hit gh.
 func (s *Server) invalidatePRs() {
 	s.prMu.Lock()
 	s.prsAt = time.Time{}

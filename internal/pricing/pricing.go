@@ -1,9 +1,9 @@
-// Package pricing mantém a tabela de preços por modelo e calcula o custo
-// estimado de uma review a partir de agent.Usage.
+// Package pricing keeps the per-model price table and computes the estimated
+// cost of a review from agent.Usage.
 //
-// Os preços mudam — um modelo novo sai, uma tarifa muda — e o binário não
-// pode precisar de rebuild. Por isso a tabela é um default shipped com o
-// código e pode ser sobrescrita em config.yaml.
+// Prices change — a new model comes out, a rate changes — and the binary must
+// not need a rebuild. So the table is a default shipped with the code and can
+// be overridden in config.yaml.
 package pricing
 
 import (
@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// Rate é o custo por 1M de tokens, em USD, para uma categoria de uso.
-// CacheWrite é a escrita de cache de 5 minutos (1,25× o input); CacheRead é a
-// leitura, que varia por modelo.
+// Rate is the cost per 1M tokens, in USD, for a usage category. CacheWrite
+// is the 5-minute cache write (1.25× the input); CacheRead is the read, which
+// varies by model.
 type Rate struct {
 	Input      float64 `yaml:"input"`
 	Output     float64 `yaml:"output"`
@@ -28,14 +28,14 @@ type Rate struct {
 // needs its own row, otherwise it keeps the cost the provider reported.
 type Table map[string]Rate
 
-// Default é a tabela usada quando o usuário não configurou nada. Preços de
-// API da Anthropic por 1M de tokens (setembro de 2026); a escrita de cache é
-// 1,25× o input e a leitura é 0,1× — com as exceções que cada linha anota.
+// Default is the table used when the user configured nothing. Anthropic API
+// prices per 1M tokens (September 2026); the cache write is 1.25× the input
+// and the read is 0.1× — with the exceptions each row notes.
 var Default = Table{
-	// Fable 5.1: leitura de cache a 0,025× do input.
+	// Fable 5.1: cache read at 0.025× the input.
 	"claude-fable-5-1": {Input: 10, Output: 50, CacheWrite: 12.50, CacheRead: 0.25},
 	"claude-fable-5":   {Input: 10, Output: 50, CacheWrite: 12.50, CacheRead: 1.00},
-	// Opus 5.5: leitura de cache a 0,05× do input.
+	// Opus 5.5: cache read at 0.05× the input.
 	"claude-opus-5-5": {Input: 4, Output: 20, CacheWrite: 5.00, CacheRead: 0.20},
 	"claude-opus-5":   {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.50},
 	"claude-opus-4-8": {Input: 5, Output: 25, CacheWrite: 6.25, CacheRead: 0.50},
@@ -104,16 +104,16 @@ func undated(name string) (string, bool) {
 	return name[:len(name)-suffix], true
 }
 
-// Cost calcula o custo em USD para um usage, usando a rate do modelo.
-// Modelo desconhecido devolve zero — o custo é reportado como "unknown" em vez
-// de adivinhar um número que pode enganar. Quem precisa distinguir "grátis"
-// de "não sei" usa CostOf.
+// Cost computes the cost in USD for a usage, using the model's rate.
+// An unknown model returns zero — the cost is reported as "unknown" instead
+// of guessing a number that may mislead. Whoever needs to tell "free" from
+// "don't know" uses CostOf.
 func (t Table) Cost(model string, input, output, cacheWrite, cacheRead int) float64 {
 	c, _ := t.CostOf(model, input, output, cacheWrite, cacheRead)
 	return c
 }
 
-// CostOf é o Cost que diz se o modelo estava na tabela.
+// CostOf is Cost that says whether the model was in the table.
 func (t Table) CostOf(model string, input, output, cacheWrite, cacheRead int) (float64, bool) {
 	rate, ok := t.Rate(model)
 	if !ok {
@@ -122,9 +122,9 @@ func (t Table) CostOf(model string, input, output, cacheWrite, cacheRead int) (f
 	return costOf(rate, input, output, cacheWrite, cacheRead), true
 }
 
-// With é esta tabela com as entradas de over por cima, numa cópia. As chaves
-// de over entram em minúsculas, para que `Claude-Opus-5-5` no config.yaml
-// troque o preço de `claude-opus-5-5` em vez de disputar com ele.
+// With is this table with the entries of over on top, in a copy. The keys
+// of over go in lowercase, so that `Claude-Opus-5-5` in config.yaml replaces
+// the price of `claude-opus-5-5` instead of competing with it.
 func (t Table) With(over Table) Table {
 	c := t.Clone()
 	for k, v := range over {
@@ -133,8 +133,8 @@ func (t Table) With(over Table) Table {
 	return c
 }
 
-// Clone copia a tabela. Default é uma variável do pacote: entregá-la direto
-// para a config deixaria o yaml do usuário escrever nela.
+// Clone copies the table. Default is a package variable: handing it
+// straight to the config would let the user's yaml write to it.
 func (t Table) Clone() Table {
 	c := make(Table, len(t))
 	for k, v := range t {
@@ -154,12 +154,12 @@ func costOf(rate Rate, input, output, cacheWrite, cacheRead int) float64 {
 	return inputCost + outputCost + cacheWriteCost + cacheReadCost
 }
 
-// FormatUSD formata um valor em dólar, com vírgula decimal e 2 casas.
+// FormatUSD formats a dollar value, with a decimal point and 2 places.
 func FormatUSD(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
-// FormatTokens formata a contagem de tokens com sufixo k/M.
+// FormatTokens formats the token count with a k/M suffix.
 func FormatTokens(n int) string {
 	switch {
 	case n < 0:

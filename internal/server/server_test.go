@@ -36,7 +36,7 @@ func testPR(number int) gh.PR {
 	return pr
 }
 
-// cfgFor devolve um config que roda cmd como agente, sem clone.
+// cfgFor returns a config that runs cmd as the agent, without a clone.
 func cfgFor(t *testing.T, cmd string, args ...string) *config.Config {
 	t.Helper()
 	if _, err := exec.LookPath(cmd); err != nil {
@@ -49,14 +49,15 @@ func cfgFor(t *testing.T, cmd string, args ...string) *config.Config {
 	cfg.Agent.Checkout = false
 	cfg.Agent.Prompt = "revise o PR {{number}} de {{repo}}"
 	cfg.Agent.TimeoutSeconds = 30
-	// Sem agents nomeados sobra a escolha única do bloco `agent` — que é o
-	// que estes testes querem exercitar. Quem testa pipeline monta a sua.
+	// With no named agents what's left is the single choice of the `agent`
+	// block — which is what these tests want to exercise. Pipeline tests build
+	// their own.
 	cfg.Agents = nil
 	cfg.Pipelines = nil
 	return cfg
 }
 
-// waitFor lê os eventos do hub até o job chegar num estado final.
+// waitFor reads the hub's events until the job reaches a final state.
 func waitFor(t *testing.T, ch chan []byte, id string, want State) jobView {
 	t.Helper()
 	deadline := time.After(20 * time.Second)
@@ -82,12 +83,12 @@ func waitFor(t *testing.T, ch chan []byte, id string, want State) jobView {
 	}
 }
 
-// O review roda fora da requisição que o pediu — este teste é o contrato
-// inteiro: enfileirou, rodou, salvou em disco e avisou pelo hub.
+// The review runs outside the request that asked for it — this test is the
+// whole contract: queued, ran, saved to disk and announced through the hub.
 func TestManagerRunsReviewAndSaves(t *testing.T) {
 	dir := t.TempDir()
-	// `cat` devolve o prompt recebido no stdin: dá para conferir o que o
-	// agente viu sem depender de um agente de verdade.
+	// `cat` returns the prompt received on stdin: that lets us check what the
+	// agent saw without depending on a real agent.
 	cfg := cfgFor(t, "cat")
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -124,8 +125,8 @@ func TestManagerRunsReviewAndSaves(t *testing.T) {
 	}
 }
 
-// Uma pipeline vira um job com um passo por agente, e cada passo chega ao
-// navegador com seu próprio estado — é o que a página anima.
+// A pipeline becomes a job with one step per agent, and each step reaches the
+// browser with its own state — that's what the page animates.
 func TestPipelineJobReportsEveryStep(t *testing.T) {
 	cfg := cfgFor(t, "echo")
 	cfg.Agent.Prompt = "{{task}}"
@@ -151,9 +152,9 @@ func TestPipelineJobReportsEveryStep(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	// Na fila o job já anuncia o que vai rodar. O estado do primeiro passo
-	// não entra na conta: o worker é livre para pegá-lo antes desta linha, e
-	// exigir "queued" aqui é uma corrida com ele.
+	// While queued the job already announces what it's going to run. The first
+	// step's state doesn't count: the worker is free to pick it up before this
+	// line, and demanding "queued" here is a race with it.
 	if view.Agent != "dupla" || len(view.Steps) != 2 {
 		t.Fatalf("job enfileirado devia listar os passos: %+v", view)
 	}
@@ -177,8 +178,8 @@ func TestPipelineJobReportsEveryStep(t *testing.T) {
 	}
 }
 
-// Publicar acontece no card do próprio review: o mesmo job volta a rodar com o
-// passo do agente de post no fim, e o review que o usuário leu continua lá.
+// Publishing happens on the review's own card: the same job runs again with the
+// post agent's step at the end, and the review the user read is still there.
 func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
@@ -186,7 +187,7 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	cfg.PostAgent = config.AgentDef{
 		Name: "post-report",
 		Task: "/post-report {{review_file}}",
-		// Publicar normalmente clona; aqui não há repositório de verdade.
+		// Publishing normally clones; here there's no real repository.
 		Checkout: &semClone,
 		Prompt:   "{{task}}",
 	}
@@ -229,7 +230,7 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 		t.Errorf("o último passo devia ser o agente de post, é %q", last.Name)
 	}
 
-	// Pedir de novo enquanto roda não abre um segundo card nem republica.
+	// Asking again while it runs doesn't open a second card or republish.
 	again, err := m.PublishWithAgent(review.ID, nil)
 	if err != nil {
 		t.Fatalf("PublishWithAgent (2): %v", err)
@@ -245,8 +246,8 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	if end.Publishing {
 		t.Error("terminada a publicação, o card volta a ser o do review")
 	}
-	// O review continua sendo o que o card mostra — o relatório do agente de
-	// post não toma o lugar dele.
+	// The review is still what the card shows — the post agent's report
+	// doesn't take its place.
 	full, _ := m.View(review.ID, true)
 	if full.Body != corpo.Body {
 		t.Errorf("o review na tela mudou depois de publicar:\n%s", full.Body)
@@ -254,8 +255,8 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	if full.SavedTo != done.SavedTo {
 		t.Errorf("o arquivo do review devia continuar %q, virou %q", done.SavedTo, full.SavedTo)
 	}
-	// E o agente de post recebeu o caminho do review: o `cat` devolve o
-	// prompt que leu, e ele sai no log do passo da publicação.
+	// And the post agent got the review's path: `cat` returns the prompt it
+	// read, and it comes out in the publishing step's log.
 	log, ok := m.Log(review.ID, 0)
 	if !ok {
 		t.Fatal("sem log")
@@ -269,8 +270,8 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	if !viuArquivo {
 		t.Errorf("o agente de post não recebeu o arquivo do review: %+v", log.Lines)
 	}
-	// E a publicação não gerou um segundo .md: o índice de revisados mora
-	// naquele diretório, mas publicar não escreve outro review.
+	// And publishing didn't produce a second .md: the index of reviewed PRs lives
+	// in that directory, but publishing doesn't write another review.
 	files, _ := os.ReadDir(dir)
 	var mds int
 	for _, f := range files {
@@ -283,8 +284,8 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	}
 }
 
-// Terminado o review, o PR fica marcado na listagem — e ganha o aviso quando
-// recebe commit novo depois.
+// Once the review is done, the PR is marked in the listing — and gets the
+// warning when it receives a new commit afterwards.
 func TestListingMarksReviewedAndChangedPRs(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
@@ -311,21 +312,21 @@ func TestListingMarksReviewedAndChangedPRs(t *testing.T) {
 		t.Fatalf("o PR devia ficar revisado e sem mudança: %+v", st)
 	}
 
-	// Mesmo PR, commit novo no topo: mudou depois do review.
+	// Same PR, new commit on top: it changed after the review.
 	mexido := pr
 	mexido.HeadRefOid = "def456"
 	if got := marks.Status(mexido); !got.Reviewed || !got.Changed {
 		t.Errorf("commit novo devia acender o aviso: %+v", got)
 	}
 
-	// E o que a página recebe carrega isso.
+	// And what the page receives carries that.
 	v := newPRView(mexido, false, time.Now()).withStatus(marks.Status(mexido), time.Now())
 	if !v.Reviewed || !v.Changed {
 		t.Errorf("a view do PR devia levar o histórico: %+v", v)
 	}
 }
 
-// Publicar um review que não terminou, ou publicar uma publicação, é recusado.
+// Publishing a review that didn't finish, or publishing a publication, is refused.
 func TestPublishWithAgentRefusesBadSources(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -344,7 +345,7 @@ func TestPublishWithAgentRefusesBadSources(t *testing.T) {
 	}
 }
 
-// O mesmo PR pedido duas vezes não pode virar dois clones.
+// The same PR requested twice can't turn into two clones.
 func TestEnqueueDedupesActivePR(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -363,7 +364,7 @@ func TestEnqueueDedupesActivePR(t *testing.T) {
 		t.Errorf("o mesmo PR virou dois jobs: %s e %s", first.ID, second.ID)
 	}
 
-	// Com outro agente, porém, é outro review — e entra na fila.
+	// With another agent, though, it's another review — and it goes into the queue.
 	cfg.Agents = []config.AgentDef{{Name: "outra-lente"}}
 	outra, err := cfg.ChoiceByName("outra-lente")
 	if err != nil {
@@ -415,10 +416,10 @@ func newTestServer(t *testing.T) *Server {
 	return srv
 }
 
-// A porta local manda clonar repositório e rodar agente com shell. Qualquer
-// página aberta em outra aba tem que bater na trave.
-// O log chega ao navegador em pedaços: cada pedido traz só o que veio depois
-// do `next` anterior. É isso que deixa a página acompanhar ao vivo.
+// The local port triggers cloning repositories and running agents with a shell.
+// Any page open in another tab must be turned away.
+// The log reaches the browser in chunks: each request brings only what came
+// after the previous `next`. That's what lets the page follow along live.
 func TestJobLogIsIncremental(t *testing.T) {
 	cfg := cfgFor(t, "sh")
 	cfg.Agent.Prompt = "{{task}}"
@@ -450,8 +451,8 @@ func TestJobLogIsIncremental(t *testing.T) {
 	if len(full.Lines) != 3 {
 		t.Fatalf("esperava 3 linhas, vieram %d: %+v", len(full.Lines), full.Lines)
 	}
-	// stdout e stderr são dois pipes lidos em paralelo: entre eles não há
-	// ordem garantida, mas cada um preserva a sua e o stderr entra no log.
+	// stdout and stderr are two pipes read in parallel: there's no guaranteed
+	// order between them, but each keeps its own and stderr goes into the log.
 	var out []string
 	var stderr int
 	for _, l := range full.Lines {
@@ -472,7 +473,7 @@ func TestJobLogIsIncremental(t *testing.T) {
 		t.Error("review terminado não está mais vivo")
 	}
 
-	// Pedindo do meio, só vem o que falta — e nada além do fim.
+	// Asking from the middle, only what's missing comes — and nothing past the end.
 	rest, _ := m.Log(view.ID, full.Lines[1].Seq)
 	if len(rest.Lines) != 2 || rest.Lines[0].Seq != full.Lines[1].Seq {
 		t.Errorf("pedido incremental trouxe %+v", rest.Lines)
@@ -481,7 +482,7 @@ func TestJobLogIsIncremental(t *testing.T) {
 		t.Errorf("do fim em diante não devia vir nada: %+v", end.Lines)
 	}
 
-	// E o mesmo pelo HTTP, que é por onde a página pede.
+	// And the same over HTTP, which is how the page asks.
 	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -497,7 +498,7 @@ func TestJobLogIsIncremental(t *testing.T) {
 	}
 }
 
-// A janela do log é limitada: um agente falante não pode encher a memória.
+// The log window is bounded: a chatty agent can't fill up memory.
 func TestLogWindowDropsOldest(t *testing.T) {
 	j := &Job{}
 	for i := range maxLogLines + 20 {
@@ -512,19 +513,19 @@ func TestLogWindowDropsOldest(t *testing.T) {
 	if j.logs[0].Text != "linha 20" {
 		t.Errorf("a janela devia ficar com o fim, começa em %q", j.logs[0].Text)
 	}
-	// Linha gigante não vai inteira para a memória.
+	// A giant line doesn't go into memory whole.
 	j.appendLog(0, "lente", "stdout", strings.Repeat("x", maxLogLineRunes*2))
 	if got := len([]rune(j.logs[len(j.logs)-1].Text)); got != maxLogLineRunes+1 {
 		t.Errorf("linha gigante devia ser cortada, ficou com %d runas", got)
 	}
 }
 
-// A página monta o seletor com o que o /api/state entrega, e um agente que não
-// existe é recusado antes de virar job.
+// The page builds the selector from what /api/state delivers, and an agent that
+// doesn't exist is refused before it becomes a job.
 func TestStateListsAgentsAndReviewRejectsUnknown(t *testing.T) {
 	cfg := cfgFor(t, "cat")
-	// A lista de um config novo é vazia; esta é a que o usuário montaria na
-	// página a partir das skills instaladas.
+	// A new config's list is empty; this is the one the user would build on
+	// the page from the installed skills.
 	cfg.Agents = []config.AgentDef{
 		{Name: "review-fleet", Task: "/review-fleet {{number}}"},
 		{Name: "exploit-digger", Task: "/exploit-digger {{number}}"},
@@ -561,7 +562,7 @@ func TestStateListsAgentsAndReviewRejectsUnknown(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &st); err != nil {
 		t.Fatalf("decodificando /api/state: %v", err)
 	}
-	// Os agents e pipelines do config, mais o agente de publicação no fim.
+	// The config's agents and pipelines, plus the publishing agent at the end.
 	if len(st.Agents) != len(cfg.Agents)+len(cfg.Pipelines)+1 {
 		t.Fatalf("o seletor veio com %d escolhas", len(st.Agents))
 	}
@@ -577,8 +578,8 @@ func TestStateListsAgentsAndReviewRejectsUnknown(t *testing.T) {
 		t.Errorf("a pipeline devia vir com seus passos: %+v", pipeline)
 	}
 
-	// Cada agente diz qual skill ele invoca e se ela está instalada — a
-	// página usa isso para avisar antes de o review falhar.
+	// Each agent says which skill it invokes and whether it's installed — the
+	// page uses this to warn before the review fails.
 	fleet := st.Agents[0]
 	if len(fleet.Skills) != 1 || fleet.Skills[0].Name != "review-fleet" {
 		t.Errorf("o review-fleet devia declarar a skill que chama: %+v", fleet.Skills)
@@ -615,7 +616,7 @@ func TestGuardBlocksForeignHostAndOrigin(t *testing.T) {
 			r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":[]}`))
 			r.Header.Set("Origin", "http://127.0.0.1:7777")
 			return r
-		}(), http.StatusBadRequest}, // passa no guard, cai na validação
+		}(), http.StatusBadRequest}, // passes the guard, falls into validation
 	}
 
 	for _, tc := range tests {
@@ -629,7 +630,7 @@ func TestGuardBlocksForeignHostAndOrigin(t *testing.T) {
 	}
 }
 
-// O nome do review vem da URL: não pode virar leitura de arquivo qualquer.
+// The review name comes from the URL: it can't turn into reading an arbitrary file.
 func TestSavedReviewRejectsTraversal(t *testing.T) {
 	h := newTestServer(t).Handler()
 	for _, name := range []string{"../config.yaml", "..%2fconfig.yaml", "config.yaml"} {
@@ -641,9 +642,9 @@ func TestSavedReviewRejectsTraversal(t *testing.T) {
 	}
 }
 
-// A descrição do PR é escrita por quem abriu o PR e cai direto no innerHTML
-// da página — e essa página fala com um servidor que dispara review e comenta
-// no GitHub no seu nome. Nada de script, nada de javascript:.
+// The PR description is written by whoever opened the PR and lands straight in
+// the page's innerHTML — and that page talks to a server that triggers reviews
+// and comments on GitHub in your name. No script, no javascript:.
 func TestRenderMarkdownSanitizes(t *testing.T) {
 	perigos := []struct {
 		name string
@@ -666,7 +667,7 @@ func TestRenderMarkdownSanitizes(t *testing.T) {
 		})
 	}
 
-	// E o que é legítimo tem que continuar chegando inteiro.
+	// And what's legitimate has to keep arriving whole.
 	got := renderMarkdown("| a | b |\n| --- | --- |\n| 1 | 2 |\n\n- [x] feito\n\n```go\nx := 1\n```\n\n[rfc](https://example.com)")
 	for _, want := range []string{"<table>", `type="checkbox"`, `class="language-go"`, `href="https://example.com"`} {
 		if !strings.Contains(got, want) {
@@ -675,12 +676,12 @@ func TestRenderMarkdownSanitizes(t *testing.T) {
 	}
 }
 
-// A lista de agentes começa vazia e é montada na página, a partir das skills
-// instaladas: adicionar, trocar o padrão e remover são três chamadas, e cada
-// uma devolve a lista inteira já redesenhada.
+// The agent list starts empty and is built on the page, from the installed
+// skills: adding, changing the default and removing are three calls, and each
+// one returns the whole list already redrawn.
 func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("BAZEL_HOME", home) // o Save não pode encostar no ~/.bazel de verdade
+	t.Setenv("BAZEL_HOME", home) // Save must not touch the real ~/.bazel
 
 	skillsDir := t.TempDir()
 	for _, s := range []struct{ nome, desc string }{
@@ -725,7 +726,7 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 		return rec, out.Agents
 	}
 
-	// Começa vazia: só o agente de publicação, que não é escolha do seletor.
+	// It starts empty: only the publishing agent, which isn't a selector choice.
 	_, lista := call(http.MethodGet, "/api/agents", "")
 	if len(lista) != 1 || !lista[0].Publisher {
 		t.Fatalf("a lista devia começar vazia: %+v", lista)
@@ -738,7 +739,7 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 	if len(lista) != 2 || lista[0].Name != "review-fleet" || lista[0].Posts {
 		t.Fatalf("o agente da skill devia entrar na lista: %+v", lista)
 	}
-	// A descrição sai do frontmatter da skill, cortada na primeira frase.
+	// The description comes from the skill's frontmatter, cut at the first sentence.
 	if lista[0].Description != "Roda uma frota de lentes sobre o mesmo diff" {
 		t.Errorf("descrição inesperada: %q", lista[0].Description)
 	}
@@ -746,8 +747,8 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 		t.Errorf("o agente devia declarar a skill instalada que chama: %+v", lista[0].Skills)
 	}
 
-	// A mesma skill de novo é recusada; a variante que publica sozinha entra
-	// com outro nome.
+	// The same skill again is refused; the variant that publishes on its own
+	// goes in under another name.
 	if rec, _ := call(http.MethodPost, "/api/agents", `{"skill":"review-fleet"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("agente repetido devia dar 400, deu %d", rec.Code)
 	}
@@ -756,14 +757,14 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 		t.Fatalf("a variante que publica devia entrar marcada: %+v", lista)
 	}
 
-	// Skill que não está na máquina não vira agente: isso só falharia na hora
-	// de rodar, que é tarde demais.
+	// A skill that isn't on the machine doesn't become an agent: that would only
+	// fail at run time, which is too late.
 	rec, _ = call(http.MethodPost, "/api/agents", `{"skill":"nao-instalada"}`)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "is not installed") {
 		t.Errorf("skill ausente devia dar 400 explicando: %d %s", rec.Code, rec.Body)
 	}
 
-	// Trocar o padrão é reordenar: o primeiro da lista é quem roda.
+	// Changing the default is reordering: the first in the list is the one that runs.
 	_, lista = call(http.MethodPost, "/api/agents/review-fleet-post/default", "")
 	if lista[0].Name != "review-fleet-post" {
 		t.Errorf("o padrão devia ir para a frente: %+v", lista)
@@ -773,7 +774,7 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 		t.Errorf("remover devia tirar da lista: %+v", lista)
 	}
 
-	// E tudo isso está no config.yaml, que é o que sobrevive ao restart.
+	// And all of this is in config.yaml, which is what survives a restart.
 	yaml, err := os.ReadFile(filepath.Join(home, "config.yaml"))
 	if err != nil {
 		t.Fatalf("o config devia ter sido salvo: %v", err)
@@ -783,7 +784,7 @@ func TestAgentEndpointsMontamAListaAPartirDasSkills(t *testing.T) {
 	}
 }
 
-// agentePayload é o agente como a página o recebe.
+// agentePayload is the agent as the page receives it.
 type agentePayload struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -795,8 +796,8 @@ type agentePayload struct {
 	} `json:"skills"`
 }
 
-// Sem agente nenhum não há review para enfileirar — e a página recebe o
-// porquê, não um 500 seco.
+// With no agent at all there's no review to queue — and the page gets the
+// reason, not a bare 500.
 func TestReviewSemAgenteConfigurado(t *testing.T) {
 	t.Setenv("BAZEL_HOME", t.TempDir())
 	cfg := config.Default()
@@ -819,16 +820,16 @@ func TestReviewSemAgenteConfigurado(t *testing.T) {
 	}
 }
 
-// O gasto do agente chega à página: o que o evento final do stream-json diz
-// vira os tokens e o custo do job, que é o que aparece no fim do review.
+// The agent's spend reaches the page: what the stream-json final event says
+// becomes the job's tokens and cost, which is what shows at the end of the review.
 func TestJobViewLevaOGastoDeTokens(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "sh")
 	events := `{"type":"result","subtype":"success","result":"# Veredito\n\nOK.","duration_ms":9000,` +
 		`"total_cost_usd":0.42,"usage":{"input_tokens":1200,"output_tokens":8000,` +
 		`"cache_creation_input_tokens":4000,"cache_read_input_tokens":20000}}`
-	// As flags de formato vão depois do script: para o `sh` são posicionais,
-	// e para o Bazel são o que liga a leitura do stream.
+	// The format flags go after the script: to `sh` they're positional,
+	// and to Bazel they're what turns on stream reading.
 	cfg.Agent.Args = []string{"-c", "cat <<'FIM'\n" + events + "\nFIM\n", "sh", "--output-format", "stream-json"}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -849,7 +850,7 @@ func TestJobViewLevaOGastoDeTokens(t *testing.T) {
 	if done.Cost != 0.42 {
 		t.Errorf("o custo devia chegar junto, veio %v", done.Cost)
 	}
-	// E fica no review salvo: quem abrir o arquivo depois vê o que custou.
+	// And it stays in the saved review: whoever opens the file later sees what it cost.
 	saved, err := os.ReadFile(done.SavedTo)
 	if err != nil {
 		t.Fatalf("lendo review salvo: %v", err)
@@ -859,7 +860,7 @@ func TestJobViewLevaOGastoDeTokens(t *testing.T) {
 	}
 }
 
-// O ✕ do card tira o job da fila desta sessão — e avisa as outras abas.
+// The card's ✕ removes the job from this session's queue — and tells the other tabs.
 func TestRemoveTiraJobDaFila(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
@@ -890,7 +891,7 @@ func TestRemoveTiraJobDaFila(t *testing.T) {
 		t.Error("remover duas vezes devia dar erro")
 	}
 
-	// O aviso de saída chega às outras abas pelo mesmo canal dos jobs.
+	// The removal notice reaches the other tabs through the same channel as the jobs.
 	deadline := time.After(5 * time.Second)
 	for {
 		select {
@@ -912,7 +913,7 @@ func TestRemoveTiraJobDaFila(t *testing.T) {
 	}
 }
 
-// Um review ainda vivo morre junto: card fora da tela e agente fora do ar.
+// A review still alive dies with it: card off the screen and agent off the air.
 func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "sleep", "30")
@@ -928,7 +929,7 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	// Espera o worker pegar o job antes de tirá-lo da fila.
+	// Waits for the worker to pick up the job before removing it from the queue.
 	deadline := time.Now().Add(5 * time.Second)
 	for {
 		v, ok := m.View(view.ID, false)
@@ -947,8 +948,8 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	if _, ok := m.View(view.ID, false); ok {
 		t.Error("o job devia ter saído da fila")
 	}
-	// O `sleep 30` foi morto junto: se não tivesse sido, o Manager ainda
-	// estaria ocupado e o próximo review ficaria esperando.
+	// The `sleep 30` was killed along with it: if it hadn't been, the Manager
+	// would still be busy and the next review would be left waiting.
 	segundo, err := m.Enqueue(testPR(999), false, cfg.DefaultChoice())
 	if err != nil {
 		t.Fatalf("Enqueue do segundo: %v", err)
@@ -966,15 +967,15 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	}
 }
 
-// Fechar o Bazel antes de publicar não pode custar o review: ele está em
-// disco, e daí ainda dá para mandá-lo ao PR — sem job de origem nenhum, que é
-// justamente o caso de quem reiniciou o servidor.
+// Closing Bazel before publishing can't cost you the review: it's on disk, and
+// from there it can still be sent to the PR — with no originating job at all,
+// which is exactly the case of someone who restarted the server.
 func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
-	// O agente de publicação também é o `cat` daqui: o que se testa é o
-	// caminho do arquivo até a fila, não o que o post-report faria. Sem
-	// clone: publicar de verdade clona, mas o repositório daqui é fictício.
+	// The publishing agent is also the `cat` here: what's being tested is the
+	// file's path to the queue, not what post-report would do. No clone:
+	// real publishing clones, but the repository here is fictitious.
 	semClone := false
 	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &semClone}
 
@@ -998,8 +999,8 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 		t.Fatalf("devia virar um job de publicação: %+v", view)
 	}
 
-	// Pedir de novo enquanto o primeiro roda não abre um segundo: publicar
-	// duas vezes o mesmo arquivo é comentar duas vezes no PR.
+	// Asking again while the first one runs doesn't open a second: publishing
+	// the same file twice is commenting twice on the PR.
 	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil)
 	if err != nil {
 		t.Fatalf("PublishSaved de novo: %v", err)
@@ -1008,8 +1009,8 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 		t.Errorf("esperava o mesmo job em curso, veio %+v", again)
 	}
 
-	// Uma publicação não gera outro arquivo: o review já está salvo, e este
-	// job só levou o que estava nele ao PR.
+	// A publication doesn't produce another file: the review is already saved,
+	// and this job only took what was in it to the PR.
 	done := waitFor(t, ch, view.ID, StateDone)
 	if done.SavedTo != "" {
 		t.Errorf("uma publicação não devia salvar outro review: %q", done.SavedTo)
@@ -1019,8 +1020,8 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 	}
 }
 
-// Cada achado do review sai numa <section> numerada: é nela que a página põe
-// a caixa de marcar, e o número é o que o publish recebe em `skip`.
+// Each review finding comes out in a numbered <section>: that's where the page
+// puts the checkbox, and the number is what publish receives in `skip`.
 func TestRenderReviewEmbrulhaOsAchados(t *testing.T) {
 	src := "# Report\n\n## Findings\n\n### One\n\ntext <script>x</script>\n\n### Two\n\nmore\n\n## Coverage\n\n- ok\n"
 	got := renderReview(src)
@@ -1040,12 +1041,12 @@ func TestRenderReviewEmbrulhaOsAchados(t *testing.T) {
 	}
 }
 
-// Desmarcar um achado na tela tira só ele do que o agente de post recebe: o
-// arquivo salvo continua inteiro e a cópia cortada vai em publish/.
+// Unticking a finding on screen removes only it from what the post agent gets:
+// the saved file stays whole and the trimmed copy goes in publish/.
 func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 	dir := t.TempDir()
-	// O `cat` devolve o prompt: o do review é o relatório com dois achados,
-	// e o do post é a task — que traz o caminho do arquivo que ele recebeu.
+	// `cat` returns the prompt: the review's is the report with two findings,
+	// and the post's is the task — which carries the path of the file it got.
 	cfg := cfgFor(t, "cat")
 	cfg.Agent.Prompt = "## Findings\n\n### First\n\nreal bug\n\n### Second\n\nfalse positive\n"
 	semClone := false
@@ -1100,15 +1101,15 @@ func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 	if !strings.Contains(string(orig), "false positive") {
 		t.Error("o review salvo não devia perder o achado desmarcado")
 	}
-	// E o review na tela continua inteiro.
+	// And the review on screen stays whole.
 	after, _ := m.View(review.ID, true)
 	if after.Body != full.Body {
 		t.Error("o corpo do review na tela mudou")
 	}
 }
 
-// O corpo do pedido de publicação é opcional: vazio é "publica tudo", e um
-// índice negativo é recusado antes de chegar à fila.
+// The publish request body is optional: empty means "publish everything", and
+// a negative index is refused before it reaches the queue.
 func TestReadSkipAceitaCorpoVazio(t *testing.T) {
 	for _, tc := range []struct {
 		body string
@@ -1135,9 +1136,9 @@ func TestReadSkipAceitaCorpoVazio(t *testing.T) {
 	}
 }
 
-// Agente cuja saída não é review não tem caminho para o PR: nem o agente de
-// post, nem o comentário colado. A página esconde os botões; isto é o que
-// segura um pedido vindo de fora dela.
+// An agent whose output isn't a review has no path to the PR: neither the post
+// agent nor the pasted comment. The page hides the buttons; this is what holds
+// back a request coming from outside it.
 func TestPublicarRecusaSaidaQueNaoEReview(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -1178,8 +1179,9 @@ func TestPublicarRecusaSaidaQueNaoEReview(t *testing.T) {
 	}
 }
 
-// O painel monta a pipeline pela API: cria, aparece no seletor, e sai por uma
-// rota própria — pipeline está em `pipelines:`, agente está em `agents:`.
+// The panel builds the pipeline through the API: create, it shows up in the
+// selector, and leaves through its own route — a pipeline is in `pipelines:`,
+// an agent is in `agents:`.
 func TestPipelineEndpoints(t *testing.T) {
 	srv := newTestServer(t)
 	h := srv.Handler()
@@ -1225,7 +1227,7 @@ func TestPipelineEndpoints(t *testing.T) {
 		t.Fatalf("a pipeline criada devia estar no seletor: %+v", out.Agents)
 	}
 
-	// Passo que não é agente é recusado com o motivo, não com um 500.
+	// A step that isn't an agent is refused with the reason, not with a 500.
 	if rec := post(t, "/api/pipelines", `{"name":"x","steps":["nao-existe"]}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("passo desconhecido devia dar 400, veio %d: %s", rec.Code, rec.Body)
 	}
@@ -1241,11 +1243,11 @@ func TestPipelineEndpoints(t *testing.T) {
 	}
 }
 
-// O config.yaml é o que se leva para outra máquina: sai como arquivo, com o
-// nome certo, e não como texto para copiar da tela.
+// config.yaml is what you take to another machine: it comes out as a file, with
+// the right name, and not as text to copy off the screen.
 func TestConfigDownload(t *testing.T) {
 	srv := newTestServer(t)
-	// O download é o arquivo em disco; sem ele gravado não há o que baixar.
+	// The download is the file on disk; without it saved there's nothing to download.
 	if err := srv.cfg.Save(); err != nil {
 		t.Fatalf("gravando o config: %v", err)
 	}
@@ -1263,9 +1265,9 @@ func TestConfigDownload(t *testing.T) {
 	}
 }
 
-// A pipeline que termina em `publish` não publica sozinha: salva o review e
-// para mostrando só o que vai ao PR — o passo que não é review fica à parte —
-// para você escolher os achados e mandar.
+// A pipeline that ends in `publish` doesn't publish on its own: it saves the
+// review and halts, showing only what goes to the PR — the step that isn't a
+// review stays apart — so you can choose the findings and send them.
 func TestPipelineEsperaParaPublicar(t *testing.T) {
 	cfg := cfgFor(t, "echo")
 	cfg.Agent.Prompt = "{{task}}"
@@ -1315,10 +1317,10 @@ func TestPipelineEsperaParaPublicar(t *testing.T) {
 	}
 }
 
-// O agente às vezes devolve o relatório colado num bloco ```markdown. Dentro
-// dele nada renderiza — a tela mostra o markdown cru em vez do review — e por
-// isso o bloco sai antes de qualquer outra coisa: na tela, no disco e no que
-// vai ao PR.
+// The agent sometimes returns the report wrapped in a ```markdown block. Inside
+// it nothing renders — the screen shows the raw markdown instead of the review
+// — and that's why the block comes out before anything else: on screen, on
+// disk and in what goes to the PR.
 func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	const relatorio = "```markdown\n# Review Fleet — PR #482\n\n**Verdict:** comment\n\n## Findings\n\n### Token stored client-side\n\nThe refresh token is written to localStorage.\n```"
 
@@ -1358,15 +1360,16 @@ func TestRelatorioSaiDoBlocoDeCodigo(t *testing.T) {
 	}
 }
 
-// Fila cheia devolve erro e marca o job como falho — sem travar o Manager.
-// Antes, Enqueue chamava finish segurando o mutex que finish também trava.
+// A full queue returns an error and marks the job as failed — without locking
+// up the Manager. Before, Enqueue called finish while holding the mutex that
+// finish also locks.
 func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
 	cfg := cfgFor(t, "cat")
 	m := &Manager{
 		cfg:   cfg,
 		hub:   NewHub(),
 		ctx:   context.Background(),
-		queue: make(chan queued), // sem worker e sem buffer: sempre cheia
+		queue: make(chan queued), // no worker and no buffer: always full
 		jobs:  map[string]*Job{},
 	}
 
@@ -1392,22 +1395,22 @@ func TestEnqueueComFilaCheiaNaoTrava(t *testing.T) {
 		t.Fatal("Enqueue travou com a fila cheia")
 	}
 
-	// O Manager continua respondendo depois.
+	// The Manager keeps responding afterwards.
 	if _, ok := m.View("j1", false); !ok {
 		t.Error("job da fila cheia sumiu")
 	}
 }
 
-// Com a fila cheia, ninguém pode ver o job como queued antes de ele falhar:
-// um Enqueue concorrente do mesmo PR que o achasse nessa janela receberia
-// sucesso e um job que nunca entrou na fila.
+// With the queue full, nobody may see the job as queued before it fails: a
+// concurrent Enqueue of the same PR that found it in that window would get
+// success and a job that never entered the queue.
 func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
 	cfg := cfgFor(t, "cat")
 	m := &Manager{
 		cfg:   cfg,
 		hub:   NewHub(),
 		ctx:   context.Background(),
-		queue: make(chan queued), // sem worker e sem buffer: sempre cheia
+		queue: make(chan queued), // no worker and no buffer: always full
 		jobs:  map[string]*Job{},
 	}
 
@@ -1439,8 +1442,8 @@ func TestEnqueueComFilaCheiaNaoDevolveJobFantasma(t *testing.T) {
 	}
 }
 
-// Exposed avisa de qualquer escuta além do loopback — inclusive `:7777`, que
-// abre todas as interfaces mesmo com a checagem de Host ligada.
+// Exposed warns about any listen beyond loopback — including `:7777`, which
+// opens all interfaces even with the Host check on.
 func TestExposedDetectsNonLoopbackListen(t *testing.T) {
 	for addr, want := range map[string]bool{
 		"127.0.0.1:7777":    false,
@@ -1498,8 +1501,8 @@ func contaNoLog(path, linha string) int {
 const relatorioDaFrota = "## Findings\n\n### First\n\nreal bug\n\n### Second\n\nfalse positive\n"
 const relatorioDaHistoria = "## Findings\n\n### Contexto\n\na história do PR\n"
 
-// esperaPublicar runs `[historia, frota, publish]` until the card stops to wait
-// for you. post is the post agent; frota, what the fleet prints.
+// esperaPublicar runs `[historia, frota, publish]` until the card stops and
+// waits for you. post is the post agent; frota, what the fleet prints.
 func esperaPublicar(t *testing.T, dir, frota string, post config.AgentDef) (*Manager, chan []byte, jobView) {
 	t.Helper()
 	cfg := cfgFor(t, "echo")

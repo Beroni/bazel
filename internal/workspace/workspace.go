@@ -1,5 +1,5 @@
-// Package workspace prepara um clone descartável do repositório, com o pull
-// request já em checkout, para o agente rodar dentro dele.
+// Package workspace prepares a disposable clone of the repository, with the pull
+// request already checked out, for the agent to run inside it.
 package workspace
 
 import (
@@ -15,26 +15,27 @@ import (
 	"github.com/beroni/bazel/internal/gh"
 )
 
-// Workspace é um clone temporário com o PR em checkout.
+// Workspace is a temporary clone with the PR checked out.
 type Workspace struct {
-	// Dir é a raiz do clone.
+	// Dir is the root of the clone.
 	Dir string
-	// Keep preserva o diretório no Cleanup, para inspeção manual.
+	// Keep preserves the directory on Cleanup, for manual inspection.
 	Keep bool
 }
 
-// cloneTimeout limita o clone e o checkout. O timeout_seconds do agente só
-// começa a contar no passo, depois do clone; sem este limite um `gh repo
-// clone` pendurado na rede segura o worker até alguém cancelar na mão.
+// cloneTimeout limits the clone and the checkout. The agent's timeout_seconds
+// only starts counting at the step, after the clone; without this limit a `gh
+// repo clone` hanging on the network holds the worker until someone cancels
+// by hand.
 var cloneTimeout = 15 * time.Minute
 
-// waitDelay é quanto o Run espera os pipes depois de matar o processo.
+// waitDelay is how long Run waits for the pipes after killing the process.
 const waitDelay = 10 * time.Second
 
-// Prepare clona o repositório do PR numa pasta temporária e faz o checkout da
-// branch do PR. O clone é blobless (--filter=blob:none) em vez de raso: baixa
-// pouco, mas mantém o histórico inteiro — sem ele o `git diff base...HEAD` do
-// agente não acha o merge-base.
+// Prepare clones the PR's repository into a temporary folder and checks out
+// the PR branch. The clone is blobless (--filter=blob:none) instead of
+// shallow: it downloads little but keeps the whole history — without it the
+// agent's `git diff base...HEAD` cannot find the merge-base.
 func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 	dir, err := os.MkdirTemp("", fmt.Sprintf("bazel-%s-%d-", sanitize(pr.Slug()), pr.Number))
 	if err != nil {
@@ -45,19 +46,19 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
 	defer cancel()
 
-	// git clone aceita um diretório existente desde que esteja vazio.
+	// git clone accepts an existing directory as long as it is empty.
 	if err := run(ctx, "", "gh", "repo", "clone", pr.Repo, dir, "--", "--filter=blob:none"); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("clonando %s: %w", pr.Repo, err)
 	}
-	// `gh pr checkout` resolve sozinho PR vindo de fork.
+	// `gh pr checkout` handles PRs coming from forks on its own.
 	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number)); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("checkout de %s: %w", pr.Key(), err)
 	}
-	// gh repo clone só traz os refs remotos que o clone inicial configurou —
-	// geralmente a branch padrão. Um PR para uma release branch precisa da base
-	// explícita para que o agente consiga comparar origin/<base>...HEAD.
+	// gh repo clone only brings the remote refs the initial clone configured —
+	// usually the default branch. A PR against a release branch needs the base
+	// fetched explicitly so the agent can compare origin/<base>...HEAD.
 	if base := strings.TrimSpace(pr.BaseRefName); base != "" {
 		if err := ensurePRBase(ctx, dir, base); err != nil {
 			ws.Remove()
@@ -96,8 +97,8 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	// O git que o gh dispara herda o stderr: sem WaitDelay, matar o gh no
-	// timeout não solta o Run enquanto o neto pendurado segura o pipe.
+	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
+	// timeout does not release Run while the hung grandchild holds the pipe.
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
@@ -108,7 +109,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	return strings.TrimSpace(stdout.String()), nil
 }
 
-// Cleanup apaga o clone, a menos que Keep esteja ligado.
+// Cleanup deletes the clone, unless Keep is on.
 func (w *Workspace) Cleanup() {
 	if w == nil || w.Keep {
 		return
@@ -116,7 +117,7 @@ func (w *Workspace) Cleanup() {
 	w.Remove()
 }
 
-// Remove apaga o clone incondicionalmente.
+// Remove deletes the clone unconditionally.
 func (w *Workspace) Remove() {
 	if w == nil || w.Dir == "" {
 		return
@@ -129,8 +130,8 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	// O git que o gh dispara herda o stderr: sem WaitDelay, matar o gh no
-	// timeout não solta o Run enquanto o neto pendurado segura o pipe.
+	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
+	// timeout does not release Run while the hung grandchild holds the pipe.
 	cmd.WaitDelay = waitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
@@ -141,8 +142,8 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 	return nil
 }
 
-// lastLines corta a saída de erro do git/gh, que costuma vir com barra de
-// progresso antes da mensagem que interessa.
+// lastLines trims the git/gh error output, which usually comes with a
+// progress bar before the message that matters.
 func lastLines(s string, n int) string {
 	lines := strings.Split(strings.TrimSpace(s), "\n")
 	if len(lines) > n {
@@ -151,7 +152,7 @@ func lastLines(s string, n int) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-// sanitize deixa só o que pode virar prefixo de diretório temporário.
+// sanitize keeps only what can become a temporary directory prefix.
 func sanitize(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch {

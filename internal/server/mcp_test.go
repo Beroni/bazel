@@ -13,7 +13,7 @@ import (
 	"github.com/beroni/bazel/internal/gh"
 )
 
-// mcpCall manda uma mensagem JSON-RPC ao /mcp e devolve o status e o corpo.
+// mcpCall sends a JSON-RPC message to /mcp and returns the status and body.
 func mcpCall(t *testing.T, h http.Handler, body string, mod ...func(*http.Request)) (int, map[string]any) {
 	t.Helper()
 	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/mcp", strings.NewReader(body))
@@ -31,8 +31,8 @@ func mcpCall(t *testing.T, h http.Handler, body string, mod ...func(*http.Reques
 	return w.Code, out
 }
 
-// mcpTool chama uma ferramenta e devolve o structuredContent, ou falha o teste
-// se ela devolveu erro.
+// mcpTool calls a tool and returns the structuredContent, or fails the test if
+// it returned an error.
 func mcpToolCall(t *testing.T, h http.Handler, name string, args any) map[string]any {
 	t.Helper()
 	res := mcpToolResult(t, h, name, args)
@@ -66,8 +66,8 @@ func toolNames(t *testing.T, h http.Handler) []string {
 	return names
 }
 
-// É o que o `claude mcp add --transport http` faz ao registrar: initialize,
-// a notificação de pronto e a lista de ferramentas.
+// This is what `claude mcp add --transport http` does when registering:
+// initialize, the ready notification and the tool list.
 func TestMCPHandshakeAndDiscovery(t *testing.T) {
 	h := newTestServer(t).Handler()
 
@@ -97,7 +97,7 @@ func TestMCPHandshakeAndDiscovery(t *testing.T) {
 		t.Error("publish_review não pode aparecer sem mcp_allow_publish")
 	}
 
-	// Versão desconhecida: o servidor oferece a dele.
+	// Unknown version: the server offers its own.
 	_, out = mcpCall(t, h, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}`)
 	if v := out["result"].(map[string]any)["protocolVersion"]; v != mcpVersions[0] {
 		t.Errorf("versão desconhecida devia cair na %s, caiu em %v", mcpVersions[0], v)
@@ -138,8 +138,9 @@ func TestMCPProtocolErrors(t *testing.T) {
 	}
 }
 
-// withLens dá ao servidor um agente nomeado. O bloco `agent` sozinho, que é o
-// que newTestServer deixa, é recusado pelo /mcp sem a proibição de publicar.
+// withLens gives the server a named agent. The `agent` block alone, which is
+// what newTestServer leaves, is refused by /mcp without the publish
+// prohibition.
 func withLens(srv *Server) *Server {
 	srv.cfgMu.Lock()
 	srv.cfg.Agents = []config.AgentDef{{Name: "lente", Task: "revise"}}
@@ -147,7 +148,8 @@ func withLens(srv *Server) *Server {
 	return srv
 }
 
-// O /mcp manda clonar e rodar agente tanto quanto a página: o guard vale igual.
+// The /mcp makes the server clone and run agents just as the page does: the
+// guard applies equally.
 func TestMCPBehindGuard(t *testing.T) {
 	h := newTestServer(t).Handler()
 	body := `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
@@ -160,8 +162,8 @@ func TestMCPBehindGuard(t *testing.T) {
 	}
 }
 
-// web_ui sai do endereço em que o servidor escuta, nunca do Host de quem
-// pergunta — e, depois do Run, da porta que ele de fato pegou.
+// web_ui comes from the address the server listens on, never from the Host of
+// whoever asks — and, after Run, from the port it actually got.
 func TestMCPWebUIIgnoresHost(t *testing.T) {
 	srv := withLens(newTestServer(t))
 	srv.prs = []gh.PR{testPR(482)}
@@ -181,7 +183,7 @@ func TestMCPWebUIIgnoresHost(t *testing.T) {
 	}
 }
 
-// O caminho inteiro de um agente externo: enfileira, espera, lê o review.
+// The whole path of an external agent: enqueue, wait, read the review.
 func TestMCPEnqueueAndPollToCompletion(t *testing.T) {
 	srv := withLens(newTestServer(t))
 	srv.prs = []gh.PR{testPR(482)}
@@ -231,8 +233,8 @@ func TestMCPEnqueueAndPollToCompletion(t *testing.T) {
 	}
 }
 
-// Publicar pelo MCP é impossível sem a chave — nem pela ferramenta, nem pelo
-// atalho de escolher um agente que publica sozinho.
+// Publishing over MCP is impossible without the key — neither through the tool
+// nor through the shortcut of choosing an agent that publishes on its own.
 func TestMCPPublishGate(t *testing.T) {
 	t.Setenv("BAZEL_HOME", t.TempDir())
 	cfg := cfgFor(t, "cat")
@@ -339,10 +341,10 @@ func TestMCPPublishGateOtherDoors(t *testing.T) {
 	}
 }
 
-// Publicar sem ter declarado posts também é publicar: uma task com --post, um
-// prompt que autoriza, e o bloco `agent` sozinho, cujo prompt o Bazel não
-// escreveu. Sem a chave, o /mcp recusa todos; com a proibição do molde padrão,
-// o bloco `agent` passa.
+// Publishing without having declared posts is also publishing: a task with
+// --post, a prompt that authorizes it, and the `agent` block alone, whose
+// prompt Bazel did not write. Without the key, /mcp refuses all of them; with
+// the default template's prohibition, the `agent` block passes.
 func TestMCPPublishGateUndeclared(t *testing.T) {
 	ref := []string{"acme/api-core#482"}
 	cases := []struct {
@@ -506,7 +508,7 @@ func TestMCPJSONRPCErrorCodes(t *testing.T) {
 		t.Errorf("[1] devia dar uma resposta -32600, veio %s", raw)
 	}
 
-	// Lote acima do teto: recusado inteiro, sem rodar nenhum item.
+	// Batch above the ceiling: refused whole, without running any item.
 	items := make([]string, mcpMaxBatch+1)
 	for i := range items {
 		items[i] = fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"ping"}`, i)

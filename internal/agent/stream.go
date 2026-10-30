@@ -1,6 +1,6 @@
-// Este arquivo traduz o JSONL do `claude -p --output-format stream-json` em
-// linhas de log legíveis. É o que faz a interface web mostrar o agente
-// trabalhando — sem isso, um `claude -p` fica mudo até o relatório sair.
+// This file translates the JSONL from `claude -p --output-format stream-json`
+// into readable log lines. It's what makes the web interface show the agent
+// working — without it, a `claude -p` stays silent until the report comes out.
 package agent
 
 import (
@@ -11,8 +11,9 @@ import (
 	"time"
 )
 
-// isStreamJSON diz se os args pedem o formato de eventos. Só nesse caso o
-// stdout é JSONL: em qualquer outro é o relatório em si, e sai cru no log.
+// isStreamJSON says whether the args ask for the event format. Only then is
+// stdout JSONL: in any other case it's the report itself, and goes raw to the
+// log.
 func isStreamJSON(args []string) bool {
 	for i, a := range args {
 		if v, ok := strings.CutPrefix(a, "--output-format="); ok {
@@ -25,29 +26,29 @@ func isStreamJSON(args []string) bool {
 	return false
 }
 
-// streamEvent é a parte de um evento do stream que interessa aqui. O formato
-// tem muito mais campo do que isto; tudo que não está mapeado é ignorado de
-// propósito, para uma versão nova do agente não quebrar o parser.
+// streamEvent is the part of a stream event that matters here. The format has
+// many more fields than this; everything not mapped is ignored on purpose, so a
+// new version of the agent doesn't break the parser.
 type streamEvent struct {
 	Type    string `json:"type"`
 	Subtype string `json:"subtype"`
-	// Result e IsError vêm no evento final.
+	// Result and IsError come in the final event.
 	Result     string  `json:"result"`
 	IsError    bool    `json:"is_error"`
 	DurationMS int     `json:"duration_ms"`
 	CostUSD    float64 `json:"total_cost_usd"`
-	// Usage é o gasto da conversa principal — só dela. Um agente que dispara
-	// sub-agentes gasta muito mais do que isto diz.
+	// Usage is the spend of the main conversation — only that. An agent that
+	// spawns sub-agents spends much more than this says.
 	Usage struct {
 		InputTokens  int `json:"input_tokens"`
 		OutputTokens int `json:"output_tokens"`
 		CacheWrite   int `json:"cache_creation_input_tokens"`
 		CacheRead    int `json:"cache_read_input_tokens"`
 	} `json:"usage"`
-	// ModelUsage é o gasto por modelo, e é ele que fecha a conta: entram as
-	// lentes que rodaram como sub-agente e os modelos auxiliares que o próprio
-	// Claude Code usa. Numa rodada com uma lente só, o `usage` acima contou
-	// 52k tokens enquanto este somou 68k.
+	// ModelUsage is the spend per model, and it's what settles the count: it
+	// includes the lenses that ran as sub-agents and the auxiliary models Claude
+	// Code itself uses. In a run with a single lens, the `usage` above counted
+	// 52k tokens while this one added up to 68k.
 	ModelUsage map[string]struct {
 		InputTokens  int     `json:"inputTokens"`
 		OutputTokens int     `json:"outputTokens"`
@@ -55,8 +56,8 @@ type streamEvent struct {
 		CacheWrite   int     `json:"cacheCreationInputTokens"`
 		CostUSD      float64 `json:"costUSD"`
 	} `json:"modelUsage"`
-	// RateLimit vem no evento `rate_limit_event`: é a cota do Claude, com as
-	// janelas de cinco horas e sete dias. Chega sozinho, sem ninguém pedir.
+	// RateLimit comes in the `rate_limit_event` event: it's Claude's quota, with
+	// the five-hour and seven-day windows. It arrives on its own, unasked.
 	RateLimit *struct {
 		Status         string `json:"status"`
 		UnifiedWindows map[string]struct {
@@ -64,15 +65,15 @@ type streamEvent struct {
 			ResetsAt    int64   `json:"resetsAt"`
 		} `json:"unifiedWindows"`
 	} `json:"rate_limit_info"`
-	// ParentToolUseID marca o que rodou dentro de um sub-agente.
+	// ParentToolUseID marks what ran inside a sub-agent.
 	ParentToolUseID *string `json:"parent_tool_use_id"`
 	Tools           []any   `json:"tools"`
 	Message         struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
-		// Usage é o gasto da chamada que gerou esta mensagem. É o que
-		// permite contar enquanto o agente ainda trabalha: somadas, elas
-		// reproduzem o `usage` do evento final.
+		// Usage is the spend of the call that produced this message. It's what
+		// allows counting while the agent is still working: added up, they
+		// reproduce the final event's `usage`.
 		Usage struct {
 			InputTokens  int `json:"input_tokens"`
 			OutputTokens int `json:"output_tokens"`
@@ -82,17 +83,17 @@ type streamEvent struct {
 	} `json:"message"`
 }
 
-// spent é o gasto do evento final. O detalhe por modelo manda quando existe —
-// é o único que enxerga os sub-agentes; sem ele sobra o `usage`, que é o que um
-// agente mais simples reporta.
+// spent is the spend of the final event. The per-model detail wins when it
+// exists — it is the only one that sees the sub-agents; without it what is
+// left is `usage`, which is what a simpler agent reports.
 //
-// O custo em USD é calculado a partir da tabela de preços, não do campo
-// `total_cost_usd` do evento: esse campo vem do Claude Code e pode não estar
-// presente em todos os provedores. A tabela é configurável em config.yaml.
+// The cost in USD is computed from the price table, not from the event's
+// `total_cost_usd` field: that field comes from Claude Code and may not be
+// present in every provider. The table is configurable in config.yaml.
 //
-// O segundo retorno é o mesmo gasto separado por modelo, para a tabela de
-// preços cobrar cada um pelo seu preço; nil quando os tokens não vieram do
-// modelUsage e não há como dividi-los.
+// The second return value is the same spend split by model, so the price
+// table can charge each one its own price; nil when the tokens did not come
+// from modelUsage and there is no way to split them.
 func (ev streamEvent) spent() (Usage, []Usage) {
 	u := Usage{CostUSD: ev.CostUSD}
 	if len(ev.ModelUsage) == 0 {
@@ -111,7 +112,7 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 		u.CacheRead += m.CacheRead
 		custo += m.CostUSD
 	}
-	// Detalhe por modelo presente mas sem token nenhum: o que vale é o usage.
+	// Per-model detail present but with no tokens at all: usage is what counts.
 	usouModelUsage := u.Total() > 0
 	if !usouModelUsage {
 		u.InputTokens = ev.Usage.InputTokens
@@ -119,14 +120,14 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 		u.CacheWrite = ev.Usage.CacheWrite
 		u.CacheRead = ev.Usage.CacheRead
 	}
-	// O total_cost_usd é a palavra final sobre o custo; a soma por modelo só
-	// entra quando ele não veio.
+	// total_cost_usd is the final word on cost; the per-model sum only comes
+	// in when it's missing.
 	if u.CostUSD == 0 {
 		u.CostUSD = custo
 	}
-	// O modelo principal é o que mais gastou tokens — com empate, o primeiro
-	// em ordem alfabética. Iterar o map direto daria um nome diferente a cada
-	// rodada.
+	// The main model is the one that spent the most tokens — on a tie, the
+	// first in alphabetical order. Iterating the map directly would give a
+	// different name on each run.
 	names := make([]string, 0, len(ev.ModelUsage))
 	for name := range ev.ModelUsage {
 		names = append(names, name)
@@ -151,8 +152,9 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 		}
 		byModel = append(byModel, part)
 	}
-	// O detalhe por modelo só vale se foi ele que contou os tokens; quando a
-	// conta caiu no `usage`, não há como dividi-la entre os modelos.
+	// The per-model detail only counts if it is what counted the tokens; when
+	// the count fell back to `usage`, there is no way to split it between the
+	// models.
 	if !usouModelUsage {
 		byModel = nil
 	}
@@ -162,12 +164,12 @@ func (ev streamEvent) spent() (Usage, []Usage) {
 	return u, byModel
 }
 
-// contentBlock é um bloco de conteúdo de mensagem: texto, chamada de
-// ferramenta ou resultado de ferramenta.
+// contentBlock is a message content block: text, tool call or tool
+// result.
 type contentBlock struct {
 	Type string `json:"type"`
-	// ID é o identificador de uma chamada de ferramenta — é por ele que os
-	// eventos de dentro de um Task dizem de qual sub-agente vieram.
+	// ID is the identifier of a tool call — it's through it that the events
+	// from inside a Task say which sub-agent they came from.
 	ID      string          `json:"id"`
 	Text    string          `json:"text"`
 	Name    string          `json:"name"`
@@ -176,43 +178,43 @@ type contentBlock struct {
 	Content json.RawMessage `json:"content"`
 }
 
-// logEntry é uma linha de log já atribuída a quem a escreveu. Agent vazio é o
-// próprio agente do passo; preenchido é um sub-agente que ele disparou.
+// logEntry is a log line already attributed to whoever wrote it. An empty Agent
+// is the step's own agent; filled in, it's a sub-agent it spawned.
 type logEntry struct {
 	Agent string
 	Text  string
 }
 
-// streamParser vai lendo o JSONL e guardando o texto final do agente.
+// streamParser reads the JSONL and keeps the agent's final text.
 type streamParser struct {
 	result string
-	// usage é o gasto fechado, do evento final. Um agente que não fala
-	// stream-json deixa isto zerado — não há de onde tirar.
+	// usage is the settled spend, from the final event. An agent that doesn't
+	// speak stream-json leaves this zeroed — there's nowhere to get it from.
 	usage Usage
-	// byModel é o gasto fechado separado por modelo, para a tabela de preços.
-	// unsplit diz que algum evento final não trouxe a separação — aí ela não
-	// cobre o total, e quem cobra usa o total.
+	// byModel is the closed spend split by model, for the price table. unsplit
+	// says some final event did not bring the split — then it does not cover the
+	// total, and whoever charges uses the total.
 	byModel []Usage
 	unsplit bool
-	// live é a conta parcial, somada mensagem a mensagem enquanto o agente
-	// trabalha. Fica abaixo do total: só enxerga a conversa principal, e as
-	// lentes que rodam como sub-agente só entram no fechamento.
+	// live is the partial count, summed message by message while the agent
+	// works. It stays below the total: it only sees the main conversation, and
+	// the lenses that run as a sub-agent only come in at closing.
 	live Usage
-	// limits é a última leitura da cota do Claude.
+	// limits is the latest reading of Claude's quota.
 	limits Limits
-	// texts é o texto que o assistente escreveu, usado como relatório se o
-	// evento final não vier (agente morto no meio, formato diferente).
+	// texts is the text the assistant wrote, used as the report if the final
+	// event doesn't come (agent died midway, different format).
 	texts []string
-	// subagents liga o id de uma chamada de Task ao nome do sub-agente que
-	// ela subiu. É o que permite dizer qual das lentes da frota escreveu
-	// cada linha: elas rodam em paralelo dentro do mesmo processo e sem isso
-	// as linhas chegam embaralhadas e anônimas.
+	// subagents maps the id of a Task call to the name of the sub-agent it
+	// started. It's what allows telling which of the fleet's lenses wrote each
+	// line: they run in parallel inside the same process and without this the
+	// lines arrive jumbled and anonymous.
 	subagents map[string]string
 }
 
-// line traduz uma linha do stream em zero ou mais linhas de log. Linha que não
-// é JSON válido passa direto: é o único jeito de não engolir a saída de um
-// agente que não fala esse formato.
+// line translates a stream line into zero or more log lines. A line that isn't
+// valid JSON passes straight through: it's the only way not to swallow the
+// output of an agent that doesn't speak this format.
 func (p *streamParser) line(raw string) []logEntry {
 	trimmed := strings.TrimSpace(raw)
 	if trimmed == "" {
@@ -223,8 +225,8 @@ func (p *streamParser) line(raw string) []logEntry {
 		return []logEntry{{Text: raw}}
 	}
 
-	// Quem escreveu: o agente do passo, ou o sub-agente dono da chamada de
-	// Task de onde este evento saiu.
+	// Who wrote it: the step's agent, or the sub-agent that owns the Task
+	// call this event came from.
 	who := ""
 	if ev.ParentToolUseID != nil && *ev.ParentToolUseID != "" {
 		who = p.subagentName(*ev.ParentToolUseID)
@@ -234,8 +236,8 @@ func (p *streamParser) line(raw string) []logEntry {
 	switch ev.Type {
 	case "rate_limit_event":
 		p.readLimits(ev)
-		// Não vira linha de log: é um número de canto de tela, não algo que o
-		// agente esteja fazendo.
+		// It doesn't become a log line: it's a number in a corner of the screen,
+		// not something the agent is doing.
 		return nil
 
 	case "system":
@@ -247,12 +249,12 @@ func (p *streamParser) line(raw string) []logEntry {
 	case "result":
 		p.result = ev.Result
 		took := time.Duration(ev.DurationMS) * time.Millisecond
-		// O gasto conta mesmo quando o agente termina mal: os tokens foram
-		// queimados do mesmo jeito.
+		// The spend counts even when the agent ends badly: the tokens were burned
+		// just the same.
 		u, byModel := ev.spent()
 		p.usage.add(u)
-		// add soma tokens e custo, não o nome: o modelo do fechamento é o do
-		// primeiro evento final que o trouxe.
+		// add sums tokens and cost, not the name: the closing model is the one from
+		// the first final event that brought it.
 		if p.usage.Model == "" {
 			p.usage.Model = u.Model
 		}
@@ -283,7 +285,7 @@ func (p *streamParser) line(raw string) []logEntry {
 		}
 		var blocks []contentBlock
 		if err := json.Unmarshal(ev.Message.Content, &blocks); err != nil {
-			return nil // conteúdo em texto puro: nada de útil para mostrar
+			return nil // plain text content: nothing useful to show
 		}
 		var out []logEntry
 		for _, b := range blocks {
@@ -304,13 +306,13 @@ func (p *streamParser) block(who string, fromAssistant bool, b contentBlock) []l
 			return nil
 		}
 		if !fromAssistant {
-			// Texto num evento de usuário é o enunciado entregue ao
-			// sub-agente. Vale como primeira linha do terminal dele — "foi
-			// isto que pediram" — mas inteiro é a skill toda numa caixinha.
+			// Text in a user event is the brief handed to the sub-agent. It
+			// works as the first line of its terminal — "this is what they
+			// asked for" — but whole it's the entire skill in a little box.
 			return []logEntry{entry(truncateRunes(firstLine(text), 200))}
 		}
-		// Só o texto do agente principal vira relatório: o do sub-agente já
-		// chega consolidado no resultado da chamada.
+		// Only the main agent's text becomes the report: the sub-agent's
+		// already arrives consolidated in the call's result.
 		if who == "" {
 			p.texts = append(p.texts, text)
 		}
@@ -325,22 +327,22 @@ func (p *streamParser) block(who string, fromAssistant bool, b contentBlock) []l
 		return []logEntry{entry("→ " + toolSummary(b.Name, b.Input))}
 
 	case "tool_result":
-		// O resultado inteiro é ruído — só o que deu errado merece linha.
+		// The whole result is noise — only what went wrong deserves a line.
 		if !b.IsError {
 			return nil
 		}
 		return []logEntry{entry("  ✗ " + firstLine(rawText(b.Content)))}
 	}
-	// thinking e o que mais vier: fora do log.
+	// thinking and whatever else comes: kept out of the log.
 	return nil
 }
 
-// rememberSubagent guarda o nome do sub-agente que uma chamada subiu, para as
-// linhas vindas de dentro dela saberem dizer de quem são.
+// rememberSubagent keeps the name of the sub-agent a call started, so the
+// lines coming from inside it can tell whose they are.
 //
-// Quem decide não é o nome da ferramenta — ela se chama `Agent` numa versão e
-// `Task` noutra — e sim ter um `subagent_type` na entrada: é o que distingue
-// "subiu um agente" de "leu um arquivo".
+// What decides is not the tool's name — it's called `Agent` in one version and
+// `Task` in another — but having a `subagent_type` in the input: that's what
+// tells "started an agent" apart from "read a file".
 func (p *streamParser) rememberSubagent(b contentBlock) {
 	if b.ID == "" {
 		return
@@ -358,8 +360,8 @@ func (p *streamParser) rememberSubagent(b contentBlock) {
 	p.register(b.ID, truncateRunes(name, 40))
 }
 
-// register anota o nome, desempatando quando a mesma lente sobe duas vezes:
-// dois `exploit-digger` em paralelo são dois terminais, não um.
+// register records the name, breaking ties when the same lens starts twice:
+// two `exploit-digger` in parallel are two terminals, not one.
 func (p *streamParser) register(id, name string) {
 	if p.subagents == nil {
 		p.subagents = map[string]string{}
@@ -383,9 +385,9 @@ func (p *streamParser) nameTaken(name string) bool {
 	return false
 }
 
-// subagentName é de quem são as linhas que saem de uma chamada. Chamada que o
-// parser não viu nascer — evento perdido, formato diferente — ainda ganha um
-// nome próprio por id, para dois desconhecidos não virarem um só.
+// subagentName is whose lines come out of a call. A call the parser didn't see
+// being born — lost event, different format — still gets its own name by id, so
+// two unknowns don't become one.
 func (p *streamParser) subagentName(parentID string) string {
 	if name, ok := p.subagents[parentID]; ok {
 		return name
@@ -394,8 +396,8 @@ func (p *streamParser) subagentName(parentID string) string {
 	return p.subagents[parentID]
 }
 
-// isAgentTool reconhece a ferramenta que sobe um sub-agente pelos nomes que
-// ela já teve.
+// isAgentTool recognizes the tool that starts a sub-agent by the names it has
+// had.
 func isAgentTool(name string) bool {
 	switch name {
 	case "Agent", "Task":
@@ -404,8 +406,8 @@ func isAgentTool(name string) bool {
 	return false
 }
 
-// toolSummary resume uma chamada de ferramenta em uma linha: o nome e o
-// argumento que diz o que ela está fazendo.
+// toolSummary sums up a tool call in one line: the name and the argument that
+// says what it's doing.
 func toolSummary(name string, input map[string]any) string {
 	if name == "" {
 		name = "?"
@@ -440,8 +442,8 @@ func str(v any) string {
 	return strings.TrimSpace(s)
 }
 
-// rawText tira o texto de um conteúdo que tanto pode ser string quanto lista
-// de blocos.
+// rawText pulls the text out of content that can be either a string or a list
+// of blocks.
 func rawText(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -463,8 +465,8 @@ func rawText(raw json.RawMessage) string {
 	return string(raw)
 }
 
-// readLimits guarda a cota que veio no evento. Janela que o Claude não mandar
-// fica zerada — o formato pode ganhar outras, e adivinhar não ajudaria.
+// readLimits keeps the quota that came in the event. A window Claude doesn't
+// send stays zeroed — the format may gain others, and guessing wouldn't help.
 func (p *streamParser) readLimits(ev streamEvent) {
 	if ev.RateLimit == nil {
 		return
@@ -485,9 +487,9 @@ func (p *streamParser) readLimits(ev streamEvent) {
 	p.limits = l
 }
 
-// spend é o gasto do agente: o fechado, quando o evento final chegou, ou a
-// conta parcial das mensagens até aqui — que é o que a página mostra enquanto
-// o review roda.
+// spend is the agent's spend: the settled one, when the final event arrived, or
+// the partial count of the messages so far — which is what the page shows while
+// the review runs.
 func (p *streamParser) spend() Usage {
 	if !p.usage.Empty() {
 		return p.usage
@@ -495,8 +497,8 @@ func (p *streamParser) spend() Usage {
 	return p.live
 }
 
-// models é o gasto fechado separado por modelo, ou nil quando a separação não
-// cobre o total — a conta parcial, ou um evento final sem modelUsage.
+// models is the closed spend split by model, or nil when the split does not
+// cover the total — the partial count, or a final event without modelUsage.
 func (p *streamParser) models() []Usage {
 	if p.usage.Empty() || p.unsplit {
 		return nil
@@ -504,8 +506,8 @@ func (p *streamParser) models() []Usage {
 	return p.byModel
 }
 
-// report é o relatório do agente: o texto do evento final ou, se ele não
-// veio, o que o assistente escreveu no caminho.
+// report is the agent's report: the text of the final event or, if it did
+// not come, what the assistant wrote along the way.
 func (p *streamParser) report() string {
 	if r := strings.TrimSpace(p.result); r != "" {
 		return r

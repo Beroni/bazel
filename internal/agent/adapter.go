@@ -4,8 +4,8 @@ import (
 	"fmt"
 )
 
-// outputAdapter traduz a saída de um agente para o contrato interno do Runner.
-// Usage é sempre um retrato acumulado do passo atual, nunca um delta.
+// outputAdapter translates an agent's output into the Runner's internal contract.
+// Usage is always a cumulative snapshot of the current step, never a delta.
 type outputAdapter interface {
 	line(string) []logEntry
 	usage() Usage
