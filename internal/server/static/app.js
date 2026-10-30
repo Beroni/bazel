@@ -70,10 +70,14 @@ async function api(path, opts = {}) {
     // the PRs and the saved list up to date before anything else is tried.
     if (res.status === 409 && body.stale) {
       err.stale = true;
-      // Kept as the page's warning, so the refreshes that follow keep it on.
-      state.warning = 'the server restarted — this page is stale; reload';
-      banner(state.warning);
-      api('/api/state').then((st) => adoptInstance(st.instance)).catch(() => {});
+      // Not the page's warning: once resynced the page is no longer stale, and
+      // loadPRs puts back whatever warning the page already had. With the
+      // instance adopted meanwhile, adoptInstance would do nothing and this
+      // would stay up, so the resync is asked for directly.
+      banner('the server restarted — this page is stale; bringing it up to date');
+      api('/api/state')
+        .then((st) => (st.instance === state.instance ? resync() : adoptInstance(st.instance)))
+        .catch(() => {});
     }
     throw err;
   }
