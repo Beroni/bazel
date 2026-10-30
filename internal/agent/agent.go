@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -299,7 +300,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
-		res := StepResult{Name: step.Name, Body: dropPreamble(strings.TrimSpace(body)), Duration: time.Since(stepStart), Usage: used, Err: err}
+		// Only a skill that ships here promises to print nothing before its report.
+		text := strings.TrimSpace(body)
+		if skills.IsBuiltin(skills.TaskSkill(step.Task)) {
+			var cut string
+			if text, cut = dropPreamble(text); cut != "" {
+				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
+					Text: "· cut from before the report: " + strconv.Quote(cut)})
+			}
+		}
+		res := StepResult{Name: step.Name, Body: text, Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -342,44 +352,58 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 // of them starts there: the header is its first line.
 var reportMarkers = []string{"<!-- review-fleet:v1", "<!-- history-pr:v1"}
 
-// dropPreamble cuts the sentence an agent sometimes writes before its report
-// ("Validated the report, printing it now."). The skills are told not to, but
-// a model narrates anyway, often in the user's language, and that sentence
-// would be saved, shown and pasted on the PR with the review. Only a short
-// preamble goes: a body with a code fence or a heading before the marker is
-// not a report with a preamble, and is left whole — except a fence opened right
-// before the marker, which is the report wrapped in ```markdown: the cut keeps
-// the fence, and Unwrap takes it off afterwards.
-func dropPreamble(body string) string {
+// preambleLimits bound what dropPreamble takes for narration.
+const (
+	preambleLines = 2
+	preambleWidth = 120
+)
+
+// notNarration matches what a sentence of narration has no reason to carry: a
+// severity, a bug, a place in the code. That text stays, for a person to see.
+var notNarration = regexp.MustCompile(`(?i)\b(critical|major|minor|nit|high|medium|bug|vuln\w*|inject\w*|bypass\w*|finding\w*)\b|\S+\.\w+:\d+`)
+
+// dropPreamble cuts the sentence a built-in skill's agent sometimes writes before
+// its report ("Validated, printing it now."), and returns what it cut. The skills
+// are told not to, but a model narrates anyway, in the user's language, and the
+// sentence would go to the PR with the review.
+//
+// It runs before anyone has read the output, so it is narrow: a line or two, short,
+// with nothing that looks like a finding, right before the report. A preamble that
+// does not fit stays where it is, on screen, and bazel-post-report refuses to
+// publish it. A report wrapped in ```markdown keeps its fence: Unwrap takes it off.
+func dropPreamble(body string) (kept, cut string) {
 	lines := strings.Split(body, "\n")
-	fence := -1 // a fence opened right before the marker: the report is wrapped
+	var preamble []string
 	for i, l := range lines {
 		t := strings.TrimSpace(l)
-		if slices.Contains(reportMarkers, t) {
-			start := i
-			if fence >= 0 {
-				start = fence // keep the fence; Unwrap takes it off
-			}
-			if start == 0 || start > 10 {
-				return body
-			}
-			return strings.Join(lines[start:], "\n")
+		if t == "" {
+			continue
 		}
-		switch {
-		case t == "":
-		case strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~"):
-			if fence >= 0 {
-				return body
+		if slices.Contains(reportMarkers, t) || ((t == "```markdown" || t == "```md") && nextIs(lines, i, reportMarkers)) {
+			if len(preamble) == 0 {
+				return body, ""
 			}
-			fence = i
-		case strings.HasPrefix(t, "#"):
-			return body
-		case fence >= 0:
-			return body // text inside the fence before the marker: not a wrapped report
+			return strings.Join(lines[i:], "\n"), strings.Join(preamble, " ")
+		}
+		if len(preamble) == preambleLines || len(t) > preambleWidth || notNarration.MatchString(t) ||
+			strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			return body, ""
+		}
+		preamble = append(preamble, t)
+	}
+	return body, ""
+}
+
+// nextIs says whether the first line after i with text is one of want.
+func nextIs(lines []string, i int, want []string) bool {
+	for _, l := range lines[i+1:] {
+		if t := strings.TrimSpace(l); t != "" {
+			return slices.Contains(want, t)
 		}
 	}
-	return body
+	return false
 }
+
 
 // gitGuard is the git configuration of every agent with a clone, the second
 // line behind gitGuardEnv's GIT_DIR: it comes in through the environment, so no
