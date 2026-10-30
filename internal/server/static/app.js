@@ -1430,6 +1430,12 @@ function renderJobs() {
 
   const rail = $('#rail');
   const scroll = rail.scrollLeft;
+  // The rail is rebuilt every second while a job runs. Whoever is on a card
+  // (or its ✕) with the keyboard keeps their place: note it and put the focus
+  // back on the same element of the rebuilt card (review F2).
+  const focused = rail.contains(document.activeElement) ? document.activeElement : null;
+  const focusCard = focused && focused.closest('.card') ? focused.closest('.card').dataset.jobId : null;
+  const focusX = !!(focused && focused.classList.contains('card-x'));
   rail.innerHTML = '';
   // A card is a summary: which PR, what runs over it, how far it got. The
   // actions (cancel, publish, comment, keep it here) live in the job's detail,
@@ -1474,6 +1480,11 @@ function renderJobs() {
     rail.append(card);
   }
   rail.scrollLeft = scroll;
+  if (focusCard) {
+    const card = [...rail.querySelectorAll('.card')].find((c) => c.dataset.jobId === focusCard);
+    const target = card && (focusX ? card.querySelector('.card-x') : card);
+    if (target) target.focus({ preventScroll: true });
+  }
 }
 
 // progressBar is the card's bar: the share of steps already finished, a moving
