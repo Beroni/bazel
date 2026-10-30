@@ -658,9 +658,9 @@ agents:
 > out the scope. The agent runs in a throwaway clone and review skills are
 > read-only: they report, they don't fix.
 
-> **The PR's own agent configuration.** For Claude Code, Bazel adds
-> `--setting-sources user --strict-mcp-config` to every step (see
-> [Security model](#security-model)). The other CLIs have their own rules:
+> **The PR's own agent configuration.** Bazel adds
+> `--setting-sources user --strict-mcp-config` to every step it recognizes as
+> Claude Code (see [Security model](#security-model)). The other CLIs have their own rules:
 > Codex loads a project's `.codex/` layers (config, hooks, rules) only when the
 > project is trusted, and the clone is a fresh temporary path — do not mark a
 > parent of your temp directory as trusted in `~/.codex/config.toml`. Bazel also
@@ -704,19 +704,28 @@ CLI is running:
   They stay in git, so a review still sees them in the diff and with
   `git show HEAD:<path>`, and the agent is told so. If they cannot be removed,
   the review stops.
-- **Claude Code is told to ignore it.** A step Bazel recognizes as Claude Code —
-  a command with `claude` in its name or that links to it, a launcher like
-  `npx @anthropic-ai/claude-code` or `env claude`, or a step that speaks
-  stream-json — gets `--setting-sources user --strict-mcp-config --plugin-dir
-  <runtime>` ahead of your `args`, and the built-in skills arrive as a plugin
-  from outside the clone. This recognition is best effort: a wrapper called
-  `cc`, or `node cli.js`, is treated as another CLI, with the first layer only.
+- **Claude Code is told to ignore it.** A step whose command is `claude`, or
+  resolves to it through `PATH` and symlinks, or that speaks Claude's stream-json
+  (`format: claude-stream`, or that output in its `args` with no format) gets
+  `--setting-sources user --strict-mcp-config --plugin-dir <runtime>` ahead of
+  your `args`, and the built-in skills arrive as a plugin from outside the
+  clone. Any other command, like a wrapper called `cc`, has the first layer only.
 - **Nothing points back into the clone.** Every step is checked before the clone
   is even made, and again right before it starts, with symlinks resolved: an
   earlier step can turn a safe path into a link. One bad step refuses the whole
   job. Another `--setting-sources` is refused, and so is `--settings`,
-  `--mcp-config`, `--plugin-dir`, `--add-dir`, `--append-system-prompt-file` or
-  `--system-prompt-file` with anything but an absolute path outside the clone.
+  `--mcp-config`, `--plugin-dir`, `--add-dir`, and the other flags that read
+  configuration, with anything but an absolute path outside the clone.
+- **No launchers in the clone.** With checkout on, `npx`, `bunx`, `npm`, `pnpm`,
+  `yarn`, `uvx`, `pipx`, `env` and relative paths are refused as a `command`,
+  before the clone: they decide what to run from the working directory, and the
+  PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
+  `command` at an installed binary, and set variables with `env:`.
+- **Git stays out of it.** Every agent with a clone gets
+  `safe.bareRepository=explicit`, `core.fsmonitor=false` and
+  `core.hooksPath=/dev/null` through `GIT_CONFIG_*`, after your own entries, so
+  a repository the PR nests in a folder cannot run its `core.fsmonitor` on a
+  `git status`.
 
 What is still on you:
 
