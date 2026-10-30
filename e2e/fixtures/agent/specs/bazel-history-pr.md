@@ -15,12 +15,18 @@ force_pushes: 0
 generated_at: 2026-10-29T12:00:00Z
 -->
 
-# History — PR #101 · Add rate limiter to the public API
+Commits read: 3
 
-## About
+## What it does
 
 E2E-BUILTIN-HISTORY a token bucket in front of the public API.
 
-## Open items
+## Decisions
+
+### 1. Start with a token bucket
+- Commit: aaaa101 · description
+The first commit adds the bucket; the description says why.
+
+## Still open
 
 - No review yet.

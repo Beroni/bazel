@@ -1,9 +1,10 @@
+import path from 'node:path';
 import { test, expect } from '../harness/fixtures';
 import { tickByFilter, ui } from '../harness/ui';
 
 // The skills that ship inside Bazel (internal/skills/builtin). The fake agent
 // plays what each skill prints (specs/bazel-*.json); these tests check what
-// Bazel does around it: the task, the files written into the clone, the lens
+// Bazel does around it: the task, the plugin the skills arrive in, the lens
 // terminals, the findings the page offers, and what may be published.
 const BUILTIN = [
   'bazel-exploit-digger',
@@ -34,7 +35,7 @@ const texts = async (bazel: any, id: string, agent?: string) => {
 test.describe('P1 · built-in skills', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
-  test('bazel-review-fleet: slash task, every built-in in the clone, one terminal per lens, four findings', async ({ app, bazel }) => {
+  test('bazel-review-fleet: slash task, every built-in in the plugin, one terminal per lens, four findings', async ({ app, bazel }) => {
     await tickByFilter(app, 'rate limiter');
     await ui.agentSelect(app).selectOption('bazel-review-fleet');
     await ui.runButton(app).click();
@@ -49,11 +50,12 @@ test.describe('P1 · built-in skills', () => {
     expect(call.prompt.startsWith('/bazel-review-fleet 101')).toBe(true);
     expect(call.prompt).toContain('do not publish anything to GitHub');
     expect([...call.skills].sort()).toEqual(BUILTIN);
+    expect(call.builtin_skill_source).toBe('plugin');
 
     const id = (await bazel.api('GET', '/api/jobs')).json.jobs[0].id;
-    expect(await texts(bazel, id, 'bazel-senior-code-reviewer')).toContain('E2E-BUILTIN-LENS-PRECISION done');
-    expect(await texts(bazel, id, 'bazel-exploit-digger')).toContain('E2E-BUILTIN-LENS-RECALL done');
-    expect(await texts(bazel, id, 'bazel-lazy-senior-dev')).toContain('E2E-BUILTIN-LENS-SUBTRACTION done');
+    expect(await texts(bazel, id, 'bazel:bazel-senior-code-reviewer')).toContain('E2E-BUILTIN-LENS-PRECISION done');
+    expect(await texts(bazel, id, 'bazel:bazel-exploit-digger')).toContain('E2E-BUILTIN-LENS-RECALL done');
+    expect(await texts(bazel, id, 'bazel:bazel-lazy-senior-dev')).toContain('E2E-BUILTIN-LENS-SUBTRACTION done');
 
     // A review never writes to GitHub on its own.
     const writes = bazel.ghCalls().filter((c) => c.argv[0] === 'api' && c.argv.includes('-X'));
@@ -70,7 +72,7 @@ test.describe('P1 · built-in skills', () => {
     expect(await texts(bazel, id, 'bazel-history-pr')).toContain('E2E-BUILTIN-HISTORY-LINE collected 3 commits');
   });
 
-  test('a codex step gets the built-in skill inlined, with its arguments, and the files in the clone', async ({ bazel }) => {
+  test('a codex step gets the built-in skill inlined, with its arguments and the plugin path', async ({ bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'codex-fleet');
     const job = await bazel.waitJob(id, (j) => j.state === 'done' || j.state === 'failed');
     expect(job.state).toBe('done');
@@ -81,7 +83,9 @@ test.describe('P1 · built-in skills', () => {
     expect(call.prompt).toContain('Arguments: 101');
     expect(call.prompt).toContain('# Bazel Review Fleet');
     expect(call.prompt).not.toContain('allowed-tools:');
-    // The skill body points at files the clone has to carry.
-    expect(call.skills).toContain('bazel-review-fleet');
+    // The skill body points at files in Bazel's own folder, outside the clone.
+    const plugin = /`<plugin>` in them is (\S+):/.exec(call.prompt)?.[1] ?? '';
+    expect(plugin.startsWith(path.join(bazel.bazelHome, 'runtime') + path.sep)).toBe(true);
+    expect(call.prompt).toContain(`${plugin}/skills/bazel-review-fleet/`);
   });
 });

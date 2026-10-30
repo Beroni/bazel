@@ -2,15 +2,15 @@
   "model": "claude-opus-5-5",
   "tools": ["Read", "Write", "Grep", "Glob", "Bash", "Agent"],
   "steps": [
-    { "tool": "Read", "input": { "file_path": ".claude/skills/bazel-review-fleet/references/headless.md" } },
+    { "tool": "Read", "input": { "file_path": "/tmp/plugin/skills/bazel-review-fleet/references/headless.md" } },
     { "tool": "Bash", "input": { "command": "git diff --name-only origin/main...HEAD" } },
-    { "agent": "bazel-senior-code-reviewer", "description": "precision lens",
+    { "agent": "bazel:bazel-senior-code-reviewer", "description": "precision lens",
       "steps": [ { "text": "E2E-BUILTIN-LENS-PRECISION done" } ] },
-    { "agent": "bazel-exploit-digger", "description": "recall lens",
+    { "agent": "bazel:bazel-exploit-digger", "description": "recall lens",
       "steps": [ { "text": "E2E-BUILTIN-LENS-RECALL done" } ] },
-    { "agent": "bazel-lazy-senior-dev", "description": "subtraction lens",
+    { "agent": "bazel:bazel-lazy-senior-dev", "description": "subtraction lens",
       "steps": [ { "text": "E2E-BUILTIN-LENS-SUBTRACTION done" } ] },
-    { "tool": "Bash", "input": { "command": "bash .claude/skills/bazel-review-fleet/references/validate-report.sh .reviews/pr-101.md" } }
+    { "tool": "Bash", "input": { "command": "bash /tmp/plugin/skills/bazel-review-fleet/references/validate-report.sh /tmp/bazel-report.x" } }
   ],
   "reportFile": "bazel-review-fleet.md",
   "usage": { "input": 3000, "output": 900, "cacheRead": 6000, "cacheWrite": 0, "costUSD": 0.2 },
