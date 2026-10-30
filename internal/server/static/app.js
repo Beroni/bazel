@@ -2116,7 +2116,8 @@ function renderLogView(body, job) {
 function renderHistoryView(body, job) {
   const pr = job.pr;
   const redraw = () => { if (state.activeJob === job.id && jobView(job) === 'history') redrawViewer(); };
-  const got = lazy(state.histories, pr.key, prPath(pr) + '/history', redraw);
+  const inList = state.prs.some((p) => p.key === pr.key);
+  const got = lazy(state.histories, pr.key, prPath(pr) + '/history' + (inList ? '' : '?offlist=1'), redraw);
   const box = tid(el('div', 'history'), 'history', { prKey: pr.key });
   body.append(box);
   if (!got) { box.append(el('p', 'dim', 'loading the history…')); return; }

@@ -386,3 +386,44 @@ func TestPRDetailsLeituraCancelada(t *testing.T) {
 		t.Error("a canceled read must not be cached")
 	}
 }
+
+// GET /history of a PR outside the list goes through the same door as the
+// Overview: refused unless asked for, read once, and under the same budget.
+func TestHistoryForaDaListaTemLimite(t *testing.T) {
+	srv := newTestServer(t)
+	calls := 0
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls++
+		return gh.Details{HeadRefOid: "abc1234"}, nil
+	}
+	oldPer := offListPerMin
+	offListPerMin = 2
+	t.Cleanup(func() { offListPerMin = oldPer })
+	if _, err := store.SaveHistory(srv.reviewsDir, "acme/api-core", 7, "abc1234", "## What it does\nX.\n"); err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+	get := func(path string) (int, historyView) {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+path, nil))
+		var v historyView
+		_ = json.Unmarshal(w.Body.Bytes(), &v)
+		return w.Code, v
+	}
+	if code, _ := get("/api/prs/acme/api-core/7/history"); code != http.StatusNotFound || calls != 0 {
+		t.Errorf("without offlist=1: %d, %d calls", code, calls)
+	}
+	for range 3 {
+		code, v := get("/api/prs/acme/api-core/7/history?offlist=1")
+		if code != http.StatusOK || !v.Found || v.Stale {
+			t.Errorf("off-list history: %d %+v", code, v)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("the same PR costs one read: %d calls", calls)
+	}
+	get("/api/prs/acme/api-core/8/history?offlist=1")
+	if code, _ := get("/api/prs/acme/api-core/9/history?offlist=1"); code != http.StatusTooManyRequests || calls != 2 {
+		t.Errorf("past the budget: %d, %d calls", code, calls)
+	}
+}

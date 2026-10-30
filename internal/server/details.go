@@ -115,18 +115,10 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 		}
 	}
 	if !listed {
-		recent := s.offList[:0]
-		for _, t := range s.offList {
-			if now.Sub(t) < time.Minute {
-				recent = append(recent, t)
-			}
-		}
-		s.offList = recent
-		if len(s.offList) >= offListPerMin {
+		if err := s.offListReadLocked(now); err != nil {
 			s.detMu.Unlock()
-			return detailsView{}, http.StatusTooManyRequests, errors.New("too many reads of PRs outside the list; wait a minute")
+			return detailsView{}, http.StatusTooManyRequests, err
 		}
-		s.offList = append(s.offList, now)
 	}
 	read := &detailsRead{done: make(chan struct{}), entry: detailsEntry{err: "the read of this PR failed"}}
 	s.reading[key] = read
@@ -160,6 +152,23 @@ func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsVie
 		s.detMu.Unlock()
 	}
 	return read.entry.answer()
+}
+
+// offListReadLocked takes one read of a PR outside the list from this minute's
+// budget, or says it is spent.
+func (s *Server) offListReadLocked(now time.Time) error {
+	recent := s.offList[:0]
+	for _, t := range s.offList {
+		if now.Sub(t) < time.Minute {
+			recent = append(recent, t)
+		}
+	}
+	s.offList = recent
+	if len(s.offList) >= offListPerMin {
+		return errors.New("too many reads of PRs outside the list; wait a minute")
+	}
+	s.offList = append(s.offList, now)
+	return nil
 }
 
 // putDetails stores an entry, dropping the oldest when the cache is full.
@@ -363,7 +372,8 @@ type decisionView struct {
 }
 
 // prOf finds a watched PR by repo and number, with the config's spelling of
-// the repository: from the list when it is there, from gh otherwise.
+// the repository: from the list when it is there, from gh otherwise. The gh
+// call counts against the reads of PRs outside the list.
 func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
 	repo, number, code, err := s.watchedRef(r)
 	if err != nil {
@@ -371,6 +381,12 @@ func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
 	}
 	if pr, ok := s.listedPR(repo, number); ok {
 		return pr, 0, nil
+	}
+	s.detMu.Lock()
+	err = s.offListReadLocked(timeNow())
+	s.detMu.Unlock()
+	if err != nil {
+		return gh.PR{}, http.StatusTooManyRequests, err
 	}
 	pr, err := gh.Get(r.Context(), repo, number)
 	if err != nil {
@@ -381,10 +397,21 @@ func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
 }
 
 func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
-	pr, code, err := s.prOf(r)
+	repo, number, code, err := s.watchedRef(r)
 	if err != nil {
 		writeErr(w, code, err)
 		return
+	}
+	pr, listed := s.listedPR(repo, number)
+	// Outside the list all this needs from GitHub is the head, and the page's
+	// own read brings it, under its cache and its limits.
+	if !listed {
+		view, code, err := s.prDetails(r, repo, number)
+		if err != nil {
+			writeErr(w, code, err)
+			return
+		}
+		pr = gh.PR{Repo: repo, Number: number, HeadRefOid: view.Sha}
 	}
 	s.cfgMu.Lock()
 	custom := s.cfg.HistoryCustom()
