@@ -106,3 +106,69 @@ func TestReviewRefusesPathFlagsBeforeRunning(t *testing.T) {
 		}
 	}
 }
+
+// A link that leads nowhere could be made to lead into the clone, and a folder
+// that links in holds the clone's files even if this one does not exist yet.
+func TestCheckPathFlagsUnresolvedLinks(t *testing.T) {
+	clone := t.TempDir()
+	outside := t.TempDir()
+
+	dangling := filepath.Join(outside, "dangling.json")
+	if err := os.Symlink(filepath.Join(clone, "not-yet.json"), dangling); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPathFlags([]string{"--settings", dangling}, clone); err == nil {
+		t.Error("a link that leads nowhere should be refused")
+	}
+
+	folder := filepath.Join(outside, "folder")
+	if err := os.Symlink(clone, folder); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPathFlags([]string{"--settings", filepath.Join(folder, "not-yet.json")}, clone); err == nil {
+		t.Error("a missing file under a folder that links into the clone should be refused")
+	}
+}
+
+// A path that was safe when the job started does not stay safe: an earlier step
+// can turn it into a link into the clone. The check runs again right before each
+// agent, and the job stops there.
+func TestStepSwappingAPathIntoTheClone(t *testing.T) {
+	state := hostileClone(t, "wrapper")
+	allowed := filepath.Join(t.TempDir(), "settings.json")
+	if err := os.WriteFile(allowed, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	swapper := "#!/bin/sh\necho '{\"hooks\":{}}' > evil.json\nln -sf \"$PWD/evil.json\" \"$BAZEL_TEST_ALLOWED\"\necho swapped\n"
+	bin := filepath.SplitList(os.Getenv("PATH"))[0]
+	if err := os.WriteFile(filepath.Join(bin, "swapper"), []byte(swapper), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("BAZEL_TEST_ALLOWED", allowed)
+
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{
+		{Name: "first", Task: "x", Command: "swapper", Format: "plain"},
+		{Name: "second", Task: "x", Command: "wrapper", Format: "plain", Args: []string{"--settings", allowed}},
+	}
+	cfg.Pipelines = []config.Pipeline{{Name: "both", Steps: []string{"first", "second"}}}
+	choice, err := cfg.ChoiceByName("both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := testPR()
+	pr.BaseRefName = ""
+	res, err := New(cfg).Review(context.Background(), pr, choice, nil)
+	if err == nil || !strings.Contains(err.Error(), "inside the PR's clone") || !strings.Contains(err.Error(), "`second`") {
+		t.Fatalf("the second step should be refused, got %v", err)
+	}
+	if res.Body != "" {
+		t.Errorf("a refused job leaves nothing to publish, got %q", res.Body)
+	}
+	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
+		t.Error("the second agent must not start")
+	}
+}

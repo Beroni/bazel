@@ -229,14 +229,18 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
 
-		// Before every step, not only the first: an earlier step can run
-		// commands in the clone, and bring the files back with a git checkout.
-		// What cannot be removed stops the review: an agent never runs next to
-		// the PR's configuration.
-		if workdir != "" {
+		// Right before the agent starts, inside exec, with nothing in between:
+		// an earlier step can run commands in the clone, bring the files back
+		// with a git checkout, or swap a path the args name for a link into the
+		// clone. A step that does not pass stops the review: an agent never
+		// runs next to the PR's configuration.
+		guard := func() (string, error) {
+			if workdir == "" {
+				return "", nil
+			}
 			removed, err := workspace.Neutralize(workdir)
 			if err != nil {
-				return Result{}, fmt.Errorf("neutralizing the PR's agent configuration: %w", err)
+				return "", fmt.Errorf("%w: neutralizing the PR's agent configuration: %w", errRefused, err)
 			}
 			if len(removed) > 0 {
 				for _, rel := range removed {
@@ -247,15 +251,19 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
 					Text: "· removed from the clone, so that no agent runs them: " + strings.Join(removed, ", ")})
 			}
+			if err := checkPathFlags(step.Args, workdir); err != nil {
+				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
+			}
+			return neutralizedNote(neutralized), nil
 		}
 
 		dir := workdir
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
-		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra) + neutralizedNote(neutralized)
+		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra)
 		stepStart := time.Now()
-		body, used, err := r.exec(ctx, step, prompt, dir, plugin,
+		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -271,6 +279,11 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			func(l Limits) {
 				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
+		// A refused step ends the job: it must not turn into one failed section
+		// of a review that can still be published.
+		if errors.Is(err, errRefused) {
+			return Result{}, err
+		}
 		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
@@ -309,6 +322,10 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		StoppedAt: stopped,
 	}, nil
 }
+
+// errRefused marks a step Bazel would not start: the whole job stops, instead of
+// that step failing inside a review.
+var errRefused = errors.New("refused to start the agent")
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,
@@ -514,6 +531,11 @@ func checkPathFlags(args []string, clone string) error {
 				if clone != "" && insideDir(v, clone) {
 					return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the file: point it outside", flag, v)
 				}
+				if info, err := os.Lstat(v); err == nil && info.Mode()&os.ModeSymlink != 0 {
+					if _, err := filepath.EvalSymlinks(v); err != nil {
+						return fmt.Errorf("%s %q is a link that leads nowhere, so it cannot be checked: point it at a real file outside the PR's clone", flag, v)
+					}
+				}
 			}
 		}
 	}
@@ -522,19 +544,30 @@ func checkPathFlags(args []string, clone string) error {
 
 // insideDir says whether path is dir or below it, comparing the paths as
 // written and with symlinks resolved: on macOS the temp folder is itself a
-// link, and a path outside can link back in.
+// link, and a path outside can link back in, in any of its folders.
 func insideDir(path, dir string) bool {
 	within := func(p, d string) bool {
 		rel, err := filepath.Rel(d, p)
 		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 	}
-	resolve := func(p string) string {
-		if real, err := filepath.EvalSymlinks(p); err == nil {
-			return real
+	return within(filepath.Clean(path), filepath.Clean(dir)) || within(resolveExisting(path), resolveExisting(dir))
+}
+
+// resolveExisting resolves symlinks in the longest part of path that exists:
+// a file not there yet, under a folder that links into the clone, is in the
+// clone all the same.
+func resolveExisting(path string) string {
+	path = filepath.Clean(path)
+	for prefix, rest := path, ""; ; {
+		if real, err := filepath.EvalSymlinks(prefix); err == nil {
+			return filepath.Join(real, rest)
 		}
-		return filepath.Clean(p)
+		parent := filepath.Dir(prefix)
+		if parent == prefix {
+			return path
+		}
+		prefix, rest = parent, filepath.Join(filepath.Base(prefix), rest)
 	}
-	return within(filepath.Clean(path), filepath.Clean(dir)) || within(resolve(path), resolve(dir))
 }
 
 // builtinSemClone returns the step that calls an embedded skill with checkout
@@ -693,7 +726,7 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -721,7 +754,6 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory
-	cmd.Stdin = strings.NewReader(prompt)
 	if len(step.Env) > 0 {
 		cmd.Env = os.Environ()
 		for k, v := range step.Env {
@@ -736,6 +768,15 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if err != nil {
 		return "", Usage{}, err
 	}
+	// The last thing before the process: the smaller the gap between checking
+	// the clone and reading it, the less there is to race.
+	note, err := guard()
+	if err != nil {
+		stdout.Close()
+		stderr.Close()
+		return "", Usage{}, err
+	}
+	cmd.Stdin = strings.NewReader(prompt + note)
 	if err := cmd.Start(); err != nil {
 		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
