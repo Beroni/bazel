@@ -111,6 +111,29 @@ func TestCatalogPathsExist(t *testing.T) {
 	}
 }
 
+// A path written relative to the skill (`references/x.md`) must exist in that
+// same skill's folder — `See references/report-format.md` from a skill that
+// has no such file sends the agent nowhere.
+func TestCatalogRelativePathsExist(t *testing.T) {
+	rel := regexp.MustCompile("`((?:references|agents)/[A-Za-z0-9_./-]+)`")
+	err := fs.WalkDir(builtinFS, builtinRoot, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		skill := strings.SplitN(strings.TrimPrefix(p, builtinRoot+"/"), "/", 2)[0]
+		data, _ := builtinFS.ReadFile(p)
+		for _, m := range rel.FindAllStringSubmatch(string(data), -1) {
+			if _, err := fs.Stat(builtinFS, builtinRoot+"/"+skill+"/"+m[1]); err != nil {
+				t.Errorf("%s mentions %s, which %s does not have", p, m[1], skill)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 // Each lens agent is named after its file, which is the name the fleet passes
 // as subagent_type.
 func TestCatalogAgents(t *testing.T) {

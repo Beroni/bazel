@@ -129,7 +129,7 @@ gh api -X POST repos/:owner/:repo/pulls/<N>/reviews --input /tmp/review.json
 `path`, `line` and `side` come straight from the finding's `<!-- finding ... -->`. The `body`
 is the finding's prose **verbatim** — nothing is assembled here, because the prose already
 opens with its level line (`**critical · authz** (…)`), written that way in the report exactly
-so this step is a copy. See `references/report-format.md`.
+so this step is a copy. See `.claude/skills/bazel-review-fleet/references/report-format.md`.
 
 The fields that matter:
 

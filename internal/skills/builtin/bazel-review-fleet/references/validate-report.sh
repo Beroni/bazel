@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Validates a .reviews/ report against references/report-format.md.
+# Validates a review report against report-format.md, next to this script.
 #
-#   bash validate-report.sh .reviews/pr-123.md
+#   bash validate-report.sh "$R"     # R: the scratch file the report was written to
 #
 # Exits 0 and stays quiet when the file conforms; exits 1 and prints `file:line: error`
-# for every deviation. A standard that does not check itself drifts again — run this before
-# handing the report over, and post-report runs it before parsing.
+# for every deviation. A standard that does not check itself drifts again — the review skills
+# run this before printing. bazel-post-report does not: the copy Bazel hands it may have an
+# emptied section after unticked findings, which this rejects.
 
 set -uo pipefail
 
