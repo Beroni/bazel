@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 	"testing"
 
 	"github.com/beroni/bazel/internal/pricing"
@@ -1358,5 +1360,146 @@ func TestNormalizeRepo(t *testing.T) {
 	_, err := NormalizeRepo("https://github.com/acme/web-app/pull/7")
 	if err == nil || !strings.Contains(err.Error(), "pull request") || !strings.Contains(err.Error(), "acme/web-app") {
 		t.Errorf("a PR URL must be refused naming its repository, got %v", err)
+	}
+}
+
+// The History tab's agent: /history-pr by default, never publishable, with a
+// clone; history_agent in the config replaces the task, and an untouched one
+// is not written to config.yaml.
+func TestHistoryChoice(t *testing.T) {
+	c := Default()
+	ch := c.HistoryChoice()
+	if len(ch.Steps) != 1 || ch.Steps[0].Task != defaultHistoryTask || ch.Publishable || ch.Posts || !ch.Steps[0].Checkout {
+		t.Errorf("default history choice: %+v", ch)
+	}
+	if PublishesBy := ch.PublishesBy(); PublishesBy != "" {
+		t.Errorf("the history agent must never publish: %s", PublishesBy)
+	}
+	if err := c.ValidateHistoryAgent(); err != nil {
+		t.Errorf("the default history agent is valid: %v", err)
+	}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
+	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel-history-pr {{number}}" {
+		t.Errorf("configured history choice: %+v", ch)
+	}
+	c.HistoryAgent = AgentDef{}
+	data, err := yaml.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "history_agent") {
+		t.Errorf("an untouched history_agent should not be written:\n%s", data)
+	}
+}
+
+// A history_agent that could write to the PR is refused when a history is
+// asked for, however it is spelled; a prompt of its own must carry the default
+// template's prohibition. Only posts: true, which is declared and not guessed,
+// stops the boot.
+func TestValidateHistoryAgent(t *testing.T) {
+	const safe = "{{task}}\nDo not publish\nanything to GitHub."
+	bad := []AgentDef{
+		{Task: "/review-fleet --post {{number}}"},
+		{Task: "/x '--post'"},
+		{Task: "/x --POST"},
+		{Task: "/x --post=true"},
+		{Task: "/x --post=1"},
+		{Task: "/bazel-post-report {{review_file}}"},
+		{Task: "/BAZEL-POST-REPORT {{number}}"},
+		{Task: "/history-pr {{number}}, then gh pr comment {{number}}"},
+		{Task: "/x {{number}}", Posts: true},
+		{Task: "/x", Prompt: safe + "\nYou are authorized\nto publish."},
+		{Task: "/x", Prompt: safe + " You are **authorized** to publish."},
+		{Task: "/x", Prompt: postPrompt + "\n"},
+		{Task: "/x", Prompt: publishPrompt + "\n"},
+		{Task: "/x", Prompt: "{{task}}\nPost the result as a comment."},
+		{Task: "/x", Prompt: safe + "\nRun gh pr review --approve."},
+		{Command: "sh", Args: []string{"-c", "gh pr comment 1 --body x"}},
+		{Command: "gh pr comment"},
+		{Name: defaultPostAgent().Name, Task: "/x"},
+	}
+	for _, def := range bad {
+		c := Default()
+		c.HistoryAgent = def
+		if err := c.ValidateHistoryAgent(); err == nil || !strings.Contains(err.Error(), "history_agent") {
+			t.Errorf("%+v must be refused, got %v", def, err)
+		}
+	}
+	good := []AgentDef{
+		{},
+		{Name: "story", Task: "/bazel-history-pr {{number}}"},
+		{Task: "/x --post=false"},
+		{Task: "/x --postpone"},
+		{Task: "/x", Prompt: safe},
+		{Task: "/x", Prompt: safe + "\nYou are not authorized to publish."},
+		{Task: "/x", Prompt: defaultPrompt},
+		{Command: "my-agent", Args: []string{"--read-only"}},
+	}
+	for _, def := range good {
+		c := Default()
+		c.HistoryAgent = def
+		if err := c.ValidateHistoryAgent(); err != nil {
+			t.Errorf("%+v must pass: %v", def, err)
+		}
+	}
+
+	// Only posts: true fails the load.
+	c := Default()
+	for _, def := range bad {
+		c.HistoryAgent = def
+		if err := c.validateFormats(); (err != nil) != def.Posts {
+			t.Errorf("%+v: load gives %v", def, err)
+		}
+	}
+}
+
+// A config without history_agent never stops on one: the `agent` block may be a
+// publishing template, supported for reviews, and the History does not inherit
+// it.
+func TestHistoryNaoHerdaOAgent(t *testing.T) {
+	for _, prompt := range []string{postPrompt, publishPrompt, "You are authorized to publish.", "You are not authorized to publish anything."} {
+		c := Default()
+		c.Agent.Prompt = prompt
+		if err := c.validateFormats(); err != nil {
+			t.Errorf("%q stopped the boot: %v", prompt, err)
+		}
+		if err := c.ValidateHistoryAgent(); err != nil {
+			t.Errorf("%q refused the history: %v", prompt, err)
+		}
+		if got := c.HistoryChoice().Steps[0].Prompt; got != defaultPrompt {
+			t.Errorf("history prompt: %q", got)
+		}
+		if how := c.HistoryChoice().PublishesBy(); how != "" {
+			t.Errorf("%q: %s", prompt, how)
+		}
+	}
+}
+
+// What counts is the step that runs, wherever it came from: an `agent` block
+// with an executable of its own is inherited by the History.
+func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
+	if Default().HistoryCustom() {
+		t.Error("Bazel's own history step is not custom")
+	}
+	for name, edit := range map[string]func(*Config){
+		"agent.command":         func(c *Config) { c.Agent.Command = "/usr/local/bin/review-and-post" },
+		"agent.args":            func(c *Config) { c.Agent.Args = []string{"-p", "--dangerously-skip-permissions"} },
+		"agent.env":             func(c *Config) { c.Agent.Env = map[string]string{"X": "1"} },
+		"history_agent.task":    func(c *Config) { c.HistoryAgent.Task = "/my-history {{number}}" },
+		"history_agent.prompt":  func(c *Config) { c.HistoryAgent.Prompt = "{{task}}" },
+		"history_agent.command": func(c *Config) { c.HistoryAgent.Command = "my-agent" },
+		"history_agent.env":     func(c *Config) { c.HistoryAgent.Env = map[string]string{"X": "1"} },
+	} {
+		c := Default()
+		edit(c)
+		if !c.HistoryCustom() {
+			t.Errorf("%s must count as custom", name)
+		}
+	}
+	// The reviews' prompt is not the History's: changing it changes nothing here.
+	c := Default()
+	c.Agent.Prompt = "{{task}} You are authorized to publish."
+	if c.HistoryCustom() {
+		t.Error("agent.prompt is not inherited by the History")
 	}
 }

@@ -10,68 +10,87 @@
 <body>
 
 <header class="bar">
-  <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> BAZEL</div>
-  <div class="stats" id="stats">loading…</div>
-  <div class="stats spend" id="spend" hidden></div>
-  <div class="stats quota" id="quota" hidden></div>
-  <div class="spacer"></div>
-  <div class="who" id="who"></div>
-  <button class="btn" id="refresh" title="refresh the list from GitHub">refresh</button>
+  <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
   <nav class="nav" id="nav">
-    <a href="#/" data-page="dashboard" class="on">dashboard</a>
-    <a href="#/config" data-page="config">config</a>
+    <a href="#/" data-page="dashboard" data-testid="nav-dashboard" class="on">Dashboard</a>
+    <a href="#/config" data-page="config" data-testid="nav-config">Config</a>
   </nav>
+  <div class="spacer"></div>
+  <!-- The bar shows only the session quota, as the design does. PR count,
+       spend, the week window and who you are open on hover or focus. -->
+  <div class="meter" id="meter" tabindex="0" aria-describedby="meter-pop">
+    <span class="meter-short" id="quota-short" data-testid="quota-short">Claude usage</span>
+    <div class="meter-pop" id="meter-pop" role="tooltip">
+      <div class="stats" id="stats" data-testid="pr-count">loading…</div>
+      <div class="stats spend" id="spend" data-testid="spend-total" hidden></div>
+      <div class="stats quota" id="quota" data-testid="quota" hidden></div>
+      <div class="who" id="who" data-testid="whoami"></div>
+    </div>
+  </div>
+  <button class="icon-btn" id="refresh" data-testid="refresh" title="refresh the list from GitHub" aria-label="refresh the PR list">↻</button>
 </header>
 
-<div id="banner" class="banner" hidden></div>
+<div id="banner" data-testid="banner" class="banner" hidden></div>
 
 <main id="page-dashboard" class="page">
   <aside class="pane prs">
     <div class="pane-head">
       <div class="row">
-        <button class="burger" id="toggle-prs" aria-expanded="true" aria-controls="pr-list"
+        <button class="burger" id="toggle-prs" data-testid="toggle-prs" aria-expanded="true" aria-controls="pr-list"
                 title="hide the list (gives the review the full window)"><span></span><span></span><span></span></button>
-        <input id="filter" type="search" placeholder="filter by title, repo or author…" autocomplete="off">
+        <label class="search">
+          <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="7" cy="7" r="4.6" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5 14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          <input id="filter" data-testid="pr-filter" type="search" placeholder="Search title, repo, author" autocomplete="off">
+        </label>
+        <button class="icon-btn" id="filter-btn" data-testid="pr-filter-menu" aria-haspopup="true" aria-expanded="false"
+                aria-controls="filter-pop" title="more filters: whose PRs, drafts, owner and repository">
+          <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="M2.5 4h11M4.5 8h7M6.5 12h3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+        </button>
       </div>
-      <div class="row">
-        <div class="segmented" id="scope">
-          <button data-scope="all" class="on">everyone</button>
-          <button data-scope="mine">mine only</button>
+      <div class="fpop" id="filter-pop" data-testid="pr-filter-pop" role="group" aria-label="more filters" hidden>
+        <div class="row filters">
+        <div class="segmented" id="scope" role="group" aria-label="whose PRs" data-testid="pr-scope">
+          <button data-scope="all" class="on" aria-pressed="true">everyone</button>
+          <button data-scope="mine" aria-pressed="false">mine only</button>
         </div>
-        <label class="check tiny"><input type="checkbox" id="hide-drafts"> hide drafts</label>
+        <label class="check tiny"><input type="checkbox" id="hide-drafts" data-testid="pr-hide-drafts"> hide drafts</label>
       </div>
-      <div class="row">
-        <select id="owner-filter" title="show only the PRs of one owner"></select>
-        <select id="repo-filter" title="show only the PRs of one repository"></select>
-        <select id="review-filter" title="filter by what Bazel has already reviewed">
-          <option value="all">any review state</option>
-          <option value="none">not reviewed</option>
-          <option value="reviewed">✓ reviewed</option>
-          <option value="changed">⟳ changed since review</option>
-        </select>
+        <div class="row filters">
+        <select id="owner-filter" data-testid="pr-owner-filter" title="show only the PRs of one owner"></select>
+        <select id="repo-filter" data-testid="pr-repo-filter" title="show only the PRs of one repository"></select>
+      </div>
+      </div>
+      <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
+        <button data-review="all" class="on" aria-pressed="true">All</button>
+        <button aria-pressed="false" data-review="none" title="not reviewed yet">New</button>
+        <button aria-pressed="false" data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
+        <button aria-pressed="false" data-review="changed" title="got new commits after the review">Changed</button>
       </div>
     </div>
     <div id="pr-list" class="list"><p class="empty">loading PRs…</p></div>
     <div class="pane-foot">
-      <label class="check"><input type="checkbox" id="select-all"> select all</label>
-      <div class="spacer"></div>
-      <select id="agent" title="which agent runs over the ticked PRs"></select>
-      <button class="btn primary" id="run" disabled>run</button>
+      <div class="row">
+        <label class="check tiny"><input type="checkbox" id="select-all" data-testid="pr-select-all"> <span id="sel-count">0 selected</span></label>
+      </div>
+      <div class="row">
+        <select id="agent" data-testid="agent-select" title="which agent runs over the ticked PRs"></select>
+        <button class="btn primary" id="run" data-testid="run-review" disabled>▶ Review</button>
+      </div>
     </div>
   </aside>
 
   <section class="pane main">
-    <div class="tabs">
-      <button class="tab on" data-tab="queue">queue <span class="pill" id="queue-count">0</span></button>
-      <button class="tab" data-tab="saved">saved</button>
+    <div class="tabs" role="tablist" aria-label="queue or saved reviews">
+      <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
       <div class="spacer"></div>
-      <div class="conn" id="conn" title="event stream">●</div>
+      <div class="conn" id="conn" data-testid="conn-status" data-state="closed" title="event stream">●</div>
     </div>
     <div id="rail" class="rail"></div>
-    <article id="viewer" class="viewer">
+    <article id="viewer" data-testid="review-viewer" class="viewer">
       <div class="placeholder">
         <img class="logo big" src="/static/bazelgeuse.webp" alt="" width="500" height="500">
-        <p>Tick a PR on the left, pick an agent and hit <b>run</b>.</p>
+        <p>Tick a PR on the left, pick an agent and hit <b>Review</b>.</p>
         <p class="dim">The agent clones the repository, runs over the PR and the result shows up here.
         You can close the tab: the review keeps going on the server.</p>
         <p class="dim only-collapsed">The list is hidden — click the <b>☰</b> on the left edge to bring it back.</p>
@@ -81,44 +100,48 @@
 </main>
 
 <section id="page-config" class="page config" hidden>
+  <!-- Two columns, as the design lays it out: what Bazel watches and what this
+       machine has installed on the left; the agents built from it, the
+       pipeline builder and the export on the right. -->
   <div class="config-body">
-      <div id="stray" class="stray" hidden></div>
-      <h3>watched repositories</h3>
-      <div id="repo-list" class="repo-list"></div>
-      <form class="row" id="repo-form">
-        <input type="text" id="repo-input" placeholder="owner/repo" autocomplete="off">
-        <button class="btn primary" type="submit">add</button>
-      </form>
+    <div id="stray" data-testid="stray-warning" class="stray" hidden></div>
+    <div class="config-cols">
+      <div class="config-col">
+        <h3>Watched repositories</h3>
+        <div class="cbox">
+          <div id="repo-list" class="repo-list"></div>
+          <form class="row" id="repo-form">
+            <input type="text" id="repo-input" data-testid="repo-input" placeholder="owner/repo" autocomplete="off">
+            <button class="btn primary" type="submit" data-testid="repo-add">Add</button>
+          </form>
+        </div>
 
-      <h3>agents</h3>
-      <p class="dim tiny">An agent is one of your skills running over the PR. The list starts empty:
-      build yours below, out of what is installed on this machine. The first one is the default.
-      Not every skill produces a review — turn <b>⇧ output can go to the PR</b> off on the ones that
-      don't, and Bazel stops offering to publish them.</p>
-      <div id="agent-list" class="agent-list"></div>
-
-      <h3>pipelines</h3>
-      <p class="dim tiny">A pipeline runs agents one after another over the <b>same clone</b> — the
-      repository is cloned once and each step reads it in turn. Their reports come back stacked in
-      one card. Only the steps whose output can go to the PR are published.
-      <br>Drag from the tray into the chain to add a step, and drag a step to move it.</p>
-      <div id="pipeline-builder" class="pipe-builder"></div>
-
-      <h3>installed skills <span class="dim" id="skills-dir"></span></h3>
-      <p class="dim tiny"><b>use</b> makes an agent that hands the review back for you to read;
-      <b>⇧ publishes</b> makes one that posts straight to the PR.</p>
-      <div id="skill-list" class="skill-list"></div>
-
-      <h3 id="config-path"></h3>
-      <div class="row">
-        <button class="btn" id="config-download">save config.yaml</button>
-        <span class="dim tiny">repos, agents and pipelines in one file — drop it at the same path
-        on another machine and Bazel comes up configured.</span>
+        <h3>Installed skills <span class="dim mono" id="skills-dir"></span></h3>
+        <p class="dim tiny"><b>Use</b> makes an agent that hands the review back for you to read;
+        <b>+ publishes</b> makes one that posts straight to the PR.</p>
+        <div id="skill-list" class="skill-list"></div>
       </div>
-      <details id="config-raw">
-        <summary class="dim tiny">show the file</summary>
-        <pre id="config-yaml"></pre>
-      </details>
+
+      <div class="config-col">
+        <h3>Agents</h3>
+        <p class="dim tiny">The first one is the default. Turn <b>⇧ output can go to the PR</b> off on
+        the agents that don't produce a review, and Bazel stops offering to publish them.</p>
+        <div id="agent-list" class="agent-list cbox"></div>
+
+        <h3>New pipeline <span class="dim plain">Steps run in order over one clone</span></h3>
+        <div id="pipeline-builder" class="pipe-builder cbox"></div>
+
+        <div class="row export">
+          <button class="btn" id="config-download" data-testid="config-download">⤓ Export config.yaml</button>
+          <span class="dim tiny">Drop it at <span id="config-path" class="mono"></span> on another machine and
+          Bazel comes up configured.</span>
+        </div>
+        <details id="config-raw">
+          <summary class="dim tiny">show the file</summary>
+          <pre id="config-yaml" data-testid="config-yaml"></pre>
+        </details>
+      </div>
+    </div>
   </div>
 </section>
 

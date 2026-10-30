@@ -380,3 +380,62 @@ func deriveRepoFromURL(urlStr string) string {
 	}
 	return ""
 }
+
+// detailFields is what the Overview needs beyond the list: the timeline, the
+// files, who reviews, labels and checks. One `gh pr view` brings all of it.
+const detailFields = "headRefOid,createdAt,body,commits,files,reviewRequests,latestReviews,labels,statusCheckRollup"
+
+// Details is a PR's page as the Overview shows it.
+type Details struct {
+	HeadRefOid string    `json:"headRefOid"`
+	CreatedAt  time.Time `json:"createdAt"`
+	Body       string    `json:"body"`
+	Commits    []struct {
+		Oid             string    `json:"oid"`
+		MessageHeadline string    `json:"messageHeadline"`
+		CommittedDate   time.Time `json:"committedDate"`
+		Authors         []struct {
+			Login string `json:"login"`
+			Name  string `json:"name"`
+		} `json:"authors"`
+	} `json:"commits"`
+	Files []struct {
+		Path      string `json:"path"`
+		Additions int    `json:"additions"`
+		Deletions int    `json:"deletions"`
+	} `json:"files"`
+	ReviewRequests []struct {
+		Login string `json:"login"`
+		Name  string `json:"name"`
+		Slug  string `json:"slug"`
+	} `json:"reviewRequests"`
+	LatestReviews []struct {
+		Author struct {
+			Login string `json:"login"`
+		} `json:"author"`
+		State string `json:"state"`
+	} `json:"latestReviews"`
+	Labels []struct {
+		Name string `json:"name"`
+	} `json:"labels"`
+	StatusCheckRollup []struct {
+		Name       string `json:"name"`
+		Context    string `json:"context"`
+		Status     string `json:"status"`
+		Conclusion string `json:"conclusion"`
+		State      string `json:"state"`
+	} `json:"statusCheckRollup"`
+}
+
+// GetDetails reads a PR's page (commits, files, reviewers, labels, checks).
+func GetDetails(ctx context.Context, repo string, number int) (Details, error) {
+	out, err := run(ctx, "gh", "pr", "view", strconv.Itoa(number), "--repo", repo, "--json", detailFields)
+	if err != nil {
+		return Details{}, err
+	}
+	var d Details
+	if err := json.Unmarshal([]byte(out), &d); err != nil {
+		return Details{}, fmt.Errorf("gh pr view: unexpected output: %w", err)
+	}
+	return d, nil
+}

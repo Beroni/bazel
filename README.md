@@ -475,7 +475,24 @@ post_agent:
   name: bazel-post-report
   task: /bazel-post-report {{review_file}}
   posts: true
+
+# Who writes the History tab. Optional: the default runs /history-pr {{number}}
+# with the factory prompt, not your agent.prompt.
+# history_agent:
+#   task: /history-pr {{number}}
 ```
+
+### The History tab
+
+The History tab runs `history_agent` on demand. Bazel offers nothing of its
+output for publishing, and it refuses a `history_agent` that declares or plainly
+asks for publishing: `posts: true` stops the load, and the rest (a post skill,
+`--post`, a `gh` command that writes, a prompt without the line
+`do not publish anything to GitHub`) stops that history with the reason. That is
+a check, not a guarantee. The default agent is *instructed* not to publish, and
+it has Bash and your `gh` login. A step of your own, whether from `history_agent`
+or a `command`, `args` or `env` inherited from `agent`, is outside what Bazel can
+vouch for, and the tab says so.
 
 ### Agents and pipelines
 
@@ -545,10 +562,13 @@ with the same ticks. **keep it here** drops the wait, not the review.
 
 The screen shows what goes, as Bazel renders it. Raw HTML in the review is
 shown as escaped text (in a block of its own for HTML blocks) instead of being
-interpreted or hidden, so what you see is the text that would be published. The
-one exception is the `<!-- finding … -->` comment right after a finding's `###`:
+interpreted or hidden. One exception is the `<!-- finding … -->` comment right after a finding's `###`:
 it is metadata for the post agent that GitHub does not show either, so it is
-left out. (The PR description is the author's text, not something Bazel
+left out, as long as every attribute is one the fleet's report format defines,
+in its form. Not everything in the markdown shows on screen, and Bazel cannot
+list all of it: some hidden text, such as a `[//]: # (comment)` or a footnote
+nothing refers to, is flagged on top of the report, and the rest may go along
+when you publish. (The PR description is the author's text, not something Bazel
 publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
 not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
 the checkboxes live only in the part under *goes to the PR*.

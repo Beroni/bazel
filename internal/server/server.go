@@ -83,6 +83,18 @@ type Server struct {
 	prs     []gh.PR
 	prErrs  []gh.RepoError
 	prsAt   time.Time
+
+	// details caches each PR's page (the Overview) by head sha: one gh call
+	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
+	// test's.
+	detMu        sync.Mutex
+	details      map[string]detailsEntry
+	reading      map[string]*detailsRead // reads under way, by the same key
+	offList      []time.Time             // reads of PRs outside the list, last minute
+	ghReads      []time.Time             // every read counted by ghReadLocked, last minute
+	listReads    []time.Time             // gh processes of forced list refreshes, last minute
+	retried      map[string]time.Time    // when each PR last got a Retry, within the gap
+	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -104,15 +116,19 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
 	jobs.idPrefix = instance[:4] + "-"
 	return &Server{
-		instance:   instance,
-		cfg:        cfg,
-		me:         me,
-		reviewsDir: reviewsDir,
-		configPath: configPath,
-		opts:       opts,
-		hub:        hub,
-		jobs:       jobs,
-		done:       make(chan struct{}),
+		instance:     instance,
+		details:      map[string]detailsEntry{},
+		reading:      map[string]*detailsRead{},
+		retried:      map[string]time.Time{},
+		fetchDetails: gh.GetDetails,
+		cfg:          cfg,
+		me:           me,
+		reviewsDir:   reviewsDir,
+		configPath:   configPath,
+		opts:         opts,
+		hub:          hub,
+		jobs:         jobs,
+		done:         make(chan struct{}),
 	}, nil
 }
 
@@ -140,6 +156,9 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/prs", s.handlePRs)
+	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/details", s.handlePRDetails)
+	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/history", s.handleHistory)
+	mux.HandleFunc("POST /api/prs/{owner}/{name}/{number}/history", s.handleHistoryGenerate)
 	mux.HandleFunc("POST /api/reviews", s.handleReview)
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
@@ -297,6 +316,17 @@ func (s *Server) guard(next http.Handler) http.Handler {
 			http.Error(w, "host not allowed", http.StatusForbidden)
 			return
 		}
+		// A GET needs no Origin to reach the API from another site: an <img>
+		// is enough to spend the machine's GitHub quota. The browser says where
+		// a request comes from, and only this page has a reason to call. A
+		// client without the header (curl, MCP, an old browser) goes on as
+		// before.
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			if site := r.Header.Get("Sec-Fetch-Site"); site == "cross-site" || site == "same-site" {
+				http.Error(w, "cross-site request refused", http.StatusForbidden)
+				return
+			}
+		}
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			if origin := r.Header.Get("Origin"); origin != "" {
 				u, err := url.Parse(origin)
@@ -394,6 +424,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		// agent run two: the chosen one and the template's. The page warns,
 		// because nothing in the result gives it away — only the spend.
 		"stray_command": stray,
+		// A history step Bazel cannot vouch for: the page says so wherever it
+		// would otherwise say the output stays here.
+		"history_custom": s.historyCustom(),
 		// The Claude quota comes empty until the first review of this session.
 		"limits": s.jobs.Limits(),
 	})
@@ -498,6 +531,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	if fresh && !force {
 		return prs, errs, at, nil
 	}
+	asked := at
 
 	s.fetchMu.Lock()
 	defer s.fetchMu.Unlock()
@@ -507,7 +541,9 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	fresh = time.Since(s.prsAt) < prTTL && !s.prsAt.IsZero()
 	prs, errs, at = s.prs, s.prErrs, s.prsAt
 	s.prMu.RUnlock()
-	if fresh && !force {
+	// Forced, the list that landed while this one waited is already the fresh
+	// read it asked for.
+	if fresh && (!force || at.After(asked)) {
 		return prs, errs, at, nil
 	}
 
@@ -518,6 +554,17 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 		IncludeDrafts: s.cfg.IncludeDrafts,
 	}
 	s.cfgMu.Unlock()
+
+	// A forced refresh past its budget is an ordinary read, the list that is
+	// there. A list that expired is read regardless: the page needs one.
+	if fresh {
+		s.detMu.Lock()
+		allowed := s.listReadLocked(timeNow(), len(repos))
+		s.detMu.Unlock()
+		if !allowed {
+			return prs, errs, at, nil
+		}
+	}
 
 	if len(repos) == 0 {
 		now := time.Now()

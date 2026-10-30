@@ -363,6 +363,12 @@ func TestEnqueueDedupesActivePR(t *testing.T) {
 	if first.ID != second.ID {
 		t.Errorf("o mesmo PR virou dois jobs: %s e %s", first.ID, second.ID)
 	}
+	// The same PR spelled with other case (config vs GitHub) is the same job.
+	shout := testPR(482)
+	shout.Repo = strings.ToUpper(shout.Repo)
+	if again, _ := m.Enqueue(shout, false, cfg.DefaultChoice()); again.ID != first.ID {
+		t.Errorf("%s e %s viraram dois jobs: %s e %s", shout.Key(), testPR(482).Key(), first.ID, again.ID)
+	}
 
 	// With another agent, though, it's another review — and it goes into the queue.
 	cfg.Agents = []config.AgentDef{{Name: "outra-lente"}}
@@ -2445,6 +2451,10 @@ func TestRespostasRecusamFrame(t *testing.T) {
 		{"404", "GET", "/api/jobs/nao-existe", http.StatusNotFound, nil},
 		{"event stream", "GET", "/api/events", http.StatusOK, func(r *http.Request) *http.Request { return r.WithContext(gone) }},
 		{"guard: host", "GET", "/", http.StatusForbidden, func(r *http.Request) *http.Request { r.Host = "evil.com"; return r }},
+		{"guard: other site", "GET", "/api/state", http.StatusForbidden, func(r *http.Request) *http.Request {
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
+			return r
+		}},
 		{"guard: origin", "POST", "/api/reviews", http.StatusForbidden, func(r *http.Request) *http.Request {
 			r.Header.Set("Origin", "https://evil.com")
 			return r
@@ -2630,5 +2640,63 @@ func TestPostRecusadoE4xx(t *testing.T) {
 	waitFor(t, ch, hist.ID, StateDone)
 	if code := post(hist.ID); code != http.StatusConflict {
 		t.Errorf("output that stays in Bazel: %d, want 409", code)
+	}
+}
+
+// The API answers only this page: a request the browser marks as coming from
+// another site is refused before it reaches gh, GET included. Same-origin
+// fetches, navigations and clients without the header go through.
+func TestGuardRecusaOutroSite(t *testing.T) {
+	h := newTestServer(t).Handler()
+	cases := []struct {
+		path, site string
+		want       int
+	}{
+		{"/api/prs?refresh=1", "cross-site", http.StatusForbidden},
+		{"/api/prs/acme/api-core/1/history", "cross-site", http.StatusForbidden},
+		{"/api/state", "same-site", http.StatusForbidden},
+		{"/api/state", "same-origin", http.StatusOK},
+		{"/api/state", "none", http.StatusOK},
+		{"/api/state", "", http.StatusOK},
+		{"/", "cross-site", http.StatusOK},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "http://127.0.0.1:7777"+c.path, nil)
+		if c.site != "" {
+			r.Header.Set("Sec-Fetch-Site", c.site)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != c.want {
+			t.Errorf("%s from %q: %d, want %d", c.path, c.site, w.Code, c.want)
+		}
+	}
+}
+
+// The two fixes meet on one request: a write from another site stops at the
+// guard, and a stale page from this site still gets the 409 that resyncs it.
+// Job ids carry the instance whichever path made them.
+func TestGuardEInstanciaJuntos(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	do := func(site, instance string) int {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/x/cancel", nil)
+		r.Header.Set("Sec-Fetch-Site", site)
+		r.Header.Set(instanceHeader, instance)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := do("cross-site", "old"); code != http.StatusForbidden {
+		t.Errorf("another site: %d, want 403", code)
+	}
+	if code := do("same-origin", "old"); code != http.StatusConflict {
+		t.Errorf("a stale page: %d, want 409", code)
+	}
+	if code := do("same-origin", srv.instance); code != http.StatusNotFound {
+		t.Errorf("this page, no such job: %d, want 404", code)
+	}
+	if !strings.HasPrefix(srv.jobs.nextIDLocked(), srv.instance[:4]+"-j") {
+		t.Error("job ids must carry the instance")
 	}
 }

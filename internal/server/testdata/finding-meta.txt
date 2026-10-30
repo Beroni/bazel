@@ -1,0 +1,153 @@
+<!-- finding severity=critical class=deps lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=422 side=RIGHT -->
+<!-- finding severity=critical class=logic lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=243 side=RIGHT -->
+<!-- finding severity=critical class=logic lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=369 side=RIGHT ref=CWE-400 -->
+<!-- finding severity=critical class=regression lenses=exploit-digger+senior-code-reviewer path=src/pkg/file.go line=238 side=RIGHT ref=CWE-345 -->
+<!-- finding severity=critical class=regression lenses=senior-code-reviewer path=src/pkg/file.go line=545 side=RIGHT confidence=8 -->
+<!-- finding severity=critical class=regression lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=249 side=RIGHT -->
+<!-- finding severity=critical class=resource lenses=exploit-digger path=src/pkg/file.go line=884 side=RIGHT confidence=high -->
+<!-- finding severity=critical class=resource lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=68 side=RIGHT -->
+<!-- finding severity=critical class=supply-chain lenses=senior-code-reviewer path=- line=- ref=CWE-1104 -->
+<!-- finding severity=major class=assumption lenses=exploit-digger path=src/pkg/file.go line=538 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=assumption lenses=exploit-digger path=src/pkg/file.go line=8199 side=RIGHT -->
+<!-- finding severity=major class=authz lenses=exploit-digger path=src/pkg/file.go line=374 side=RIGHT confidence=high -->
+<!-- finding severity=major class=authz lenses=exploit-digger path=src/pkg/file.go line=935 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=authz lenses=senior-code-reviewer+lazy-senior-dev path=src/pkg/file.go line=34 side=RIGHT ref=CWE-1385 -->
+<!-- finding severity=major class=compatibility lenses=exploit-digger path=src/pkg/file.go line=176 side=RIGHT -->
+<!-- finding severity=major class=concurrency lenses=exploit-digger path=src/pkg/file.go line=591 side=RIGHT -->
+<!-- finding severity=major class=correctness lenses=senior-code-reviewer path=src/pkg/file.go line=189 side=RIGHT -->
+<!-- finding severity=major class=delete lenses=lazy-senior-dev path=src/pkg/file.go line=252 side=RIGHT lines_saved=22 -->
+<!-- finding severity=major class=docs lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=14 side=RIGHT confidence=9 -->
+<!-- finding severity=major class=error-handling lenses=exploit-digger path=src/pkg/file.go line=399 side=RIGHT -->
+<!-- finding severity=major class=logic lenses=exploit-digger path=- line=- -->
+<!-- finding severity=major class=logic lenses=exploit-digger path=src/pkg/file.go line=314 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=logic lenses=exploit-digger path=src/pkg/file.go line=36 side=RIGHT -->
+<!-- finding severity=major class=logic lenses=exploit-digger path=src/pkg/file.go line=87 side=RIGHT ref=CWE-190 -->
+<!-- finding severity=major class=logic lenses=exploit-digger+senior-code-reviewer path=src/pkg/file.go line=813 side=RIGHT confidence=high -->
+<!-- finding severity=major class=logic lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=2192 side=RIGHT confidence=high ref=CWE-20 -->
+<!-- finding severity=major class=logic lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=404 side=RIGHT confidence=9 -->
+<!-- finding severity=major class=pr-mismatch lenses=exploit-digger path=src/pkg/file.go line=302 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=pr-mismatch lenses=senior-code-reviewer+exploit-digger path=- line=- -->
+<!-- finding severity=major class=regression lenses=exploit-digger path=src/pkg/file.go line=328 side=RIGHT -->
+<!-- finding severity=major class=regression lenses=exploit-digger path=src/pkg/file.go line=333 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=regression lenses=senior-code-reviewer path=src/pkg/file.go line=1019 side=RIGHT confidence=8 -->
+<!-- finding severity=major class=regression lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=101 side=RIGHT confidence=high -->
+<!-- finding severity=major class=regression lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=423 side=RIGHT ref=CWE-20 -->
+<!-- finding severity=major class=resource lenses=exploit-digger path=- line=- side=RIGHT confidence=medium -->
+<!-- finding severity=major class=resource lenses=exploit-digger path=src/pkg/file.go line=1237 side=RIGHT ref=CWE-400 -->
+<!-- finding severity=major class=resource lenses=exploit-digger path=src/pkg/file.go line=566 side=RIGHT -->
+<!-- finding severity=major class=reuse lenses=lazy-senior-dev path=src/pkg/file.go line=428 side=RIGHT lines_saved=250 -->
+<!-- finding severity=major class=secrets lenses=exploit-digger path=src/pkg/file.go line=7 side=RIGHT confidence=high -->
+<!-- finding severity=major class=shrink lenses=lazy-senior-dev path=src/pkg/file.go line=587 side=RIGHT lines_saved=62 -->
+<!-- finding severity=major class=test-coverage lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=30 side=RIGHT -->
+<!-- finding severity=major class=test-gap lenses=exploit-digger path=src/pkg/file.go line=85 side=RIGHT -->
+<!-- finding severity=major class=test-gap lenses=senior-code-reviewer path=src/pkg/file.go line=300 side=RIGHT confidence=9 -->
+<!-- finding severity=major class=test-validity lenses=senior-code-reviewer path=src/pkg/file.go line=193 side=RIGHT confidence=9 -->
+<!-- finding severity=major class=test-validity lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=92 side=RIGHT -->
+<!-- finding severity=major class=validation lenses=exploit-digger path=- line=- -->
+<!-- finding severity=major class=validation lenses=exploit-digger path=src/pkg/file.go line=107 side=RIGHT confidence=medium -->
+<!-- finding severity=major class=validation lenses=exploit-digger path=src/pkg/file.go line=721 side=RIGHT -->
+<!-- finding severity=major class=validation lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=142 side=RIGHT confidence=8 ref=CWE-20 -->
+<!-- finding severity=major class=yagni lenses=lazy-senior-dev path=src/pkg/file.go line=731 side=RIGHT lines_saved=66 -->
+<!-- finding severity=minor class=architecture lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=121 side=RIGHT -->
+<!-- finding severity=minor class=architecture lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=20 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=assumption lenses=exploit-digger path=src/pkg/file.go line=244 side=RIGHT -->
+<!-- finding severity=minor class=assumption lenses=exploit-digger path=src/pkg/file.go line=258 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=assumption lenses=exploit-digger path=src/pkg/file.go line=588 side=RIGHT confidence=low -->
+<!-- finding severity=minor class=authz lenses=exploit-digger path=src/pkg/file.go line=476 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=correctness lenses=senior-code-reviewer path=src/pkg/file.go line=560 side=RIGHT -->
+<!-- finding severity=minor class=crypto lenses=exploit-digger path=src/pkg/file.go line=21 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=dead-code lenses=senior-code-reviewer+lazy-senior-dev path=src/pkg/file.go line=51 side=RIGHT lines_saved=10 -->
+<!-- finding severity=minor class=delete lenses=lazy-senior-dev path=src/pkg/file.go line=255 side=RIGHT lines_saved=15 -->
+<!-- finding severity=minor class=delete lenses=lazy-senior-dev path=src/pkg/file.go start_line=2572 line=2576 side=RIGHT lines_saved=13 -->
+<!-- finding severity=minor class=docs lenses=exploit-digger path=src/pkg/file.go line=1968 side=RIGHT -->
+<!-- finding severity=minor class=docs lenses=senior-code-reviewer path=src/pkg/file.go line=280 side=RIGHT confidence=9 -->
+<!-- finding severity=minor class=docs lenses=senior-code-reviewer path=src/pkg/file.go line=64 side=RIGHT confidence=8 ref=CWE-20 -->
+<!-- finding severity=minor class=docs lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=51 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=error-handling lenses=exploit-digger path=- line=- -->
+<!-- finding severity=minor class=error-handling lenses=exploit-digger path=src/pkg/file.go line=1448 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=error-handling lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=68 side=RIGHT -->
+<!-- finding severity=minor class=hygiene lenses=senior-code-reviewer+lazy-senior-dev path=src/pkg/file.go line=77 side=RIGHT lines_saved=1 -->
+<!-- finding severity=minor class=injection lenses=exploit-digger path=src/pkg/file.go line=257 side=RIGHT ref=CWE-117 -->
+<!-- finding severity=minor class=lifecycle lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=176 side=RIGHT -->
+<!-- finding severity=minor class=logic lenses=exploit-digger path=src/pkg/file.go line=145 side=RIGHT -->
+<!-- finding severity=minor class=logic lenses=exploit-digger path=src/pkg/file.go line=303 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=logic lenses=exploit-digger path=src/pkg/file.go line=42 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=logic lenses=senior-code-reviewer path=src/pkg/file.go line=122 side=RIGHT confidence=9 -->
+<!-- finding severity=minor class=observability lenses=exploit-digger path=src/pkg/file.go line=76 side=RIGHT -->
+<!-- finding severity=minor class=perf lenses=exploit-digger path=src/pkg/file.go line=72 side=RIGHT -->
+<!-- finding severity=minor class=perf lenses=senior-code-reviewer path=src/pkg/file.go line=72 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=pr-mismatch lenses=exploit-digger path=src/pkg/file.go line=36 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=pr-mismatch lenses=exploit-digger path=src/pkg/file.go line=899 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=pr-mismatch lenses=senior-code-reviewer path=src/pkg/file.go line=876 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=pr-mismatch lenses=senior-code-reviewer path=src/pkg/file.go line=943 side=RIGHT confidence=9 -->
+<!-- finding severity=minor class=pr-mismatch lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=68 side=RIGHT -->
+<!-- finding severity=minor class=quality lenses=exploit-digger path=src/pkg/file.go line=40 side=RIGHT -->
+<!-- finding severity=minor class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=624 side=RIGHT confidence=9 ref=CWE-20 -->
+<!-- finding severity=minor class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=975 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=race lenses=exploit-digger path=- line=- side=RIGHT -->
+<!-- finding severity=minor class=regression lenses=exploit-digger path=src/pkg/file.go line=13 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=regression lenses=exploit-digger path=src/pkg/file.go line=267 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=regression lenses=exploit-digger path=src/pkg/file.go line=675 side=RIGHT -->
+<!-- finding severity=minor class=resource lenses=exploit-digger path=src/pkg/file.go line=573 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=resource lenses=exploit-digger+senior-code-reviewer path=src/pkg/file.go line=140 side=RIGHT -->
+<!-- finding severity=minor class=reuse lenses=lazy-senior-dev path=src/pkg/file.go line=1769 side=RIGHT lines_saved=14 -->
+<!-- finding severity=minor class=secrets lenses=exploit-digger path=src/pkg/file.go line=133 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=secrets lenses=exploit-digger path=src/pkg/file.go line=154 side=RIGHT -->
+<!-- finding severity=minor class=shrink lenses=lazy-senior-dev path=src/pkg/file.go line=140 side=RIGHT lines_saved=55 -->
+<!-- finding severity=minor class=stdlib lenses=lazy-senior-dev path=src/pkg/file.go line=42 side=RIGHT lines_saved=17 -->
+<!-- finding severity=minor class=test-brittleness lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=120 side=RIGHT -->
+<!-- finding severity=minor class=test-coverage lenses=senior-code-reviewer path=src/pkg/file.go line=1514 side=RIGHT -->
+<!-- finding severity=minor class=test-gap lenses=exploit-digger path=src/pkg/file.go line=138 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=test-gap lenses=exploit-digger path=src/pkg/file.go line=27 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=test-gap lenses=exploit-digger path=src/pkg/file.go line=510 side=RIGHT -->
+<!-- finding severity=minor class=test-gap lenses=senior-code-reviewer path=src/pkg/file.go line=1922 side=RIGHT confidence=9 -->
+<!-- finding severity=minor class=test-gap lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=2685 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=test-quality lenses=senior-code-reviewer path=src/pkg/file.go line=19 side=RIGHT -->
+<!-- finding severity=minor class=test-validity lenses=exploit-digger path=src/pkg/file.go line=8256 side=RIGHT -->
+<!-- finding severity=minor class=test-validity lenses=senior-code-reviewer path=src/pkg/file.go line=298 side=RIGHT confidence=8 -->
+<!-- finding severity=minor class=test-validity lenses=senior-code-reviewer path=src/pkg/file.go line=385 start_line=384 side=RIGHT -->
+<!-- finding severity=minor class=validation lenses=exploit-digger path=src/pkg/file.go line=174 side=RIGHT ref=CWE-117 -->
+<!-- finding severity=minor class=validation lenses=exploit-digger path=src/pkg/file.go line=419 side=RIGHT confidence=high -->
+<!-- finding severity=minor class=validation lenses=exploit-digger path=src/pkg/file.go line=92 side=RIGHT confidence=medium -->
+<!-- finding severity=minor class=validation lenses=exploit-digger+lazy-senior-dev path=src/pkg/file.go line=42 side=RIGHT -->
+<!-- finding severity=minor class=yagni lenses=lazy-senior-dev path=src/pkg/file.go line=56 side=RIGHT lines_saved=17 -->
+<!-- finding severity=nit class=assumption lenses=exploit-digger path=src/pkg/file.go line=55 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=assumption lenses=exploit-digger path=src/pkg/file.go line=804 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=delete lenses=lazy-senior-dev path=src/pkg/file.go line=5 side=RIGHT lines_saved=2 -->
+<!-- finding severity=nit class=deps lenses=exploit-digger path=src/pkg/file.go line=3 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=docs lenses=exploit-digger path=- line=- -->
+<!-- finding severity=nit class=docs lenses=exploit-digger path=src/pkg/file.go line=143 side=RIGHT -->
+<!-- finding severity=nit class=docs lenses=senior-code-reviewer path=src/pkg/file.go line=113 side=RIGHT confidence=10 -->
+<!-- finding severity=nit class=docs lenses=senior-code-reviewer path=src/pkg/file.go line=247 side=RIGHT confidence=8 -->
+<!-- finding severity=nit class=docs lenses=senior-code-reviewer path=src/pkg/file.go line=277 side=RIGHT confidence=9 -->
+<!-- finding severity=nit class=error-handling lenses=exploit-digger path=src/pkg/file.go line=228 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=error-handling lenses=exploit-digger path=src/pkg/file.go line=663 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=logic lenses=exploit-digger path=src/pkg/file.go line=437 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=logic lenses=exploit-digger path=src/pkg/file.go line=56 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=logic lenses=exploit-digger path=src/pkg/file.go line=96 side=RIGHT -->
+<!-- finding severity=nit class=pr-mismatch lenses=exploit-digger path=- line=- -->
+<!-- finding severity=nit class=pr-mismatch lenses=exploit-digger path=src/pkg/file.go line=153 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=pr-mismatch lenses=exploit-digger path=src/pkg/file.go line=18 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=pr-mismatch lenses=senior-code-reviewer+exploit-digger path=src/pkg/file.go line=39 side=RIGHT confidence=9 -->
+<!-- finding severity=nit class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=385 side=RIGHT confidence=8 -->
+<!-- finding severity=nit class=quality lenses=senior-code-reviewer path=src/pkg/file.go line=8279 side=RIGHT -->
+<!-- finding severity=nit class=regression lenses=exploit-digger path=src/pkg/file.go line=1295 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=regression lenses=exploit-digger path=src/pkg/file.go line=943 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=resource lenses=exploit-digger path=src/pkg/file.go line=177 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=resource lenses=exploit-digger path=src/pkg/file.go line=246 side=RIGHT -->
+<!-- finding severity=nit class=resource lenses=exploit-digger path=src/pkg/file.go line=373 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=reuse lenses=lazy-senior-dev path=src/pkg/file.go line=82 side=RIGHT lines_saved=7 -->
+<!-- finding severity=nit class=secrets lenses=exploit-digger path=src/pkg/file.go line=38 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=secrets lenses=exploit-digger path=src/pkg/file.go line=5 side=RIGHT confidence=low -->
+<!-- finding severity=nit class=shrink lenses=lazy-senior-dev path=src/pkg/file.go line=35 side=RIGHT lines_saved=3 -->
+<!-- finding severity=nit class=stdlib lenses=lazy-senior-dev path=src/pkg/file.go line=100 side=RIGHT lines_saved=4 -->
+<!-- finding severity=nit class=test-coverage lenses=exploit-digger path=src/pkg/file.go line=1401 side=RIGHT -->
+<!-- finding severity=nit class=test-gap lenses=exploit-digger path=src/pkg/file.go line=1599 side=RIGHT confidence=low -->
+<!-- finding severity=nit class=test-gap lenses=exploit-digger path=src/pkg/file.go line=1617 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=test-gap lenses=exploit-digger path=src/pkg/file.go line=2356 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=test-gap lenses=exploit-digger path=src/pkg/file.go start_line=280 line=285 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=validation lenses=exploit-digger path=src/pkg/file.go line=21 side=RIGHT confidence=high -->
+<!-- finding severity=nit class=validation lenses=exploit-digger path=src/pkg/file.go line=412 side=RIGHT confidence=medium -->
+<!-- finding severity=nit class=yagni lenses=lazy-senior-dev path=src/pkg/file.go line=593 side=RIGHT lines_saved=4 -->
+<!-- finding severity=major class=authz lenses=senior-code-reviewer path=src/pkg/file.go line=7 side=RIGHT confidence=9 ref=CWE-639,OWASP-A01 -->
+<!-- finding severity=major class=injection lenses=exploit-digger path=src/pkg/file.go line=7 side=RIGHT confidence=high ref=CVE-2024-3094,GHSA-fxph-hxgv-c2wc,OWASP-A03:2021 -->
