@@ -63,6 +63,7 @@ the prompt — it is only downloaded if your template uses `{{diff}}`.
 - Go 1.25+ (to build)
 - [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
+- `jq`, for publishing to the PR
 - An AI agent on your `PATH` that reads a prompt on stdin — by default
   [`claude`](https://claude.com/claude-code) in [stream mode](#the-live-log),
   which is what feeds the live log

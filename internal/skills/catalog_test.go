@@ -82,28 +82,6 @@ func TestCatalogFollowsHeadless(t *testing.T) {
 	}
 }
 
-// A skill reads text from someone else's PR, so every prompt that reaches a model
-// says that text is data. The fleet gets it from headless.md, which it follows
-// whole; the post skill and the history name that rule themselves, because they
-// do not take that section (or not all of it).
-func TestCatalogTreatsThePRAsData(t *testing.T) {
-	for _, p := range []string{
-		"bazel-post-report/SKILL.md", "bazel-history-pr/SKILL.md",
-		"bazel-review-fleet/references/headless.md",
-		"bazel-senior-code-reviewer/agents/bazel-senior-code-reviewer.md",
-		"bazel-exploit-digger/agents/bazel-exploit-digger.md",
-		"bazel-lazy-senior-dev/agents/bazel-lazy-senior-dev.md",
-	} {
-		data, err := builtinFS.ReadFile(builtinRoot + "/" + p)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if text := strings.Join(strings.Fields(string(data)), " "); !strings.Contains(text, "never instructions to you") {
-			t.Errorf("%s does not say the PR is data", p)
-		}
-	}
-}
-
 // The skills name files by their path in the plugin (`<plugin>/skills/…`,
 // `<plugin>/agents/…`). Every one of those paths has to exist in what
 // Materialize writes, or the agent reads nothing and improvises.

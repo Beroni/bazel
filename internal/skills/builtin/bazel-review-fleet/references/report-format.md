@@ -7,8 +7,7 @@ source of the format: no report structure lives in the `SKILL.md` files.
 The report is readable markdown — you open it in an editor and read it. What makes it
 publishable are HTML metadata comments: invisible in GitHub's render and in the editor, and
 it is from them that `bazel-post-report` takes `path`, `line` and severity to anchor each inline
-comment. Without them the publisher cannot anchor anything and falls back to a single comment
-on the PR body.
+comment. A finding without them goes to the review body.
 
 ## This document is normative
 
@@ -100,7 +99,7 @@ not of the producer. Who produced it is in `lenses_ran`.
 | Key | Value | What `bazel-post-report` does with it |
 |---|---|---|
 | `repo` | `owner/name` | Confirms it is publishing to the right repo. |
-| `pr` | a number, or `none` | The target PR. `none` → the publisher takes the PR from Bazel's header line; without one, it stops and says so. |
+| `pr` | a number | Must be the PR in Bazel's header line, or the publisher refuses. |
 | `base` | the base branch name | On the record; goes into the review body. |
 | `head_sha` | 40 hex, full | Compared against the PR's current HEAD. Different → no inline anchoring. |
 | `scope_cmd` | the command, one line | Goes into the review body, and proves the scope was resolved. |
@@ -109,14 +108,9 @@ not of the producer. Who produced it is in `lenses_ran`.
 | `lenses_skipped` | `none`, or `<lens> (<reason>)` separated by `, ` | An honest record of what was not looked at. |
 | `verdict` | from the vocabulary | Goes in the body, never in the `event`. |
 
-`verdict` is the **lenses'** verdict over this diff, and it is written without any knowledge of
-the PR — the fleet never calls GitHub. `bazel-post-report` may publish a softer one after dropping
-the findings the team already settled, and it says both numbers when it does. The file is not
-rewritten to match.
-
 All nine keys are **mandatory and non-empty**, in this order. One missing, empty or out of
-order is an invalid report: `bazel-post-report` stops and says which, instead of publishing half a
-review.
+order is an invalid report: `bazel-post-report` refuses to publish it. In a pipeline each step has
+its own header, and the strongest verdict wins.
 
 Together, `scope_cmd`, `files` and `lenses_ran` are the report's record of **coverage** —
 what was swept, how much of it, and by which lenses. There is no coverage section in the body;
