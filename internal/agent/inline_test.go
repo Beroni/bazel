@@ -32,6 +32,8 @@ func TestDropPreamble(t *testing.T) {
 		{"history preamble goes", "Done.\n<!-- history-pr:v1\npr: 1\n-->", "<!-- history-pr:v1\npr: 1\n-->"},
 		{"report alone stays", report, report},
 		{"fenced report is Unwrap's", "```markdown\n" + report + "\n```", "```markdown\n" + report + "\n```"},
+		{"preamble before a fenced report goes, the fence stays", "Here is the report:\n\n```markdown\n" + report + "\n```", "```markdown\n" + report + "\n```"},
+		{"prose inside a fence is not a wrapped report", "Note:\n```\nsome code\n" + report + "\n```", "Note:\n```\nsome code\n" + report + "\n```"},
 		{"a heading before is not a preamble", "## Step one\n\n" + report, "## Step one\n\n" + report},
 		{"no marker stays", "Just a plain review.\n\n## Findings", "Just a plain review.\n\n## Findings"},
 		{"marker in a quote stays", "The header reads\n`<!-- review-fleet:v1`", "The header reads\n`<!-- review-fleet:v1`"},

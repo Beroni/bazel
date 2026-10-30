@@ -347,27 +347,36 @@ var reportMarkers = []string{"<!-- review-fleet:v1", "<!-- history-pr:v1"}
 // a model narrates anyway, often in the user's language, and that sentence
 // would be saved, shown and pasted on the PR with the review. Only a short
 // preamble goes: a body with a code fence or a heading before the marker is
-// not a report with a preamble, and is left whole (Unwrap handles the fence).
+// not a report with a preamble, and is left whole — except a fence opened right
+// before the marker, which is the report wrapped in ```markdown: the cut keeps
+// the fence, and Unwrap takes it off afterwards.
 func dropPreamble(body string) string {
 	lines := strings.Split(body, "\n")
+	fence := -1 // a fence opened right before the marker: the report is wrapped
 	for i, l := range lines {
 		t := strings.TrimSpace(l)
-		marker := false
-		for _, m := range reportMarkers {
-			if t == m {
-				marker = true
+		if slices.Contains(reportMarkers, t) {
+			start := i
+			if fence >= 0 {
+				start = fence // keep the fence; Unwrap takes it off
 			}
-		}
-		if !marker {
-			if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") || strings.HasPrefix(t, "#") {
+			if start == 0 || start > 10 {
 				return body
 			}
-			continue
+			return strings.Join(lines[start:], "\n")
 		}
-		if i == 0 || i > 10 {
+		switch {
+		case t == "":
+		case strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~"):
+			if fence >= 0 {
+				return body
+			}
+			fence = i
+		case strings.HasPrefix(t, "#"):
 			return body
+		case fence >= 0:
+			return body // text inside the fence before the marker: not a wrapped report
 		}
-		return strings.Join(lines[i:], "\n")
 	}
 	return body
 }
