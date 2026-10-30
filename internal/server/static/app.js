@@ -1921,16 +1921,18 @@ function lazy(cache, key, url, onReady) {
   if (have.loading) return have.view ? have : null;
   if (!have.stale && (have.view || have.error)) return have;
   cache[key] = { loading: true, view: have.view };
-  api(url)
+  api(have.retry ? url + (url.includes('?') ? '&' : '?') + 'retry=1' : url)
     .then((view) => { cache[key] = { view }; onReady(); })
     .catch((err) => { cache[key] = { error: err.message }; onReady(); });
   return have.view ? cache[key] : null;
 }
 
 // retryButton forgets a failed read and draws again, which reads it again.
+// retry=1 tells the server this is someone asking, so its short memory of the
+// failure does not answer in GitHub's place.
 function retryButton(cache, key, redraw) {
   const b = tid(el('button', 'btn small', 'Retry'), 'retry');
-  b.addEventListener('click', () => { delete cache[key]; redraw(); });
+  b.addEventListener('click', () => { cache[key] = { retry: true }; redraw(); });
   return b;
 }
 

@@ -181,24 +181,52 @@ func TestPRDetailsLimites(t *testing.T) {
 	if code := get(listed); code != http.StatusBadGateway || calls != 1 {
 		t.Errorf("a failure must not be retried at once: %d, %d calls", code, calls)
 	}
+	// Retry reads past it, but not faster than detailsRetryGap, and it says when.
+	retry := listed + "?retry=1"
+	if code := get(retry); code != http.StatusBadGateway || calls != 2 {
+		t.Errorf("Retry must read again: %d, %d calls", code, calls)
+	}
+	if code := get(retry); code != http.StatusTooManyRequests || calls != 2 {
+		t.Errorf("a second Retry at once: %d, %d calls", code, calls)
+	}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+retry, nil))
+	if !strings.Contains(w.Body.String(), "try again in 5s") {
+		t.Errorf("the refusal must say when: %s", w.Body)
+	}
+	if code := get(listed); code != http.StatusBadGateway || calls != 2 {
+		t.Errorf("a plain read still gets the cached failure: %d, %d calls", code, calls)
+	}
+	now = now.Add(detailsRetryGap)
+	fail = false
+	if code := get(retry); code != http.StatusOK || calls != 3 {
+		t.Errorf("Retry after the gap, GitHub back: %d, %d calls", code, calls)
+	}
+	// With nothing failed, retry=1 is a plain read: it cannot force a call.
+	if code := get(retry); code != http.StatusOK || calls != 3 {
+		t.Errorf("Retry with no failure: %d, %d calls", code, calls)
+	}
+	now = now.Add(detailsTTL + time.Second)
+	fail = true
+	get(listed)
 	now = now.Add(detailsErrTTL + time.Second)
 	fail = false
-	if code := get(listed); code != http.StatusOK || calls != 2 {
+	if code := get(listed); code != http.StatusOK || calls != 5 {
 		t.Errorf("after the error window: %d, %d calls", code, calls)
 	}
 	// Same head, but checks and reviews move: stale after detailsTTL.
 	get(listed)
-	if calls != 2 {
+	if calls != 5 {
 		t.Errorf("within the TTL the cache answers: %d calls", calls)
 	}
 	now = now.Add(detailsTTL + time.Second)
-	if get(listed); calls != 3 {
+	if get(listed); calls != 6 {
 		t.Errorf("past the TTL it is read again: %d calls", calls)
 	}
 
 	// Outside the list: refused without offlist=1, rate limited with it.
 	offListPerMin = 2
-	if code := get("/api/prs/acme/api-core/7/details"); code != http.StatusNotFound || calls != 3 {
+	if code := get("/api/prs/acme/api-core/7/details"); code != http.StatusNotFound || calls != 6 {
 		t.Errorf("off-list without asking: %d, %d calls", code, calls)
 	}
 	for n, want := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {

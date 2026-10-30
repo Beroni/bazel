@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,11 +19,15 @@ type detailsEntry struct {
 	at   time.Time
 	view detailsView
 	err  string
+	// retried is when the page last asked to read past this failure.
+	retried time.Time
 }
 
 // The details cache. Checks and reviews change without a new commit, so even
 // at the same head an entry is read again after detailsTTL. A failed read is
-// not retried before detailsErrTTL, whoever asks. At most detailsMax entries
+// not retried before detailsErrTTL, unless someone clicks Retry (retry=1):
+// that one goes to GitHub, at most once every detailsRetryGap, so a held-down
+// click or a script cannot turn it into a loop. At most detailsMax entries
 // are kept, the oldest going first. A PR that is not in the list is only read
 // when the page asks for it explicitly (offlist=1), and at most offListPerMin
 // times a minute: the list bounds what the page needs, and nothing else
@@ -33,6 +38,8 @@ var (
 	detailsMax    = 256
 	offListPerMin = 6
 	timeNow       = time.Now
+
+	detailsRetryGap = 5 * time.Second
 )
 
 func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
@@ -53,9 +60,20 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 	e, ok := s.details[key]
 	if ok && (!listed || e.sha == pr.HeadRefOid || e.err != "") {
 		if e.err != "" && now.Sub(e.at) < detailsErrTTL {
-			s.detMu.Unlock()
-			writeErr(w, http.StatusBadGateway, errors.New(e.err))
-			return
+			wait := detailsRetryGap - now.Sub(e.retried)
+			if r.URL.Query().Get("retry") != "1" {
+				s.detMu.Unlock()
+				writeErr(w, http.StatusBadGateway, errors.New(e.err))
+				return
+			}
+			if wait > 0 {
+				s.detMu.Unlock()
+				writeErr(w, http.StatusTooManyRequests, fmt.Errorf("%s — try again in %ds", e.err, (wait+time.Second-1)/time.Second))
+				return
+			}
+			// Stamped before the read: a second click while it runs is refused.
+			e.retried = now
+			s.details[key] = e
 		}
 		if e.err == "" && now.Sub(e.at) < detailsTTL {
 			s.detMu.Unlock()
@@ -83,7 +101,7 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 	d, err := s.fetchDetails(r.Context(), repo, number)
 	entry := detailsEntry{sha: d.HeadRefOid, at: now}
 	if err != nil {
-		entry.sha, entry.err = pr.HeadRefOid, err.Error()
+		entry.sha, entry.err, entry.retried = pr.HeadRefOid, err.Error(), e.retried
 	} else {
 		entry.view = detailsViewOf(d)
 	}
