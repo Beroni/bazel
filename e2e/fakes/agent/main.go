@@ -65,10 +65,18 @@ func main() {
 	}
 	defer f.Close()
 
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 1<<20), 1<<20)
-	for sc.Scan() {
-		line := sc.Text()
+	// Line by line with no limit: an event can be as long as a real one, and a
+	// scenario that cannot be read to its end must not pass as a short review.
+	r := bufio.NewReader(f)
+	for {
+		raw, err := r.ReadString('\n')
+		if err != nil && err != io.EOF {
+			fail(2, "fake-agent: reading the scenario: "+err.Error())
+		}
+		if raw == "" {
+			return
+		}
+		line := strings.TrimSuffix(raw, "\n")
 		if !strings.HasPrefix(line, "#!") {
 			fmt.Println(line)
 			continue
