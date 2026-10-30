@@ -169,7 +169,23 @@ func (s *Server) Handler() http.Handler {
 	// running an agent, just spoken by machine.
 	mux.HandleFunc("/mcp", s.handleMCP)
 
-	return s.guard(mux)
+	return secureHeaders(s.guard(mux))
+}
+
+// secureHeaders goes on every response, the guard's refusals included. The
+// page must not load inside another site's frame: a hidden iframe on
+// 127.0.0.1 keeps a local Host, passes the guard, and could walk a click to
+// "Publish inline review" and its confirm (clickjacking). X-Frame-Options is
+// for older browsers, frame-ancestors for the rest. nosniff keeps the browser
+// to the declared types — every response here declares one.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // semCache tells the browser not to keep what comes embedded in the binary.

@@ -2318,3 +2318,33 @@ func TestInstanciaDoServidor(t *testing.T) {
 		t.Fatal("o SSE não mandou nada ao conectar")
 	}
 }
+
+// Every response refuses to be framed and to be type-sniffed: the page, the
+// assets, the API, SSE and the guard's own 403 (clickjacking on publish).
+func TestRespostasRecusamFrame(t *testing.T) {
+	h := newTestServer(t).Handler()
+	cases := []struct {
+		path string
+		mod  func(*http.Request)
+	}{
+		{"/", nil},
+		{"/static/app.js", nil},
+		{"/api/state", nil},
+		{"/api/jobs/nao-existe", nil},
+		{"/", func(r *http.Request) { r.Host = "evil.com" }},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest("GET", "http://127.0.0.1:7777"+c.path, nil)
+		if c.mod != nil {
+			c.mod(r)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		got := w.Result().Header
+		if got.Get("X-Frame-Options") != "DENY" ||
+			got.Get("Content-Security-Policy") != "frame-ancestors 'none'" ||
+			got.Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("%s (host %s, %d): headers %v", c.path, r.Host, w.Code, got)
+		}
+	}
+}
