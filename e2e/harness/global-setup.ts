@@ -2,13 +2,20 @@ import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { chromium } from '@playwright/test';
 import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
+
+// The suite touches no network: Go may only use what it already has.
+const GO_OFFLINE = { ...process.env, GOPROXY: 'off', GOSUMDB: 'off', GOTOOLCHAIN: 'local' };
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
 // The real gh lives next to node and git in Homebrew, so that directory is
 // never on the server's PATH — git is linked in by itself.
 export default async function globalSetup() {
+  if (!fs.existsSync(chromium.executablePath())) {
+    throw new Error(`the Chromium this Playwright needs is not installed (${chromium.executablePath()}): run \`make e2e-setup\` once`);
+  }
   fs.rmSync(BIN, { recursive: true, force: true });
   // A failed test keeps its root for debugging, until the next run.
   fs.rmSync(path.join(OUT, 'runs'), { recursive: true, force: true });
@@ -17,8 +24,8 @@ export default async function globalSetup() {
   // The three builds run in parallel; Go's build cache makes a warm run cheap.
   const build = (out: string, pkg: string, cwd = REPO) =>
     new Promise<void>((resolve, reject) =>
-      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd }, (err, _stdout, stderr) =>
-        err ? reject(new Error(`go build ${pkg} in ${cwd}: ${stderr || err.message}`)) : resolve()));
+      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd, env: GO_OFFLINE }, (err, _stdout, stderr) =>
+        err ? reject(new Error(`go build ${pkg} in ${cwd} (offline; run \`go mod download\` once if a module is missing): ${stderr || err.message}`)) : resolve()));
   await Promise.all([build('bazel', '.', BAZEL_SRC), build('gh', './e2e/fakes/gh'), build('fake-agent', './e2e/fakes/agent')]);
   if (BAZEL_SRC !== REPO) console.log(`e2e: Bazel under test built from ${BAZEL_SRC}`);
 
