@@ -2427,6 +2427,121 @@ func TestInstanciaDoServidor(t *testing.T) {
 	}
 }
 
+// Every response refuses to be framed and to be type-sniffed: the page, the
+// assets, the API, SSE and the guard's own 403 (clickjacking on publish).
+func TestRespostasRecusamFrame(t *testing.T) {
+	h := newTestServer(t).Handler()
+	// The event stream only returns once its client leaves.
+	gone, leave := context.WithCancel(context.Background())
+	leave()
+	cases := []struct {
+		name, method, path string
+		want               int
+		mod                func(*http.Request) *http.Request
+	}{
+		{"page", "GET", "/", http.StatusOK, nil},
+		{"static", "GET", "/static/app.js", http.StatusOK, nil},
+		{"api", "GET", "/api/state", http.StatusOK, nil},
+		{"404", "GET", "/api/jobs/nao-existe", http.StatusNotFound, nil},
+		{"event stream", "GET", "/api/events", http.StatusOK, func(r *http.Request) *http.Request { return r.WithContext(gone) }},
+		{"guard: host", "GET", "/", http.StatusForbidden, func(r *http.Request) *http.Request { r.Host = "evil.com"; return r }},
+		{"guard: origin", "POST", "/api/reviews", http.StatusForbidden, func(r *http.Request) *http.Request {
+			r.Header.Set("Origin", "https://evil.com")
+			return r
+		}},
+	}
+	for _, c := range cases {
+		r := httptest.NewRequest(c.method, "http://127.0.0.1:7777"+c.path, nil)
+		if c.mod != nil {
+			r = c.mod(r)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		got := w.Result().Header
+		if w.Code != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, w.Code, c.want)
+		}
+		if got.Get("X-Frame-Options") != "DENY" ||
+			got.Get("Content-Security-Policy") != "frame-ancestors 'none'" ||
+			got.Get("X-Content-Type-Options") != "nosniff" ||
+			got.Get("Referrer-Policy") != "no-referrer" {
+			t.Errorf("%s (%d): headers %v", c.name, w.Code, got)
+		}
+	}
+}
+
+// A job id from before a restart must not name a job of the new process: the
+// count starts over on every boot, so the id carries the instance.
+func TestIDDoJobUnicoPorInstancia(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := srv.instance[:4] + "-j1"; v.ID != want {
+		t.Errorf("job id %q, want %q", v.ID, want)
+	}
+	if _, ok := srv.jobs.View(v.ID, false); !ok {
+		t.Errorf("job %q not found by its id", v.ID)
+	}
+}
+
+// A write under /api/jobs/ from a page of another server process is refused
+// with 409 and does nothing; with this server's instance, or with no header
+// at all (MCP, curl), it goes through.
+func TestInstanciaVelhaNaoMexeNoJob(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := srv.Handler()
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	do := func(method, path, instance string) (int, string) {
+		r := httptest.NewRequest(method, "http://127.0.0.1:7777"+path, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		if instance != "" {
+			r.Header.Set("X-Bazel-Instance", instance)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	a, _ := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	b, _ := srv.jobs.Enqueue(testPR(483), false, cfg.DefaultChoice())
+	waitFor(t, ch, a.ID, StateRunning)
+
+	if code, body := do("POST", "/api/jobs/"+a.ID+"/cancel", "old-instance"); code != http.StatusConflict || !strings.Contains(body, `"stale":true`) {
+		t.Errorf("cancel from a stale page: %d %s, want 409 stale", code, body)
+	}
+	if code, _ := do("DELETE", "/api/jobs/"+a.ID, "old-instance"); code != http.StatusConflict {
+		t.Errorf("remove from a stale page: %d, want 409", code)
+	}
+	if v, ok := srv.jobs.View(a.ID, false); !ok || v.State != StateRunning {
+		t.Fatalf("a refused request must not touch the job: %+v %v", v, ok)
+	}
+	if code, body := do("POST", "/api/jobs/"+a.ID+"/cancel", srv.instance); code != http.StatusOK {
+		t.Errorf("cancel with this instance: %d %s", code, body)
+	}
+	if code, body := do("DELETE", "/api/jobs/"+b.ID, ""); code != http.StatusOK {
+		t.Errorf("remove with no header: %d %s", code, body)
+	}
+	if code, _ := do("GET", "/api/jobs/"+a.ID, "old-instance"); code != http.StatusOK {
+		t.Errorf("reads are never refused: %d", code)
+	}
+}
+
 // POST /api/repos takes exactly owner/name (BUG-QA-03): "acme/" and a PR URL
 // are refused with 400 and leave the config alone; a repository URL goes in
 // trimmed to owner/name.

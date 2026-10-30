@@ -56,14 +56,28 @@ const el = (tag, cls, text) => {
 };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  // Every write names the server instance this page knows: after a restart the
+  // server refuses an action meant for a job of the old process, and says so.
+  if (opts.method && opts.method !== 'GET' && state.instance) headers['X-Bazel-Instance'] = state.instance;
+  const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    // The page is from another server process: say so, and bring the queue,
+    // the PRs and the saved list up to date before anything else is tried.
+    if (res.status === 409 && body.stale) {
+      err.stale = true;
+      // Not the page's warning: once resynced the page is no longer stale, and
+      // loadPRs puts back whatever warning the page already had. With the
+      // instance adopted meanwhile, adoptInstance would do nothing and this
+      // would stay up, so the resync is asked for directly.
+      banner('the server restarted — this page is stale; bringing it up to date');
+      api('/api/state')
+        .then((st) => (st.instance === state.instance ? resync() : adoptInstance(st.instance)))
+        .catch(() => {});
+    }
     throw err;
   }
   return body;
@@ -235,10 +249,10 @@ function connect() {
   };
 }
 
-// adoptInstance keeps the id of the server process. Job ids restart at j1 on
-// every boot, so with a different id everything the page cached by job id
-// (review body, split, ticks, log) belongs to another job, or to none. It
-// forgets all that and redoes what depended on it.
+// adoptInstance keeps the id of the server process. Jobs do not outlive it, so
+// with a different id everything the page cached by job id (review body,
+// split, ticks, log) belongs to a job that is gone. It forgets all that and
+// redoes what depended on it.
 function adoptInstance(id) {
   if (!id || id === state.instance) return;
   const anterior = state.instance;
