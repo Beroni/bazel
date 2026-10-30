@@ -190,3 +190,59 @@ func TestStepSwappingAPathIntoTheClone(t *testing.T) {
 		t.Error("the second agent must not start")
 	}
 }
+
+// CLAUDE_CONFIG_DIR is where --setting-sources user reads: relative or in the
+// clone, it would be the PR's settings. Inherited counts as much as set.
+func TestCheckClaudeConfigDir(t *testing.T) {
+	clone := t.TempDir()
+	outside := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
+	for _, bad := range []string{".x", "./.x", "~/.claude", filepath.Join(clone, ".x")} {
+		err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": bad}}, clone)
+		if err == nil || !strings.Contains(err.Error(), "CLAUDE_CONFIG_DIR") {
+			t.Errorf("%q should be refused, got %v", bad, err)
+		}
+	}
+	if err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
+		t.Errorf("an absolute path outside the clone is fine: %v", err)
+	}
+	if err := checkClaudeConfigDir(config.ResolvedAgent{}, clone); err != nil {
+		t.Errorf("not set, nothing to refuse: %v", err)
+	}
+
+	t.Setenv("CLAUDE_CONFIG_DIR", ".inherited")
+	if err := checkClaudeConfigDir(config.ResolvedAgent{}, clone); err == nil {
+		t.Error("a relative value inherited from Bazel's environment should be refused")
+	}
+	if err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
+		t.Errorf("the step's value wins over the inherited one: %v", err)
+	}
+}
+
+// It stops the job before the clone, like the other bad steps.
+func TestRelativeConfigDirRefusedBeforeTheClone(t *testing.T) {
+	state := hostileClone(t, "wrapper")
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "wrapper", Format: "plain",
+		Env: map[string]string{"CLAUDE_CONFIG_DIR": ".x"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := false
+	_, err = New(cfg).Review(context.Background(), testPR(), choice, func(e Event) {
+		cloned = cloned || e.Kind == EventClone
+	})
+	if err == nil || !strings.Contains(err.Error(), "CLAUDE_CONFIG_DIR") {
+		t.Fatalf("the review should be refused, got %v", err)
+	}
+	if cloned {
+		t.Error("the refusal should come before the clone")
+	}
+	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
+		t.Error("the agent must not start")
+	}
+}

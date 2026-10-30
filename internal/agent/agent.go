@@ -159,6 +159,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	for _, s := range choice.Steps {
 		err := checkLauncher(s)
 		if err == nil {
+			err = checkClaudeConfigDir(s, "")
+		}
+		if err == nil {
 			err = checkSettingSources(s.Args)
 		}
 		if err == nil {
@@ -252,7 +255,11 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
 					Text: "· removed from the clone, so that no agent runs them: " + logPaths(removed)})
 			}
-			if err := checkPathFlags(step.Args, workdir); err != nil {
+			err = checkPathFlags(step.Args, workdir)
+			if err == nil {
+				err = checkClaudeConfigDir(step, workdir)
+			}
+			if err != nil {
 				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
 			}
 			return neutralizedNote(len(neutralized)), nil
@@ -569,6 +576,26 @@ func checkSettingSources(args []string) error {
 		if found && strings.TrimSpace(value) != "user" {
 			return fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
 		}
+	}
+	return nil
+}
+
+// checkClaudeConfigDir refuses a CLAUDE_CONFIG_DIR, set on the step or inherited,
+// that is relative or inside the clone: it is where `--setting-sources user`
+// reads the user's settings, so there it would read the PR's, hooks included.
+func checkClaudeConfigDir(step config.ResolvedAgent, clone string) error {
+	dir, ok := step.Env["CLAUDE_CONFIG_DIR"]
+	if !ok {
+		dir = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
+	if dir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("CLAUDE_CONFIG_DIR %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", dir)
+	}
+	if clone != "" && insideDir(dir, clone) {
+		return fmt.Errorf("CLAUDE_CONFIG_DIR %q is inside the PR's clone, where the PR controls the settings: point it outside", dir)
 	}
 	return nil
 }
