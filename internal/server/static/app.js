@@ -772,8 +772,7 @@ function findingHead(sec) {
 }
 
 // findingTitle is a short " (title)" for a finding's accessible name.
-function findingTitle(sec) {
-  let t = findingHead(sec).title;
+function findingTitle(t) {
   if (t.length > 60) t = t.slice(0, 59).trimEnd() + '…';
   return t ? ` (${t})` : '';
 }
@@ -795,7 +794,7 @@ function decorateFindings(md, key, publishable = true) {
     box.checked = !out.has(idx);
     tid(box, 'finding-pick', { findingIndex: idx });
     // Every box looks the same; the accessible name says which finding it is.
-    box.setAttribute('aria-label', `include finding ${idx + 1}${findingTitle(sec)} in what goes to the PR`);
+    box.setAttribute('aria-label', `include finding ${idx + 1}${findingTitle(title)} in what goes to the PR`);
     box.title = 'untick to leave this finding out of what goes to the PR';
     label.append(box);
 
