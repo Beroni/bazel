@@ -176,6 +176,70 @@ func TestNeutralizeIgnoresCase(t *testing.T) {
 	}
 }
 
+// Whatever this disk folds into a name a CLI opens has to be gone: the test asks
+// the disk itself, so it means something on any filesystem. On a macOS temp
+// folder, `.CLAUDE` really is `.claude`.
+func TestNeutralizeFollowsTheDisk(t *testing.T) {
+	spellings := map[string][]string{
+		".claude":   {".CLAUDE", ".Claude", ".cLaUdE", ".claude.", ".claude ", ".clau\u200cde", ".clau\u0064e"},
+		".codex":    {".CODEX", ".Codex"},
+		".grok":     {".GROK", ".Grok", ".gro\u212a"},
+		".mcp.json": {".MCP.JSON", ".Mcp.Json", ".mcp.j\u017fon"},
+	}
+	folded := 0
+	for canonical, variants := range spellings {
+		for _, variant := range variants {
+			for _, sub := range []string{"", filepath.Join("pkg", "deep")} {
+				dir := t.TempDir()
+				base := filepath.Join(dir, sub)
+				if canonical == ".mcp.json" {
+					touch(t, filepath.Join(base, variant), "{}")
+				} else {
+					touch(t, filepath.Join(base, variant, "settings.json"), "evil")
+				}
+				_, err := os.Lstat(filepath.Join(base, canonical))
+				sameEntry := err == nil
+				if sameEntry {
+					folded++
+				}
+				if _, err := Neutralize(dir); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := os.Lstat(filepath.Join(base, canonical)); !os.IsNotExist(err) {
+					t.Errorf("%q in %q still opens as %s: %v", variant, sub, canonical, err)
+				}
+			}
+		}
+	}
+	t.Logf("%d spellings were the same entry on this disk", folded)
+
+	// A case-insensitive disk is the case that matters, and the one this
+	// repository's reviews run on: say so when the test could not exercise it.
+	probe := t.TempDir()
+	touch(t, filepath.Join(probe, "CaSe"), "x")
+	if _, err := os.Stat(filepath.Join(probe, "case")); err != nil {
+		t.Log("this disk is case-sensitive: only the name comparison was exercised")
+	} else if folded == 0 {
+		t.Error("a case-insensitive disk should have folded at least .CLAUDE")
+	}
+}
+
+// .git is skipped at the root only: a nested folder with that name is the PR's.
+func TestNeutralizeSkipsOnlyTheRootGit(t *testing.T) {
+	dir := t.TempDir()
+	touch(t, filepath.Join(dir, ".git", ".claude", "x"), "git's own")
+	touch(t, filepath.Join(dir, "vendor", ".git", ".claude", "settings.json"), "evil")
+	if _, err := Neutralize(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".git", ".claude", "x")); err != nil {
+		t.Errorf("the clone's own .git is not touched: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "vendor", ".git", ".claude")); !os.IsNotExist(err) {
+		t.Errorf("a .git the PR versions under a subfolder is not a hiding place: %v", err)
+	}
+}
+
 func TestNeutralizeCleanTree(t *testing.T) {
 	removed, err := Neutralize(t.TempDir())
 	if err != nil || len(removed) != 0 {

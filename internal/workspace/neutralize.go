@@ -30,22 +30,19 @@ func isUntrusted(name string) bool {
 // Any depth, because Claude Code also discovers `<sub>/.claude/skills` when it
 // reads a file in that folder.
 //
+// In each folder it asks the disk first, by the name a CLI opens: `.CLAUDE`,
+// `.Claude` or any other spelling a filesystem folds into `.claude` (case on
+// APFS, Unicode forms, a trailing dot on NTFS) answers to that Lstat, and there
+// is no list of variants to get wrong. The walk then catches what the disk
+// keeps apart, in any case, so a clone looks the same on every machine.
+//
 // The clone is disposable, and the review loses nothing: the files are still
 // in git, in the diff and in `git show HEAD:<path>`. Only the working tree
 // changes. Neither the walk nor os.RemoveAll follow a symlink: a `.claude` that
 // links elsewhere loses the link, and what it pointed at is not touched.
 func Neutralize(dir string) ([]string, error) {
 	var removed []string
-	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() && d.Name() == ".git" {
-			return filepath.SkipDir
-		}
-		if !isUntrusted(d.Name()) {
-			return nil
-		}
+	remove := func(path string) error {
 		if err := os.RemoveAll(path); err != nil {
 			return err
 		}
@@ -54,6 +51,37 @@ func Neutralize(dir string) ([]string, error) {
 			return err
 		}
 		removed = append(removed, rel)
+		return nil
+	}
+	gitDir := filepath.Join(dir, ".git")
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if path == gitDir {
+			return filepath.SkipDir
+		}
+		if d.IsDir() {
+			for _, name := range untrustedConfig {
+				entry := filepath.Join(path, name)
+				if _, err := os.Lstat(entry); err == nil {
+					if err := remove(entry); err != nil {
+						return err
+					}
+				} else if !os.IsNotExist(err) {
+					return err
+				}
+			}
+			if path == dir {
+				return nil
+			}
+		}
+		if !isUntrusted(d.Name()) {
+			return nil
+		}
+		if err := remove(path); err != nil {
+			return err
+		}
 		if d.IsDir() {
 			return filepath.SkipDir
 		}
