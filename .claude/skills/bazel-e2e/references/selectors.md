@@ -43,7 +43,8 @@ Differences on the redesign, already handled by the helpers:
 | `quota` | claude session/week | `data-level="ok|warn|crit"` | |
 | `refresh` | refresh button | | |
 | `nav-dashboard`, `nav-config` | page switch | | |
-| `banner` | error banner | | |
+| `banner` | message bar; user-action errors are an alert (class `alert`) that stays until ✕ or the next action | | |
+| `banner-dismiss` | the ✕ of an alert (`aria-label="dismiss this message"`) — proposed; the role/name fallback works today | | |
 | `conn-status` | SSE dot | `data-state="open|closed"` | |
 
 ### PR list

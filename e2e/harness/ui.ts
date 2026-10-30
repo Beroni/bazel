@@ -50,6 +50,10 @@ export const ui = {
   removeButton: (card: Locator) => tid(card, 'job-remove', card.getByRole('button', { name: '✕' })),
   jobPublished: (card: Locator) => tid(card, 'job-published', card.getByText('✓ published')),
 
+  /** The page-wide message bar (errors, warnings). */
+  banner: (p: Page) => tid(p, 'banner', p.locator('#banner')),
+  /** The ✕ that dismisses an error left in the banner (since the R1 fix). */
+  bannerDismiss: (p: Page) => tid(p, 'banner-dismiss', p.getByRole('button', { name: 'dismiss this message' })),
   /** The review pane. */
   viewer: (p: Page) => tid(p, 'review-viewer', p.getByRole('article')),
   findingPicks: (scope: Locator) => scope.getByTestId('finding-pick').or(scope.getByRole('checkbox', { name: 'report' })),
