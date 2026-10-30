@@ -1503,3 +1503,54 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 		t.Error("agent.prompt is not inherited by the History")
 	}
 }
+
+// A launcher behind a wrapper is the same launcher, and the program a wrapper
+// runs by relative path resolves in the clone too. Other args are left alone.
+func TestCheckLauncherAtrasDeWrapper(t *testing.T) {
+	refused := []ResolvedAgent{
+		{Command: "timeout", Args: []string{"600", "npx", "tool"}},
+		{Command: "/usr/bin/nice", Args: []string{"-n", "5", "yarnpkg", "x"}},
+		{Command: "nohup", Args: []string{"./scripts/agent.sh"}},
+		{Command: "stdbuf", Args: []string{"-oL", "/usr/local/bin/corepack"}},
+	}
+	for _, st := range refused {
+		st.Checkout = true
+		if CheckLauncher(st) == nil {
+			t.Errorf("%s %v must be refused", st.Command, st.Args)
+		}
+		st.Checkout = false
+		if err := CheckLauncher(st); err != nil {
+			t.Errorf("%s %v without a clone: %v", st.Command, st.Args, err)
+		}
+	}
+	for _, st := range []ResolvedAgent{
+		{Command: "timeout", Args: []string{"600", "claude", "-p"}, Checkout: true},
+		{Command: "claude", Args: []string{"--allowedTools", "npx", "./x"}, Checkout: true},
+		{Command: "timeout", Args: []string{"10m", "/usr/local/bin/agent", "--add-dir", "some/dir"}, Checkout: true},
+	} {
+		if err := CheckLauncher(st); err != nil {
+			t.Errorf("%s %v: %v", st.Command, st.Args, err)
+		}
+	}
+}
+
+// A launcher in the config is said at boot, for every place a step can come
+// from, and the config still loads: the job is what gets refused.
+func TestLauncherAvisaNoBoot(t *testing.T) {
+	c := Default()
+	c.Agents = []AgentDef{{Name: "lens", Task: "/x", Command: "npx"}, {Name: "ok", Task: "/y"}}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/h", Command: "timeout", Args: []string{"60", "bunx"}}
+	c.warnLaunchers()
+	joined := strings.Join(c.Warnings, "\n")
+	for _, name := range []string{`"lens"`, `"story"`} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("no warning for %s: %q", name, c.Warnings)
+		}
+	}
+	if strings.Contains(joined, `"ok"`) {
+		t.Errorf("a good agent was flagged: %q", c.Warnings)
+	}
+	if err := c.validateFormats(); err != nil {
+		t.Errorf("the config must still load: %v", err)
+	}
+}
