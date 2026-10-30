@@ -249,6 +249,8 @@ async function loadPRs(force) {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
     state.prs = data.prs || [];
     state.prsLoaded = true;
+    // The repos on the Config page say "N open"; the count is this list.
+    if (!$('#page-config').hidden) renderRepos();
     state.repoErrors = data.repo_errors || [];
     // With no repository error the banner goes back to the config warning, if
     // there is one: clearing here wiped exactly what startup had to say.
@@ -2261,15 +2263,17 @@ function renderAgentList() {
 
     const top = el('div', 'agent-top');
     top.append(el('span', 'agent-name', a.name));
-    if (a.pipeline) top.append(el('span', 'tag', 'pipeline'));
-    if (a.posts) top.append(el('span', 'tag posts', '⇧ publishes'));
-    if (a.publishable === false) top.append(el('span', 'tag', 'not a review'));
-    if (a.publisher) top.append(el('span', 'tag', 'used when publishing'));
-    else if (defaultAgent() === a.name) top.append(el('span', 'tag mine', 'default'));
+    // Badges, as the design draws them: default, publishes, pipeline, used
+    // when publishing — and "not a review" for output that stays here.
+    if (defaultAgent() === a.name && !a.publisher) top.append(el('span', 'badge accent', 'default'));
+    if (a.posts && !a.publisher) top.append(el('span', 'badge', 'publishes'));
+    if (a.pipeline) top.append(el('span', 'badge', 'pipeline'));
+    if (a.publishable === false) top.append(el('span', 'badge', 'not a review'));
+    if (a.publisher) top.append(el('span', 'badge', 'used when publishing'));
     // What the dashboard picker has on now, when it is not the default: it says
     // what runs next from this browser, while the file still says the default.
     if (!a.publisher && state.agent === a.name && defaultAgent() !== a.name) {
-      const t = el('span', 'tag', 'picked on the dashboard');
+      const t = el('span', 'badge', 'picked on the dashboard');
       t.title = 'selected in the dashboard right now; config.yaml still has the default above';
       top.append(t);
     }
@@ -2279,7 +2283,7 @@ function renderAgentList() {
     if (!a.publisher) {
       top.append(el('div', 'spacer'));
       if (defaultAgent() !== a.name) {
-        const d = tid(el('button', 'btn small ghost', 'make default'), 'agent-default');
+        const d = tid(el('button', 'btn small ghost link', 'Make default'), 'agent-default');
         d.title = 'becomes the agent the selector starts on';
         d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
         top.append(d);
@@ -2301,7 +2305,7 @@ function renderAgentList() {
       // Pipeline and agent leave through different doors: one lives under
       // `pipelines:`, the other under `agents:`.
       const base = a.pipeline ? '/api/pipelines/' : '/api/agents/';
-      const rm = tid(el('button', 'btn small ghost', 'remove'), a.pipeline ? 'pipeline-remove' : 'agent-remove');
+      const rm = tid(el('button', 'btn small ghost', 'Remove'), a.pipeline ? 'pipeline-remove' : 'agent-remove');
       rm.addEventListener('click', () => agentAction(base + encodeURIComponent(a.name), 'DELETE', rm));
       top.append(rm);
     }
@@ -2311,9 +2315,9 @@ function renderAgentList() {
     if (a.pipeline) row.append(el('div', 'agent-desc', (a.steps || []).join(' → ')));
 
     const usa = el('div', 'agent-skills');
-    for (const sk of a.skills || []) {
-      const t = el('span', 'skill-ref ' + (sk.installed ? 'ok' : 'missing'),
-        (sk.installed ? '✓ /' : '✗ /') + sk.name);
+    for (const [i, sk] of (a.skills || []).entries()) {
+      if (i && a.pipeline) usa.append(el('span', 'skill-arrow', '→'));
+      const t = el('span', 'skill-ref ' + (sk.installed ? 'ok' : 'missing'), '/' + sk.name);
       t.title = sk.installed
         ? 'installed in ' + state.skillsDir
         : `this skill is not in ${state.skillsDir} — the agent will fail at run time`;
@@ -2321,6 +2325,9 @@ function renderAgentList() {
     }
     if (!(a.skills || []).length) usa.append(el('span', 'dim', 'calls no skill'));
     row.append(usa);
+    if ((a.skills || []).some((k) => !k.installed)) {
+      row.append(el('p', 'agent-warn', 'Calls a skill that isn\'t installed here — it would fail at run time.'));
+    }
 
     box.append(row);
   }
@@ -2534,7 +2541,7 @@ function linhaDeCriar() {
   nome.value = state.pipeName || '';
   nome.addEventListener('input', () => { state.pipeName = nome.value; });
 
-  const criar = tid(el('button', 'btn primary', 'create pipeline'), 'pipeline-create');
+  const criar = tid(el('button', 'btn primary', 'Create'), 'pipeline-create');
   const agentes = state.pipeSteps.filter((n) => !ehReservado(n)).length;
   let impede = '';
   if (!agentes) impede = 'a pipeline needs at least one agent';
@@ -2565,7 +2572,7 @@ function linhaDeCriar() {
 function renderSkillList() {
   const box = $('#skill-list');
   box.innerHTML = '';
-  $('#skills-dir').textContent = state.skillsDir ? '· ' + state.skillsDir : '';
+  $('#skills-dir').textContent = state.skillsDir || '';
   if (!state.skills.length) {
     box.append(el('p', 'none', `nothing in ${state.skillsDir || '~/.claude/skills'} — install a skill there to build an agent out of it.`));
     return;
@@ -2585,17 +2592,19 @@ function renderSkillList() {
       // This one isn't on disk: it came in the binary and is written into the
       // clone before running. Saying so here is what explains why it shows up on
       // a machine where nobody installed any skill.
-      const t = el('span', 'tag', 'in Bazel');
+      const t = el('span', 'badge', 'built in');
       t.title = 'ships inside the Bazel binary — nothing to install, and it works on any machine';
       row.append(t);
     }
-    row.append(el('span', 'skill-desc', sk.description || ''));
+    const desc = el('span', 'skill-desc', sk.description || '');
+    desc.title = sk.description || '';
+    row.append(desc);
 
     const acoes = el('span', 'skill-actions');
     if (sk.name === state.postSkill) {
       // The publishing one doesn't become an agent: alone it runs without the
       // review and posts nothing. It comes in via the publish button and the publish step.
-      const t = el('span', 'tag', 'runs as publish');
+      const t = el('span', 'badge', 'runs as publish');
       t.title = 'publishes a review you have read — from the publish button or the publish step of a pipeline';
       acoes.append(t);
       row.append(acoes);
@@ -2604,8 +2613,10 @@ function renderSkillList() {
     }
     const add = (rotulo, posts, dica) => {
       const nome = posts ? sk.name + '-post' : sk.name;
-      const b = tid(el('button', 'btn small' + (posts ? ' ghost' : ''), rotulo), posts ? 'skill-publishes' : 'skill-use');
+      const b = tid(el('button', 'btn small', rotulo), posts ? 'skill-publishes' : 'skill-use');
       if (nomes.has(nome)) {
+        // Already an agent: the design says "In use" in the Use slot.
+        if (!posts) b.textContent = 'In use';
         b.disabled = true;
         b.title = `${nome} is already in the agent list`;
       } else {
@@ -2614,8 +2625,8 @@ function renderSkillList() {
       }
       acoes.append(b);
     };
-    add('use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
-    add('⇧ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
+    add('Use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
+    add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
     row.append(acoes);
 
     box.append(row);
@@ -2704,8 +2715,10 @@ function renderRepos() {
   }
   for (const repo of state.repos) {
     const row = tid(el('div', 'repo-row'), 'repo-row', { repo });
-    row.append(el('span', null, repo));
-    const rm = tid(el('button', 'btn small ghost', 'remove'), 'repo-remove');
+    // "N open": the PRs of this repository in the list right now.
+    const open = state.prs.filter((pr) => repoKey(pr.repo) === repoKey(repo)).length;
+    row.append(el('span', 'repo-name', repo), el('span', 'repo-open dim', `${open} open`));
+    const rm = tid(el('button', 'btn small ghost', 'Remove'), 'repo-remove');
     rm.addEventListener('click', () => removeRepo(repo, rm));
     row.append(rm);
     box.append(row);

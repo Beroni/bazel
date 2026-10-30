@@ -100,44 +100,48 @@
 </main>
 
 <section id="page-config" class="page config" hidden>
+  <!-- Two columns, as the design lays it out: what Bazel watches and what this
+       machine has installed on the left; the agents built from it, the
+       pipeline builder and the export on the right. -->
   <div class="config-body">
-      <div id="stray" data-testid="stray-warning" class="stray" hidden></div>
-      <h3>watched repositories</h3>
-      <div id="repo-list" class="repo-list"></div>
-      <form class="row" id="repo-form">
-        <input type="text" id="repo-input" data-testid="repo-input" placeholder="owner/repo" autocomplete="off">
-        <button class="btn primary" type="submit" data-testid="repo-add">add</button>
-      </form>
+    <div id="stray" data-testid="stray-warning" class="stray" hidden></div>
+    <div class="config-cols">
+      <div class="config-col">
+        <h3>Watched repositories</h3>
+        <div class="cbox">
+          <div id="repo-list" class="repo-list"></div>
+          <form class="row" id="repo-form">
+            <input type="text" id="repo-input" data-testid="repo-input" placeholder="owner/repo" autocomplete="off">
+            <button class="btn primary" type="submit" data-testid="repo-add">Add</button>
+          </form>
+        </div>
 
-      <h3>agents</h3>
-      <p class="dim tiny">An agent is one of your skills running over the PR. The list starts empty:
-      build yours below, out of what is installed on this machine. The first one is the default.
-      Not every skill produces a review — turn <b>⇧ output can go to the PR</b> off on the ones that
-      don't, and Bazel stops offering to publish them.</p>
-      <div id="agent-list" class="agent-list"></div>
-
-      <h3>pipelines</h3>
-      <p class="dim tiny">A pipeline runs agents one after another over the <b>same clone</b> — the
-      repository is cloned once and each step reads it in turn. Their reports come back stacked in
-      one card. Only the steps whose output can go to the PR are published.
-      <br>Drag from the tray into the chain to add a step, and drag a step to move it.</p>
-      <div id="pipeline-builder" class="pipe-builder"></div>
-
-      <h3>installed skills <span class="dim" id="skills-dir"></span></h3>
-      <p class="dim tiny"><b>use</b> makes an agent that hands the review back for you to read;
-      <b>⇧ publishes</b> makes one that posts straight to the PR.</p>
-      <div id="skill-list" class="skill-list"></div>
-
-      <h3 id="config-path"></h3>
-      <div class="row">
-        <button class="btn" id="config-download" data-testid="config-download">save config.yaml</button>
-        <span class="dim tiny">repos, agents and pipelines in one file — drop it at the same path
-        on another machine and Bazel comes up configured.</span>
+        <h3>Installed skills <span class="dim mono" id="skills-dir"></span></h3>
+        <p class="dim tiny"><b>Use</b> makes an agent that hands the review back for you to read;
+        <b>+ publishes</b> makes one that posts straight to the PR.</p>
+        <div id="skill-list" class="skill-list"></div>
       </div>
-      <details id="config-raw">
-        <summary class="dim tiny">show the file</summary>
-        <pre id="config-yaml" data-testid="config-yaml"></pre>
-      </details>
+
+      <div class="config-col">
+        <h3>Agents</h3>
+        <p class="dim tiny">The first one is the default. Turn <b>⇧ output can go to the PR</b> off on
+        the agents that don't produce a review, and Bazel stops offering to publish them.</p>
+        <div id="agent-list" class="agent-list cbox"></div>
+
+        <h3>New pipeline <span class="dim plain">Steps run in order over one clone</span></h3>
+        <div id="pipeline-builder" class="pipe-builder cbox"></div>
+
+        <div class="row export">
+          <button class="btn" id="config-download" data-testid="config-download">⤓ Export config.yaml</button>
+          <span class="dim tiny">Drop it at <span id="config-path" class="mono"></span> on another machine and
+          Bazel comes up configured.</span>
+        </div>
+        <details id="config-raw">
+          <summary class="dim tiny">show the file</summary>
+          <pre id="config-yaml" data-testid="config-yaml"></pre>
+        </details>
+      </div>
+    </div>
   </div>
 </section>
 
