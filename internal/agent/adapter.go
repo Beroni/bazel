@@ -14,15 +14,20 @@ type outputAdapter interface {
 	err() error
 }
 
-func newOutputAdapter(format string, args []string) (outputAdapter, error) {
-	if format == "" {
-		if isStreamJSON(args) {
-			format = "claude-stream"
-		} else {
-			format = "plain"
-		}
+// outputFormat is the format a step speaks: the declared one or, when none is,
+// what its args ask for.
+func outputFormat(format string, args []string) string {
+	switch {
+	case format != "":
+		return format
+	case isStreamJSON(args):
+		return "claude-stream"
 	}
-	switch format {
+	return "plain"
+}
+
+func newOutputAdapter(format string, args []string) (outputAdapter, error) {
+	switch format = outputFormat(format, args); format {
 	case "claude-stream":
 		return &claudeAdapter{}, nil
 	case "codex-json":

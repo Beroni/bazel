@@ -77,30 +77,23 @@ func TestConfineClaudeDoubleDash(t *testing.T) {
 	}
 }
 
-// A launcher takes its own options before the package: the flags have to reach
-// Claude Code, so they go right after it.
-func TestConfineClaudeLauncher(t *testing.T) {
-	for _, args := range [][]string{
-		{"-y", "@anthropic-ai/claude-code", "-p"},
-		{"-y", "@anthropic-ai/claude-code@2.1.312", "-p"},
-		{"--", "@anthropic-ai/claude-code", "-p"},
-		{"exec", "--", "claude", "-p"},
-	} {
-		got := confineClaude(args, "/rt/x")
-		pkg := claudePackageArg(got)
-		if got[pkg+1] != "--setting-sources" || got[len(got)-1] != "-p" {
-			t.Errorf("the flags belong right after the package: %q", got)
-		}
-	}
-}
-
 func TestRunsClaude(t *testing.T) {
 	bin := t.TempDir()
-	real := filepath.Join(bin, "claude")
-	if err := os.WriteFile(real, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(real, filepath.Join(bin, "ai")); err != nil {
+	if err := os.Symlink(filepath.Join(bin, "claude"), filepath.Join(bin, "ai")); err != nil {
+		t.Fatal(err)
+	}
+	// The native install: the file is its version, under claude/versions.
+	native := filepath.Join(bin, "share", "claude", "versions", "2.1.312")
+	if err := os.MkdirAll(filepath.Dir(native), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(native, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(native, filepath.Join(bin, "native-ai")); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(bin, "unrelated"), []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -114,36 +107,92 @@ func TestRunsClaude(t *testing.T) {
 	}{
 		{config.ResolvedAgent{Command: "claude", Args: []string{"-p"}}, true},
 		{config.ResolvedAgent{Command: "/opt/bin/claude", Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "ai", Format: "plain"}, true}, // a link to claude
-		{config.ResolvedAgent{Command: "my-claude", Format: "claude-stream"}, true},
-		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format", "stream-json"}}, true},
-		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format=stream-json"}, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "npx", Args: []string{"-y", "@anthropic-ai/claude-code", "-p"}, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "bunx", Args: []string{"@anthropic-ai/claude-code@latest"}, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "env", Args: []string{"FOO=1", "claude", "-p"}, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "mise", Args: []string{"exec", "--", "claude", "-p"}, Format: "plain"}, true},
-		// A shell takes no flags for what it runs: Neutralize protects this one.
-		{config.ResolvedAgent{Command: "sh", Args: []string{"-c", "claude -p"}, Format: "claude-stream"}, false},
+		{config.ResolvedAgent{Command: "Claude", Format: "plain"}, true},
 		{config.ResolvedAgent{Command: "claude.exe", Format: "plain"}, true},
 		{config.ResolvedAgent{Command: `C:\x\claude.cmd`, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "Claude", Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "claude-wrapper", Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "node", Args: []string{"/x/cli.js", "--output-format", "stream-json"}, Format: "plain"}, true},
-		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, false},
-		{config.ResolvedAgent{Command: "grok", Format: "grok-stream"}, false},
-		{config.ResolvedAgent{Command: "echo", Args: []string{"report"}}, false},
+		{config.ResolvedAgent{Command: "ai", Format: "plain"}, true},        // a link to claude
+		{config.ResolvedAgent{Command: "native-ai", Format: "plain"}, true}, // a link to the native install
+		{config.ResolvedAgent{Command: "my-wrapper", Format: "claude-stream"}, true},
+		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format", "stream-json"}}, true},
+		{config.ResolvedAgent{Command: "wrapper", Args: []string{"--output-format=stream-json"}}, true},
+
+		// Nothing in the command or the format says Claude Code.
 		{config.ResolvedAgent{Command: "unrelated", Format: "plain"}, false},
-		// Nothing shows these are Claude Code: Neutralize protects them.
 		{config.ResolvedAgent{Command: "cc", Args: []string{"-p"}, Format: "plain"}, false},
+		{config.ResolvedAgent{Command: "claude-wrapper", Format: "plain"}, false},
 		{config.ResolvedAgent{Command: "node", Args: []string{"/x/cli.js", "-p"}, Format: "plain"}, false},
+		{config.ResolvedAgent{Command: "echo", Args: []string{"report"}}, false},
+
+		// The args never count: these are other CLIs.
+		{config.ResolvedAgent{Command: "aider", Args: []string{"--model", "claude"}, Format: "plain"}, false},
+		{config.ResolvedAgent{Command: "codex", Args: []string{"exec", "--add-dir", "/Users/me/claude"}, Format: "codex-json"}, false},
+		{config.ResolvedAgent{Command: "grok", Args: []string{"--add-dir", "/Users/me/claude"}, Format: "grok-stream"}, false},
+		{config.ResolvedAgent{Command: "gemini", Args: []string{"--output-format", "stream-json"}, Format: "plain"}, false},
 		{config.ResolvedAgent{Command: "pi", Args: []string{"--model", "claude-haiku"}, Format: "plain"}, false},
-		// A shell takes no flags, whatever it says it speaks.
+
+		// A shell takes no flags for what it calls, a launcher chooses its own
+		// program: neither is confined, whatever it says it speaks.
+		{config.ResolvedAgent{Command: "sh", Args: []string{"-c", "claude -p"}, Format: "claude-stream"}, false},
 		{config.ResolvedAgent{Command: "bash", Args: []string{"-c", "claude -p --output-format stream-json"}}, false},
+		{config.ResolvedAgent{Command: "npx", Args: []string{"@anthropic-ai/claude-code", "--output-format", "stream-json"}}, false},
 	}
 	for _, c := range cases {
 		if got := runsClaude(c.step); got != c.want {
 			t.Errorf("runsClaude(%+v) = %v, want %v", c.step, got, c.want)
 		}
+	}
+}
+
+// With the clone as working directory, a launcher runs what the PR says: it is
+// refused up front, and a relative command too. Without a clone, it is the
+// user's own folder and nothing changes.
+func TestCheckLauncher(t *testing.T) {
+	for _, command := range []string{"npx", "bunx", "pnpm", "yarn", "npm", "uvx", "pipx", "env", "/usr/local/bin/npx", "npx.cmd"} {
+		err := checkLauncher(config.ResolvedAgent{Name: "x", Command: command, Checkout: true})
+		if err == nil || !strings.Contains(err.Error(), "not supported with checkout on") {
+			t.Errorf("%s with checkout should be refused clearly, got %v", command, err)
+		}
+		if err := checkLauncher(config.ResolvedAgent{Command: command}); err != nil {
+			t.Errorf("%s without checkout: %v", command, err)
+		}
+	}
+	for _, command := range []string{"./bin/agent", "bin/agent", "../x"} {
+		if err := checkLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err == nil {
+			t.Errorf("%s resolves inside the clone and should be refused", command)
+		}
+	}
+	for _, command := range []string{"claude", "codex", "/usr/local/bin/agent"} {
+		if err := checkLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err != nil {
+			t.Errorf("%s is an installed binary: %v", command, err)
+		}
+	}
+}
+
+// The refusal comes before the clone: nothing of the PR is on disk yet.
+func TestLauncherRefusedBeforeTheClone(t *testing.T) {
+	state := hostileClone(t, "npx")
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "npx", Format: "plain",
+		Args: []string{"-y", "@anthropic-ai/claude-code", "-p"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := false
+	_, err = New(cfg).Review(context.Background(), testPR(), choice, func(e Event) {
+		cloned = cloned || e.Kind == EventClone
+	})
+	if err == nil || !strings.Contains(err.Error(), "not supported with checkout on") {
+		t.Fatalf("the review should be refused, got %v", err)
+	}
+	if cloned {
+		t.Error("the refusal should come before the clone")
+	}
+	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
+		t.Error("the launcher must not start")
 	}
 }
 

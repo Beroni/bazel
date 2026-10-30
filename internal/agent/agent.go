@@ -157,7 +157,10 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// Before the clone and before any step: one bad step refuses the whole job,
 	// instead of failing midway through a review that can still be published.
 	for _, s := range choice.Steps {
-		err := checkSettingSources(s.Args)
+		err := checkLauncher(s)
+		if err == nil {
+			err = checkSettingSources(s.Args)
+		}
 		if err == nil {
 			err = checkPathFlags(s.Args, "")
 		}
@@ -338,25 +341,18 @@ func neutralizedNote(paths []string) string {
 		strings.Join(paths, ", ") + ". They are still in git and still part of the review: the diff shows them, and `git show HEAD:<path>` reads them."
 }
 
-// claudePackage is the npm package of Claude Code, the one a launcher names:
-// `npx @anthropic-ai/claude-code`, `bunx @anthropic-ai/claude-code@latest`.
-const claudePackage = "@anthropic-ai/claude-code"
-
-// runsClaude says whether a step runs Claude Code: a command with claude in its
-// name, under any name that resolves to it; a launcher that names it; or a step
-// that speaks its stream-json. This is best effort and is not what protects a
-// run: a command that shows none of this (a wrapper called `cc`, `node cli.js`)
-// counts as another CLI, and so does a shell — `sh -c '…'` runs a script, and
-// flags before or after the -c never reach what it calls. workspace.Neutralize
-// is what protects those runs.
+// runsClaude says whether a step runs Claude Code: its command is `claude`, or
+// resolves to it, or it speaks Claude's stream-json. Only the command and the
+// format count, never the args: a `--model claude` on another CLI is not Claude
+// Code, and flags injected there break it. A command that shows neither (a
+// wrapper called `cc`) counts as another CLI, and so does a shell, whose
+// `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
+// protects those runs.
 func runsClaude(step config.ResolvedAgent) bool {
-	if isShell(step.Command) {
+	if isShell(step.Command) || isLauncher(step.Command) {
 		return false
 	}
-	if strings.Contains(programName(step.Command), "claude") || resolvesToClaude(step.Command) || claudePackageArg(step.Args) >= 0 {
-		return true
-	}
-	return step.Format == "claude-stream" || isStreamJSON(step.Args)
+	return isClaudeCommand(step.Command) || outputFormat(step.Format, step.Args) == "claude-stream"
 }
 
 // programName is a command's base name as a program: lower case, because the
@@ -369,9 +365,13 @@ func programName(command string) string {
 	return name
 }
 
-// resolvesToClaude says whether command, through PATH and symlinks, is Claude
-// Code: a `ai -> claude` link keeps the real program.
-func resolvesToClaude(command string) bool {
+// isClaudeCommand says whether command is Claude Code, by name or through PATH
+// and symlinks: an npm install ends in its package, the native one in
+// ~/.local/share/claude/versions/<version>, where the file is the version.
+func isClaudeCommand(command string) bool {
+	if programName(command) == "claude" {
+		return true
+	}
 	path, err := exec.LookPath(command)
 	if err != nil {
 		return false
@@ -380,16 +380,9 @@ func resolvesToClaude(command string) bool {
 	if err != nil {
 		return false
 	}
-	return programName(real) == "claude" || strings.Contains(real, claudePackage)
-}
-
-// claudePackageArg returns the index of the arg a launcher runs Claude Code
-// with — its npm package, or `claude` itself (`env claude`, `mise exec --
-// claude`) — or -1.
-func claudePackageArg(args []string) int {
-	return slices.IndexFunc(args, func(a string) bool {
-		return strings.Contains(a, claudePackage) || programName(a) == "claude"
-	})
+	slashed := filepath.ToSlash(real)
+	return programName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
+		strings.Contains(slashed, "/claude/versions/")
 }
 
 // isShell says whether command is a shell.
@@ -399,6 +392,33 @@ func isShell(command string) bool {
 		return true
 	}
 	return false
+}
+
+// isLauncher says whether command picks what it runs at run time. With the
+// clone as working directory, that choice is the PR's: npx runs the
+// node_modules the PR versions, an .npmrc points the registry at its server,
+// and a .yarnrc runs a file of its own — all before any flag of Bazel's counts.
+func isLauncher(command string) bool {
+	switch programName(command) {
+	case "npx", "npm", "pnpx", "pnpm", "yarn", "bun", "bunx", "uv", "uvx", "pipx", "env":
+		return true
+	}
+	return false
+}
+
+// checkLauncher refuses a command that would decide inside the clone what to
+// run: a launcher, or a relative path, which resolves in the clone too.
+func checkLauncher(step config.ResolvedAgent) error {
+	if !step.Checkout {
+		return nil
+	}
+	if isLauncher(step.Command) {
+		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", step.Command)
+	}
+	if strings.ContainsAny(step.Command, `/\`) && !filepath.IsAbs(step.Command) {
+		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", step.Command)
+	}
+	return nil
 }
 
 // runsClaudeAnywhere says whether any step of the choice runs Claude Code.
@@ -443,16 +463,14 @@ func newRuntime() (string, error) {
 //   - --plugin-dir: the embedded skills, which --setting-sources user would
 //     otherwise hide along with the clone's .claude/skills.
 //
-// The flags go first — right after the package, when a launcher runs it — and
-// never at the end: after a `--`, anything is plain text to the CLI, and an
-// appended flag would look added and do nothing. For the same reason a flag
-// found after a `--` does not count as already there. checkSettingSources has
-// already refused any --setting-sources other than user.
+// The flags go first and never at the end: after a `--`, anything is plain text
+// to the CLI, and an appended flag would look added and do nothing. For the same
+// reason a flag found after a `--` does not count as already there.
+// checkSettingSources has already refused any --setting-sources but user.
 func confineClaude(args []string, plugin string) []string {
-	start := claudePackageArg(args) + 1
-	own := args[start:]
-	if end := slices.Index(own, "--"); end >= 0 {
-		own = own[:end]
+	own := args
+	if end := slices.Index(args, "--"); end >= 0 {
+		own = args[:end]
 	}
 	var flags []string
 	if !slices.ContainsFunc(own, func(a string) bool {
@@ -466,7 +484,7 @@ func confineClaude(args []string, plugin string) []string {
 	if plugin != "" {
 		flags = append(flags, "--plugin-dir", plugin)
 	}
-	return slices.Concat(args[:start], flags, args[start:])
+	return slices.Concat(flags, args)
 }
 
 // checkSettingSources refuses a --setting-sources other than user, wherever it
