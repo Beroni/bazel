@@ -199,14 +199,34 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(fs.readFileSync(path.join(outside, 'mcp.json'), 'utf8')).toBe('KEEP-MCP');
   });
 
-  test('a .claude in another case is the same folder here', async ({ bazel }) => {
-    SEC();
-    bazel.updatePR('acme/api-core#101', { files: { '.Claude/settings.json': HOSTILE['.claude/settings.json'] } });
-    await reviewRuns(bazel, 'review-fleet');
-    // On a case-insensitive disk (macOS) Lstat(".claude") sees it; elsewhere it is not config.
-    expect(bazel.agentCalls()[0].agent_config).toEqual([]);
-    expectConfined(bazel, bazel.agentCalls()[0], STREAM);
-  });
+  // SEC-02: a sweep that compares names exactly misses these, and on a
+  // case-insensitive disk (APFS, the macOS default) `.claude/settings.json` then
+  // opens the PR's `.CLAUDE/settings.json`. The fake opens the lower-case path,
+  // as a CLI would. The last two are the ones APFS folds and a ToLower would not
+  // all catch: U+212A (Kelvin) folds to k, U+017F (long s) to s.
+  for (const [what, file, top] of [
+    ['upper case', '.CLAUDE/settings.json', '.CLAUDE'],
+    ['upper case .mcp.json', '.MCP.JSON', '.MCP.JSON'],
+    ['mixed case', '.Codex/config.toml', '.Codex'],
+    ['a subfolder', 'sub/.Claude/settings.json', 'sub/.Claude'],
+    ['Kelvin sign', '.gro\u212a/config.toml', '.gro\u212a'],
+    ['long s', '.mcp.j\u017fon', '.mcp.j\u017fon'],
+  ]) {
+    test(`agent config in another case is removed: ${what}`, async ({ bazel }) => {
+      knownBug('SEC-02', 'the sweep compares agent config names exactly');
+      bazel.updatePR('acme/api-core#101', { files: { [file]: HOSTILE['.claude/settings.json'], 'src/main.go': 'package main' } });
+      const { id, job } = await reviewRuns(bazel, 'review-fleet');
+      expect(job.state).toBe('done');
+      const [call] = bazel.agentCalls();
+      // What the bypass looks like: the agent opens the PR's file.
+      expect(call.config_readable).toEqual([]);
+      expect(call.config_anywhere).toEqual([]);
+      expect(call.agent_config).toEqual([]);
+      // The fixture did make the variant: it is deleted from a tracked tree.
+      expect(call.git_status).toContain(' D ');
+      expect((await logOf(bazel, id)).some((l) => l.startsWith(REMOVED) && l.includes(top))).toBe(true);
+    });
+  }
 
   test('a config path that points into the clone is refused before any agent runs', async ({ bazel }) => {
     SEC();
@@ -282,6 +302,52 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     ]);
     expect(bazel.agentCalls().every((c) => c.plugin_dir === '')).toBe(true);
     expect(bazel.runtimes()).toEqual([]);
+  });
+});
+
+test.describe('P0 · a step cannot turn a later step into a reader of the clone', () => {
+  const settings = (bz: Bazel) => path.join(bz.root, 'outside', 'settings.json');
+  test.use({
+    bazelOptions: {
+      config: (bz: Bazel) => ({
+        agents: [
+          // Runs in the clone, as an agent with Bash does: repoints the file.
+          { ...plain('swapper', 'swap-settings'), env: { FAKE_AGENT_SCENARIO: 'swap-settings', E2E_SETTINGS: settings(bz) } },
+          plain('harmless', 'plain-report'),
+          fleet('victim', { command: 'fake-agent', args: [...STREAM, '--settings', settings(bz)] }),
+        ],
+        pipelines: [
+          { name: 'swap-then-run', steps: ['swapper', 'victim'] },
+          { name: 'no-swap', steps: ['harmless', 'victim'] },
+        ],
+      }),
+    },
+  });
+  const prepare = (bz: Bazel) => {
+    fs.mkdirSync(path.dirname(settings(bz)), { recursive: true });
+    fs.writeFileSync(settings(bz), '{}');
+  };
+
+  // The control: a --settings outside the clone is fine, and the step runs.
+  test('a valid --settings outside the clone reaches the step', async ({ bazel }) => {
+    SEC();
+    prepare(bazel);
+    const { job } = await reviewRuns(bazel, 'no-swap');
+    expect(job.state).toBe('done');
+    const [, victim] = bazel.agentCalls();
+    expectConfined(bazel, victim, [...STREAM, '--settings', settings(bazel)]);
+  });
+
+  // SEC-03 (H2-2): --settings is checked once, before the steps. Step 1 runs in
+  // the clone and replaces the valid file with a symlink into it; step 2 then
+  // reads the PR's content as configuration. Expected: checked before each step.
+  test('a --settings swapped for a link into the clone refuses the next step', async ({ bazel }) => {
+    knownBug('SEC-03', 'path flags are checked once, not before every step');
+    prepare(bazel);
+    const { job } = await reviewRuns(bazel, 'swap-then-run');
+    expect(fs.lstatSync(settings(bazel)).isSymbolicLink()).toBe(true); // the swap did happen
+    expect(bazel.agentCalls().map((c) => c.scenario)).toEqual(['swap-settings']);
+    expect(JSON.stringify(job)).toContain("inside the PR's clone");
   });
 });
 

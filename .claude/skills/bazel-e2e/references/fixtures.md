@@ -95,6 +95,10 @@ The record (`bazel.agentCalls()`):
   Claude Code arrived.
 - `agent_config`: what is left of `.claude`, `.codex`, `.grok` and `.mcp.json`
   (Lstat, so a dangling symlink counts). Must be `[]` when an agent starts.
+- `config_readable`: the config files that open under the lower-case names a
+  CLI uses (`.claude/settings.json`, `.mcp.json`, …). This is the real check on
+  a case-insensitive disk: a PR's `.CLAUDE/` answers to `.claude/`.
+  `config_anywhere`: the same names at any depth and in any case.
 - `clone_skills`, `git_status`, `git_exclude`: the clone as the agent found it.
 - `grok_env`, `grok_home_config`: the `GROK_*` env Bazel set for a `grok-stream`
   step and whether `$GROK_HOME/config.toml` existed.

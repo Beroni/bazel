@@ -37,6 +37,10 @@ export interface AgentCall {
   strict_mcp_config: boolean;
   /** What is left of .claude, .codex, .grok and .mcp.json in the clone (Lstat). */
   agent_config: string[];
+  /** Config files that open under the lower-case names a CLI uses. */
+  config_readable: string[];
+  /** The agent config names at any depth, in any case. */
+  config_anywhere: string[];
   /** `git status --porcelain` of the clone and its .git/info/exclude. */
   git_status: string;
   git_exclude: string;
@@ -55,8 +59,8 @@ export interface GhSettings {
 export interface BazelOptions {
   /** Directory under e2e/fixtures with prs.json and gh.json. */
   fixtures?: string;
-  /** Replaces keys of the default config (shallow). */
-  config?: Record<string, unknown>;
+  /** Replaces keys of the default config (shallow); a function gets the server, for paths in its root. */
+  config?: Record<string, unknown> | ((bz: Bazel) => Record<string, unknown>);
   /** Extra server flags, e.g. ['--jobs', '1']. */
   flags?: string[];
   /** Skills to create under skills_dir (name → description). */
@@ -183,7 +187,8 @@ export class Bazel {
   }
 
   private writeConfig(): void {
-    const cfg = { ...defaultConfig(this.home), ...(this.opts.config ?? {}) };
+    const extra = typeof this.opts.config === 'function' ? this.opts.config(this) : this.opts.config;
+    const cfg = { ...defaultConfig(this.home), ...(extra ?? {}) };
     fs.writeFileSync(this.configPath, JSON.stringify(cfg, null, 2));
     const skills = this.opts.skills ?? DEFAULT_SKILLS;
     for (const [name, description] of Object.entries(skills)) {

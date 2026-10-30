@@ -81,6 +81,9 @@ Nothing else from the developer's shell is inherited.
 that aborts anything not on `127.0.0.1`. To assert a confirm's text, add your
 own `page.on('dialog', …)` listener — both run.
 
+`bazelOptions.config` may be a function of the server (`(bz) => ({…})`) when a
+value needs a path in its temp root.
+
 ## Default config
 
 Repos `acme/api-core`, `acme/web-app`; `include_drafts: true`; base agent

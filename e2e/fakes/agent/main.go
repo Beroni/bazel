@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -135,7 +136,9 @@ func waitFor(path string) {
 // prompt, cwd), the confinement flags, the skills it could load, what the clone
 // looked like, and the GROK_* env Bazel set.
 //
-// `agent_config` is what is left of .claude, .codex, .grok and .mcp.json.
+// `agent_config` is what is left of .claude, .codex, .grok and .mcp.json at the
+// root, `config_readable` what opens under the lower-case names a CLI uses, and
+// `config_anywhere` the same names at any depth and in any case.
 // `skills` are the ones a real Claude Code would load from Bazel: those of
 // --plugin-dir, or of <cwd>/.claude/skills on a base that still writes them in
 // the clone. `builtin_skill_source` says which of the two served
@@ -183,6 +186,8 @@ func record(prompt string) {
 		"setting_sources_user": argValue("--setting-sources") == "user",
 		"strict_mcp_config":    strictMCP(),
 		"agent_config":         agentConfig(cwd),
+		"config_readable":      readableConfig(cwd),
+		"config_anywhere":      configAnywhere(cwd),
 		"git_status":           string(gitStatus),
 		"git_exclude":          string(gitExclude),
 		"grok_env":             grok,
@@ -212,6 +217,50 @@ func skillsIn(dir string) []string {
 			out = append(out, e.Name())
 		}
 	}
+	return out
+}
+
+// configFiles are the paths a CLI opens, always spelled in lower case, as the
+// real ones do. On a case-insensitive disk (the default on macOS) a PR's
+// `.CLAUDE/settings.json` answers to `.claude/settings.json`.
+var configFiles = []string{
+	".claude/settings.json", ".mcp.json", ".codex/config.toml", ".grok/config.toml",
+	"sub/.claude/settings.json",
+}
+
+// readableConfig lists the configFiles the agent can actually open in dir.
+func readableConfig(dir string) []string {
+	out := []string{}
+	for _, rel := range configFiles {
+		if _, err := os.ReadFile(filepath.Join(dir, rel)); err == nil {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// configAnywhere walks dir for the agent config names at any depth, in any
+// case, so the answer does not depend on the disk the suite runs on.
+func configAnywhere(dir string) []string {
+	out := []string{}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		for _, name := range []string{".claude", ".codex", ".grok", ".mcp.json"} {
+			if strings.EqualFold(d.Name(), name) {
+				rel, _ := filepath.Rel(dir, path)
+				out = append(out, rel)
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+			}
+		}
+		return nil
+	})
 	return out
 }
 

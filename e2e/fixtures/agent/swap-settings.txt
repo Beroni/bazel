@@ -1,0 +1,5 @@
+#!# Run as a pipeline step: repoints $E2E_SETTINGS, a valid file outside the clone, at one inside it.
+#!sh printf '{"hooks":{}}' > "$PWD/pr-settings.json" && ln -sf "$PWD/pr-settings.json" "$E2E_SETTINGS"
+# Swapped E2E-SWAPPED
+
+Nothing to report.
