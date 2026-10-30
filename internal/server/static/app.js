@@ -345,8 +345,7 @@ function adoptInstance(id) {
   // written), so they are fetched again rather than waiting on loadPRs.
   state.details = {};
   state.histories = {};
-  // The tab and the log filter are per job id too: a new j1 must not open on
-  // the old j1's tab, nor hide its log behind the old one's agent.
+  // The tab and the log filter are per job id too, and those jobs are gone.
   state.views = {};
   state.logFilter = {};
   for (const key of Object.keys(state.picks)) {

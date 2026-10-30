@@ -2451,6 +2451,10 @@ func TestRespostasRecusamFrame(t *testing.T) {
 		{"404", "GET", "/api/jobs/nao-existe", http.StatusNotFound, nil},
 		{"event stream", "GET", "/api/events", http.StatusOK, func(r *http.Request) *http.Request { return r.WithContext(gone) }},
 		{"guard: host", "GET", "/", http.StatusForbidden, func(r *http.Request) *http.Request { r.Host = "evil.com"; return r }},
+		{"guard: other site", "GET", "/api/state", http.StatusForbidden, func(r *http.Request) *http.Request {
+			r.Header.Set("Sec-Fetch-Site", "cross-site")
+			return r
+		}},
 		{"guard: origin", "POST", "/api/reviews", http.StatusForbidden, func(r *http.Request) *http.Request {
 			r.Header.Set("Origin", "https://evil.com")
 			return r
@@ -2666,5 +2670,33 @@ func TestGuardRecusaOutroSite(t *testing.T) {
 		if w.Code != c.want {
 			t.Errorf("%s from %q: %d, want %d", c.path, c.site, w.Code, c.want)
 		}
+	}
+}
+
+// The two fixes meet on one request: a write from another site stops at the
+// guard, and a stale page from this site still gets the 409 that resyncs it.
+// Job ids carry the instance whichever path made them.
+func TestGuardEInstanciaJuntos(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	do := func(site, instance string) int {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/x/cancel", nil)
+		r.Header.Set("Sec-Fetch-Site", site)
+		r.Header.Set(instanceHeader, instance)
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	if code := do("cross-site", "old"); code != http.StatusForbidden {
+		t.Errorf("another site: %d, want 403", code)
+	}
+	if code := do("same-origin", "old"); code != http.StatusConflict {
+		t.Errorf("a stale page: %d, want 409", code)
+	}
+	if code := do("same-origin", srv.instance); code != http.StatusNotFound {
+		t.Errorf("this page, no such job: %d, want 404", code)
+	}
+	if !strings.HasPrefix(srv.jobs.nextIDLocked(), srv.instance[:4]+"-j") {
+		t.Error("job ids must carry the instance")
 	}
 }
