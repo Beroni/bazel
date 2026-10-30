@@ -222,3 +222,6 @@ If a gate stopped you or the API refused something, say which and why.
 - Never review the code yourself or add a finding that was not in the file.
 - Never post in a language other than English.
 - Never edit files, commit, push or open a PR.
+- Never merge, close, reopen, edit, label or assign the PR, never touch another PR or another
+  repository, and never call a `gh` write other than the review, the body comment and the
+  👍 that `publishing.md` lists.
