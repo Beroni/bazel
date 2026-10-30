@@ -87,7 +87,7 @@ check "nothing written into the clone" '! git -C "$CLONE" status --porcelain --i
 check "one turn, no progress notes before the report ($RESULTS results)" '[ "$RESULTS" = 1 ]'
 check "skill never asked a question" '! grep -q "\"name\":\"AskUserQuestion\"" "$WORK/stream.jsonl"'
 check "report starts with its header, no preamble" 'head -1 "$WORK/report.md" | grep -qE "^(<!-- (review-fleet|history-pr):v1|# )"'
-check "no trailing file path or chat line" '! tail -3 "$WORK/report.md" | grep -qE "(→|\.reviews/|\.pr-history/)"'
+check "no trailing file path or chat line" '! tail -3 "$WORK/report.md" | grep -qE "^(→ |/[^ ]+\.md$)|\.reviews/|\.pr-history/"'
 check "not wrapped in a markdown fence" '! head -1 "$WORK/report.md" | grep -q "^\`\`\`"'
 if head -1 "$WORK/report.md" | grep -q '^<!-- review-fleet:v1'; then
   check "validate-report.sh passes" 'bash "$BUILTIN/bazel-review-fleet/references/validate-report.sh" "$WORK/report.md"'

@@ -95,7 +95,8 @@ behind an httpOnly cookie. Confirmed: the message cites the thread.
   causal link (**confirmed** / **inferred** / **unanswered**, see the SKILL). Never write "fixed
   in `abc123`" for an inferred link.
 - **`- Rejected:`** — an alternative the record shows was tried or proposed and dropped, and
-  why. Only what the commits or comments show; never invent an alternative to have one.
+  why. Only what the commits or comments show; never invent an alternative to have one. None →
+  no line: `- Rejected: nothing in the record` would show up on the page as an alternative.
 - Pressure points (files with the most commits) and what force-pushes erased go in the body
   of the decision they belong to.
 
