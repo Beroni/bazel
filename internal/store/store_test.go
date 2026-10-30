@@ -78,3 +78,35 @@ func TestSaveDoMesmoPRAoMesmoTempoGuardaOsDois(t *testing.T) {
 		}
 	}
 }
+
+// The saved file says what ran, per section in a pipeline, and it is read back
+// for the Saved tab. The report's own text does not change: that goes to the PR.
+func TestSaveDizOQueRodou(t *testing.T) {
+	for _, c := range []struct {
+		steps []agent.StepResult
+		want  string
+	}{
+		{[]agent.StepResult{{Name: "lens", Ran: "claude · opus-5"}}, "claude · opus-5"},
+		{[]agent.StepResult{{Name: "a", Ran: "claude · opus-5"}, {Name: "b", Ran: "codex"}}, "a: claude · opus-5, b: codex"},
+	} {
+		dir := t.TempDir()
+		res := agent.Result{Agent: "fleet", Body: "## Report\n\nBody.", Steps: c.steps}
+		res.PR.Repo, res.PR.Number = "acme/api", 7
+		path, err := Save(dir, res, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entries, err := List(dir)
+		if err != nil || len(entries) != 1 {
+			t.Fatalf("List: %v %v", entries, err)
+		}
+		if entries[0].Ran != c.want {
+			t.Errorf("Ran = %q, want %q", entries[0].Ran, c.want)
+		}
+		data, _ := os.ReadFile(path)
+		head, body, _ := strings.Cut(string(data), "\n---\n")
+		if !strings.Contains(head, "- Ran on: "+c.want) || strings.Contains(body, "Ran on") {
+			t.Errorf("header %q, report %q", head, body)
+		}
+	}
+}

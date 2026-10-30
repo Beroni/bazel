@@ -46,6 +46,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Agent != "" {
 		fmt.Fprintf(&b, "- Agent: %s\n", agentLine(res))
 	}
+	if ran := ranLine(res); ran != "" {
+		fmt.Fprintf(&b, "- Ran on: %s\n", ran)
+	}
 	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
 	}
@@ -115,6 +118,22 @@ func CommentBody(res agent.Result) string {
 	return b.String()
 }
 
+// ranLine says what the review ran on, section by section when it has several.
+// It lives in the header, not in the section titles: those go to the PR, and the
+// headings are what the report is cut by.
+func ranLine(res agent.Result) string {
+	if len(res.Steps) == 1 {
+		return res.Steps[0].Ran
+	}
+	parts := make([]string, 0, len(res.Steps))
+	for _, s := range res.Steps {
+		if s.Ran != "" {
+			parts = append(parts, s.Name+": "+s.Ran)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // agentLine describes who ran: the name of the choice and, when it chains more
 // than one agent, the time of each step.
 func agentLine(res agent.Result) string {
@@ -148,7 +167,9 @@ type Entry struct {
 	// Agent is who produced this review, read from the file header. It is what
 	// lets you know, a session later, whether what is here can go to the PR — a
 	// history report saved on disk is still not a review.
-	Agent   string    `json:"agent,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	// Ran is what it ran on, from the same header; older files have none.
+	Ran     string    `json:"ran,omitempty"`
 	Number  int       `json:"number,omitempty"`
 	ModTime time.Time `json:"mod_time"`
 	Size    int64     `json:"size"`
@@ -173,12 +194,13 @@ func List(dir string) ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		title, agent := header(filepath.Join(dir, it.Name()))
+		title, agent, ran := header(filepath.Join(dir, it.Name()))
 		repo, number := PRFromTitle(title)
 		out = append(out, Entry{
 			Name:    it.Name(),
 			Title:   title,
 			Agent:   agent,
+			Ran:     ran,
 			Repo:    repo,
 			Number:  number,
 			ModTime: info.ModTime(),
@@ -258,10 +280,10 @@ func ReviewBody(file string) string {
 
 // header reads the title and the agent of a saved review without loading the
 // whole file: they are the two things the listing needs from inside it.
-func header(path string) (title, agent string) {
+func header(path string) (title, agent, ran string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -271,14 +293,16 @@ func header(path string) (title, agent string) {
 		line := strings.TrimSpace(sc.Text())
 		switch {
 		case line == "---":
-			return title, agent
+			return title, agent, ran
 		case title == "" && strings.HasPrefix(line, "# "):
 			title = strings.TrimSpace(strings.TrimPrefix(line, "# "))
 		case agent == "" && strings.HasPrefix(line, "- Agent: "):
 			agent = AgentFromLine(line)
+		case ran == "" && strings.HasPrefix(line, "- Ran on: "):
+			ran = strings.TrimPrefix(line, "- Ran on: ")
 		}
 	}
-	return title, agent
+	return title, agent, ran
 }
 
 // AgentFromLine pulls the choice name out of the header's "- Agent: ..." line.

@@ -86,6 +86,7 @@ func newPRView(pr gh.PR, mine bool, now time.Time) prView {
 // second.
 type stepView struct {
 	Name      string     `json:"name"`
+	Ran       string     `json:"ran,omitempty"`
 	State     State      `json:"state"`
 	Seconds   int        `json:"seconds"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
@@ -235,7 +236,7 @@ func (j *Job) stepViews() []stepView {
 	}
 	out := make([]stepView, 0, len(j.Steps))
 	for _, st := range j.Steps {
-		v := stepView{Name: st.Name, State: st.State, Err: st.Err}
+		v := stepView{Name: st.Name, Ran: st.Ran, State: st.State, Err: st.Err}
 		switch {
 		case st.State == StateRunning && !st.StartedAt.IsZero():
 			t := st.StartedAt

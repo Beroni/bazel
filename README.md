@@ -326,10 +326,16 @@ Every review lands in three places, in this order:
 
 1. **The page** — markdown rendered in the right-hand pane.
 2. **A file** — `<BAZEL_HOME>/reviews/<repo>-<number>-<date>.md`, with the PR
-   header, the agent that ran (per-step timings in a pipeline) and the
-   [token spend](#token-usage). This is the copy that outlives the server: the
+   header, the agent that ran (per-step timings in a pipeline), what it ran on
+   and the [token spend](#token-usage). This is the copy that outlives the server: the
    **saved** tab reads it back and can still take it to the PR.
 3. **The PR on GitHub** — only if you ask, and only after you have read it.
+
+Each step says what it ran on, such as `claude · opus-5` or `codex`, on the job's
+card, in its step list and in the file's `- Ran on:` line, section by section in
+a pipeline. The label comes from the output format and the model the agent
+reported; a CLI Bazel does not know shows its command name. It stays out of the
+report's own text, because that text is what goes to the PR.
 
 ## Publishing to the PR
 
