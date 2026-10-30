@@ -251,6 +251,11 @@ async function loadPRs(force) {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
     state.prs = data.prs || [];
     state.prsLoaded = true;
+    // A fresh list may mean new commits, checks or reviews: the PR pages and
+    // histories read so far are read again when next drawn (review F3). The
+    // server's own cache keeps that cheap.
+    state.details = {};
+    state.histories = {};
     // The repos on the Config page say "N open"; the count is this list.
     if (!$('#page-config').hidden) renderRepos();
     state.repoErrors = data.repo_errors || [];
@@ -351,8 +356,10 @@ function upsertJob(job) {
   }
   renderJobs();
   if (state.activeJob === job.id) renderViewer();
-  // A history that just finished: the tab reads it again.
-  if (job.history && job.state !== 'queued' && job.state !== 'running' && state.histories) {
+  // A job of this PR that just ended changes its page (a review in the
+  // timeline) or its history: both are read again.
+  if (job.state !== 'queued' && job.state !== 'running') delete state.details[job.pr.key];
+  if (job.history && job.state !== 'queued' && job.state !== 'running') {
     delete state.histories[job.pr.key];
     if (state.activeJob && jobView(state.jobs.find((x) => x.id === state.activeJob) || {}) === 'history') {
       delete $('#viewer').dataset.sig;
