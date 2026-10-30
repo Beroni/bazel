@@ -1872,7 +1872,7 @@ function sectionLabel(text, extra) {
 function renderPRPage(body, pr, job, redraw) {
   const d = prDetails(pr, redraw);
   const err = state.details && state.details[pr.key] && state.details[pr.key].error;
-  const page = el('div', 'prpage');
+  const page = tid(el('div', 'prpage'), 'pr-page', { prKey: pr.key, loaded: !!d });
   const main = el('div', 'prmain');
   const side = el('aside', 'prside');
   page.append(main, side);
@@ -1897,7 +1897,7 @@ function renderPRPage(body, pr, job, redraw) {
   // ACTIVITY: opened, each commit, and Bazel's reviews of it.
   if (d) {
     main.append(sectionLabel('Activity'));
-    const tl = el('ol', 'timeline');
+    const tl = tid(el('ol', 'timeline'), 'pr-activity');
     const item = (who, what, extra, when, cls) => {
       const li = el('li', cls || '');
       li.append(el('span', 'tdot'), el('b', null, who), el('span', null, ' ' + what));
@@ -1928,7 +1928,7 @@ function renderPRPage(body, pr, job, redraw) {
     const fl = sectionLabel('Files changed', ` ${d.files.length} file${d.files.length === 1 ? '' : 's'} · `);
     fl.lastChild.append(el('span', 'add', '+' + adds), document.createTextNode(' '), el('span', 'del', '−' + dels));
     main.append(fl);
-    const files = el('div', 'pfiles');
+    const files = tid(el('div', 'pfiles'), 'pr-files');
     for (const f of d.files) {
       const row = el('div', 'pfile');
       row.append(el('code', 'pfile-path', f.path), el('span', 'add', '+' + f.additions), el('span', 'del', '−' + f.deletions));
@@ -1946,19 +1946,19 @@ function renderPRPage(body, pr, job, redraw) {
     side.append(sectionLabel('Reviewers'));
     if (!d.reviewers.length) side.append(el('p', 'dim', 'nobody yet'));
     for (const r of d.reviewers) {
-      const row = el('div', 'prev');
+      const row = tid(el('div', 'prev'), 'pr-reviewer', { login: r.login, state: r.state });
       row.append(el('span', 'avatar', (r.login[0] || '?').toUpperCase()), el('span', 'prev-who', r.login), el('span', 'prev-state ' + r.state.replace(/\s/g, '-'), r.state));
       side.append(row);
     }
     side.append(sectionLabel('Labels'));
     const labels = el('div', 'plabels');
     if (!d.labels.length) labels.append(el('span', 'dim', 'none'));
-    for (const l of d.labels) labels.append(el('span', 'plabel-chip', l));
+    for (const l of d.labels) labels.append(tid(el('span', 'plabel-chip', l), 'pr-label'));
     side.append(labels);
     side.append(sectionLabel('Checks'));
     if (!d.checks.length) side.append(el('p', 'dim', 'none reported'));
     for (const c of d.checks) {
-      const row = el('div', 'pcheck ' + c.state);
+      const row = tid(el('div', 'pcheck ' + c.state), 'pr-check', { name: c.name, state: c.state });
       row.append(el('span', 'tdot'), el('code', null, c.name), el('span', 'pcheck-state', c.state));
       side.append(row);
     }
