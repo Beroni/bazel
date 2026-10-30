@@ -364,6 +364,7 @@ async function resync() {
   try {
     const st = await api('/api/state');
     state.jobs = st.jobs || [];
+    state.historyCustom = !!st.history_custom;
     state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
     renderQuota();
     applyAgents(st.agents || []);
@@ -2147,7 +2148,7 @@ function renderLogView(body, job) {
 // historyCustomNote says, where it can be read, that the history runs a step
 // of your own. Bazel still offers nothing of it for publishing, but it cannot
 // answer for what that step does by itself.
-const historyCustomNote = () => tid(el('p', 'stale-box', 'The history runs a step of your own (task, prompt, command or env from your config).'
+const historyCustomNote = () => tid(el('p', 'stale-box', 'The history runs a step of your own (task, prompt, command, args or env from your config).'
   + ' Bazel does not publish its output, but it cannot vouch for what that step does on its own.'), 'history-custom');
 
 // renderHistoryView is the PR's story, on demand: the history agent writes
@@ -2169,14 +2170,14 @@ function renderHistoryView(body, job) {
     e.append(retryButton('histories', pr.key, redraw));
     box.append(e);
   }
-  if (h.custom && !job.history) box.append(historyCustomNote());
+  if (state.historyCustom && !job.history) box.append(historyCustomNote());
 
   const generate = (label) => {
     const b = tid(el('button', label === 'Generate' ? 'btn primary' : 'btn small ghost link', label),
       label === 'Generate' ? 'history-generate' : 'history-regenerate');
     // What keeps an agent off the PR is a line in its prompt, not a lock.
     b.title = `runs ${h.agent} over this PR — a job in the queue`
-      + (h.custom ? '' : '; it is instructed not to publish');
+      + (state.historyCustom ? '' : '; it is instructed not to publish');
     b.addEventListener('click', async () => {
       b.disabled = true;
       clearAlert();

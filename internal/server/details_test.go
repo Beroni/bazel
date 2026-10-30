@@ -510,12 +510,10 @@ func TestHistoryAvisaPassoCustom(t *testing.T) {
 	}
 	srv.prs = []gh.PR{testPR(482)}
 	h := srv.Handler()
-	for _, path := range []string{"/api/state", "/api/prs/acme/api-core/482/history"} {
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+path, nil))
-		if !strings.Contains(w.Body.String(), `"history_custom":true`) && !strings.Contains(w.Body.String(), `"custom":true`) {
-			t.Errorf("%s does not say the step is custom: %s", path, w.Body)
-		}
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/state", nil))
+	if !strings.Contains(w.Body.String(), `"history_custom":true`) {
+		t.Errorf("/api/state does not say the step is custom: %s", w.Body)
 	}
 }
 

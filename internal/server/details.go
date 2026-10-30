@@ -386,18 +386,16 @@ func checkState(status, conclusion, state string) string {
 // historyView is a PR's history as the History tab draws it, with the
 // markdown parts already rendered and sanitized.
 type historyView struct {
-	Found       bool   `json:"found"`
-	Stale       bool   `json:"stale,omitempty"`
-	CommitsRead int    `json:"commits_read,omitempty"`
-	Agent       string `json:"agent"`
-	// Custom says the step that runs is not Bazel's own (see HistoryCustom).
-	Custom    bool           `json:"custom,omitempty"`
-	WhatHTML  string         `json:"what_html,omitempty"`
-	Decisions []decisionView `json:"decisions"`
-	StillOpen []string       `json:"still_open_html"`
-	OpenNote  string         `json:"still_open_note_html,omitempty"`
-	RestHTML  string         `json:"rest_html,omitempty"`
-	Job       *jobView       `json:"job,omitempty"`
+	Found       bool           `json:"found"`
+	Stale       bool           `json:"stale,omitempty"`
+	CommitsRead int            `json:"commits_read,omitempty"`
+	Agent       string         `json:"agent"`
+	WhatHTML    string         `json:"what_html,omitempty"`
+	Decisions   []decisionView `json:"decisions"`
+	StillOpen   []string       `json:"still_open_html"`
+	OpenNote    string         `json:"still_open_note_html,omitempty"`
+	RestHTML    string         `json:"rest_html,omitempty"`
+	Job         *jobView       `json:"job,omitempty"`
 }
 
 type decisionView struct {
@@ -452,7 +450,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		pr = gh.PR{Repo: repo, Number: number, HeadRefOid: view.Sha}
 	}
-	v := historyView{Agent: s.historyAgentName(), Custom: s.historyCustom(), Decisions: []decisionView{}, StillOpen: []string{}}
+	v := historyView{Agent: s.historyAgentName(), Decisions: []decisionView{}, StillOpen: []string{}}
 	if j, ok := s.jobs.HistoryJob(pr.Key()); ok {
 		v.Job = &j
 	}
