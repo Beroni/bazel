@@ -1,5 +1,5 @@
 import { test, expect, knownBug } from '../harness/fixtures';
-import { openJob, ui } from '../harness/ui';
+import { expandFindings, openJob, ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
   ({ name, task: `/exploit-digger {{number}}`, command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: scenario }, ...extra });
@@ -30,7 +30,7 @@ test.describe('P1 · report and findings', () => {
     expect(job.html).toContain('&lt;script&gt;');
     expect(job.html).not.toContain('finding id=');
     await app.reload();
-    await openJob(app, 'Add rate limiter to the public API');
+    await expandFindings(await openJob(app, 'Add rate limiter to the public API'));
     // What you read is the text that would be published.
     await expect(ui.viewer(app).getByText("<script>alert('E2E-XSS')</script>", { exact: false })).toBeVisible();
   });

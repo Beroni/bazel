@@ -57,14 +57,30 @@ export const ui = {
   /** The review pane. */
   viewer: (p: Page) => tid(p, 'review-viewer', p.getByRole('article')),
   findingPicks: (scope: Locator) => scope.getByTestId('finding-pick').or(scope.getByRole('checkbox', { name: 'report' })),
-  publishInline: (scope: Locator) => tid(scope, 'publish-inline', scope.getByRole('button', { name: /^publish inline review$/i })),
-  pasteAsComment: (scope: Locator) => tid(scope, 'paste-comment', scope.getByRole('button', { name: /^or paste as a comment$/i })),
+  publishInline: (scope: Locator) => tid(scope, 'publish-inline', scope.getByRole('button', { name: /^(publish inline review|↗ publish)$/i })),
+  pasteAsComment: (scope: Locator) => tid(scope, 'paste-comment', scope.getByRole('button', { name: /^(or paste as a comment|as comment)$/i })),
+  /** Finding rows of the compact report (redesign c2614d9); none on master. */
+  findingToggles: (scope: Locator) => scope.getByTestId('finding-toggle'),
   keepHere: (scope: Locator) => tid(scope, 'keep-here', scope.getByRole('button', { name: /^keep it here$/i })),
   alreadyPublished: (scope: Locator) => tid(scope, 'already-published', scope.getByText('✓ already on the PR')),
   /** The part of a split report that stays in Bazel, and the part that goes. */
   reviewContext: (scope: Locator) => tid(scope, 'review-context', scope.getByText('stays in Bazel — not published')),
   notAReview: (scope: Locator, agent: string) => scope.getByText(new RegExp(`what "${agent}" produces stays in Bazel`)),
 };
+
+/**
+ * Opens every collapsed finding. The redesign shows each finding as a compact
+ * row with its body closed (only the first starts open); master shows every
+ * body. Call it before asserting on text inside a finding's body.
+ */
+export async function expandFindings(viewer: Locator): Promise<void> {
+  const toggles = ui.findingToggles(viewer);
+  const n = await toggles.count();
+  for (let i = 0; i < n; i++) {
+    const t = toggles.nth(i);
+    if ((await t.getAttribute('aria-expanded')) === 'false') await t.click();
+  }
+}
 
 /** Ticks the PRs matching `text` through the filter + "select all". */
 export async function tickByFilter(page: Page, text: string): Promise<void> {

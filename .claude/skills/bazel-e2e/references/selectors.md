@@ -29,6 +29,12 @@ Differences on the redesign, already handled by the helpers:
   not a `<select>` (`filterByReview()`).
 - `pr-row-check` has `aria-label="tick owner/repo#n"`; `pr-owner-filter` (#25)
   and `conn-status` (`data-state=open|closed`) exist; `quota` has `data-level`.
+- Compact report (c2614d9/60ba42e): each finding is a `finding-row`
+  (`data-finding-index`, `data-severity` crit|high|med|low|none, `data-open`)
+  with a `finding-toggle` (`aria-expanded`); only the first starts open. Call
+  `expandFindings(viewer)` before asserting on text inside a finding's body.
+  Labels changed: "↗ Publish" and "As comment" (testids unchanged);
+  `pick-summary` reads "N of M findings".
 - `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
 - Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
   just now", "⟳ changed since review"); tests match both.

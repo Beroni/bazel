@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect, knownBug } from '../harness/fixtures';
-import { tickByFilter, ui } from '../harness/ui';
+import { expandFindings, tickByFilter, ui } from '../harness/ui';
 
 test.describe('P0 · review', () => {
   test('a mocked claude-stream review runs from the UI to the rendered report', async ({ app, bazel }) => {
@@ -12,6 +12,7 @@ test.describe('P0 · review', () => {
     // The report lands in the viewer, findings and all.
     const viewer = ui.viewer(app);
     await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: 20_000 });
+    await expandFindings(viewer);
     await expect(viewer.getByText('E2E-FINDING-TWO')).toBeVisible();
     await expect(ui.findingPicks(viewer)).toHaveCount(2);
     await expect(ui.publishInline(viewer)).toBeVisible();

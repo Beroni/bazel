@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { openJob, ui } from '../harness/ui';
+import { expandFindings, openJob, ui } from '../harness/ui';
 
 // Publishing is the one place Bazel writes to GitHub. Here "GitHub" is the
 // fake gh's call log: every assertion is on the exact argv and payload that
@@ -10,6 +10,8 @@ async function openFinishedReview(app: any, bazel: any) {
   await bazel.waitJob(id, (j: any) => j.state === 'done');
   await app.reload();
   const viewer = await openJob(app, 'Add rate limiter to the public API');
+  await expect(ui.findingPicks(viewer)).toHaveCount(2);
+  await expandFindings(viewer);
   await expect(viewer.getByText('E2E-FINDING-TWO')).toBeVisible();
   return { id, viewer };
 }

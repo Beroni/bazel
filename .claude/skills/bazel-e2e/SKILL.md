@@ -105,7 +105,7 @@ vs. actual and the test name.
 5. Selectors and UI actions go through `e2e/harness/ui.ts` only: the
    `data-testid` of [references/selectors.md](references/selectors.md) first,
    master's role/text as fallback. Use the action helpers (`openJob`,
-   `cancelJob`, `filterByReview`, `selectByLabel`) where the two UIs differ —
+   `cancelJob`, `filterByReview`, `selectByLabel`, `expandFindings`) where the two UIs differ —
    on the redesign, cancel/publish/keep live in the job's detail, not on the
    card. Never select by CSS class.
 6. Assert outcomes at three levels when they exist: what the page shows, what
