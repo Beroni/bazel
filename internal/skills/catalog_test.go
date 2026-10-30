@@ -181,3 +181,34 @@ func TestInline(t *testing.T) {
 		}
 	}
 }
+
+// The name is normalized once: a task IsBuiltin accepts is never inlined with
+// an empty body (review F7).
+func TestInlineOddTasks(t *testing.T) {
+	for _, task := range []string{"/bazel-review-fleet\r\n26", "/BAZEL-REVIEW-FLEET 26", "  /bazel-review-fleet 26  "} {
+		got := Inline(task)
+		if !strings.Contains(got, "# Bazel Review Fleet") {
+			t.Errorf("Inline(%q) lost the skill body:\n%.200s", task, got)
+		}
+	}
+	// `//name` is not a slash command for a built-in; it must not become an
+	// envelope with no instructions.
+	if got := Inline("//bazel-review-fleet 26"); got != "//bazel-review-fleet 26" {
+		t.Errorf("a double slash should be left alone, got %.120q", got)
+	}
+}
+
+func TestCanonical(t *testing.T) {
+	cases := map[string]string{
+		"/BAZEL-POST-REPORT /tmp/r.md":   "/bazel-post-report /tmp/r.md",
+		"/Bazel-Review-Fleet {{number}}": "/bazel-review-fleet {{number}}",
+		"/bazel-review-fleet 26":         "/bazel-review-fleet 26",
+		"/review-fleet 26":               "/review-fleet 26",
+		"Review this PR.":                "Review this PR.",
+	}
+	for in, want := range cases {
+		if got := Canonical(in); got != want {
+			t.Errorf("Canonical(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

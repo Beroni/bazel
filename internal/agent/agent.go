@@ -271,7 +271,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		// Claude Code finds the built-in skills in the plugin; the other CLIs
 		// get the skill inside the prompt, with the plugin's path.
-		task := step.Task
+		task := skills.Canonical(step.Task)
 		if !runsClaude(step) {
 			task = skills.Inline(task, plugin)
 		}

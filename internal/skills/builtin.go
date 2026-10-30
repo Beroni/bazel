@@ -61,13 +61,36 @@ func Builtin() []Skill {
 // page show these as installed without looking for them on disk: they are in
 // the binary, and there is nothing to install.
 func IsBuiltin(name string) bool {
+	_, ok := builtinNamed(name)
+	return ok
+}
+
+// builtinNamed finds an embedded skill by name, with or without the slash and
+// ignoring case — one normalization for every caller, so IsBuiltin and Inline
+// can never disagree about whether a task calls a built-in.
+func builtinNamed(name string) (Skill, bool) {
 	name = strings.TrimPrefix(strings.TrimSpace(name), "/")
 	for _, s := range Builtin() {
 		if strings.EqualFold(s.Name, name) {
-			return true
+			return s, true
 		}
 	}
-	return false
+	return Skill{}, false
+}
+
+// Canonical rewrites a task that calls a built-in skill so the slash command
+// carries the skill's exact name: `/BAZEL-POST-REPORT x` becomes
+// `/bazel-post-report x`. Bazel matches names ignoring case; the agent CLI may
+// not, and a publishing step that silently runs without its skill would still
+// have the permission to post. Any other task comes back as it was.
+func Canonical(task string) string {
+	name := TaskSkill(task)
+	s, ok := builtinNamed(name)
+	if !ok || name == s.Name {
+		return task
+	}
+	trimmed := strings.TrimSpace(task)
+	return "/" + s.Name + trimmed[1+len(name):]
 }
 
 // Materialize writes the embedded skills into dir as a Claude Code plugin —
@@ -148,19 +171,14 @@ func agentFile(rel string) (string, bool) {
 // not call a built-in skill comes back as it was.
 func Inline(task, plugin string) string {
 	name := TaskSkill(task)
-	if name == "" || !IsBuiltin(name) {
+	s, ok := builtinNamed(name)
+	if !ok {
 		return task
 	}
-	var body string
-	for _, s := range Builtin() {
-		if strings.EqualFold(s.Name, name) {
-			data, err := builtinFS.ReadFile(s.Dir + "/SKILL.md")
-			if err != nil {
-				return task
-			}
-			body = withoutFrontmatter(string(data))
-			break
-		}
+	data, err := builtinFS.ReadFile(s.Dir + "/SKILL.md")
+	body := withoutFrontmatter(string(data))
+	if err != nil || body == "" {
+		return task
 	}
 	args := strings.TrimSpace(strings.TrimSpace(task)[1+len(name):])
 	if args == "" {
@@ -168,7 +186,7 @@ func Inline(task, plugin string) string {
 	}
 	return fmt.Sprintf("Run the `%s` skill below. This agent does not load skills by itself, so its "+
 		"instructions are inlined here. Its files are in %s/skills/%s/ and the agents it names in "+
-		"%s/agents/.\n\nArguments: %s\n\n%s", name, plugin, name, plugin, args, body)
+		"%s/agents/.\n\nArguments: %s\n\n%s", s.Name, plugin, s.Name, plugin, args, body)
 }
 
 // withoutFrontmatter drops the YAML block between the two `---` at the top.
