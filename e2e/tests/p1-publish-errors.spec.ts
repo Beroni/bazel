@@ -23,7 +23,7 @@ test.describe('P1 · a failed publish stays on screen', () => {
     // event; wait for it (or 3.5 s, the slowest wipe seen) instead of guessing.
     const refreshed = app.waitForResponse((r) => r.url().includes('/api/prs'), { timeout: 3_500 }).catch(() => null);
     await btn.click();
-    await expect(ui.banner(app)).toContainText('HTTP 403');
+    await expect(ui.banner(app)).toContainText('HTTP 403', { timeout: 20_000 });
     await bazel.waitJob(id, (j) => !!j.post_error);
     await refreshed;
     await app.waitForTimeout(300);

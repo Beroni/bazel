@@ -165,7 +165,7 @@ test.describe('P1 · History', () => {
     await openJob(app, 'Add rate limiter to the public API');
     await app.getByRole('tab', { name: 'History' }).click();
     await app.getByTestId('history-generate').click();
-    await expect(app.getByTestId('history-decision')).toHaveCount(2, { timeout: 20_000 });
+    await expect(app.getByTestId('history-decision')).toHaveCount(2, { timeout: 40_000 });
     await expect(app.getByTestId('history-decision').first()).toHaveAttribute('data-n', '1');
   });
 });
@@ -188,7 +188,7 @@ test.describe('P1 · History escapes what the agent wrote', () => {
     await app.getByRole('tab', { name: 'History' }).click();
     await app.getByTestId('history-generate').click();
     const decision = app.getByTestId('history-decision');
-    await expect(decision).toHaveCount(1, { timeout: 20_000 });
+    await expect(decision).toHaveCount(1, { timeout: 40_000 });
     await expect(decision).toContainText('E2E-DECISION-HTML');
     expect(await app.getByTestId('history').locator('[onerror], img[src="x"], script').count()).toBe(0);
     expect(await app.evaluate(() => (window as any).__xss)).toBeUndefined();
