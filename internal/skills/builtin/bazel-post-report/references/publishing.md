@@ -56,13 +56,9 @@ Three things in that payload decide everything downstream, and two of them are e
   sitting in a thread somebody resolved looks exactly like one nobody touched. Join call 3 to
   call 1 on `databaseId == id` — they are the same number.
 
-## A finding already on the PR — react, do not repeat
+## A 👍 on a duplicate
 
-Running the fleet twice on the same PR must not double the number of comments, and a finding
-somebody already raised does not need the fleet repeating it in different words.
-
-The definition of "same finding", and the four destinations a finding can land in, are in
-`bazel-post-report/SKILL.md` — one place, so they cannot drift. What follows here are the commands.
+When a finding is already on the PR, and the rules in `bazel-post-report/SKILL.md` say to react:
 
 ```bash
 # duplicate of an inline review comment
@@ -72,29 +68,13 @@ gh api -X POST repos/:owner/:repo/pulls/comments/<id>/reactions -f content=+1
 gh api -X POST repos/:owner/:repo/issues/comments/<id>/reactions -f content=+1
 ```
 
-These are **different endpoints** for the two comment types, and an `id` from one does not
-exist in the other — sending it to the wrong one returns 404. You already know the type: it
-came from one of the two lists above.
+Two **different endpoints**: an `id` from one list returns 404 on the other, and you know the
+type from the list it came from. Reacting is idempotent (200 instead of 201 when the 👍 is
+already there).
 
-Reacting is idempotent. If the 👍 is already there, the API returns 200 instead of 201 and does
-not duplicate — running the fleet three times on the same PR leaves one 👍, not three.
+## A settled finding — who settled it
 
-The 👍 says "I found this too, independently". It is a convergence signal, the same kind as two
-lenses agreeing, and it matters most when the comment belongs to someone else. When the
-duplicate is from a previous run of the fleet itself, the 👍 communicates nothing to anyone —
-but it is harmless and idempotent, so react anyway and do not spend a decision on it.
-
-Filtering duplicates is **not** filtering severity: a `critical` already on the PR still counts
-toward the verdict and the report. It just does not become a second comment.
-
-If **every** finding is a duplicate, the payload ends up with no comments at all — do not send
-an empty review, and **do not post the all-clear**: the all-clear is for zero findings, and
-here there are findings, just already said. Let the 👍 speak and report it in stdout.
-
-## A finding that was already settled — list it, do not repost
-
-The rule and what the summary says are in `bazel-post-report/SKILL.md`. What the survey gives
-you, with no extra call:
+From the survey above, with no extra call:
 
 ```bash
 #   resolved  → its root id appears in call 3 with isResolved: true; who → resolvedBy
@@ -102,22 +82,19 @@ you, with no extra call:
 #   by the PR's author → compare user with `gh pr view <N> --json author --jq .author.login`
 ```
 
-## A single review with inline comments (preferred)
-
-One review groups everything into a single notification instead of N. Assemble the payload and
-send it in one go:
+## A single review with inline comments
 
 ```bash
 cat > /tmp/review.json <<'JSON'
 {
-  "body": "## Review Fleet\n\n3 lenses · 4 findings · verdict: request_changes\n\nScope: `git diff origin/develop...HEAD` — 12 files · head `a1b2c3d`\n\n<summary>",
+  "body": "## Review Fleet\n\nverdict: request_changes · 4 findings\n\nScope: `git diff origin/develop...HEAD` — 12 files · head `a1b2c3d`\n\n<summary>",
   "event": "COMMENT",
   "comments": [
     {
       "path": "src/api/transfer.ts",
       "line": 88,
       "side": "RIGHT",
-      "body": "**critical · authz** (senior-code-reviewer + exploit-digger)\n\nTransfer reads `accountId` from the request body without checking ownership.\n\n**Trigger:** `POST /api/transfer` with another user's `accountId` debits their account.\n\n**Fix:** resolve the account from the session, or assert `account.ownerId === session.userId` before debiting."
+      "body": "**critical · authz** (senior-code-reviewer + exploit-digger)\n\nTransfer reads `accountId` from the request body without checking ownership.\n\n**Trigger:** `POST /api/transfer` with another user's `accountId` debits their account.\n\n**Fix:** resolve the account from the session, or assert `account.ownerId === session.userId` before debiting.\n\nCWE-639,OWASP-A01"
     }
   ]
 }
@@ -126,47 +103,28 @@ JSON
 gh api -X POST repos/:owner/:repo/pulls/<N>/reviews --input /tmp/review.json
 ```
 
-`path`, `line` and `side` come straight from the finding's `<!-- finding ... -->`. The `body`
-is the finding's prose **verbatim** — nothing is assembled here, because the prose already
-opens with its level line (`**critical · authz** (…)`), written that way in the report exactly
-so this step is a copy. See `.claude/skills/bazel-review-fleet/references/report-format.md`.
-
-The fields that matter:
-
-- `event`: **`COMMENT`**, always. Do not use `REQUEST_CHANGES` — that blocks the merge in the
-  user's name, a decision that is theirs, not the fleet's. The verdict goes in the `body` and
-  they act on it. `APPROVE` never, not even when the report says `approve`.
-- `line` + `side: "RIGHT"` — the line in the file **after** the change. To comment on a removed
-  line, `side: "LEFT"`.
-- Line range: `start_line` (and `start_side`) alongside `line`.
-
-The finding's `ref` (CWE/OWASP) lives only in the metadata; append it as a trailing line on the
-comment when there is one. Its `confidence` stays out of the PR.
-
-If the API rejects one comment for an invalid line, it rejects the **entire review**. Drop the
-offending comment, send the rest, and tell the user which one fell out — do not give up on
-posting everything because of one, and do not swallow the loss.
+- `path`, `line`, `side` come from the finding's `<!-- finding … -->`; `side: "LEFT"` for a
+  removed line; a range adds `start_line` (and `start_side`).
+- `body` is the finding's prose verbatim — it already opens with its level line (see
+  `.claude/skills/bazel-review-fleet/references/report-format.md`) — plus `ref` as a trailing
+  line when there is one.
+- `event` is `COMMENT`, always.
+- One comment on an invalid line makes the API reject the **whole** review: drop that comment,
+  send the rest, and say which one fell out.
 
 ## Fallback: a single comment on the PR
-
-When anchoring to a line is not worth it (scattered findings, lines outside the diff) or is not
-safe (the report's `head_sha` does not match the PR's HEAD):
 
 ```bash
 gh pr comment <N> --body-file /tmp/report.md
 ```
 
-This is the safest path and the one to prefer when in doubt. With a different sha, the body has
-to say which commit was reviewed:
+With a sha mismatch the body opens with:
 
 ```markdown
 > Reviewed at `a1b2c3d`; the PR has moved since, so findings are not line-anchored.
 ```
 
-## Zero findings — post the all-clear
-
-A silent fleet is indistinguishable from a fleet that never ran. With no findings at all, post
-saying so — with what was covered attached:
+## Zero findings — the all-clear
 
 ```bash
 gh pr comment <N> --body-file /tmp/all-clear.md
@@ -182,49 +140,9 @@ Lenses: senior-code-reviewer, exploit-digger, lazy-senior-dev
 <!-- review-fleet: all-clear @ a1b2c3d -->
 ```
 
-The coverage line is the report's header — `scope_cmd`, `files` and `lenses_ran`, verbatim.
-Without it the all-clear is worthless: "no problems found" on its own does not say whether the
-diff was swept or ignored. Never post an all-clear without saying what was swept and by whom.
-
-Two conditions, both mandatory and both checkable in the report header:
-
-- **`files:` greater than zero.** An all-clear on top of a scope that never resolved is the
-  worst possible comment — it tells the team the code was reviewed when nothing was read, and a
-  collapsed `git diff A...B` exits 0 with zero lines, exactly like a clean diff.
-- **`lenses_ran` complete**, or the comment says which were skipped and why (`lenses_skipped`
-  carries the reason). "0 findings" with a lens missing claims coverage that never happened.
-
-`gh pr comment` still applies, never `APPROVE` — the fleet says it found nothing; approving is
-the user's decision.
-
-The trailing marker carries the PR's HEAD (`gh pr view <N> --json headRefOid --jq .headRefOid`).
-On the next run, look for it among the body comments — and for the marker earlier Bazel
-versions posted, `<!-- bazel: all-clear @ <sha> -->`, which means the same thing:
-
-- **Same sha** already has an all-clear → nothing changed since; **👍 it**, do not post another.
-- **Different sha** → a new commit landed, and the old all-clear does not cover that code. Post
-  a new one. Do not delete or edit the old one: it was true about that sha.
-
-## The shape of each comment
-
-**Everything posted goes out in English.** The report is already born in English
-(`report-format.md`), so normally it is a straight copy. If any prose came back from a lens in
-another language, translate it before assembling the payload — what reaches the PR is read by
-the team and stays in the repo's history.
-
-The comment is the finding's prose as written in the report: the level line, the description,
-the `**Trigger:**` when there is one, the `**Fix:**`.
-
-```
-**critical · authz** (senior-code-reviewer + exploit-digger)
-```
-
-Two lenses on the same finding is a strong signal, and that line is where it shows. For
-`lazy-senior-dev` cuts the same line carries the gain:
-
-```
-**minor · reuse · −27 lines** (lazy-senior-dev)
-```
-
-No hedging, no paragraph defending the finding. If the explanation is longer than the code, cut
-the explanation.
+- The coverage lines are the report's header — `scope_cmd`, `files`, `lenses_ran` (and
+  `lenses_skipped` with its reasons when it is not `none`), verbatim.
+- The marker carries the PR's HEAD (`gh pr view <N> --json headRefOid --jq .headRefOid`).
+  Before posting, look for it among the body comments, and for the marker earlier Bazel
+  versions posted, `<!-- bazel: all-clear @ <sha> -->`: same sha → 👍 it and post nothing;
+  different sha → post a new one, and never edit or delete the old.
