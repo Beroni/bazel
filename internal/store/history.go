@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -172,64 +171,90 @@ func ParseHistory(md string) History {
 	return h
 }
 
-// historyDir is where the generated histories live, one file per PR and head.
-func historyDir(dir string) string { return filepath.Join(dir, "history") }
-
-// historyName is the file of one PR's history at one head sha.
-func historyName(repo string, number int, sha string) string {
+// historyPath is the file of one PR's history at one head:
+// history/<owner>/<name>/<number>/<sha>.md. Owner, name and number each get a
+// directory of their own, so no two PRs can share a file (acme/web-2 #10 is
+// not acme/web #2, a-b/c is not a/b-c), and owner and name go in lower case,
+// as GitHub compares them.
+func historyPath(dir, repo string, number int, sha string) (string, error) {
+	owner, name, ok := strings.Cut(strings.ToLower(repo), "/")
+	if !ok || !safeSegment(owner) || !safeSegment(name) || number <= 0 {
+		return "", fmt.Errorf("invalid PR %s#%d", repo, number)
+	}
+	sha = strings.ToLower(sha)
 	if len(sha) > 12 {
 		sha = sha[:12]
 	}
-	if sha == "" {
+	if sha == "" || strings.Trim(sha, "0123456789abcdef") != "" {
 		sha = "nohead"
 	}
-	return fmt.Sprintf("%s-%d-%s.md", sanitize(repo), number, sanitize(sha))
+	return filepath.Join(dir, "history", owner, name, strconv.Itoa(number), sha+".md"), nil
+}
+
+// safeSegment is a path segment that stays where it is put.
+func safeSegment(s string) bool {
+	return s != "" && s != "." && s != ".." && !strings.ContainsAny(s, `/\`)
 }
 
 // SaveHistory keeps the history generated for a PR at head sha, replacing an
-// older one for the same head: it is the same story, regenerated.
+// older one for the same head: it is the same story, regenerated. The file is
+// written under a temporary name of its own and renamed into place.
 func SaveHistory(dir, repo string, number int, sha, md string) (string, error) {
-	if err := os.MkdirAll(historyDir(dir), 0o755); err != nil {
+	path, err := historyPath(dir, repo, number, sha)
+	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(historyDir(dir), historyName(repo, number, sha))
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(md), 0o644); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
-	return path, os.Rename(tmp, path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".history-*")
+	if err != nil {
+		return "", err
+	}
+	if _, err := tmp.WriteString(md); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
+		return "", err
+	}
+	return path, nil
 }
 
 // LoadHistory returns the history of a PR: the one generated at head sha when
-// there is one, else the newest at any head, with stale=true. found=false
-// means none was ever generated.
+// there is one, else the newest at another head of the same PR, with
+// stale=true. found=false means none was ever generated.
 func LoadHistory(dir, repo string, number int, sha string) (md string, stale, found bool) {
-	if data, err := os.ReadFile(filepath.Join(historyDir(dir), historyName(repo, number, sha))); err == nil {
-		return string(data), false, true
-	}
-	prefix := fmt.Sprintf("%s-%d-", sanitize(repo), number)
-	items, err := os.ReadDir(historyDir(dir))
+	path, err := historyPath(dir, repo, number, sha)
 	if err != nil {
 		return "", false, false
 	}
-	type cand struct {
-		name string
-		mod  int64
+	if data, err := os.ReadFile(path); err == nil {
+		return string(data), false, true
 	}
-	var cs []cand
-	for _, it := range items {
-		if it.IsDir() || !strings.HasPrefix(it.Name(), prefix) || !strings.HasSuffix(it.Name(), ".md") {
-			continue
-		}
-		if info, err := it.Info(); err == nil {
-			cs = append(cs, cand{it.Name(), info.ModTime().UnixNano()})
-		}
-	}
-	if len(cs) == 0 {
+	items, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
 		return "", false, false
 	}
-	sort.Slice(cs, func(i, j int) bool { return cs[i].mod > cs[j].mod })
-	data, err := os.ReadFile(filepath.Join(historyDir(dir), cs[0].name))
+	newest, at := "", int64(0)
+	for _, it := range items {
+		if it.IsDir() || !strings.HasSuffix(it.Name(), ".md") {
+			continue
+		}
+		if info, err := it.Info(); err == nil && info.ModTime().UnixNano() > at {
+			newest, at = it.Name(), info.ModTime().UnixNano()
+		}
+	}
+	if newest == "" {
+		return "", false, false
+	}
+	data, err := os.ReadFile(filepath.Join(filepath.Dir(path), newest))
 	if err != nil {
 		return "", false, false
 	}

@@ -147,3 +147,31 @@ func TestParseHistoryRealOutput(t *testing.T) {
 		}
 	}
 }
+
+// One PR's history never shows up as another's: owner, name and number are
+// separate path segments, matched exactly (review F2).
+func TestHistoryNaoVazaEntrePRs(t *testing.T) {
+	dir := t.TempDir()
+	for _, c := range []struct {
+		repo string
+		n    int
+	}{{"acme/web-2", 10}, {"a-b/c", 7}} {
+		if _, err := SaveHistory(dir, c.repo, c.n, "aaa111", "story of "+c.repo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range []struct {
+		repo string
+		n    int
+	}{{"acme/web", 2}, {"acme/web", 210}, {"a/b-c", 7}} {
+		if md, _, found := LoadHistory(dir, c.repo, c.n, "aaa111"); found {
+			t.Errorf("%s#%d got another PR's history: %q", c.repo, c.n, md)
+		}
+	}
+	if md, stale, found := LoadHistory(dir, "ACME/Web-2", 10, "AAA111"); !found || stale || md != "story of acme/web-2" {
+		t.Errorf("same PR in another case: %q stale=%v found=%v", md, stale, found)
+	}
+	if _, err := SaveHistory(dir, "../x", 1, "aaa", "no"); err == nil {
+		t.Error("a path segment like .. must be refused")
+	}
+}
