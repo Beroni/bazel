@@ -2090,7 +2090,7 @@ function renderOverview(body, job) {
   // a small block at the end of it.
   const main = renderPRPage(body, job.pr, job, () => { if (state.activeJob === job.id) redrawViewer(); });
   const block = el('section', 'jobfacts');
-  main.append(sectionLabel('This review'), block);
+  main.append(sectionLabel(job.history ? 'This history' : 'This review'), block);
   body = block;
   const msg = {
     queued: 'Queued — starts as soon as a worker frees up.',
