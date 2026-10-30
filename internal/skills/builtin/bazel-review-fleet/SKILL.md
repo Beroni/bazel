@@ -112,8 +112,14 @@ A real conflict (one lens wants to cut what another says is load-bearing):
 
 ## Step 5 — Verdict
 
-`request_changes` if **any** lens asked for it; otherwise `comment` if any lens commented;
-`approve` only if every lens that ran approved **and** the scope had files.
+The verdict follows what is **left in the report after the merge**, not what each lens voted —
+a lens that asked for changes over a cut the merge dropped has nothing left to back it:
+
+- `request_changes` — a `critical` or `major` finding in `## Findings`;
+- `comment` — otherwise, any finding, cut or `## Needs human verification` item;
+- `approve` — nothing at all, over a scope with files.
+
+Cuts never drive `request_changes`: a simplification does not block a merge.
 
 ## Step 6 — Print the report
 

@@ -50,5 +50,10 @@ says:
 Copy `severity` and `class` verbatim from the JSON. `findings: []` is a legitimate result: the
 `**Verdict:**` line with `no findings` already says so.
 
+The verdict follows what is in the report, with the fleet's rule (`bazel-review-fleet`, Step 5):
+`request_changes` for a `critical` or `major` finding, `comment` for anything else in it,
+`approve` for nothing — even when the lens's own `verdict` said otherwise, for instance after
+`bazel-lazy-senior-dev` dropped a load-bearing cut.
+
 Write it to a scratch file and validate it (section 3 of `headless.md`), fix until it
 passes, and print its content as your final output, with nothing around it.
