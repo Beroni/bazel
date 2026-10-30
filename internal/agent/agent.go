@@ -166,6 +166,14 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		workdir = ws.Dir
 	}
 
+	// Before anything runs: a flag that reads a file from the clone hands the
+	// PR's content to the agent as configuration.
+	for _, s := range choice.Steps {
+		if err := checkPathFlags(s.Args, workdir); err != nil {
+			return Result{}, fmt.Errorf("`%s`: %w", s.Name, err)
+		}
+	}
+
 	// The publishing skill works over the PR's clone (it checks that the repo it
 	// is about to comment on is the PR's): without one it has nothing to check.
 	if step := builtinSemClone(choice); step != "" {
@@ -433,6 +441,70 @@ func confineClaude(args []string, plugin string) ([]string, error) {
 		flags = append(flags, "--plugin-dir", plugin)
 	}
 	return slices.Concat(args[:start], flags, args[start:]), nil
+}
+
+// pathFlags are the CLI flags whose value is read as configuration: settings
+// with hooks, MCP servers that start commands, plugins, folders the agent gets
+// access to, system prompts. In a file the PR controls, each one is the PR
+// configuring the agent.
+var pathFlags = []string{
+	"--settings", "--mcp-config", "--plugin-dir", "--add-dir",
+	"--append-system-prompt-file", "--system-prompt-file",
+}
+
+// checkPathFlags refuses a pathFlag in the args of any step unless its value
+// is an absolute path outside the clone. A relative path resolves inside the
+// clone, where the agent runs; so does anything that is not a path at all,
+// like the inline JSON --settings and --mcp-config also take, which a config
+// has no reason to need here and which cannot be told apart from a mistake.
+// Refusing is what keeps a misconfigured step from running at all: --mcp-config
+// and --add-dir take several values, and all of them are checked.
+func checkPathFlags(args []string, clone string) error {
+	for i, a := range args {
+		for _, flag := range pathFlags {
+			var values []string
+			switch {
+			case a == flag:
+				for _, v := range args[i+1:] {
+					if strings.HasPrefix(v, "-") {
+						break
+					}
+					values = append(values, v)
+				}
+				if len(values) == 0 {
+					return fmt.Errorf("%s has no value: it must be an absolute path outside the PR's clone", flag)
+				}
+			case strings.HasPrefix(a, flag+"="):
+				values = []string{strings.TrimPrefix(a, flag+"=")}
+			}
+			for _, v := range values {
+				if !filepath.IsAbs(v) {
+					return fmt.Errorf("%s %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it, where the PR controls the file", flag, v)
+				}
+				if clone != "" && insideDir(v, clone) {
+					return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the file: point it outside", flag, v)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// insideDir says whether path is dir or below it, comparing the paths as
+// written and with symlinks resolved: on macOS the temp folder is itself a
+// link, and a path outside can link back in.
+func insideDir(path, dir string) bool {
+	within := func(p, d string) bool {
+		rel, err := filepath.Rel(d, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	resolve := func(p string) string {
+		if real, err := filepath.EvalSymlinks(p); err == nil {
+			return real
+		}
+		return filepath.Clean(p)
+	}
+	return within(filepath.Clean(path), filepath.Clean(dir)) || within(resolve(path), resolve(dir))
 }
 
 // builtinSemClone returns the step that calls an embedded skill without a clone
