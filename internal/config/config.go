@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/beroni/bazel/internal/pricing"
@@ -1063,11 +1064,21 @@ func (c *Config) ValidateHistoryAgent() error {
 	return nil
 }
 
-// HistoryCustom says the user wrote a history_agent: then what it does is
-// theirs to answer for, and ValidateHistoryAgent can only catch the obvious.
+// HistoryCustom says the history runs something other than Bazel's own step:
+// another task, prompt, executable, args or env, whether written in
+// history_agent or inherited from the `agent` block. Decided on the resolved
+// step, because that is what runs. Such a step is outside what Bazel can vouch
+// for: ValidateHistoryAgent catches the obvious, and an executable of your own
+// can do anything.
 func (c *Config) HistoryCustom() bool {
-	d := c.HistoryAgent
-	return strings.TrimSpace(d.Task+d.Prompt+d.Command) != "" || len(d.Args) > 0
+	ch := c.HistoryChoice()
+	if len(ch.Steps) != 1 {
+		return true
+	}
+	st := ch.Steps[0]
+	own := Default().Agent
+	return st.Task != defaultHistoryTask || st.Prompt != defaultPrompt || st.Command != own.Command ||
+		!slices.Equal(st.Args, own.Args) || len(st.Env) > 0
 }
 
 // publishCommandRe matches, in flattened text, the flag and the gh commands

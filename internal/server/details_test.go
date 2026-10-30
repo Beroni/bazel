@@ -493,3 +493,25 @@ func TestHistoryForaDaListaTemLimite(t *testing.T) {
 		t.Errorf("past the budget: %d, %d calls", code, calls)
 	}
 }
+
+// The page learns from the step that runs: an `agent` block with an executable
+// of its own reaches the History with no history_agent in sight.
+func TestHistoryAvisaPassoCustom(t *testing.T) {
+	cfg := cfgFor(t, "/usr/local/bin/review-and-post")
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.prs = []gh.PR{testPR(482)}
+	h := srv.Handler()
+	for _, path := range []string{"/api/state", "/api/prs/acme/api-core/482/history"} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+path, nil))
+		if !strings.Contains(w.Body.String(), `"history_custom":true`) && !strings.Contains(w.Body.String(), `"custom":true`) {
+			t.Errorf("%s does not say the step is custom: %s", path, w.Body)
+		}
+	}
+}

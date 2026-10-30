@@ -475,7 +475,24 @@ post_agent:
   name: bazel-post-report
   task: /bazel-post-report {{review_file}}
   posts: true
+
+# Who writes the History tab. Optional: the default runs /history-pr {{number}}
+# with the factory prompt, not your agent.prompt.
+# history_agent:
+#   task: /history-pr {{number}}
 ```
+
+### The History tab
+
+The History tab runs `history_agent` on demand. Bazel offers nothing of its
+output for publishing, and it refuses a `history_agent` that declares or plainly
+asks for publishing: `posts: true` stops the load, and the rest (a post skill,
+`--post`, a `gh` command that writes, a prompt without the line
+`do not publish anything to GitHub`) stops that history with the reason. That is
+a check, not a guarantee. The default agent is *instructed* not to publish, and
+it has Bash and your `gh` login. A step of your own, whether from `history_agent`
+or a `command`, `args` or `env` inherited from `agent`, is outside what Bazel can
+vouch for, and the tab says so.
 
 ### Agents and pipelines
 

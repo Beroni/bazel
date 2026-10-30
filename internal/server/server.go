@@ -423,6 +423,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		// agent run two: the chosen one and the template's. The page warns,
 		// because nothing in the result gives it away — only the spend.
 		"stray_command": stray,
+		// A history step Bazel cannot vouch for: the page says so wherever it
+		// would otherwise say the output stays here.
+		"history_custom": s.historyCustom(),
 		// The Claude quota comes empty until the first review of this session.
 		"limits": s.jobs.Limits(),
 	})

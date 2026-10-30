@@ -242,6 +242,7 @@ async function boot() {
     adoptInstance(st.instance);
     state.me = st.me;
     state.jobs = st.jobs || [];
+    state.historyCustom = !!st.history_custom;
     $('#who').textContent = '@' + st.me;
     $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagent: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nconcurrent reviews: ${st.concurrency}`;
     state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
@@ -1880,6 +1881,7 @@ function jobHead(job) {
   link.textContent = `${job.pr.repo} #${job.pr.number}`;
   kicker.append(link, document.createTextNode(' · ' + job.pr.author));
   grow.append(kicker, el('h2', null, job.pr.title));
+  if (job.history && state.historyCustom) grow.append(historyCustomNote());
   const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
   pill.title = label(job);
   head.append(grow, pill);
@@ -2140,6 +2142,12 @@ function renderLogView(body, job) {
   pollLog(job.id);
 }
 
+// historyCustomNote says, where it can be read, that the history runs a step
+// of your own. Bazel still offers nothing of it for publishing, but it cannot
+// answer for what that step does by itself.
+const historyCustomNote = () => tid(el('p', 'stale-box', 'The history runs a step of your own (task, prompt, command or env from your config).'
+  + ' Bazel does not publish its output, but it cannot vouch for what that step does on its own.'), 'history-custom');
+
 // renderHistoryView is the PR's story, on demand: the history agent writes
 // what the PR does, the decisions taken (with the commit and the source of
 // each, and what was rejected) and what is still open. Nothing runs until you
@@ -2159,14 +2167,14 @@ function renderHistoryView(body, job) {
     return;
   }
   const h = got.view;
+  if (h.custom && !job.history) box.append(historyCustomNote());
 
   const generate = (label) => {
     const b = tid(el('button', label === 'Generate' ? 'btn primary' : 'btn small ghost link', label),
       label === 'Generate' ? 'history-generate' : 'history-regenerate');
-    // A history_agent of your own passed a check that can only catch the
-    // obvious: only Bazel's own default gets the promise.
+    // What keeps an agent off the PR is a line in its prompt, not a lock.
     b.title = `runs ${h.agent} over this PR — a job in the queue`
-      + (h.custom ? '; it is your history_agent, so what it does is up to its prompt' : '; nothing goes to the PR');
+      + (h.custom ? '' : '; it is instructed not to publish');
     b.addEventListener('click', async () => {
       b.disabled = true;
       clearAlert();
@@ -2316,7 +2324,9 @@ function renderReportView(v, job) {
     // An agent that produces no review has nowhere to publish. Saying so here
     // beats showing nothing: you have just read the report and the next
     // question is always "so, does this go to the PR?".
-    v.append(el('p', 'dim end-note', `This is not a review — what "${job.agent}" produces stays in Bazel.`
+    v.append(el('p', 'dim end-note', (job.history && state.historyCustom
+      ? `This is not a review — Bazel does not publish what "${job.agent}" produces.`
+      : `This is not a review — what "${job.agent}" produces stays in Bazel.`)
       + ' Run a reviewing agent over this PR when you want something to publish.'));
   } else if (!job.publishing) {
     // The design's footer: "N of M findings" on the left, the two ways to the

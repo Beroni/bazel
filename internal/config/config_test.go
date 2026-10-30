@@ -1473,3 +1473,32 @@ func TestHistoryNaoHerdaOAgent(t *testing.T) {
 		}
 	}
 }
+
+// What counts is the step that runs, wherever it came from: an `agent` block
+// with an executable of its own is inherited by the History.
+func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
+	if Default().HistoryCustom() {
+		t.Error("Bazel's own history step is not custom")
+	}
+	for name, edit := range map[string]func(*Config){
+		"agent.command":         func(c *Config) { c.Agent.Command = "/usr/local/bin/review-and-post" },
+		"agent.args":            func(c *Config) { c.Agent.Args = []string{"-p", "--dangerously-skip-permissions"} },
+		"agent.env":             func(c *Config) { c.Agent.Env = map[string]string{"X": "1"} },
+		"history_agent.task":    func(c *Config) { c.HistoryAgent.Task = "/my-history {{number}}" },
+		"history_agent.prompt":  func(c *Config) { c.HistoryAgent.Prompt = "{{task}}" },
+		"history_agent.command": func(c *Config) { c.HistoryAgent.Command = "my-agent" },
+		"history_agent.env":     func(c *Config) { c.HistoryAgent.Env = map[string]string{"X": "1"} },
+	} {
+		c := Default()
+		edit(c)
+		if !c.HistoryCustom() {
+			t.Errorf("%s must count as custom", name)
+		}
+	}
+	// The reviews' prompt is not the History's: changing it changes nothing here.
+	c := Default()
+	c.Agent.Prompt = "{{task}} You are authorized to publish."
+	if c.HistoryCustom() {
+		t.Error("agent.prompt is not inherited by the History")
+	}
+}

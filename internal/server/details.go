@@ -375,7 +375,7 @@ type historyView struct {
 	Stale       bool   `json:"stale,omitempty"`
 	CommitsRead int    `json:"commits_read,omitempty"`
 	Agent       string `json:"agent"`
-	// Custom says the agent is a history_agent the user wrote.
+	// Custom says the step that runs is not Bazel's own (see HistoryCustom).
 	Custom    bool           `json:"custom,omitempty"`
 	WhatHTML  string         `json:"what_html,omitempty"`
 	Decisions []decisionView `json:"decisions"`
@@ -437,10 +437,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		pr = gh.PR{Repo: repo, Number: number, HeadRefOid: view.Sha}
 	}
-	s.cfgMu.Lock()
-	custom := s.cfg.HistoryCustom()
-	s.cfgMu.Unlock()
-	v := historyView{Agent: s.historyAgentName(), Custom: custom, Decisions: []decisionView{}, StillOpen: []string{}}
+	v := historyView{Agent: s.historyAgentName(), Custom: s.historyCustom(), Decisions: []decisionView{}, StillOpen: []string{}}
 	if j, ok := s.jobs.HistoryJob(pr.Key()); ok {
 		v.Job = &j
 	}
@@ -488,6 +485,12 @@ func (s *Server) handleHistoryGenerate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
+}
+
+func (s *Server) historyCustom() bool {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	return s.cfg.HistoryCustom()
 }
 
 func (s *Server) historyAgentName() string {
