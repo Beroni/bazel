@@ -107,8 +107,7 @@ test.describe('P1 · tokens and quota', () => {
     await expect(quota).toHaveText('claude session 86% · week 16%');
     await expect(quota).toBeVisible();
     await expect(quota).toHaveAttribute('title', /session resets at .*\n.*week resets at/s);
-    const short = app.getByTestId('quota-short'); // redesign: the bar only says this much
-    if (await short.count()) await expect(short).toHaveText('86% of session used');
+    await expect(app.getByTestId('quota-short')).toHaveText('86% of session used');
   });
 
   test('the session total in the top bar adds up the jobs', async ({ app, bazel }) => {

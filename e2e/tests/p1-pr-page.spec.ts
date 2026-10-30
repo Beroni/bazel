@@ -2,17 +2,9 @@ import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { openJob, ui } from '../harness/ui';
 
-// The PR's own page (Overview) and its History, from feat/redesign 6789bcb /
-// 160a9bc. Bases without the routes skip these tests.
+// The PR's own page (Overview) and its History.
 const DETAILS = '/api/prs/acme/api-core/101/details';
 const HISTORY = '/api/prs/acme/api-core/101/history';
-
-async function needsPRPage(bazel: Bazel) {
-  // Probe with a repo that is not watched: a JSON 404 means the route exists,
-  // and nothing is fetched or cached for the PR under test.
-  const r = await fetch(bazel.url + '/api/prs/not/watched/1/details');
-  test.skip(!(r.headers.get('content-type') ?? '').includes('json'), 'this base has no PR page routes');
-}
 
 const detailCalls = (bazel: Bazel) =>
   bazel.ghCalls().filter((c) => c.argv[0] === 'pr' && c.argv[1] === 'view' && (c.argv.at(-1) ?? '').includes('statusCheckRollup'));
@@ -20,7 +12,6 @@ const detailCalls = (bazel: Bazel) =>
 test.describe('P1 · PR page (Overview)', () => {
   test('details come from one gh pr view per head sha, in the page shape', async ({ bazel }) => {
     await bazel.api('GET', '/api/prs'); // the list is what tells Bazel the head sha
-    await needsPRPage(bazel);
     const { status, json } = await bazel.api('GET', DETAILS);
     expect(status).toBe(200);
     expect(json.sha).toBe('aaaa101');
@@ -46,7 +37,6 @@ test.describe('P1 · PR page (Overview)', () => {
   });
 
   test('a repository that is not watched gets 404 and no gh call, on every PR page route', async ({ bazel }) => {
-    await needsPRPage(bazel);
     for (const [method, path] of [['GET', '/api/prs/evil/repo/1/details'], ['GET', '/api/prs/evil/repo/1/history'], ['POST', '/api/prs/evil/repo/1/history']]) {
       expect((await bazel.api(method, path)).status, `${method} ${path}`).toBe(404);
     }
@@ -55,7 +45,6 @@ test.describe('P1 · PR page (Overview)', () => {
   });
 
   test('clicking a PR opens its page with files, reviewers and checks', async ({ app, bazel }) => {
-    await needsPRPage(bazel);
     await ui.prRow(app, 'Add rate limiter to the public API').click();
     const page = app.getByTestId('pr-page');
     await expect(page).toHaveAttribute('data-loaded', 'true');
@@ -68,7 +57,6 @@ test.describe('P1 · PR page (Overview)', () => {
 
 test.describe('P1 · PR page escapes what the PR author wrote', () => {
   test('a commit title and a label with HTML show as text, nothing runs', async ({ app, bazel }) => {
-    await needsPRPage(bazel);
     bazel.updatePR('acme/api-core#101', {
       commits: [{ oid: 'aaaa101', messageHeadline: '<img src=x onerror="window.__xss=1"> E2E-XSS-COMMIT', committedDate: '2026-10-21T12:00:00Z', authors: [{ login: 'alice' }] }],
       labels: [{ name: '<b>e2e-xss-label</b>' }],
@@ -96,7 +84,6 @@ test.describe('P1 · History', () => {
 
   test('generated on demand as a job; parsed; never marks the PR reviewed nor lands in Saved', async ({ bazel }) => {
     await bazel.api('GET', '/api/prs');
-    await needsPRPage(bazel);
     const before = (await bazel.api('GET', HISTORY)).json;
     expect(before.found).toBe(false);
     expect(before.agent).toBe('/history-pr');
@@ -136,7 +123,6 @@ test.describe('P1 · History', () => {
 
   test('Regenerate after the head moved: stale notice, a second run, fresh again', async ({ app, bazel }) => {
     await bazel.api('GET', '/api/prs');
-    await needsPRPage(bazel);
     const first = await bazel.api('POST', HISTORY);
     await bazel.waitJob(first.json.id, (j) => j.state === 'done');
     bazel.updatePR('acme/api-core#101', { headRefOid: 'dddd-moved' });
@@ -158,7 +144,6 @@ test.describe('P1 · History', () => {
   });
 
   test('the History tab of a job generates it and lists the decisions', async ({ app, bazel }) => {
-    await needsPRPage(bazel);
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
@@ -180,7 +165,6 @@ test.describe('P1 · History escapes what the agent wrote', () => {
   });
 
   test('HTML in a decision title, its source and body never runs', async ({ app, bazel }) => {
-    await needsPRPage(bazel);
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();

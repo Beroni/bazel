@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 test.describe('P1 · saved reviews', () => {
@@ -168,13 +168,12 @@ test.describe('P1 · server guard', () => {
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
   });
 
-  // SEC-06: Origin does not cover GET, so a page on another site can still make
+  // SEC-06, fixed in #30: Origin does not cover GET, so a page on another site can still make
   // the browser fire one. It cannot read the answer (no CORS), and a POST is
   // refused, but `<img src=…/api/prs?refresh=1>` runs `gh search prs` with the
   // user's login: blind, and only spends quota. A client that sends no such
   // header (curl, MCP) goes on as before.
   test('Sec-Fetch-Site cross-site or same-site is refused on /api, and only there', async ({ bazel }) => {
-    knownBug('SEC-06', '/api answers cross-site fetches');
     for (const site of ['cross-site', 'same-site']) {
       expect((await bazel.rawRequest('GET', '/api/state', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': site })).status, site).toBe(403);
       expect((await bazel.rawRequest('POST', '/api/reviews', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': site, 'Content-Type': 'application/json' },

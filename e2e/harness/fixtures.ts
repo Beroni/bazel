@@ -7,7 +7,7 @@ export { expect };
 /**
  * knownBug marks a test that reproduces an open bug: it is expected to fail.
  * When the base under test has the fix, list the id in E2E_FIXED
- * (E2E_FIXED=BUG-QA-07,SEC-06) and the test must pass instead. Once the fix
+ * (E2E_FIXED=BUG-QA-12) and the test must pass instead. Once the fix
  * is on origin/master, delete the knownBug line from the test.
  */
 export function knownBug(id: string, what: string): void {

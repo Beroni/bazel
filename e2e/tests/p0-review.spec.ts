@@ -47,7 +47,7 @@ test.describe('P0 · review', () => {
 
     // The PR is marked reviewed in the list.
     await ui.filter(app).fill('');
-    // "✓ reviewed just now" on master, "✓ just now" since #25, "reviewed now" on the redesign.
+    // "✓ reviewed just now" before #25, "✓ just now" after it, "reviewed now" since #30.
     await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^(✓ )?(reviewed )?(just now|now|\d+[mhd])/);
   });
 

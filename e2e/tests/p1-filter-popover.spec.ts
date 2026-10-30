@@ -1,13 +1,12 @@
 import { test, expect } from '../harness/fixtures';
 import { openFilters, selectByLabel, ui } from '../harness/ui';
 
-// Redesign sidebar (79f3807): scope, drafts, owner and repo live in a popover.
+// The sidebar: scope, drafts, owner and repo live in a popover.
 // Closing it must not drop what was chosen, and the menu says filters are on.
 test.describe('P1 · filter popover keeps its filters', () => {
   test.use({ bazelOptions: { config: { repos: ['acme/api-core', 'acme/web-app', 'globex/site'] } } });
 
   test('mine only, hide drafts, owner and repo survive closing and reopening the popover', async ({ app, bazel }) => {
-    test.skip((await app.getByTestId('pr-filter-menu').count()) === 0, 'this base has no filter popover');
     bazel.addPR({ repo: 'globex/site', number: 3, title: 'Globex landing page', headRefName: 'feat/landing', headRefOid: 'gggg003', author: { login: 'dave' } });
     await bazel.api('GET', '/api/prs?refresh=1');
     await app.reload();

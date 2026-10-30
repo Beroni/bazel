@@ -1,13 +1,9 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { expandFindings, openJob, ui } from '../harness/ui';
 import { Page } from '@playwright/test';
 
-// Behaviours of feat/redesign that have no master counterpart. Bases without
-// the redesign skip them (no testids in the page).
 const TITLE = 'Add rate limiter to the public API';
-const redesignOnly = async (page: Page) =>
-  test.skip((await page.getByTestId('review-viewer').count()) === 0, 'this base is not the redesign');
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
   ({ name, task: '/exploit-digger {{number}}', command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: scenario }, ...extra });
@@ -30,7 +26,6 @@ test.describe('P1 · redesign details', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
   test('a failed PR page keeps its error on screen, with Retry at hand', async ({ app, bazel }) => {
-    await redesignOnly(app);
     bazel.setGh({ fail: { 'view:acme/api-core#101': 'HTTP 502: E2E-DETAILS-DOWN' } });
     await ui.prRow(app, TITLE).click();
     const error = app.getByTestId('pr-error');
@@ -40,14 +35,9 @@ test.describe('P1 · redesign details', () => {
     await expect(error.getByTestId('retry')).toBeVisible();
   });
 
-  // BUG-QA-08: the server keeps a failed read for detailsErrTTL (30s, "not
-  // retried, whoever asks"), and the Retry button goes through the same door:
-  // GitHub is back, you click Retry, and for up to 30s you get the old error
-  // again, with nothing saying why. Expected: Retry reads again, or says when
-  // it can. Reported to the Bazel Developer.
+  // BUG-QA-08, fixed in #30: the server kept a failed read for 30s and Retry
+  // went through the same door, answering the old error with nothing saying why.
   test('Retry reads again once GitHub is back', async ({ app, bazel }) => {
-    knownBug('BUG-QA-08', 'Retry answers the cached failure for 30s');
-    await redesignOnly(app);
     bazel.setGh({ fail: { 'view:acme/api-core#101': 'HTTP 502: E2E-DETAILS-DOWN' } });
     await ui.prRow(app, TITLE).click();
     await expect(app.getByTestId('pr-error')).toBeVisible();
@@ -58,7 +48,6 @@ test.describe('P1 · redesign details', () => {
   });
 
   test('a markdown image becomes a link in the PR body and the report, and is never fetched', async ({ app, bazel }) => {
-    await redesignOnly(app);
     const fetched: string[] = [];
     app.on('request', (r) => { if (r.url().includes('attacker.example')) fetched.push(r.url()); });
     bazel.updatePR('acme/api-core#101', { body: 'Look: ![the chart](https://attacker.example/body.png)' });
@@ -77,7 +66,6 @@ test.describe('P1 · redesign details', () => {
   });
 
   test('the confirm says what goes; dismissing it sends nothing', async ({ app, bazel, dialogs }) => {
-    await redesignOnly(app);
     const { viewer } = await reviewed(app, bazel, 'review-fleet');
     await app.getByRole('tab', { name: 'Report' }).click();
     await ui.findingPicks(viewer).nth(1).uncheck();
@@ -90,7 +78,6 @@ test.describe('P1 · redesign details', () => {
   });
 
   test('the rest of the report is open and flagged when it goes to the PR', async ({ app, bazel, dialogs }) => {
-    await redesignOnly(app);
     const { viewer } = await reviewed(app, bazel, 'sections');
     await app.getByRole('tab', { name: 'Report' }).click();
     const more = viewer.getByTestId('review-more');
@@ -106,7 +93,6 @@ test.describe('P1 · redesign details', () => {
   });
 
   test('…and closed, without the label, when it does not', async ({ app, bazel }) => {
-    await redesignOnly(app);
     const { viewer } = await reviewed(app, bazel, 'sections-stay');
     await app.getByRole('tab', { name: 'Report' }).click();
     const more = viewer.getByTestId('review-more');
@@ -120,7 +106,6 @@ test.describe('P1 · what the markdown hides', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
   test('hidden text is flagged on top, counted in the confirm, and a malformed finding comment shows', async ({ app, bazel, dialogs }) => {
-    await redesignOnly(app);
     const { viewer } = await reviewed(app, bazel, 'hidden');
     await app.getByRole('tab', { name: 'Report' }).click();
     const hidden = viewer.getByTestId('review-hidden');
@@ -153,7 +138,6 @@ test.describe('P1 · a history_agent of your own', () => {
     test.use({ bazelOptions: { config: { agents: AGENTS, history_agent: step({ task: '/history-pr {{number}} --post' }) } } });
 
     test('does not stop the boot: the refusal comes on POST, and no agent runs', async ({ app, bazel }) => {
-      await redesignOnly(app);
       const r = await generate(bazel);
       expect(r.status).toBe(409);
       expect(JSON.stringify(r.json)).toContain('history_agent has a task that publishes');
@@ -165,7 +149,6 @@ test.describe('P1 · a history_agent of your own', () => {
     test.use({ bazelOptions: { config: { agents: AGENTS, history_agent: step({ prompt: 'Tell the story of {{repo}}#{{number}}.' }) } } });
 
     test('is refused too', async ({ app, bazel }) => {
-      await redesignOnly(app);
       const r = await generate(bazel);
       expect(r.status).toBe(409);
       expect(JSON.stringify(r.json)).toContain('do not publish anything to GitHub');
@@ -177,7 +160,6 @@ test.describe('P1 · a history_agent of your own', () => {
     test.use({ bazelOptions: { config: { agents: AGENTS, history_agent: step({}) } } });
 
     test('runs, and the History tab says Bazel cannot vouch for it', async ({ app, bazel }) => {
-      await redesignOnly(app);
       expect((await bazel.api('GET', '/api/state')).json.history_custom).toBe(true);
       await reviewed(app, bazel, 'review-fleet');
       await app.getByRole('tab', { name: 'History' }).click();
@@ -185,9 +167,7 @@ test.describe('P1 · a history_agent of your own', () => {
     });
   });
 
-  test('a PR outside the list needs offlist=1, on history as on details', async ({ page, bazel }) => {
-    await page.goto(bazel.url + '/');
-    await redesignOnly(page);
+  test('a PR outside the list needs offlist=1, on history as on details', async ({ bazel }) => {
     expect((await bazel.api('GET', '/api/prs/acme/api-core/999/history')).status).toBe(404);
     expect(bazel.ghCalls().filter((c) => c.argv.includes('999'))).toEqual([]);
   });
@@ -204,7 +184,6 @@ test.describe('P1 · a history job is not a review', () => {
   });
 
   test('no "reviewing" tag in the list; the Activity says it is writing, then wrote, the history', async ({ app, bazel }) => {
-    await redesignOnly(app);
     const q = await bazel.api('POST', '/api/prs/acme/api-core/101/history');
     await bazel.waitJob(q.json.id, (j) => j.state === 'running');
     await app.reload();
@@ -221,14 +200,9 @@ test.describe('P1 · a history job is not a review', () => {
     await expect(row.getByTestId('pr-review-tag')).toHaveCount(0);
   });
 
-  // BUG-QA-07: upsertJob only redraws when the job is the open one
-  // (state.activeJob). With the PR's own page open (openPR: activePR, no
-  // activeJob), a job of that PR ending clears state.details and draws nothing:
-  // the Activity keeps saying "is writing…" / "is reviewing with" until you
-  // leave and come back. Expected: the open page follows the job.
+  // BUG-QA-07, fixed in #30: with the PR's own page open, a job of that PR
+  // ending drew nothing, and the Activity kept saying "is writing…".
   test('the Activity of an open PR page follows the job to its end', async ({ app, bazel }) => {
-    knownBug('BUG-QA-07', 'open PR page does not redraw when a job of the PR ends');
-    await redesignOnly(app);
     const q = await bazel.api('POST', '/api/prs/acme/api-core/101/history');
     await bazel.waitJob(q.json.id, (j) => j.state === 'running');
     await app.reload();
@@ -241,7 +215,6 @@ test.describe('P1 · a history job is not a review', () => {
   });
 
   test('a running review does get the tag (the control for the test above)', async ({ app, bazel }) => {
-    await redesignOnly(app);
     const id = await bazel.enqueue('acme/api-core#101', 'slow-lens');
     await bazel.waitJob(id, (j) => j.state === 'running');
     await app.reload();
@@ -256,7 +229,6 @@ test.describe('P2 · the list while it loads', () => {
     const held = new Promise<void>((r) => { answer = r; });
     await page.route('**/api/prs*', async (route) => { await held; await route.continue(); });
     await page.goto(bazel.url + '/');
-    await redesignOnly(page);
     await expect(page.getByText('no open PRs')).toHaveCount(0);
     await expect(page.getByTestId('pr-count')).not.toHaveText(/^0 PRs/);
     await page.waitForTimeout(300);

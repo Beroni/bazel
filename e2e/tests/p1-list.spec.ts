@@ -49,7 +49,7 @@ test.describe('P1 · list filters', () => {
     expect(json.prs.find((p: any) => p.key === 'acme/api-core#101').changed_since_review).toBe(true);
     await app.reload();
     await filterByReview(app, 'all');
-    // "⟳ changed since review" on master, "⟳ changed" since #25, "changed" on the redesign.
+    // "⟳ changed since review" before #25, "⟳ changed" after it, "changed" since #30.
     await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^(⟳ )?changed( since review)?$/);
     const changed = await bazel.tool('list_prs', { status: 'changed' });
     expect(changed.out.prs.map((p: any) => p.key)).toEqual(['acme/api-core#101']);

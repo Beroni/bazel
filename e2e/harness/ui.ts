@@ -4,19 +4,18 @@ import { expect, Locator, Page } from '@playwright/test';
  * Every UI selector the tests use lives here, so a redesign changes one file.
  *
  * Each one tries the data-testid of the contract (references/selectors.md)
- * first and falls back to role/visible text, so the same suite runs against
- * origin/master (no testids yet) and feat/redesign (testids, new labels).
- * Where the two UIs put an action in different places, the helper below the
- * selectors does the right thing on both.
+ * first and falls back to role/visible text, which keeps the suite usable
+ * against a base from before the testids (E2E_BAZEL_SRC). Where the UIs put an
+ * action in different places, the helper below the selectors handles both.
  */
 function tid(scope: Page | Locator, id: string, fallback: Locator): Locator {
   return scope.getByTestId(id).or(fallback).first();
 }
 
 export const ui = {
-  /** Claude quota ("claude session 86% · week 16%"); in the #meter popover on the redesign. */
+  /** Claude quota ("claude session 86% · week 16%"); in the #meter popover. */
   quota: (p: Page) => tid(p, 'quota', p.getByText(/^claude session/)),
-  /** Session spend ("3,6M tokens · $4.18"); in the #meter popover on the redesign. */
+  /** Session spend ("3,6M tokens · $4.18"); in the #meter popover. */
   spendTotal: (p: Page) => tid(p, 'spend-total', p.getByText(/^[\d,.]+[kM]? tokens( · \$[\d.]+)?$/)),
   /** Header counter: "5 PRs", "1 of 5 PRs · 1 ticked". */
   prCount: (p: Page) => tid(p, 'pr-count', p.getByText(/^\d+( of \d+)? PRs?( · \d+ ticked)?$/)),
@@ -30,7 +29,7 @@ export const ui = {
     p.getByTestId('pr-scope').locator(`[data-scope="${which}"]`)
       .or(p.getByRole('button', { name: which === 'mine' ? 'mine only' : 'everyone' })).first(),
   repoFilter: (p: Page) => tid(p, 'pr-repo-filter', p.getByRole('combobox').filter({ has: p.getByRole('option', { name: /^any repo/ }) })),
-  /** Review-state filter: a <select> on master, a group of chips on the redesign. Use filterByReview(). */
+  /** Review-state filter: a group of chips; a <select> before #30. Use filterByReview(). */
   reviewFilter: (p: Page) => tid(p, 'pr-review-filter', p.getByRole('combobox').filter({ has: p.getByRole('option', { name: 'not reviewed' }) })),
   /** The PR list row whose title is `title` (the element holding its checkbox). */
   prRow: (p: Page, title: string) =>

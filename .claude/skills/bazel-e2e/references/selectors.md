@@ -14,7 +14,7 @@ Rules for the UI side:
 
 ## Contract
 
-Status: **implemented on feat/redesign (57f4936)**, not on origin/master yet.
+Status: **implemented on master since #30.**
 `harness/ui.ts` uses the testid when the page has it and master's role/text
 otherwise; the whole suite passes on both. P0 = used by the P0 tests.
 

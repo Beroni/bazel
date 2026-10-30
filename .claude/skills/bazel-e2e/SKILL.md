@@ -33,7 +33,7 @@ specs stay the same, only the binary under test changes:
 ```sh
 git worktree add --detach ../bases/redesign <branch-or-commit>
 make e2e E2E_BAZEL_SRC=../bases/redesign
-make e2e E2E_BAZEL_SRC=../bases/fixes E2E_FIXED=BUG-QA-07,BUG-QA-08,SEC-06
+make e2e E2E_BAZEL_SRC=../bases/fix E2E_FIXED=BUG-QA-12
 ```
 
 Use `knownBug`, never a skip, for a security guard, so losing it turns the
