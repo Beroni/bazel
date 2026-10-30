@@ -171,6 +171,23 @@ test.describe('P1 · server guard', () => {
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
   });
 
+  // SEC-06: a browser says where a request comes from, and Origin does not
+  // cover GET: a page elsewhere could read /api through a DNS trick or no-cors.
+  // A client that sends no such header (curl, MCP) goes on as before.
+  test('Sec-Fetch-Site cross-site or same-site is refused on /api, and only there', async ({ bazel }) => {
+    knownBug('SEC-06', '/api answers cross-site fetches');
+    for (const site of ['cross-site', 'same-site']) {
+      expect((await bazel.rawRequest('GET', '/api/state', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': site })).status, site).toBe(403);
+      expect((await bazel.rawRequest('POST', '/api/reviews', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': site, 'Content-Type': 'application/json' },
+        JSON.stringify({ refs: ['acme/api-core#101'], agent: 'review-fleet' }))).status, site).toBe(403);
+    }
+    expect(bazel.agentCalls()).toEqual([]);
+    for (const site of ['same-origin', 'none']) {
+      expect((await bazel.rawRequest('GET', '/api/state', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': site })).status, site).toBe(200);
+    }
+    expect((await bazel.rawRequest('GET', '/', { Host: `127.0.0.1:${bazel.port}`, 'Sec-Fetch-Site': 'cross-site' })).status).toBe(200);
+  });
+
   test('the page loads nothing from outside 127.0.0.1', async ({ page, bazel }) => {
     const outside: string[] = [];
     page.on('request', (r) => { if (!r.url().startsWith(bazel.url) && !r.url().startsWith('data:')) outside.push(r.url()); });

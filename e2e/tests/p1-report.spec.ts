@@ -28,7 +28,7 @@ test.describe('P1 · report and findings', () => {
     expect(job.html).not.toMatch(/<script/i);
     expect(job.html).not.toMatch(/<div onclick/i);
     expect(job.html).toContain('&lt;script&gt;');
-    expect(job.html).not.toContain('finding id=');
+    expect(job.html).not.toContain('finding severity=');
     await app.reload();
     await expandFindings(await openJob(app, 'Add rate limiter to the public API'));
     // What you read is the text that would be published.

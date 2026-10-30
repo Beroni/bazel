@@ -14,7 +14,7 @@ Rules for the UI side:
 
 ## Contract
 
-Status: **implemented on feat/redesign (bd7240a)**, not on origin/master yet.
+Status: **implemented on feat/redesign (57f4936)**, not on origin/master yet.
 `harness/ui.ts` uses the testid when the page has it and master's role/text
 otherwise; the whole suite passes on both. P0 = used by the P0 tests.
 
@@ -58,6 +58,13 @@ Differences on the redesign, already handled by the helpers:
   History: there is no `<img>`. The publish confirm says "Goes to the PR: N of M
   findings (whole bodies)…". Before `/api/prs` answers the list says it is
   loading, never "no open PRs".
+- `review-hidden`: warning on top of the Report with the text only the markdown
+  has (`[//]: # (…)`, unreferenced notes), each piece in a `<pre>`; the publish
+  confirm counts them. A `<!-- finding … -->` stays hidden only in the exact
+  shape of `report-format.md` (no quotes, no `id`): use
+  `<!-- finding severity=minor path=a.go line=3 -->` in fixtures.
+- `history-custom`: notice in the History tab and the history job's header when
+  the step is not Bazel's own (`history_custom` in `/api/state`).
 - `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
 - Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
   just now", "⟳ changed since review"); tests match both.

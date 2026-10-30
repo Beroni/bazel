@@ -3,7 +3,7 @@
 ## Findings
 
 ### H1 · major · Script in the text
-<!-- finding id="H1" path="a.go" line="3" -->
+<!-- finding severity=minor path=a.go line=3 -->
 
 The PR adds <script>alert('E2E-XSS')</script> to the template.
 
