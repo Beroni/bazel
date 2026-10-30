@@ -1470,18 +1470,21 @@ function selectVisible(on) {
 // changes, so a row says "reviewing" while one runs over it — and only then:
 // the list is not rebuilt on every job event.
 function syncReviewingTags() {
-  const sig = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running')
-    .map((j) => j.pr.key).sort().join(' ');
+  const sig = state.jobs.filter(reviewing).map((j) => j.pr.key).sort().join(' ');
   if (sig === state.liveSig) return;
   state.liveSig = sig;
   renderPRs();
 }
 
+// reviewing tells a review still queued or running from the rest; the job
+// that writes a PR's history is not a review of it.
+const reviewing = (j) => !j.history && (j.state === 'queued' || j.state === 'running');
+
 // prStateTag is the one tag a PR row carries: "reviewing" while a job of this
 // session runs over it, else what reviewTags says (changed, or reviewed with
 // its age).
 function prStateTag(pr) {
-  const live = state.jobs.some((j) => j.pr.key === pr.key && (j.state === 'queued' || j.state === 'running'));
+  const live = state.jobs.some((j) => j.pr.key === pr.key && reviewing(j));
   if (live) return tid(el('span', 'tag reviewing', 'reviewing'), 'pr-review-tag', { state: 'reviewing' });
   return reviewTags(pr)[0] || null;
 }
@@ -1961,8 +1964,10 @@ function renderPRPage(body, pr, job, redraw) {
     for (const c of commits) item(c.author || pr.author, c.headline, c.short, ageOf(c.date));
     const reviews = state.jobs.filter((j) => j.pr.key === pr.key);
     for (const j of reviews) {
-      const verb = j.state === 'running' || j.state === 'queued' ? 'is reviewing with'
-        : j.state === 'done' ? 'reviewed with' : j.state === 'failed' ? 'failed a review with' : 'canceled a review with';
+      const live = j.state === 'running' || j.state === 'queued';
+      const verb = j.history
+        ? (live ? 'is writing the history with' : j.state === 'done' ? 'wrote the history with' : j.state === 'failed' ? 'failed the history with' : 'canceled the history with')
+        : (live ? 'is reviewing with' : j.state === 'done' ? 'reviewed with' : j.state === 'failed' ? 'failed a review with' : 'canceled a review with');
       const li = el('li', 'tbazel' + (j.id === (job && job.id) ? ' on' : ''));
       li.append(el('span', 'tdot'), el('b', null, 'bazel'), el('span', null, ` ${verb} ${j.agent || 'an agent'}`),
         el('span', 'twhen', j.state === 'running' ? 'now' : ''));
