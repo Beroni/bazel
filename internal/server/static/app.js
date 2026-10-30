@@ -42,6 +42,13 @@ const state = {
 
 const $ = (sel) => document.querySelector(sel);
 
+// redrawViewer draws the panel again even if its signature did not change:
+// what moved is data the signature does not cover.
+const redrawViewer = () => {
+  delete $('#viewer').dataset.sig;
+  renderViewer();
+};
+
 // clearViewer empties the right panel and forgets the signature of what was
 // drawn in it. Without that forgetting, going back to the queue tab fell into
 // the renderViewer shortcut — "already drawn" — and the panel kept what the
@@ -366,8 +373,7 @@ function upsertJob(job) {
   if (job.history && job.state !== 'queued' && job.state !== 'running') {
     delete state.histories[job.pr.key];
     if (state.activeJob && jobView(state.jobs.find((x) => x.id === state.activeJob) || {}) === 'history') {
-      delete $('#viewer').dataset.sig;
-      renderViewer();
+      redrawViewer();
     }
   }
   syncReviewingTags();
@@ -2030,7 +2036,7 @@ function renderPRPage(body, pr, job, redraw) {
 function renderOverview(body, job) {
   // The page of the PR first, like the design; the review's own facts go to
   // a small block at the end of it.
-  const main = renderPRPage(body, job.pr, job, () => { if (state.activeJob === job.id) { delete $('#viewer').dataset.sig; renderViewer(); } });
+  const main = renderPRPage(body, job.pr, job, () => { if (state.activeJob === job.id) redrawViewer(); });
   const block = el('section', 'jobfacts');
   main.append(sectionLabel('This review'), block);
   body = block;
@@ -2088,7 +2094,7 @@ function renderLogView(body, job) {
 // ask: "Generate" queues it as a job, and the result is kept per PR and head.
 function renderHistoryView(body, job) {
   const pr = job.pr;
-  const redraw = () => { if (state.activeJob === job.id && jobView(job) === 'history') { delete $('#viewer').dataset.sig; renderViewer(); } };
+  const redraw = () => { if (state.activeJob === job.id && jobView(job) === 'history') redrawViewer(); };
   const got = lazy(state.histories, pr.key, prPath(pr) + '/history', redraw);
   const box = tid(el('div', 'history'), 'history', { prKey: pr.key });
   body.append(box);
