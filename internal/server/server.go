@@ -83,6 +83,13 @@ type Server struct {
 	prs     []gh.PR
 	prErrs  []gh.RepoError
 	prsAt   time.Time
+
+	// details caches each PR's page (the Overview) by head sha: one gh call
+	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
+	// test's.
+	detMu        sync.Mutex
+	details      map[string]detailsEntry
+	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -104,15 +111,17 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
 	jobs.idPrefix = instance[:4] + "-"
 	return &Server{
-		instance:   instance,
-		cfg:        cfg,
-		me:         me,
-		reviewsDir: reviewsDir,
-		configPath: configPath,
-		opts:       opts,
-		hub:        hub,
-		jobs:       jobs,
-		done:       make(chan struct{}),
+		instance:     instance,
+		details:      map[string]detailsEntry{},
+		fetchDetails: gh.GetDetails,
+		cfg:          cfg,
+		me:           me,
+		reviewsDir:   reviewsDir,
+		configPath:   configPath,
+		opts:         opts,
+		hub:          hub,
+		jobs:         jobs,
+		done:         make(chan struct{}),
 	}, nil
 }
 
@@ -140,6 +149,7 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/state", s.handleState)
 	mux.HandleFunc("GET /api/prs", s.handlePRs)
+	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/details", s.handlePRDetails)
 	mux.HandleFunc("POST /api/reviews", s.handleReview)
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
