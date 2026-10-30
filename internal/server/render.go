@@ -171,12 +171,54 @@ func isFindingMeta(blk *ast.HTMLBlock, text string) bool {
 	if !ok || h.Level != 3 {
 		return false
 	}
-	return findingMetaRe.MatchString(strings.TrimSpace(text))
+	return validFindingMeta(strings.TrimSpace(text))
 }
 
-// findingMetaRe is that comment: the keys the fleet writes, each a short value.
-// Anything longer or stranger is text someone wants the post agent to read.
-var findingMetaRe = regexp.MustCompile(`^<!-- finding(?: (?:id|severity|class|lenses|path|file|line|start_line|side|ref)=[^\s<>]{1,120})* -->$`)
+// metaValues is the shape of each attribute of that comment, as the fleet's
+// report format defines it: a closed set of keys, each value from a vocabulary
+// or a narrow form with no room for a sentence.
+var metaValues = map[string]*regexp.Regexp{
+	"severity": regexp.MustCompile(`^(critical|major|minor|nit|high|medium|low|info)$`),
+	"class": regexp.MustCompile(`^(injection|authz|validation|secrets|crypto|web3|logic|error-handling|regression|test-gap|test-validity|assumption|` +
+		`perf|resource|architecture|quality|migration|idiom|deps|a11y|docs|hygiene|pr-mismatch|delete|reuse|stdlib|native|drop-dep|yagni|shrink|out-of-scope|` +
+		`compatibility|concurrency|correctness|dead-code|lifecycle|observability|race|supply-chain|test-brittleness|test-coverage|test-quality)$`),
+	"lenses":      regexp.MustCompile(`^(senior-code-reviewer|exploit-digger|lazy-senior-dev)(\+(senior-code-reviewer|exploit-digger|lazy-senior-dev))*$`),
+	"path":        regexp.MustCompile(`^(-|[A-Za-z0-9_./@+-]{1,200})$`),
+	"line":        regexp.MustCompile(`^(-|[0-9]{1,7})$`),
+	"start_line":  regexp.MustCompile(`^[0-9]{1,7}$`),
+	"side":        regexp.MustCompile(`^(LEFT|RIGHT)$`),
+	"start_side":  regexp.MustCompile(`^(LEFT|RIGHT)$`),
+	"confidence":  regexp.MustCompile(`^(10|[0-9]|high|medium|low)$`),
+	"lines_saved": regexp.MustCompile(`^[0-9]{1,6}$`),
+	"ref":         regexp.MustCompile(`^[A-Za-z0-9:.#-]{1,40}$`),
+}
+
+// validFindingMeta reports whether text is that comment and nothing more: each
+// key once, each value in its shape, plain ASCII. Anything else may be text
+// someone wants the post agent to read, so it stays on screen.
+func validFindingMeta(text string) bool {
+	inner, ok := strings.CutPrefix(text, "<!-- finding")
+	if !ok || len(text) > 400 {
+		return false
+	}
+	inner, ok = strings.CutSuffix(inner, " -->")
+	if !ok {
+		return false
+	}
+	if inner == "" {
+		return true
+	}
+	seen := map[string]bool{}
+	for _, f := range strings.Split(strings.TrimPrefix(inner, " "), " ") {
+		key, value, _ := strings.Cut(f, "=")
+		shape, known := metaValues[key]
+		if !known || seen[key] || !shape.MatchString(value) {
+			return false
+		}
+		seen[key] = true
+	}
+	return true
+}
 
 // policy cleans the HTML after it is converted.
 //
