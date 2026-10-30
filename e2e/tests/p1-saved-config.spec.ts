@@ -60,11 +60,13 @@ test.describe('P1 · config through the API', () => {
   // reached config.yaml and every `gh search prs` as a bogus repo:… term, and
   // the second could not be removed. Now: 400 unless it reduces to owner/name.
   test('a repo must be exactly owner/name', async ({ bazel }) => {
+    const before = (await bazel.api('GET', '/api/repos')).json.repos;
+    const file = bazel.configText();
     for (const repo of ['acme/', 'https://github.com/acme/web-app/pull/7', '/web-app', 'a/b/c']) {
-      const r = await bazel.api('POST', '/api/repos', { repo });
-      const stored = r.json.repos ?? [];
-      expect(r.status === 400 || stored.every((x: string) => /^[\w.-]+\/[\w.-]+$/.test(x)), `${repo} → ${JSON.stringify(stored)}`).toBe(true);
+      expect((await bazel.api('POST', '/api/repos', { repo })).status, repo).toBe(400);
     }
+    expect((await bazel.api('GET', '/api/repos')).json.repos).toEqual(before);
+    expect(bazel.configText()).toBe(file);
   });
 
   test('agents from installed skills: use, ⇧ publishes, and the refusals', async ({ bazel }) => {
