@@ -105,6 +105,16 @@ Repos `acme/api-core`, `acme/web-app`; `include_drafts: true`; base agent
 `post_agent` = `bazel-post-report` with scenario `post-claude`, which runs
 `#!gh-review` (→ `gh api --method POST repos/<repo>/pulls/<n>/reviews --input -`).
 
+## Dropping the connection
+
+`harness/flaky-proxy.ts` is a TCP proxy in front of a server: open the page on
+its port, `drop()` to cut every connection and refuse new ones while the server
+stays up, `resume()` to bring it back. Use it for a real network blip:
+`context.setOffline(true)` does not cut an open EventSource. For a restart that
+keeps the port, so an open page reconnects: `bazel.restart({ samePort: true })`.
+
+`harness/ui.ts` has `jobBody` and `actionBar` by class, with no testid yet.
+
 ## Determinism
 
 - Never sleep for "long enough". Hold an agent with `#!wait <name>` and call

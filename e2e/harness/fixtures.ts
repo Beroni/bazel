@@ -1,5 +1,8 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { test as base, expect, Page } from '@playwright/test';
 import { Bazel, BazelOptions } from './bazel';
+import { COVERAGE } from './paths';
 import { ui } from './ui';
 
 export { expect };
@@ -35,6 +38,17 @@ type Fixtures = {
 
 export const test = base.extend<Fixtures>({
   bazelOptions: [{}, { option: true }],
+
+  // With E2E_COVERAGE=1 every page records V8's coverage of app.js, and
+  // tools/coverage.mjs adds the runs up. Nothing to instrument, nothing to build.
+  page: async ({ page }, use, testInfo) => {
+    if (!process.env.E2E_COVERAGE) return use(page);
+    await page.coverage.startJSCoverage({ resetOnNavigation: false });
+    await use(page);
+    const app = (await page.coverage.stopJSCoverage()).filter((e) => e.url.endsWith('/static/app.js'));
+    fs.mkdirSync(COVERAGE, { recursive: true });
+    fs.writeFileSync(path.join(COVERAGE, `${testInfo.testId}-${testInfo.repeatEachIndex}.json`), JSON.stringify(app));
+  },
 
   bazel: async ({ bazelOptions }, use, testInfo) => {
     const bz = new Bazel(bazelOptions);

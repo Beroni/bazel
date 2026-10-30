@@ -40,6 +40,12 @@ e2e:
 		|| (echo "e2e: dependencies are not in the npm cache: run make e2e-setup once" >&2; exit 1)
 	cd e2e && ./node_modules/.bin/playwright test $(E2E_ARGS)
 
+## e2e-cover: e2e suite plus the coverage of app.js it reaches
+.PHONY: e2e-cover
+e2e-cover:
+	E2E_COVERAGE=1 $(MAKE) e2e
+	node e2e/tools/coverage.mjs
+
 ## cover: runs the tests with a coverage report
 .PHONY: cover
 cover:

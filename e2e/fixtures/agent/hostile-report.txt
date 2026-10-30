@@ -1,0 +1,15 @@
+# <img src=x onerror="window.__xss='report-h1'"> Report
+
+[click](javascript:window.__xss='link')
+
+<a href="javascript:window.__xss='anchor'">anchor</a>
+
+## Findings
+
+### H1 · major · <img src=x onerror="window.__xss='finding-title'"> title
+
+`a.go:1` body <svg onload="window.__xss='svg'"></svg>
+
+### H2 · minor · ordinary
+
+Second E2E-HOSTILE-TWO.

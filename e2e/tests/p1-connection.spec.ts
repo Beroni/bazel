@@ -21,6 +21,7 @@ test.describe('P1 · the connection drops and comes back', () => {
     knownBug('BUG-QA-09', 'nothing resyncs after the event stream reconnects');
     const proxy = new FlakyProxy(bazel.port);
     await proxy.start();
+    bazel.extraOrigins.add(`http://127.0.0.1:${proxy.port}`);
     try {
       await page.goto(`http://127.0.0.1:${proxy.port}/`);
       await expect(ui.prCount(page)).toHaveText('5 PRs');
@@ -50,6 +51,7 @@ test.describe('P1 · the connection drops and comes back', () => {
     knownBug('BUG-QA-09', 'nothing resyncs after the event stream reconnects');
     const proxy = new FlakyProxy(bazel.port);
     await proxy.start();
+    bazel.extraOrigins.add(`http://127.0.0.1:${proxy.port}`);
     try {
       await page.goto(`http://127.0.0.1:${proxy.port}/`);
       await expect(ui.prCount(page)).toHaveText('5 PRs');
@@ -68,6 +70,7 @@ test.describe('P1 · the connection drops and comes back', () => {
   test('a reload after the drop shows the truth', async ({ page, bazel }) => {
     const proxy = new FlakyProxy(bazel.port);
     await proxy.start();
+    bazel.extraOrigins.add(`http://127.0.0.1:${proxy.port}`);
     try {
       await page.goto(`http://127.0.0.1:${proxy.port}/`);
       await expect(ui.prCount(page)).toHaveText('5 PRs');

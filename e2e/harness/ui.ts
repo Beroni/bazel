@@ -43,6 +43,11 @@ export const ui = {
   banner: (p: Page) => p.getByTestId('banner'),
   /** The ✕ that dismisses an error left in the banner. */
   bannerDismiss: (p: Page) => p.getByRole('button', { name: 'dismiss this message' }),
+  /** The scroller of a job's detail. By class until it has a testid (`job-body`). */
+  jobBody: (p: Page) => p.locator('#viewer .job-body'),
+  /** The bar with the publish buttons. By class until it has a testid (`viewer-actions`). */
+  actionBar: (p: Page) => p.locator('#viewer .viewer-actions'),
+  findingPick: (scope: Locator, text: string) => scope.getByTestId('finding-row').filter({ hasText: text }).getByTestId('finding-pick'),
   /** The review pane. */
   viewer: (p: Page) => p.getByTestId('review-viewer'),
   findingPicks: (scope: Locator) => scope.getByTestId('finding-pick'),
@@ -99,6 +104,11 @@ export async function settled(page: Page): Promise<void> {
     page.waitForRequest('**/api/state?settled'),
     page.evaluate(() => fetch('/api/state?settled').then((r) => r.text())),
   ]);
+}
+
+/** Opens one of the tabs of a job's detail. */
+export async function jobTab(page: Page, name: 'Overview' | 'History' | 'Live log' | 'Report'): Promise<void> {
+  await page.getByRole('tab', { name }).click();
 }
 
 /** Ticks the PRs matching `text` through the filter + "select all". */

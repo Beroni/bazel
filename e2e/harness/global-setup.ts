@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { takeLock } from './lock';
-import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, goOffline, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
+import { BAZEL_SRC, BIN, COVERAGE, FAKE_CLAUDE, FAKE_WRAPPER, goOffline, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
@@ -18,6 +18,7 @@ export default async function globalSetup() {
   fs.rmSync(BIN, { recursive: true, force: true });
   // A failed test keeps its root for debugging, until the next run.
   fs.rmSync(path.join(OUT, 'runs'), { recursive: true, force: true });
+  fs.rmSync(COVERAGE, { recursive: true, force: true });
   fs.mkdirSync(BIN, { recursive: true });
 
   // The three builds run in parallel; Go's build cache makes a warm run cheap.

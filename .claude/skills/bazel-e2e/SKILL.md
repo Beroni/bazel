@@ -63,6 +63,12 @@ show as `✘` in the list reporter but count as passed — they reproduce open
 bugs and flip to "Expected to fail, but passed" the day the bug is fixed (then
 delete the `knownBug` line, or list the id in `E2E_FIXED` for that base).
 
+### Coverage of app.js
+
+`make e2e-cover` runs the suite with V8's own coverage (nothing instrumented,
+nothing built) and prints lines and functions reached in `app.js`, plus the
+largest functions no test calls. That list is where to look next.
+
 ## Hard rules
 
 - The server env is built from scratch by `safeEnv()` (`e2e/harness/paths.ts`):

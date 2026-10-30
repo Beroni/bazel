@@ -12,6 +12,7 @@ export const OUT = process.env.E2E_OUT ? path.resolve(REPO, process.env.E2E_OUT)
  */
 export const BAZEL_SRC = process.env.E2E_BAZEL_SRC ? path.resolve(REPO, process.env.E2E_BAZEL_SRC) : REPO;
 export const BIN = path.join(OUT, 'bin');
+export const COVERAGE = path.join(OUT, 'coverage');
 /**
  * The fake agent under the name `claude`, for tests that need the command name
  * itself to matter. Used by absolute path: `claude` must stay off the server's PATH.

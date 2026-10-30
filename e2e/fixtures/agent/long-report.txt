@@ -1,0 +1,22 @@
+#!# A report with a very long unbroken token, a wide table, a long path and a code block.
+# Long E2E-LONG-REPORT
+
+Summary with an_identifier_that_never_breaks_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa end.
+
+## Findings
+
+### L1 · major · A finding title that is very long and keeps going to see how the compact row copes with it when the window is narrow and the title has no end in sight at all
+
+`internal/very/deep/path/that/goes/on/and/on/and/on/and/on/and/on/and/on/and/on/and/on/and/on/file_with_a_long_name.go:1234` E2E-LONG-BODY.
+
+```go
+func aFunctionWithAVeryLongSignature(ctx context.Context, firstArgument string, secondArgument string, thirdArgument string, fourthArgument string) (result string, err error) {
+```
+
+| column one | column two | column three | column four | column five | column six | column seven |
+| --- | --- | --- | --- | --- | --- | --- |
+| a value that is quite long | another value that is quite long | yet another value | more | and more | and more still | the end |
+
+### L2 · minor · مراجعة العنوان بالعربية
+
+تعليق بالعربية E2E-RTL-BODY مع `code` في المنتصف.
