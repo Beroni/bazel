@@ -40,9 +40,9 @@ Use `knownBug`, never a skip, for a security guard, so losing it turns the
 suite red. `tests/p0-confine.spec.ts` (the PR's agent config never runs) has
 neither any more: since #29 it simply has to pass.
 `E2E_FIXED` lists the known bugs that base has fixed: their `knownBug(...)`
-tests must then pass instead of fail. The selectors in `harness/ui.ts` work on
-both UIs (testids first, master's role/text second), so a UI difference shows
-up as a helper to adjust there, not as an edit in every test.
+tests must then pass instead of fail. The selectors in `harness/ui.ts` follow
+the current UI only: a base from before #30 will not pass. A UI change shows up
+as a helper to adjust there, not as an edit in every test.
 
 First run installs `@playwright/test` (pinned to 1.58.2, which matches the
 Chromium build 1208 already in `~/Library/Caches/ms-playwright`) from the npm
@@ -107,7 +107,7 @@ vs. actual and the test name.
    `FAKE_AGENT_GATE: 'gate-name'` in the same env and `bazel.release('gate-name')`.
 5. Selectors and UI actions go through `e2e/harness/ui.ts` only: the
    `data-testid` of [references/selectors.md](references/selectors.md) first,
-   master's role/text as fallback. Use the action helpers (`openJob`,
+   with no fallback, so a testid that goes away fails loudly. Use the action helpers (`openJob`,
    `cancelJob`, `filterByReview`, `selectByLabel`, `expandFindings`,
    `openFilters`, `showMeters`) where the two UIs differ —
    on the redesign, cancel/publish/keep live in the job's detail, not on the

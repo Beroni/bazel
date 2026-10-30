@@ -107,7 +107,7 @@ test.describe('P0 · publish step waits for you', () => {
     expect(job.html).toMatch(/<h2[^>]*>review-fleet<\/h2>/);
     expect(job.html).toMatch(/<h2[^>]*>plain-lens<\/h2>/);
     const md = fs.readFileSync(job.saved_to, 'utf8');
-    expect(md).toMatch(/- Agent: two-lenses — review-fleet \(\d+s\) → plain-lens \(\d+s\)|- Agent: .*review-fleet.*plain-lens/);
+    expect(md).toMatch(/- Agent: two-lenses — review-fleet \(\d+s\) → plain-lens \(\d+s\)/);
   });
 
   test('a failing step becomes a section with its error; the rest carries on', async ({ bazel }) => {

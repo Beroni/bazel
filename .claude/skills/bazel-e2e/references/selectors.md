@@ -15,8 +15,8 @@ Rules for the UI side:
 ## Contract
 
 Status: **implemented on master since #30.**
-`harness/ui.ts` uses the testid when the page has it and master's role/text
-otherwise; the whole suite passes on both. P0 = used by the P0 tests.
+`harness/ui.ts` goes by testid with no fallback, and tests assert today's texts
+only: a change here is a change of contract. P0 = used by the P0 tests.
 
 Differences on the redesign, already handled by the helpers:
 

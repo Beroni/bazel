@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { openFilters, selectByLabel, ui } from '../harness/ui';
+import { openFilters, ui } from '../harness/ui';
 
 // The sidebar: scope, drafts, owner and repo live in a popover.
 // Closing it must not drop what was chosen, and the menu says filters are on.
@@ -27,7 +27,7 @@ test.describe('P1 · filter popover keeps its filters', () => {
     await expect(ui.scope(app, 'mine')).toHaveAttribute('aria-pressed', 'true');
     await ui.scope(app, 'all').click();
     await ui.hideDrafts(app).check();
-    await selectByLabel(owner, /^globex/);
+    await owner.selectOption({ label: 'globex (1)' });
     await expect(ui.prCount(app)).toHaveText('1 of 6 PRs');
     await app.mouse.click(5, 5); // a click outside closes it
     await expect(pop).toBeHidden();
@@ -35,13 +35,13 @@ test.describe('P1 · filter popover keeps its filters', () => {
 
     await openFilters(app);
     await expect(ui.hideDrafts(app)).toBeChecked();
-    await expect(owner.locator('option:checked')).toHaveText(/^globex/);
-    await selectByLabel(owner, /^any owner|^everyone|^all/i);
-    await selectByLabel(ui.repoFilter(app), /web-app \(2\)$/);
+    await expect(owner.locator('option:checked')).toHaveText('globex (1)');
+    await owner.selectOption({ label: 'any owner (6)' });
+    await ui.repoFilter(app).selectOption({ label: 'acme/web-app (2)' });
     await expect(ui.prCount(app)).toHaveText('2 of 6 PRs');
     await app.keyboard.press('Escape');
     await openFilters(app);
-    await expect(ui.repoFilter(app).locator('option:checked')).toHaveText(/web-app \(2\)$/);
+    await expect(ui.repoFilter(app).locator('option:checked')).toHaveText('acme/web-app (2)');
     await expect(ui.hideDrafts(app)).toBeChecked();
   });
 });

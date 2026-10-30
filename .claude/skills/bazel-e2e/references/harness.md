@@ -8,7 +8,7 @@ e2e/
     global-setup.ts        go build bazel + fakes; preflight; ~/.bazel guard
     bazel.ts               class Bazel (one isolated server), defaultConfig()
     fixtures.ts            Playwright fixtures: bazelOptions, bazel, app
-    ui.ts                  every UI selector (testid → role/text fallback)
+    ui.ts                  every UI selector, by testid only
   fakes/gh/main.go         fake GitHub CLI
   fakes/agent/main.go      fake agent CLI (scenario player)
   fixtures/default/        prs.json, gh.json

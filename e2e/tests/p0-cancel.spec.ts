@@ -16,8 +16,8 @@ test.describe('P0 · cancel', () => {
 
     await cancelJob(app, 'Dark mode toggle in settings');
     await bazel.waitJob(id, (j) => j.state === 'canceled');
-    await expect(card.getByText(/cancel+ed/i).first()).toBeVisible();
-    await expect(ui.cancelControl(app, card)).toHaveCount(0);
+    await expect(card).toHaveAttribute('data-state', 'canceled');
+    await expect(ui.cancelControl(app)).toHaveCount(0);
 
     // Releasing the scenario now must change nothing: the process is dead.
     bazel.release('release-slow');
