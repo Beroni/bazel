@@ -726,6 +726,15 @@ function skipNote(skip) {
 
 // decorateFindings puts the checkbox on each finding of the review drawn in md
 // and returns how many findings there are.
+// findingTitle is a short " (title)" for a finding's accessible name: its ###
+// heading, or the bold line that opens it, trimmed to about 60 characters.
+function findingTitle(sec) {
+  const h = sec.querySelector('h1, h2, h3, h4, strong');
+  let t = h ? h.textContent.replace(/\s+/g, ' ').trim().replace(/^\d+[.)]\s*/, '') : '';
+  if (t.length > 60) t = t.slice(0, 59).trimEnd() + '…';
+  return t ? ` (${t})` : '';
+}
+
 function decorateFindings(md, key) {
   const secs = md.querySelectorAll('section.finding');
   const out = skipped(key);
@@ -736,6 +745,9 @@ function decorateFindings(md, key) {
     box.type = 'checkbox';
     box.checked = !out.has(idx);
     tid(box, 'finding-pick', { findingIndex: idx });
+    // Every box shows the same word, "report"; the accessible name says which
+    // finding it is, so a screen reader can tell them apart.
+    box.setAttribute('aria-label', `include finding ${idx + 1}${findingTitle(sec)} in what goes to the PR`);
     box.title = 'untick to leave this finding out of what goes to the PR';
     label.append(box, el('span', null, 'report'));
     sec.classList.toggle('skipped', out.has(idx));
