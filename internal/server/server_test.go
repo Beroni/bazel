@@ -967,6 +967,114 @@ func TestRemoveCancelaReviewEmAndamento(t *testing.T) {
 	}
 }
 
+// A removed job is never published again (BUG-QA-04). Remove broadcasts
+// job_gone, and the worker, waking up from the cancellation, used to finish the
+// job and broadcast it as "canceled" afterwards — the card came back as a ghost.
+func TestRemovidoNaoVoltaComoFantasma(t *testing.T) {
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+
+	m := NewManager(ctx, cfg, t.TempDir(), 1, false, hub)
+	first, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	waitFor(t, ch, first.ID, StateRunning)
+	if err := m.Remove(first.ID); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	// One worker: once the second job runs, the first one's run() has returned
+	// and everything it was going to broadcast is already in the channel.
+	second, err := m.Enqueue(testPR(999), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	gone := false
+	deadline := time.After(10 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("the second job never started")
+		case msg := <-ch:
+			var ev struct {
+				Type string `json:"type"`
+				Data struct {
+					ID    string `json:"id"`
+					State State  `json:"state"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(msg, &ev) != nil {
+				continue
+			}
+			switch {
+			case ev.Type == "job_gone" && ev.Data.ID == first.ID:
+				gone = true
+			case ev.Type == "job" && ev.Data.ID == first.ID && gone:
+				t.Fatalf("job %s came back after job_gone as %q", first.ID, ev.Data.State)
+			case ev.Type == "job" && ev.Data.ID == second.ID && ev.Data.State == StateRunning:
+				if !gone {
+					t.Fatal("job_gone never went out")
+				}
+				return
+			}
+		}
+	}
+}
+
+// The window pubMu closes (review F3): publish has taken the view of a live
+// job and is about to broadcast it when Remove runs. Without pubMu, job_gone
+// goes out first and the stale "job" event lands after it — the ghost card.
+// With it, Remove waits and job_gone is always the last word.
+func TestRemoveNoMeioDoPublishNaoDeixaFantasma(t *testing.T) {
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	// No worker: this goroutine is the only one that publishes, so the hook
+	// is set and read without a race.
+	m := &Manager{cfg: cfgFor(t, "cat"), hub: hub, ctx: context.Background(), queue: make(chan queued, 1), jobs: map[string]*Job{}}
+	job := &Job{ID: "j1", PR: testPR(482), State: StateRunning}
+	poeJob(m, job)
+	v := struct{ ID string }{job.ID}
+
+	removed := make(chan struct{})
+	var once sync.Once
+	m.beforeBroadcast = func() {
+		once.Do(func() {
+			go func() { _ = m.Remove(v.ID); close(removed) }()
+			// Give Remove the time to broadcast job_gone, if nothing stops it.
+			time.Sleep(100 * time.Millisecond)
+		})
+	}
+	m.publish(job)
+	<-removed
+
+	var order []string
+	timeout := time.After(2 * time.Second)
+	for len(order) < 2 {
+		select {
+		case <-timeout:
+			t.Fatalf("events for %s: %v", v.ID, order)
+		case msg := <-ch:
+			var ev struct {
+				Type string `json:"type"`
+				Data struct {
+					ID string `json:"id"`
+				} `json:"data"`
+			}
+			if json.Unmarshal(msg, &ev) == nil && ev.Data.ID == v.ID && (ev.Type == "job" || ev.Type == "job_gone") {
+				order = append(order, ev.Type)
+			}
+		}
+	}
+	if order[0] != "job" || order[1] != "job_gone" {
+		t.Errorf("events for %s: %v, want [job job_gone] — job_gone must be the last word", v.ID, order)
+	}
+}
+
 // Closing Bazel before publishing can't cost you the review: it's on disk, and
 // from there it can still be sent to the PR — with no originating job at all,
 // which is exactly the case of someone who restarted the server.
@@ -2316,5 +2424,96 @@ func TestInstanciaDoServidor(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("o SSE não mandou nada ao conectar")
+	}
+}
+
+// POST /api/repos takes exactly owner/name (BUG-QA-03): "acme/" and a PR URL
+// are refused with 400 and leave the config alone; a repository URL goes in
+// trimmed to owner/name.
+func TestRepoAddExigeOwnerName(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	post := func(repo string) (int, string) {
+		body, _ := json.Marshal(map[string]string{"repo": repo})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(string(body)))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code, w.Body.String()
+	}
+	before := append([]string(nil), srv.cfg.Repos...)
+	for _, bad := range []string{"acme/", "https://github.com/acme/web-app/pull/7", "acme"} {
+		if code, body := post(bad); code != http.StatusBadRequest {
+			t.Errorf("%q: status %d (%s), want 400", bad, code, body)
+		}
+	}
+	if code, body := post("https://github.com/acme/web-app/pull/7"); !strings.Contains(body, "pull request") {
+		t.Errorf("a PR URL should say it is a pull request: %d %s", code, body)
+	}
+	if fmt.Sprint(srv.cfg.Repos) != fmt.Sprint(before) {
+		t.Errorf("a refused repo changed the config: %v → %v", before, srv.cfg.Repos)
+	}
+	if code, body := post("https://github.com/acme/web-app.git"); code != http.StatusOK || !strings.Contains(body, `"acme/web-app"`) {
+		t.Errorf("a repository URL should go in as acme/web-app: %d %s", code, body)
+	}
+}
+
+// POST /api/jobs/{id}/post turned down by Bazel is a 4xx, not 502 (BUG-QA-05):
+// unknown job 404, a job still running or one whose output stays in Bazel 409.
+// 502 is left for gh failing to post.
+func TestPostRecusadoE4xx(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo '# report'; sleep ${SLEEP:-0}")
+	nao := false
+	cfg.Agents = []config.AgentDef{
+		{Name: "lento", Task: "revise", Env: map[string]string{"SLEEP": "30"}},
+		{Name: "historia", Task: "history", Publishable: &nao},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 2})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	h := srv.Handler()
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	post := func(id string) int {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/"+id+"/post", strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w.Code
+	}
+	choice := func(name string) config.Choice {
+		c, err := cfg.ChoiceByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+
+	if code := post("nao-existe"); code != http.StatusNotFound {
+		t.Errorf("unknown job: %d, want 404", code)
+	}
+	// The other actions on a job agree: an unknown id is 404 there too.
+	for _, action := range []string{"publish", "dismiss", "cancel"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/jobs/nao-existe/"+action, strings.NewReader(`{}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s of an unknown job: %d, want 404", action, w.Code)
+		}
+	}
+	running, _ := srv.jobs.Enqueue(testPR(482), false, choice("lento"))
+	waitFor(t, ch, running.ID, StateRunning)
+	if code := post(running.ID); code != http.StatusConflict {
+		t.Errorf("job still running: %d, want 409", code)
+	}
+	hist, _ := srv.jobs.Enqueue(testPR(483), false, choice("historia"))
+	waitFor(t, ch, hist.ID, StateDone)
+	if code := post(hist.ID); code != http.StatusConflict {
+		t.Errorf("output that stays in Bazel: %d, want 409", code)
 	}
 }

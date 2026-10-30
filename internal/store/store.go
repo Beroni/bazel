@@ -3,7 +3,9 @@ package store
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -22,12 +24,11 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
-	name := fmt.Sprintf("%s-%d-%s.md",
+	base := fmt.Sprintf("%s-%d-%s",
 		sanitize(res.PR.Repo),
 		res.PR.Number,
 		time.Now().Format("20060102-150405"),
 	)
-	path := filepath.Join(dir, name)
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s#%d — %s\n\n", res.PR.Repo, res.PR.Number, res.PR.Title)
@@ -58,10 +59,43 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	b.WriteString(res.Body)
 	b.WriteString("\n")
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o644); err != nil {
-		return "", err
+	return writeNew(dir, base, []byte(b.String()))
+}
+
+// maxSameName caps how many reviews of one PR can land in the same second.
+const maxSameName = 100
+
+// writeNew writes data to <base>.md in dir without ever replacing a file. The
+// name only has second resolution, and two reviews of the same PR that finish
+// in the same second (two agents, --jobs 2) would get the same path: the second
+// one wiped out the first, and both cards pointed at the survivor. O_EXCL makes
+// the create fail instead of overwriting, and the next try adds -2, -3...
+func writeNew(dir, base string, data []byte) (string, error) {
+	for i := 1; i <= maxSameName; i++ {
+		name := base + ".md"
+		if i > 1 {
+			name = fmt.Sprintf("%s-%d.md", base, i)
+		}
+		path := filepath.Join(dir, name)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			os.Remove(path)
+			return "", err
+		}
+		if err := f.Close(); err != nil {
+			os.Remove(path)
+			return "", err
+		}
+		return path, nil
 	}
-	return path, nil
+	return "", fmt.Errorf("%d reviews named %s already exist", maxSameName, base)
 }
 
 // CommentBody builds the text posted on the PR.

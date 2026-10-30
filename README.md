@@ -293,6 +293,12 @@ saved markdown:
 - Spend: 1,8M tokens (in 12k · out 84k · cache 1,7M) · $2.41
 ```
 
+The dollar figure is one number everywhere — the log's done line, the card, the
+report footer and the saved file. It comes from Bazel's price table for every
+model the table knows (each model charged its own price; `agent.pricing` in
+`config.yaml` overrides a row), and from the provider's own `total_cost_usd`
+for a model it doesn't.
+
 Plain agents report no spend. Codex JSON reports input, cached-input, and
 output tokens; it does not currently provide dollar cost or quota information.
 Grok Build's stream reports token usage and its final USD cost.
