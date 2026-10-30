@@ -154,6 +154,23 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}
 	total := len(choice.Steps)
 
+	// Before the clone and before any step: one bad step refuses the whole job,
+	// instead of failing midway through a review that can still be published.
+	for _, s := range choice.Steps {
+		err := checkSettingSources(s.Args)
+		if err == nil {
+			err = checkPathFlags(s.Args, "")
+		}
+		if err != nil {
+			return Result{}, fmt.Errorf("`%s`: %w", s.Name, err)
+		}
+	}
+	// The publishing skill works over the PR's clone (it checks that the repo it
+	// is about to comment on is the PR's): without one it has nothing to check.
+	if step := builtinSemClone(choice); step != "" {
+		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel that works over the PR's clone — turn checkout on for it, or point it at a skill of your own", step)
+	}
+
 	var workdir string
 	if choice.NeedsCheckout() {
 		emit(Event{Kind: EventClone, Total: total, Name: pr.Key()})
@@ -166,7 +183,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		workdir = ws.Dir
 	}
 
-	// Before anything runs: a flag that reads a file from the clone hands the
+	// Now that the clone has a path: a flag that reads a file from it hands the
 	// PR's content to the agent as configuration.
 	for _, s := range choice.Steps {
 		if err := checkPathFlags(s.Args, workdir); err != nil {
@@ -174,11 +191,6 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 	}
 
-	// The publishing skill works over the PR's clone (it checks that the repo it
-	// is about to comment on is the PR's): without one it has nothing to check.
-	if step := builtinSemClone(choice); step != "" {
-		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel that works over the PR's clone — turn checkout on for it, or point it at a skill of your own", step)
-	}
 	// Claude Code gets the embedded skills as a plugin in a folder of Bazel's,
 	// never in the clone, and that folder goes with the review — on success,
 	// error or cancel alike.
@@ -403,26 +415,9 @@ func newRuntime() (string, error) {
 // The flags go first — right after the package, when a launcher runs it — and
 // never at the end: after a `--`, anything is plain text to the CLI, and an
 // appended flag would look added and do nothing. For the same reason a flag
-// found after a `--` does not count as already there. A --setting-sources that
-// also reads the project is refused wherever it is: there is no safe way to
-// honor it.
-func confineClaude(args []string, plugin string) ([]string, error) {
-	for i, a := range args {
-		value, found := "", false
-		switch {
-		case a == "--setting-sources":
-			found = true
-			if i+1 < len(args) {
-				value = args[i+1]
-			}
-		case strings.HasPrefix(a, "--setting-sources="):
-			found, value = true, strings.TrimPrefix(a, "--setting-sources=")
-		}
-		if found && strings.TrimSpace(value) != "user" {
-			return nil, fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
-		}
-	}
-
+// found after a `--` does not count as already there. checkSettingSources has
+// already refused any --setting-sources other than user.
+func confineClaude(args []string, plugin string) []string {
 	start := claudePackageArg(args) + 1
 	own := args[start:]
 	if end := slices.Index(own, "--"); end >= 0 {
@@ -440,7 +435,28 @@ func confineClaude(args []string, plugin string) ([]string, error) {
 	if plugin != "" {
 		flags = append(flags, "--plugin-dir", plugin)
 	}
-	return slices.Concat(args[:start], flags, args[start:]), nil
+	return slices.Concat(args[:start], flags, args[start:])
+}
+
+// checkSettingSources refuses a --setting-sources other than user, wherever it
+// is in the args: there is no safe way to honor one that reads the project.
+func checkSettingSources(args []string) error {
+	for i, a := range args {
+		value, found := "", false
+		switch {
+		case a == "--setting-sources":
+			found = true
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
+		case strings.HasPrefix(a, "--setting-sources="):
+			found, value = true, strings.TrimPrefix(a, "--setting-sources=")
+		}
+		if found && strings.TrimSpace(value) != "user" {
+			return fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
+		}
+	}
+	return nil
 }
 
 // pathFlags are the CLI flags whose value is read as configuration: settings
@@ -689,9 +705,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 
 	args := step.Args
 	if runsClaude(step) {
-		if args, err = confineClaude(step.Args, plugin); err != nil {
-			return "", Usage{}, err
-		}
+		args = confineClaude(step.Args, plugin)
 	}
 	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory

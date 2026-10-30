@@ -16,10 +16,7 @@ func TestConfineClaude(t *testing.T) {
 	guard := []string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}
 
 	base := []string{"-p", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
-	got, err := confineClaude(base, "/rt/x")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := confineClaude(base, "/rt/x")
 	if want := slices.Concat(guard, base); !slices.Equal(got, want) {
 		t.Errorf("the flags go first:\n got %q\nwant %q", got, want)
 	}
@@ -29,10 +26,7 @@ func TestConfineClaude(t *testing.T) {
 
 	// The user's args already confine it: nothing is repeated.
 	own := []string{"-p", "--model", "haiku", "--setting-sources=user", "--strict-mcp-config"}
-	got, err = confineClaude(own, "/rt/y")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got = confineClaude(own, "/rt/y")
 	if joined := strings.Join(got, " "); strings.Count(joined, "setting-sources") != 1 || strings.Count(joined, "--strict-mcp-config") != 1 {
 		t.Errorf("flags already in the args were repeated: %q", got)
 	}
@@ -41,12 +35,15 @@ func TestConfineClaude(t *testing.T) {
 	}
 
 	// Without a plugin dir (no embedded skill to load), the guard flags still go.
-	got, _ = confineClaude([]string{"-p"}, "")
+	got = confineClaude([]string{"-p"}, "")
 	if !slices.Equal(got, []string{"--setting-sources", "user", "--strict-mcp-config", "-p"}) {
 		t.Errorf("no plugin: %q", got)
 	}
+}
 
-	// Any source that reads the project is refused, in both spellings.
+// Any source that reads the project is refused, in both spellings, wherever it
+// is in the args.
+func TestCheckSettingSources(t *testing.T) {
 	for _, bad := range [][]string{
 		{"-p", "--setting-sources", "user,project"},
 		{"-p", "--setting-sources=project"},
@@ -54,8 +51,13 @@ func TestConfineClaude(t *testing.T) {
 		{"-p", "--setting-sources"},
 		{"-p", "--", "--setting-sources", "project"},
 	} {
-		if _, err := confineClaude(bad, "/rt"); err == nil || !strings.Contains(err.Error(), "--setting-sources user only") {
+		if err := checkSettingSources(bad); err == nil || !strings.Contains(err.Error(), "--setting-sources user only") {
 			t.Errorf("%q should be refused with a clear message, got %v", bad, err)
+		}
+	}
+	for _, ok := range [][]string{{"-p"}, {"--setting-sources", "user"}, {"--setting-sources=user", "-p"}} {
+		if err := checkSettingSources(ok); err != nil {
+			t.Errorf("%q is fine: %v", ok, err)
 		}
 	}
 }
@@ -63,18 +65,12 @@ func TestConfineClaude(t *testing.T) {
 // After a `--` everything is positional: the flags must come before it, and a
 // flag found after it is text, not a flag already set.
 func TestConfineClaudeDoubleDash(t *testing.T) {
-	got, err := confineClaude([]string{"-p", "--", "some text"}, "/rt/x")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got := confineClaude([]string{"-p", "--", "some text"}, "/rt/x")
 	if sep := slices.Index(got, "--"); sep < 0 || slices.Index(got, "--setting-sources") > sep || slices.Index(got, "--strict-mcp-config") > sep || slices.Index(got, "--plugin-dir") > sep {
 		t.Errorf("every flag must sit before the --: %q", got)
 	}
 
-	got, err = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	got = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "")
 	sep := slices.Index(got, "--")
 	if !slices.Contains(got[:sep], "--strict-mcp-config") || !slices.Contains(got[:sep], "--setting-sources") {
 		t.Errorf("a flag after the -- is text and does not count: %q", got)
@@ -90,10 +86,7 @@ func TestConfineClaudeLauncher(t *testing.T) {
 		{"--", "@anthropic-ai/claude-code", "-p"},
 		{"exec", "--", "claude", "-p"},
 	} {
-		got, err := confineClaude(args, "/rt/x")
-		if err != nil {
-			t.Fatal(err)
-		}
+		got := confineClaude(args, "/rt/x")
 		pkg := claudePackageArg(got)
 		if got[pkg+1] != "--setting-sources" || got[len(got)-1] != "-p" {
 			t.Errorf("the flags belong right after the package: %q", got)
@@ -216,42 +209,114 @@ func TestReviewCleansPluginOnError(t *testing.T) {
 	}
 }
 
-// A contradicting flag stops the review before anything runs.
-func TestReviewRefusesProjectSettings(t *testing.T) {
-	fakeClaude(t, 0)
-	cfg, choice := claudeChoice(t, []string{"-p", "--setting-sources", "user,project"})
-	_, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
-	if err == nil || !strings.Contains(err.Error(), "--setting-sources user only") {
-		t.Errorf("a --setting-sources that reads the project must be refused clearly, got %v", err)
+// One bad step refuses the whole job before the clone: the good step does not
+// run, and nothing comes out that could be published.
+func TestPipelineRefusedBeforeAnything(t *testing.T) {
+	state := hostileClone(t, "wrapper")
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{
+		{Name: "good", Task: "x", Command: "wrapper", Format: "plain"},
+		{Name: "bad", Task: "x", Command: "wrapper", Format: "plain", Args: []string{"--setting-sources", "user,project"}},
+	}
+	cfg.Pipelines = []config.Pipeline{{Name: "both", Steps: []string{"good", "bad"}}}
+	choice, err := cfg.ChoiceByName("both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cloned := false
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, func(e Event) {
+		cloned = cloned || e.Kind == EventClone
+	})
+	if err == nil || !strings.Contains(err.Error(), "--setting-sources user only") || !strings.Contains(err.Error(), "`bad`") {
+		t.Fatalf("the job should be refused naming the step, got %v (%+v)", err, res)
+	}
+	if cloned {
+		t.Error("the refusal should come before the clone")
+	}
+	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
+		t.Error("the good step must not run")
 	}
 }
 
-// A cancelled review cleans up too: the plugin goes with the review, however
-// it ends.
+// Cancelling a review with the agent running kills it and takes the plugin
+// folder along.
 func TestReviewCleansPluginOnCancel(t *testing.T) {
-	bin := t.TempDir()
-	script := "#!/bin/sh\nsleep 10\n"
+	bin, state := t.TempDir(), t.TempDir()
+	marker := filepath.Join(state, "running")
+	script := "#!/bin/sh\ntouch " + marker + "\nexec sleep 30\n"
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 	cfg, choice := claudeChoice(t, []string{"-p"})
-	ctx, cancel := context.WithCancel(context.Background())
 	home, _ := config.Dir()
+	runtime := filepath.Join(home, "runtime")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	foldersWhileRunning := make(chan int, 1)
 	go func() {
-		// Cancel once the plugin folder exists, i.e. while the agent runs.
-		for i := 0; i < 200; i++ {
-			if entries, _ := os.ReadDir(filepath.Join(home, "runtime")); len(entries) > 0 {
+		for i := 0; i < 500; i++ {
+			if _, err := os.Stat(marker); err == nil {
 				break
 			}
 			time.Sleep(10 * time.Millisecond)
 		}
+		entries, _ := os.ReadDir(runtime)
+		foldersWhileRunning <- len(entries)
 		cancel()
 	}()
-	New(cfg).Review(ctx, testPR(), choice, nil)
-	entries, _ := os.ReadDir(filepath.Join(home, "runtime"))
+	start := time.Now()
+	_, err := New(cfg).Review(ctx, testPR(), choice, nil)
+	if err == nil {
+		t.Error("a cancelled review should return an error")
+	}
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatal("the agent never started: this test would prove nothing")
+	}
+	if n := <-foldersWhileRunning; n != 1 {
+		t.Errorf("the plugin folder should exist while the agent runs, found %d", n)
+	}
+	if time.Since(start) > 20*time.Second {
+		t.Error("the agent was not killed")
+	}
+	entries, _ := os.ReadDir(runtime)
 	if len(entries) != 0 {
 		t.Errorf("a cancelled review left %d runtime folders behind", len(entries))
+	}
+}
+
+// Publishing, with a clone: the post agent is confined like a review, gets
+// the review's path, and never sees the PR's configuration.
+func TestPublishIsConfined(t *testing.T) {
+	state := hostileClone(t, "claude")
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.PostAgent.Format = "plain"
+	cfg.PostAgent.Args = []string{"-p"}
+	cfg.PostAgent.Command = "claude"
+	choice := cfg.PostChoice()
+	pr := testPR()
+	pr.BaseRefName = ""
+	res, err := New(cfg).Publish(context.Background(), pr, choice, "/reviews/publish/copy.md", "body", nil)
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	for _, want := range []string{"--setting-sources user --strict-mcp-config --plugin-dir"} {
+		if !strings.Contains(res.Body, want) {
+			t.Errorf("the post agent should get %q:\n%s", want, res.Body)
+		}
+	}
+	prompt, _ := os.ReadFile(filepath.Join(state, "prompt"))
+	if !strings.Contains(string(prompt), "/bazel-post-report /reviews/publish/copy.md") {
+		t.Errorf("the post agent should get the trimmed copy:\n%s", prompt)
+	}
+	if _, err := os.Stat(filepath.Join(state, "hook-ran")); err == nil {
+		t.Error("the post agent found the PR's configuration in the clone")
 	}
 }
 
