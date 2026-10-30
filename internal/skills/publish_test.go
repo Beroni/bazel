@@ -25,7 +25,7 @@ d=$FAKE_DIR
 case "$1 $2" in
 "pr view")
   case "$*" in
-  *headRefOid*) cat "$d/head" ;;
+  *headRefOid*) printf '{"headRefOid":"%s"}\n' "$(cat "$d/head")" ;;
   *) printf '{"author":{"login":"pr-author"},"url":"https://github.invalid/o/r/pull/7"}\n' ;;
   esac ;;
 "pr diff") cat "$d/diff" ;;

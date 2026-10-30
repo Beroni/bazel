@@ -109,7 +109,7 @@ publish() {
   reviewed=$(jq -r .reviewed_sha "$work/plan.json")
 
   # The last read before writing: a push after the review moves the lines.
-  head=$(gh pr view "$NUMBER" --repo "$REPO" --json headRefOid --jq .headRefOid) || fail "cannot read the PR's head"
+  head=$(gh pr view "$NUMBER" --repo "$REPO" --json headRefOid | jq -r .headRefOid) || fail "cannot read the PR's head"
   [ "$head" = "$reviewed" ] || moved=yes
 
   jq --argjson same "$same" --arg moved "$moved" --arg head "$head" -f "$HERE/decide.jq" "$work/plan.json" > "$work/decided.json" ||
