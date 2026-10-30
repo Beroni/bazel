@@ -447,61 +447,25 @@ function openPR(key) {
 
   const v = docPanel();
 
+  // The head reads like a job's: repo #n · author, then the title. Draft and
+  // approvals ride along as small tags.
   const head = el('div', 'viewer-head');
   const grow = el('div', 'grow');
-  const h = el('h2');
-  h.append(el('span', 'num', '#' + pr.number), document.createTextNode(' ' + pr.title));
-
-  const sub = el('div', 'meta');
+  const kicker = el('div', 'kicker');
   const link = prLink(pr);
-  sub.append(
-    link,
-    el('span', null, '@' + pr.author),
-    el('span', null, `${pr.branch} → ${pr.base}`),
-    el('span', 'add', '+' + pr.additions),
-    el('span', 'del', '−' + pr.deletions),
-    el('span', null, `${pr.changed_files} files`),
-    el('span', null, pr.age),
-  );
-  if (pr.draft) sub.append(el('span', 'tag draft', 'draft'));
-  if (pr.review_decision === 'APPROVED') sub.append(el('span', 'tag approved', 'approved'));
-  if (pr.review_decision === 'CHANGES_REQUESTED') sub.append(el('span', 'tag changes', 'changes'));
-  for (const t of reviewTags(pr)) sub.append(t);
-  grow.append(h, sub);
-
+  link.textContent = `${pr.repo} #${pr.number}`;
+  kicker.append(link, document.createTextNode(' · ' + pr.author));
+  if (pr.draft) kicker.append(el('span', 'tag draft', 'draft'));
+  if (pr.review_decision === 'APPROVED') kicker.append(el('span', 'tag approved', 'approved'));
+  if (pr.review_decision === 'CHANGES_REQUESTED') kicker.append(el('span', 'tag changes', 'changes requested'));
+  grow.append(kicker, el('h2', null, pr.title));
   head.append(grow);
   v.append(head);
 
-  if (pr.changed_since_review) {
-    const aviso = el('div', 'stale-box');
-    aviso.textContent = `This PR changed after the review from ${ago(pr.reviewed_at)}`
-      + (pr.review_agent ? ` (${pr.review_agent})` : '')
-      + ' — what is here is no longer what the agent read.';
-    v.append(aviso);
-  }
-
-  if (pr.body_html) {
-    const md = el('div', 'md');
-    md.innerHTML = pr.body_html;
-    v.append(md);
-  } else {
-    v.append(el('p', 'dim', '(no description)'));
-  }
-
-  const done = state.jobs.filter((j) => j.pr.key === pr.key);
-  if (done.length) {
-    const back = el('p', 'dim');
-    back.style.marginTop = '28px';
-    back.append(document.createTextNode('reviews in this session: '));
-    for (const j of done) {
-      const a = el('a', null, `${j.id} (${label(j)})`);
-      a.href = '#';
-      a.style.marginRight = '10px';
-      a.addEventListener('click', (e) => { e.preventDefault(); openJob(j.id); });
-      back.append(a);
-    }
-    v.append(back);
-  }
+  // The same page the Overview of a job shows: description, timeline, files,
+  // reviewers, labels and checks. Reviews of this PR in the session are in its
+  // timeline, and open from there.
+  renderPRPage(v, pr, null, () => { if (state.activePR === key) openPR(key); });
   v.scrollTop = 0;
 }
 
@@ -1822,6 +1786,7 @@ function jobHead(job) {
   const grow = el('div', 'grow');
   const kicker = el('div', 'kicker');
   const link = prLink(job.pr);
+  link.textContent = `${job.pr.repo} #${job.pr.number}`;
   kicker.append(link, document.createTextNode(' · ' + job.pr.author));
   grow.append(kicker, el('h2', null, job.pr.title));
   const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
@@ -1860,9 +1825,156 @@ function jobTabs(job, view) {
   return bar;
 }
 
+// --- the PR page (Overview) ---
+//
+// The Overview is the pull request itself, as the design draws it: who wants
+// to merge what, the description, a timeline of the commits (and of Bazel's
+// review), the files it touches; reviewers, labels and checks on the side.
+// The page comes from /api/prs/…/details, cached by the server per head sha
+// and here per PR for the session.
+
+// ageOf is how long ago a date was, the way the list writes ages.
+function ageOf(date) {
+  const t = new Date(date).getTime();
+  if (!t) return '';
+  const s = Math.max(0, (Date.now() - t) / 1000);
+  if (s < 60) return 'now';
+  if (s < 3600) return Math.floor(s / 60) + 'm';
+  if (s < 86400) return Math.floor(s / 3600) + 'h';
+  return Math.floor(s / 86400) + 'd';
+}
+
+// prDetails returns the PR's page if it is loaded, and starts loading it when
+// not; onReady runs once it arrives.
+function prDetails(pr, onReady) {
+  state.details = state.details || {};
+  const key = pr.key;
+  const have = state.details[key];
+  if (have && have.view) return have.view;
+  if (have && have.loading) return null;
+  state.details[key] = { loading: true };
+  const [owner, name] = pr.repo.split('/');
+  api(`/api/prs/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${pr.number}/details`)
+    .then((view) => { state.details[key] = { view }; onReady(); })
+    .catch((err) => { state.details[key] = { error: err.message }; onReady(); });
+  return null;
+}
+
+function sectionLabel(text, extra) {
+  const h = el('h4', 'plabel', text);
+  if (extra) h.append(el('span', 'plabel-extra', extra));
+  return h;
+}
+
+// renderPRPage draws the page of pr into body. job, when given, is the review
+// open on it: it adds Bazel's line to the timeline and a small block with the
+// review's own facts at the end.
+function renderPRPage(body, pr, job, redraw) {
+  const d = prDetails(pr, redraw);
+  const err = state.details && state.details[pr.key] && state.details[pr.key].error;
+  const page = el('div', 'prpage');
+  const main = el('div', 'prmain');
+  const side = el('aside', 'prside');
+  page.append(main, side);
+  body.append(page);
+
+  const listed = state.prs.find((p) => p.key === pr.key) || {};
+  const commits = d ? d.commits : [];
+  const merge = el('p', 'pmerge');
+  merge.append(el('b', null, pr.author), document.createTextNode(` wants to merge ${d ? commits.length + ' commit' + (commits.length === 1 ? '' : 's') : 'its commits'} into `),
+    el('code', null, pr.base || listed.base || ''), document.createTextNode(' from '), el('code', null, pr.branch || listed.branch || ''));
+  main.append(merge);
+  if (listed.changed_since_review) {
+    main.append(el('div', 'stale-box', `This PR changed after the review from ${ago(listed.reviewed_at)}`
+      + (listed.review_agent ? ` (${listed.review_agent})` : '') + ' — what is here is no longer what the agent read.'));
+  }
+  const html = (d && d.body_html) || listed.body_html;
+  const desc = el('div', 'md pdesc');
+  if (html) desc.innerHTML = html; else desc.append(el('p', 'dim', d || err ? '(no description)' : 'loading the PR…'));
+  main.append(desc);
+  if (err) main.append(el('p', 'dim', 'Could not read the rest of the PR from GitHub: ' + err));
+
+  // ACTIVITY: opened, each commit, and Bazel's reviews of it.
+  if (d) {
+    main.append(sectionLabel('Activity'));
+    const tl = el('ol', 'timeline');
+    const item = (who, what, extra, when, cls) => {
+      const li = el('li', cls || '');
+      li.append(el('span', 'tdot'), el('b', null, who), el('span', null, ' ' + what));
+      if (extra) li.append(el('code', 'tsha', extra));
+      li.append(el('span', 'twhen', when));
+      tl.append(li);
+    };
+    if (d.created_at) item(pr.author, 'opened this pull request', '', ageOf(d.created_at));
+    for (const c of commits) item(c.author || pr.author, c.headline, c.short, ageOf(c.date));
+    const reviews = state.jobs.filter((j) => j.pr.key === pr.key);
+    for (const j of reviews) {
+      const verb = j.state === 'running' || j.state === 'queued' ? 'is reviewing with'
+        : j.state === 'done' ? 'reviewed with' : j.state === 'failed' ? 'failed a review with' : 'canceled a review with';
+      const li = el('li', 'tbazel' + (j.id === (job && job.id) ? ' on' : ''));
+      li.append(el('span', 'tdot'), el('b', null, 'bazel'), el('span', null, ` ${verb} ${j.agent || 'an agent'}`),
+        el('span', 'twhen', j.state === 'running' ? 'now' : ''));
+      if (!job || j.id !== job.id) {
+        operable(li, `open the review ${j.id}`, () => openJob(j.id));
+        li.addEventListener('click', () => openJob(j.id));
+      }
+      tl.append(li);
+    }
+    main.append(tl);
+
+    // FILES CHANGED with +/− and a five-square bar.
+    const adds = d.files.reduce((n, f) => n + f.additions, 0);
+    const dels = d.files.reduce((n, f) => n + f.deletions, 0);
+    const fl = sectionLabel('Files changed', ` ${d.files.length} file${d.files.length === 1 ? '' : 's'} · `);
+    fl.lastChild.append(el('span', 'add', '+' + adds), document.createTextNode(' '), el('span', 'del', '−' + dels));
+    main.append(fl);
+    const files = el('div', 'pfiles');
+    for (const f of d.files) {
+      const row = el('div', 'pfile');
+      row.append(el('code', 'pfile-path', f.path), el('span', 'add', '+' + f.additions), el('span', 'del', '−' + f.deletions));
+      const bar = el('span', 'pbar');
+      const total = f.additions + f.deletions;
+      const green = total ? Math.round((5 * f.additions) / total) : 0;
+      for (let i = 0; i < 5; i++) bar.append(el('i', i < green ? 'a' : total ? 'd' : ''));
+      bar.setAttribute('aria-hidden', 'true');
+      row.append(bar);
+      files.append(row);
+    }
+    main.append(files);
+
+    // The side: reviewers, labels, checks.
+    side.append(sectionLabel('Reviewers'));
+    if (!d.reviewers.length) side.append(el('p', 'dim', 'nobody yet'));
+    for (const r of d.reviewers) {
+      const row = el('div', 'prev');
+      row.append(el('span', 'avatar', (r.login[0] || '?').toUpperCase()), el('span', 'prev-who', r.login), el('span', 'prev-state ' + r.state.replace(/\s/g, '-'), r.state));
+      side.append(row);
+    }
+    side.append(sectionLabel('Labels'));
+    const labels = el('div', 'plabels');
+    if (!d.labels.length) labels.append(el('span', 'dim', 'none'));
+    for (const l of d.labels) labels.append(el('span', 'plabel-chip', l));
+    side.append(labels);
+    side.append(sectionLabel('Checks'));
+    if (!d.checks.length) side.append(el('p', 'dim', 'none reported'));
+    for (const c of d.checks) {
+      const row = el('div', 'pcheck ' + c.state);
+      row.append(el('span', 'tdot'), el('code', null, c.name), el('span', 'pcheck-state', c.state));
+      side.append(row);
+    }
+  }
+  return main;
+}
+
 // renderOverview is everything about the job that is not the report or the
 // log: where it runs, with what, its steps, what it cost and where it landed.
 function renderOverview(body, job) {
+  // The page of the PR first, like the design; the review's own facts go to
+  // a small block at the end of it.
+  const main = renderPRPage(body, job.pr, job, () => { if (state.activeJob === job.id) { delete $('#viewer').dataset.sig; renderViewer(); } });
+  const block = el('section', 'jobfacts');
+  main.append(sectionLabel('This review'), block);
+  body = block;
   const msg = {
     queued: 'Queued — starts as soon as a worker frees up.',
     running: job.publishing
@@ -1880,10 +1992,7 @@ function renderOverview(body, job) {
     dd.append(...vals);
     facts.append(el('dt', null, k), dd);
   };
-  const link = prLink(job.pr);
-  fact('PR', link);
-  fact('Author', '@' + job.pr.author);
-  fact('Branch', `${job.pr.branch} → ${job.pr.base}`);
+  // PR, author and branch are on the page above; the block keeps the review's own.
   if (job.agent) {
     const a = el('span', null, job.agent + (job.pipeline ? ' ⛓' : ''));
     a.title = agentTitle(job.agent);
