@@ -21,12 +21,14 @@ gh api repos/:owner/:repo/pulls/<N>/comments --paginate \
 gh api repos/:owner/:repo/issues/<N>/comments --paginate \
   --jq '.[] | {id, user: .user.login, body}'
 
-# 3. thread state — resolution exists ONLY in GraphQL, never in the REST payload above
-gh api graphql -F owner=<owner> -F repo=<repo> -F number=<N> -f query='
-query($owner:String!, $repo:String!, $number:Int!) {
+# 3. thread state — resolution exists ONLY in GraphQL, never in the REST payload above.
+#    --paginate walks every page through $endCursor: a PR can have more than 100 threads.
+gh api graphql --paginate -F owner=<owner> -F repo=<repo> -F number=<N> -f query='
+query($owner:String!, $repo:String!, $number:Int!, $endCursor:String) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$number) {
-      reviewThreads(first:100) {
+      reviewThreads(first:100, after:$endCursor) {
+        pageInfo { hasNextPage endCursor }
         nodes { isResolved isOutdated resolvedBy { login } comments(first:1) { nodes { databaseId } } }
       } } } }' \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
