@@ -133,7 +133,7 @@ this PR" is not a dismissal when the PR touches that code.
 
 ## Workflow
 
-1. **Establish scope** (see below). Then read the PR title/description and the ticket it
+1. **Take the scope** the orchestrator handed you (see "Scope" below). Then read the PR title/description and the ticket it
    closes.
 2. **Read.** The diff, and the current files around each hunk. Trace flows end to end.
 3. **Run the dimension passes (A–K)** relevant to the diff's languages and surface. Skip
@@ -143,39 +143,14 @@ this PR" is not a dismissal when the PR touches that code.
 5. **Dedup** overlapping candidates, then DROP everything below 8 and everything in the hard
    exclusion list.
 
-## Scope resolution
+## Scope
 
-Normally the orchestrator hands you the scope — a diff range, a PR number, or an explicit
-file list. **If it did, use exactly that and skip this section.** All lenses in the fleet
-must review the identical diff, or their findings cannot be compared or deduped.
-
-Running standalone, resolve in this order and stop at the first that yields a non-empty
-change set:
-
-1. **PR associated with this branch** — never guess the base branch, ask for it:
-   ```bash
-   gh pr view --json number,baseRefName,title,body   # the REAL base, stacked PRs included
-   gh pr diff <number>
-   ```
-2. **Configured upstream:** `git rev-parse --abbrev-ref '@{upstream}'` → `git diff <up>...HEAD`
-3. **Remote default branch:** `git remote show origin | sed -n 's/.*HEAD branch: //p'`
-   → `git diff origin/<branch>...HEAD`
-4. **No remote / no commits ahead — review the working tree:**
-   ```bash
-   git status --porcelain -uall   # -uall is mandatory: without it a new directory
-                                  # shows up as ONE "?? dir/" line, hiding N files
-   git diff HEAD                  # modified files; does NOT include untracked
-   ```
-   Read every untracked file listed by `-uall` with the Read tool — `git diff` never shows
-   them, and new files carry the most unreviewed risk.
-
-Notes:
-- `git diff A...B` already means "since merge-base(A,B)". Do not wrap it in
-  `$(git merge-base ...)` — that computes the base twice and, if the ref does not exist,
-  collapses into `...HEAD`, which **exits 0 with empty output**.
-- Verify the resolved scope is non-empty before reviewing. An empty change set is a
-  resolution failure, not a clean diff: stop and say which steps you tried and what each
-  returned. **Never return `approve` because you could not find the diff.**
+The orchestrator always hands you the scope — the diff command, the file list, the PR — in a
+block at the top of your prompt. **Use exactly that** and nothing else: every lens must review
+the identical diff, or their findings cannot be compared or deduplicated. Never resolve a scope
+of your own, never guess a base branch, and never drop a path from it (`.claude/` and other
+agent configuration included). No scope block → return your JSON with no findings and say so
+in a `needs_human_verification` item (or in `body`, if your contract has no such list).
 
 ## Output contract
 

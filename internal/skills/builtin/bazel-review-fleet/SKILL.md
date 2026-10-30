@@ -52,24 +52,8 @@ The lens instructions are the agent files Bazel wrote into the clone:
 | `exploit-digger` | `bazel-exploit-digger` | `.claude/agents/bazel-exploit-digger.md` |
 | `lazy-senior-dev` | `bazel-lazy-senior-dev` | `.claude/agents/bazel-lazy-senior-dev.md` |
 
-Every lens gets **the same** scope block, verbatim:
-
-```
-Scope for this review (resolved by the orchestrator — use exactly this, do NOT resolve it
-again, skip the "Scope resolution" section of your prompt):
-
-  Command: git diff origin/develop...HEAD
-  Files (N): src/api/users.ts, src/lib/auth.ts, ...
-  PR #123 — "<title>" — base: develop
-  PR description: <body, or "no description">
-
-Review that scope with your lens and return ONLY the JSON of your output contract.
-
-Write every prose field of that JSON in English, regardless of the language of this prompt,
-of the repo, or of the user's request.
-```
-
-The language line is mandatory and goes in literally.
+Every lens gets **the same** scope block, verbatim — the one in Step 2 of
+`.claude/skills/bazel-review-fleet/references/single-lens.md`, language line included.
 
 **With the `Agent` tool** (Claude Code): one message, one `Agent` call per lens with its
 `subagent_type` and **`run_in_background: false`**, so the three run in parallel and you wait

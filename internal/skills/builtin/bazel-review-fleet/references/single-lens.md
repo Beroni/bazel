@@ -14,7 +14,7 @@ Hand the lens the scope block below, verbatim:
 
 ```
 Scope for this review (resolved by the orchestrator — use exactly this, do NOT resolve it
-again, skip the "Scope resolution" section of your prompt):
+again):
 
   Command: git diff origin/develop...HEAD
   Files (N): src/api/users.ts, src/lib/auth.ts, ...
