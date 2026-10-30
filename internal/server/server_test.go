@@ -2323,28 +2323,40 @@ func TestInstanciaDoServidor(t *testing.T) {
 // assets, the API, SSE and the guard's own 403 (clickjacking on publish).
 func TestRespostasRecusamFrame(t *testing.T) {
 	h := newTestServer(t).Handler()
+	// The event stream only returns once its client leaves.
+	gone, leave := context.WithCancel(context.Background())
+	leave()
 	cases := []struct {
-		path string
-		mod  func(*http.Request)
+		name, method, path string
+		want               int
+		mod                func(*http.Request) *http.Request
 	}{
-		{"/", nil},
-		{"/static/app.js", nil},
-		{"/api/state", nil},
-		{"/api/jobs/nao-existe", nil},
-		{"/", func(r *http.Request) { r.Host = "evil.com" }},
+		{"page", "GET", "/", http.StatusOK, nil},
+		{"static", "GET", "/static/app.js", http.StatusOK, nil},
+		{"api", "GET", "/api/state", http.StatusOK, nil},
+		{"404", "GET", "/api/jobs/nao-existe", http.StatusNotFound, nil},
+		{"event stream", "GET", "/api/events", http.StatusOK, func(r *http.Request) *http.Request { return r.WithContext(gone) }},
+		{"guard: host", "GET", "/", http.StatusForbidden, func(r *http.Request) *http.Request { r.Host = "evil.com"; return r }},
+		{"guard: origin", "POST", "/api/reviews", http.StatusForbidden, func(r *http.Request) *http.Request {
+			r.Header.Set("Origin", "https://evil.com")
+			return r
+		}},
 	}
 	for _, c := range cases {
-		r := httptest.NewRequest("GET", "http://127.0.0.1:7777"+c.path, nil)
+		r := httptest.NewRequest(c.method, "http://127.0.0.1:7777"+c.path, nil)
 		if c.mod != nil {
-			c.mod(r)
+			r = c.mod(r)
 		}
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
 		got := w.Result().Header
+		if w.Code != c.want {
+			t.Errorf("%s: status %d, want %d", c.name, w.Code, c.want)
+		}
 		if got.Get("X-Frame-Options") != "DENY" ||
 			got.Get("Content-Security-Policy") != "frame-ancestors 'none'" ||
 			got.Get("X-Content-Type-Options") != "nosniff" {
-			t.Errorf("%s (host %s, %d): headers %v", c.path, r.Host, w.Code, got)
+			t.Errorf("%s (%d): headers %v", c.name, w.Code, got)
 		}
 	}
 }
