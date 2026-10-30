@@ -939,6 +939,14 @@ function renderRepoFilters() {
 // selectableAgents are the ones that can review. The publishing agent also
 // comes from the server — it shows up in the config — but running it on a PR
 // with no finished review wouldn't do anything.
+// defaultAgent is config.yaml's default: the server lists the choices with
+// it first. It is not state.agent, which is only what the dashboard picker
+// has selected right now.
+function defaultAgent() {
+  const first = selectableAgents()[0];
+  return first ? first.name : '';
+}
+
 function selectableAgents() {
   return state.agents.filter((a) => !a.publisher);
 }
@@ -1919,7 +1927,7 @@ function renderAgentList() {
   for (const a of state.agents) {
     const row = el('div', 'agent-row');
     if (a.pipeline) tid(row, 'pipeline-row', { pipeline: a.name });
-    else tid(row, 'agent-row', { agent: a.name, default: state.agent === a.name, missingSkill: (a.skills || []).some((k) => !k.installed) });
+    else tid(row, 'agent-row', { agent: a.name, default: defaultAgent() === a.name, missingSkill: (a.skills || []).some((k) => !k.installed) });
 
     const top = el('div', 'agent-top');
     top.append(el('span', 'agent-name', a.name));
@@ -1927,13 +1935,20 @@ function renderAgentList() {
     if (a.posts) top.append(el('span', 'tag posts', '⇧ publishes'));
     if (a.publishable === false) top.append(el('span', 'tag', 'not a review'));
     if (a.publisher) top.append(el('span', 'tag', 'used when publishing'));
-    else if (state.agent === a.name) top.append(el('span', 'tag mine', 'default'));
+    else if (defaultAgent() === a.name) top.append(el('span', 'tag mine', 'default'));
+    // What the dashboard picker has on now, when it is not the default: it says
+    // what runs next from this browser, while the file still says the default.
+    if (!a.publisher && state.agent === a.name && defaultAgent() !== a.name) {
+      const t = el('span', 'tag', 'picked on the dashboard');
+      t.title = 'selected in the dashboard right now; config.yaml still has the default above';
+      top.append(t);
+    }
 
     // The publishing agent isn't a choice in the list: it is what runs when you
     // send a review you've already read to be published, and it can't be taken off.
     if (!a.publisher) {
       top.append(el('div', 'spacer'));
-      if (state.agent !== a.name) {
+      if (defaultAgent() !== a.name) {
         const d = tid(el('button', 'btn small ghost', 'make default'), 'agent-default');
         d.title = 'becomes the agent the selector starts on';
         d.addEventListener('click', () => agentAction('/api/agents/' + encodeURIComponent(a.name) + '/default', 'POST', d));
