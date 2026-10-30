@@ -306,3 +306,61 @@ func TestNeutralizeCleanTree(t *testing.T) {
 		t.Errorf("nothing to neutralize: %v, %v", removed, err)
 	}
 }
+
+// Every CLI's folder goes, the one several of them share included.
+func TestNeutralizeOtherCLIs(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".gemini/settings.json", ".cursor/mcp.json", ".agents/skills/x/SKILL.md", "sub/.gemini/a", "docs/keep.md", ".github/workflows/ci.yml"} {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := Neutralize(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{".agents", ".cursor", ".gemini", filepath.Join("sub", ".gemini")}; !slices.Equal(removed, want) {
+		t.Errorf("removed %q, want %q", removed, want)
+	}
+	for _, kept := range []string{"docs/keep.md", ".github/workflows/ci.yml"} {
+		if _, err := os.Stat(filepath.Join(dir, kept)); err != nil {
+			t.Errorf("%s must stay: %v", kept, err)
+		}
+	}
+}
+
+// A path deeper than the system takes as a whole is still swept: a PR must not
+// be able to stop its own review with one.
+func TestNeutralizeBeyondPathMax(t *testing.T) {
+	dir := t.TempDir()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	deep := "."
+	for range 60 {
+		deep = filepath.Join(deep, strings.Repeat("d", 100))
+		if err := root.Mkdir(deep, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	target := filepath.Join(deep, ".claude")
+	if err := root.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := Neutralize(dir)
+	if err != nil {
+		t.Fatalf("Neutralize: %v", err)
+	}
+	if !slices.Equal(removed, []string{target}) {
+		t.Errorf("removed %d entries", len(removed))
+	}
+	if _, err := root.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("still there: %v", err)
+	}
+}

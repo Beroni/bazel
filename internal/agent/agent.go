@@ -386,7 +386,7 @@ func neutralizedNote(n int) string {
 		return ""
 	}
 	return fmt.Sprintf("\n\nBazel removed %d path(s) from the working tree before you ran (.claude, .codex, .grok and "+
-		".mcp.json, at any depth), because agent CLIs execute them. They are still in git and still part of the review: "+
+		".mcp.json, at any depth, and the same for other CLIs), because agent CLIs execute them. They are still in git and still part of the review: "+
 		"the diff shows them, and `git show HEAD:<path>` reads them.", n)
 }
 

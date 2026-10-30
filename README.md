@@ -722,9 +722,10 @@ that, in layers, and the first is the one that does not depend on knowing which
 CLI is running:
 
 - **It is not there.** Right before each step starts, of any CLI, Bazel removes
-  every `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
-  clone's working tree, at any depth (Claude Code also finds a nested
-  `.claude/skills`) and in any spelling the disk folds into those names (on
+  every `.claude/`, `.codex/`, `.grok/`, `.gemini/`, `.cursor/` and `.agents/`
+  folder and every `.mcp.json` from the clone's working tree, at any depth
+  (Claude Code also finds a nested `.claude/skills`) and in any spelling the disk
+  folds into those names (on
   macOS, `.CLAUDE` is `.claude`), without following symlinks. The job's log says
   what went.
   They stay in git, so a review still sees them in the diff and with
