@@ -368,9 +368,9 @@ func gitGuardEnv(env []string, clone string) []string {
 	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
 }
 
-// agentGrace is how long an agent's process and pipes get to finish once it has
+// Grace is how long an agent's process and pipes get to finish once it has
 // exited or been killed.
-const agentGrace = 5 * time.Second
+const Grace = 5 * time.Second
 
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
@@ -876,7 +876,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	defer stderr.Close()
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
-	cmd.WaitDelay = agentGrace // a child holding stdin must not hold Wait
+	cmd.WaitDelay = Grace // a child holding stdin must not hold Wait
 	ownProcessGroup(cmd)
 
 	// The last thing before the process: the smaller the gap between checking
@@ -940,7 +940,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
 	killProcessGroup(cmd)
-	stray := time.AfterFunc(agentGrace, func() {
+	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()
 		stderr.Close()
 	})
