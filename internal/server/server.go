@@ -64,9 +64,10 @@ type Server struct {
 	jobs       *Manager
 	done       chan struct{}
 
-	// instance is random per server process. Job ids restart at j1 on every
-	// boot, so the page uses it to tell a restarted server from a dropped
-	// connection and to forget what it cached under the old ids.
+	// instance is random per server process. Job ids carry its first
+	// characters (see Manager.idPrefix), and the page uses it to tell a
+	// restarted server from a dropped connection and to forget what it cached
+	// under the old ids.
 	instance string
 
 	// cfgMu protects the config fields the interface edits (repos).
@@ -100,6 +101,8 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	if err != nil {
 		return nil, err
 	}
+	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
+	jobs.idPrefix = instance[:4] + "-"
 	return &Server{
 		instance:   instance,
 		cfg:        cfg,
@@ -108,7 +111,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		configPath: configPath,
 		opts:       opts,
 		hub:        hub,
-		jobs:       NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub),
+		jobs:       jobs,
 		done:       make(chan struct{}),
 	}, nil
 }
@@ -176,12 +179,12 @@ func (s *Server) Handler() http.Handler {
 const instanceHeader = "X-Bazel-Instance"
 
 // sameInstance refuses an action on a job sent by a page of another server
-// process. Job ids start again at j1 on every restart: in the seconds before
-// the page hears the new instance, a stale tab could publish, comment on or
-// cancel a different j3 — with skip indices from another review. The page
-// sends the instance it knows on every write under /api/jobs/; a mismatch is
-// 409 and nothing happens. A request without the header (MCP, curl, tests)
-// goes through as before.
+// process. The instance prefix already keeps an old id from naming a new job
+// by accident, but this is what tells the page why it was refused, so it
+// resyncs at once rather than showing a bare 404. The page sends the instance
+// it knows on every write under /api/jobs/; a mismatch is 409 and nothing
+// happens. A request without the header (MCP, curl, tests) goes through as
+// before.
 func (s *Server) sameInstance(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/jobs/") {

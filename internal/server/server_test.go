@@ -2361,6 +2361,29 @@ func TestRespostasRecusamFrame(t *testing.T) {
 	}
 }
 
+// A job id from before a restart must not name a job of the new process: the
+// count starts over on every boot, so the id carries the instance.
+func TestIDDoJobUnicoPorInstancia(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sleep", "30")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := srv.instance[:4] + "-j1"; v.ID != want {
+		t.Errorf("job id %q, want %q", v.ID, want)
+	}
+	if _, ok := srv.jobs.View(v.ID, false); !ok {
+		t.Errorf("job %q not found by its id", v.ID)
+	}
+}
+
 // A write under /api/jobs/ from a page of another server process is refused
 // with 409 and does nothing; with this server's instance, or with no header
 // at all (MCP, curl), it goes through.

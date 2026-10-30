@@ -213,6 +213,10 @@ type Manager struct {
 	jobs  map[string]*Job
 	order []string
 	seq   int
+	// idPrefix makes job ids unique across restarts (the first characters of
+	// the server instance): the seq starts over on every boot, and "j3" from a
+	// page or an MCP client of the old process must not name the new j3.
+	idPrefix string
 
 	// limits is the latest reading of Claude's quota. It belongs to no job: it
 	// is the machine's, and holds for the whole page.
@@ -223,6 +227,12 @@ type Manager struct {
 // NewManager starts the worker pool. concurrency caps how many agents run at
 // once: each review clones a repository and starts a process, so this is what
 // separates "reviewing two PRs" from "bringing down the laptop".
+// nextIDLocked makes the id of a new job. Callers hold m.mu.
+func (m *Manager) nextIDLocked() string {
+	m.seq++
+	return fmt.Sprintf("%sj%d", m.idPrefix, m.seq)
+}
+
 func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, concurrency int, keep bool, hub *Hub) *Manager {
 	if concurrency < 1 {
 		concurrency = 1
@@ -270,7 +280,6 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 			return v, nil
 		}
 	}
-	m.seq++
 	steps := make([]jobStep, 0, len(choice.Steps))
 	for _, st := range choice.Steps {
 		// The `publish` step does not get its own row: what shows on screen is
@@ -282,7 +291,7 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 		steps = append(steps, jobStep{Name: st.Name, State: StateQueued})
 	}
 	job := &Job{
-		ID:       fmt.Sprintf("j%d", m.seq),
+		ID:       m.nextIDLocked(),
 		PR:       pr,
 		Mine:     mine,
 		Choice:   choice,
@@ -875,9 +884,8 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 	}
 
 	choice := m.cfg.PostChoice()
-	m.seq++
 	job := &Job{
-		ID:        fmt.Sprintf("j%d", m.seq),
+		ID:        m.nextIDLocked(),
 		PR:        pr,
 		Mine:      mine,
 		Choice:    choice,
