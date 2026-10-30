@@ -419,20 +419,22 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
    and a running review doesn't lose its log when you go look at the config. */
 .page[hidden] { display: none; }
 .page.config { flex: 1; overflow: auto; min-height: 0; }
-.config-body { max-width: 920px; margin: 0 auto; padding: 24px 20px 60px; }
+.config-body { max-width: 1340px; margin: 0 auto; padding: 22px 16px 60px; }
 /* Each section opens with a sentence-case title over a hairline, the way the
    design separates groups, instead of the old uppercase labels. */
-.config-body h3 { font-size: 14px; font-weight: 600; color: var(--text); margin: 30px 0 10px; padding-top: 18px; border-top: 1px solid var(--line); }
+.config-body h3, .config-body .stray + .config-cols h3 {
+  font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim);
+  margin: 22px 0 8px; padding: 0; border: 0;
+}
 .config-body h3::first-letter { text-transform: uppercase; }
-.config-body h3:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
+.config-body h3:first-child { margin-top: 0; }
 
 /* The config path is a path, not a label: no uppercase. */
 .config-body #config-path { word-break: break-all; }
 .config-body pre { margin: 0; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; overflow: auto; font-size: 12.5px; }
 .config-body #repo-input { flex: 1; }
-.repo-list { margin-bottom: 10px; }
-.repo-list .repo-row { display: flex; align-items: center; justify-content: space-between; padding: 7px 12px; border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: 6px; background: var(--panel); font-weight: 500; }
-.repo-list .none { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+.repo-list .repo-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 12px; font-weight: 500; }
+.repo-list .none { color: var(--dim); font-size: 12px; padding: 10px 12px; margin: 0; }
 
 ::-webkit-scrollbar { width: 11px; height: 11px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
@@ -623,29 +625,34 @@ main.no-prs .burger span { background: var(--accent); }
 
 /* --- agents and skills in the config --- */
 .agent-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
-.agent-row { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 10px 13px; background: var(--panel); }
+.agent-row { padding: 10px 12px; }
 .agent-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .agent-name { color: var(--text); font-weight: 600; font-size: 14px; }
 .agent-desc { color: var(--dim); font-size: 12px; margin-top: 4px; }
-.agent-skills { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; font-size: 11px; }
-.skill-ref { padding: 1px 7px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-family: var(--mono); }
-.skill-ref.ok { color: var(--ok); }
+.agent-skills { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 7px; font-size: 11px; align-items: center; }
+.skill-ref {
+  padding: 1px 7px; border-radius: 4px; font-family: var(--mono); font-size: 11.5px;
+  box-shadow: inset 0 0 0 1px var(--line); color: var(--text);
+}
 /* A skill the agent calls that doesn't exist on the machine: you only find out
    at run time, and by then it's too late. */
-.skill-ref.missing { color: var(--err); }
+.skill-ref.missing {
+  color: var(--err); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--err) 50%, transparent);
+}
 
-.skill-list { max-height: 300px; overflow-y: auto; border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
-.skill-row { display: flex; gap: 10px; padding: 6px 12px; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.skill-row { display: flex; align-items: center; gap: 10px; padding: 8px; font-size: 13px; border-bottom: 1px solid var(--line); }
 .skill-row:last-child { border-bottom: 0; }
-.skill-row.on { background: var(--accent-soft); }
-.skill-row.on .skill-name { color: var(--accent); }
-.skill-name { flex: none; width: 170px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.skill-desc { flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* The buttons that turn the skill into an agent. They sit at the row's right
-   and only show in full on hover — the list is long and what you read is the name. */
-.skill-actions { flex: none; display: flex; gap: 6px; align-items: center; opacity: .35; transition: opacity .12s; }
-.skill-row:hover .skill-actions, .skill-actions:focus-within { opacity: 1; }
-.skill-actions .btn { padding: 1px 7px; font-size: 11px; }
+.skill-name {
+  flex: none; width: 180px; color: var(--text); overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; font-family: var(--mono); font-size: 12.5px; font-weight: 600;
+}
+.skill-desc {
+  flex: 1; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: normal;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+}
+/* The buttons that turn the skill into an agent, at the row's right. */
+.skill-actions { flex: none; display: flex; gap: 6px; align-items: center; }
+.skill-actions .btn { padding: 2px 8px; font-size: 12px; font-weight: 600; }
 
 /* The review spend: tokens and cost, on the card and at the end of the report. */
 .tokens { color: var(--dim); font-variant-numeric: tabular-nums; }
@@ -657,8 +664,8 @@ main.no-prs .burger span { background: var(--accent); }
    that is what shows where the step will land before you let go. */
 .pipe-builder { display: flex; flex-direction: column; gap: 10px; margin-bottom: 12px; }
 .pipe-flow {
-  display: flex; flex-wrap: wrap; align-items: stretch; gap: 2px; min-height: 56px;
-  padding: 10px; border: 1px dashed var(--hover-2); border-radius: var(--radius-md); background: var(--panel);
+  display: flex; flex-wrap: wrap; align-items: stretch; gap: 2px; min-height: 56px; padding: 10px;
+  border: 1px dashed var(--line); border-radius: var(--radius-md);
 }
 .pipe-flow.empty { align-items: center; color: var(--dim); }
 
@@ -666,19 +673,17 @@ main.no-prs .burger span { background: var(--accent); }
 .pipe-gap.over { width: 26px; background: var(--accent); }
 
 .pipe-node {
-  display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; min-width: 96px;
+  display: flex; flex-direction: row; gap: 2px; padding: 4px 9px; min-width: 0;
   border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel-2);
-  font-size: 12px; cursor: grab; user-select: none;
+  font-size: 12px; cursor: grab; user-select: none; align-items: center;
 }
 .pipe-node:active { cursor: grabbing; }
 .pipe-node.dragging { opacity: .35; }
-.pipe-node.reserved { border-style: dashed; }
-.pipe-node.reserved .pipe-node-name { color: var(--warn); }
+.pipe-node.reserved { border-color: var(--accent-line); }
 .pipe-node-top { display: flex; align-items: center; gap: 6px; }
 .pipe-node-name { font-weight: 600; }
 .pipe-node .n {
-  color: var(--dim); font-size: 10px; border: 1px solid var(--line);
-  border-radius: 3px; padding: 0 4px; line-height: 1.5;
+  color: var(--dim); font-size: 12px; border: 0; border-radius: 3px; padding: 0 4px 0 0; line-height: 1.5;
 }
 .pipe-node .x { margin-left: auto; background: none; border: 0; color: var(--dim); cursor: pointer;
   font-size: 13px; padding: 0 1px; line-height: 1; }
@@ -687,9 +692,12 @@ main.no-prs .burger span { background: var(--accent); }
 .pipe-arrow { align-self: center; color: var(--dim); font-size: 13px; padding: 0 1px; }
 
 .pipe-tray { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-.pipe-tray .btn { cursor: grab; }
+.pipe-tray .btn {
+  cursor: grab; border: 1px dashed var(--hover-2); border-radius: 6px; padding: 3px 9px; font-size: 12.5px;
+  color: var(--text);
+}
 .pipe-tray .btn:disabled { cursor: default; }
-.pipe-tray .btn.reserved { border-style: dashed; }
+.pipe-tray .btn.reserved { border-color: var(--accent-line); }
 .pipe-sep { color: var(--dim); padding: 0 2px; }
 .pipe-row { display: flex; gap: 8px; align-items: center; }
 .pipe-row input { flex: 1; min-width: 0; }
@@ -765,64 +773,35 @@ main.no-prs .burger span { background: var(--accent); }
 /* --- config in two columns, as the design lays it out ---
    Small uppercase section labels, each list in one framed box with rows
    split by hairlines, badges for what an agent is, skills as mono chips. */
-.config-body { max-width: 1340px; padding: 22px 16px 60px; }
 .config-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
 @media (max-width: 1000px) { .config-cols { grid-template-columns: minmax(0, 1fr); } }
-.config-body h3, .config-body .stray + .config-cols h3 {
-  font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: var(--dim);
-  margin: 22px 0 8px; padding: 0; border: 0;
-}
 .config-body .config-col > h3:first-child { margin-top: 0; }
 .config-body h3 .plain, .config-body h3 .mono { text-transform: none; letter-spacing: 0; font-weight: 400; margin-left: 6px; }
 .mono { font-family: var(--mono); font-size: 12px; }
 .cbox { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--panel); }
 .config-body p.tiny { margin: -2px 0 8px; }
-.repo-list { margin: 0; }
-.repo-list .repo-row { border: 0; border-radius: 0; margin: 0; background: transparent; padding: 8px 12px; gap: 12px; }
 .repo-list .repo-row + .repo-row { border-top: 1px solid var(--line); }
 .repo-name { flex: 1; font-weight: 600; }
 .repo-open { font-size: 12.5px; }
-.repo-list .none { padding: 10px 12px; margin: 0; }
 #repo-form { padding: 8px; border-top: 1px solid var(--line); }
 .agent-list.cbox { gap: 0; margin: 0; }
-.agent-row { border: 0; border-radius: 0; background: transparent; padding: 10px 12px; }
 .agent-row + .agent-row { border-top: 1px solid var(--line); }
 .agent-list > .none { padding: 10px 12px; margin: 0; }
-.agent-name { font-size: 14px; font-weight: 600; }
 .btn.link { color: var(--accent); }
 .badge {
   display: inline-flex; align-items: center; font-size: 11px; font-weight: 600; padding: 1px 7px;
   border-radius: 5px; background: var(--hover-2); color: var(--text);
 }
 .badge.accent { background: transparent; color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent-line); }
-.agent-skills { gap: 4px; align-items: center; }
-.skill-ref { font-family: var(--mono); font-size: 11.5px; padding: 1px 7px; border-radius: 4px; background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: var(--text); }
-.skill-ref.ok { color: var(--text); }
-.skill-ref.missing { color: var(--err); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--err) 50%, transparent); }
 .skill-arrow { color: var(--dim); font-size: 11px; }
 .agent-warn { margin: 6px 0 0; font-size: 12px; color: var(--err); }
-.skill-list { max-height: none; border: 0; background: transparent; }
-.skill-row { align-items: center; padding: 8px 8px; font-size: 13px; }
-.skill-row.on { background: transparent; }
-.skill-row.on .skill-name { color: var(--text); }
-.skill-name { width: 180px; font-family: var(--mono); font-size: 12.5px; color: var(--text); font-weight: 600; }
-.skill-desc { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
-.skill-actions { opacity: 1; }
-.skill-actions .btn { padding: 2px 8px; font-size: 12px; font-weight: 600; }
 .skill-actions .btn:disabled { opacity: .5; }
 .pipe-builder.cbox { padding: 12px; margin: 0; }
 .export { margin-top: 14px; gap: 10px; }
 /* The builder's tray: one dashed chip per agent ("+ review-fleet"), and the
    chain as numbered steps — as in the design. */
-.pipe-tray .btn { border: 1px dashed var(--hover-2); border-radius: 6px; padding: 3px 9px; font-size: 12.5px; color: var(--text); }
 .pipe-tray .btn:hover:not(:disabled) { border-color: var(--accent-line); color: var(--accent); background: transparent; }
-.pipe-tray .btn.reserved { border-color: var(--accent-line); }
-.pipe-flow { background: transparent; border-color: var(--line); }
-.pipe-node { flex-direction: row; align-items: center; min-width: 0; padding: 4px 9px; }
-.pipe-node .n { border: 0; color: var(--dim); font-size: 12px; padding: 0 4px 0 0; }
 .pipe-node .pipe-node-note { display: none; }
-.pipe-node.reserved { border-color: var(--accent-line); border-style: solid; }
-.pipe-node.reserved .pipe-node-name { color: var(--text); }
 
 /* --- the History tab ---
    What it does in larger text; decisions numbered in small circles down a
