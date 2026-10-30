@@ -118,13 +118,32 @@ func TestImagemViraLink(t *testing.T) {
 	src := "see ![the chart](https://attacker.example/p.png) and ![](https://x.example/q.png) and ![bad](javascript:alert(1))\n"
 	for name, render := range map[string]func(string) string{"description": renderMarkdown, "review": renderReviewMarkdown} {
 		got := render(src)
-		for _, want := range []string{`<a href="https://attacker.example/p.png" rel="nofollow">image: the chart</a>`, `<a href="https://x.example/q.png" rel="nofollow">image</a>`, "image: bad"} {
+		for _, want := range []string{`<a href="https://attacker.example/p.png" rel="nofollow noreferrer">image: the chart</a>`, `<a href="https://x.example/q.png" rel="nofollow noreferrer">image</a>`, "image: bad"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("%s: missing %q in:\n%s", name, want, got)
 			}
 		}
 		if strings.Contains(got, "<img") || strings.Contains(got, "javascript") {
 			t.Errorf("%s: %s", name, got)
+		}
+	}
+}
+
+// A badge keeps its real link, a link in an alt stays text, and an image's
+// title shows: no anchors inside anchors, and nothing the screen drops.
+func TestImagemDentroDeLink(t *testing.T) {
+	for name, render := range map[string]func(string) string{"description": renderMarkdown, "review": renderReviewMarkdown} {
+		got := render("[![CI](https://ci/b.svg)](https://ci/run)\n\n![click [here](https://evil.example)](https://benign.example/a.png)\n\n![x](https://a.example/u.png \"the title\")\n")
+		for _, want := range []string{`<a href="https://ci/run" rel="nofollow noreferrer">image: CI</a>`, "image: click here", "image: x (the title)"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: missing %q in:\n%s", name, want, got)
+			}
+		}
+		if strings.Contains(got, "evil.example") || strings.Contains(got, "ci/b.svg") {
+			t.Errorf("%s: %s", name, got)
+		}
+		if strings.Count(got, "<a ") != strings.Count(got, "</a>") {
+			t.Errorf("%s: unbalanced anchors: %s", name, got)
 		}
 	}
 }

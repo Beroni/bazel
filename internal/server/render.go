@@ -61,17 +61,50 @@ func (imageAsLink) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
 
 func renderImage(w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
 	if !entering {
-		w.WriteString("</a>")
 		return ast.WalkContinue, nil
 	}
 	img := n.(*ast.Image)
+	// The alt is written as text: a link inside it, or this one inside a link
+	// (the [![badge](x)](url) of a README), would nest anchors and lose the
+	// outer one.
+	label := "image"
+	if alt := plainText(n, source); alt != "" {
+		label += ": " + alt
+	}
+	if len(img.Title) > 0 {
+		label += " (" + string(img.Title) + ")"
+	}
+	inLink := false
+	for p := n.Parent(); p != nil; p = p.Parent() {
+		inLink = inLink || p.Kind() == ast.KindLink
+	}
+	if inLink {
+		w.WriteString(html.EscapeString(label))
+		return ast.WalkSkipChildren, nil
+	}
 	w.WriteString(`<a href="`)
 	w.Write(util.EscapeHTML(util.URLEscape(img.Destination, true)))
-	w.WriteString(`">image`)
-	if n.HasChildren() {
-		w.WriteString(": ")
-	}
-	return ast.WalkContinue, nil
+	w.WriteString(`">`)
+	w.WriteString(html.EscapeString(label))
+	w.WriteString("</a>")
+	return ast.WalkSkipChildren, nil
+}
+
+// plainText is the text under n, without its markup.
+func plainText(n ast.Node, source []byte) string {
+	var b strings.Builder
+	_ = ast.Walk(n, func(c ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			switch t := c.(type) {
+			case *ast.Text:
+				b.Write(t.Segment.Value(source))
+			case *ast.String:
+				b.Write(t.Value)
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return b.String()
 }
 
 // rawHTMLAsText writes the markdown's raw HTML, inline and block, as escaped
@@ -155,6 +188,8 @@ var policy = func() *bluemonday.Policy {
 	// Without this the class="language-go" disappears and the code block loses
 	// its marker.
 	p.AllowAttrs("class").OnElements("code", "pre", "span", "div", "li")
+	// A click on a link must not tell the other site this page's address.
+	p.RequireNoReferrerOnLinks(true)
 	return p
 }()
 
