@@ -23,28 +23,12 @@ The report is not the place to exercise style. It is read by a parser (`bazel-po
 compared across runs; a stable format is what makes two runs on the same PR diffable and what
 lets the publisher detect a duplicate.
 
-Validate before you hand it over:
-
-```bash
-bash .claude/skills/bazel-review-fleet/references/validate-report.sh .reviews/pr-123.md
-```
-
 ## Where the report goes
 
-Under Bazel the report is **the agent's final output**: Bazel saves it under its reviews
-directory with its own header on top, shows it on its page, and hands that saved file to
-`bazel-post-report` when you publish. See `headless.md`, section 3.
-
-The skill validates it from a scratch file outside the clone (`headless.md`, section 3) and
-never writes inside the clone.
-
-**The report carries no memory of previous runs**, and that is deliberate — it is a statement
-about one diff at one sha, not a ledger. Decisions the team took on earlier findings live on the PR, in resolved threads and
-replies, and `bazel-post-report` is what reads them back.
-
-Every path the PR changes is part of the change set, `.claude/` included (`headless.md`,
-section 2). A review makes no write to the working tree at all: it never applies a fix, never
-commits and never pushes.
+The report is the agent's **final output**, validated from a scratch file outside the clone and
+printed as it is (`headless.md`, section 3). It carries **no memory of previous runs**: it is a
+statement about one diff at one sha, not a ledger — what the team decided on earlier findings
+lives on the PR, and `bazel-post-report` reads it back from there.
 
 ## Closed vocabularies
 
@@ -182,19 +166,7 @@ An `###` heading with the title, the metadata comment on the **immediately follo
 blank line, then the prose up to the next heading. **That prose is published verbatim** as the
 body of the inline comment — which is why the language rule applies here.
 
-```markdown
-### Transfer debits any account by id
-<!-- finding severity=critical class=authz lenses=senior-code-reviewer+exploit-digger path=src/api/transfer.ts line=88 side=RIGHT confidence=9 ref=CWE-639 -->
-
-**critical · authz** (senior-code-reviewer + exploit-digger)
-
-Transfer reads `accountId` from the request body without checking ownership.
-
-**Trigger:** `POST /api/transfer` with another user's `accountId` debits their account.
-
-**Fix:** resolve the account from the session, or assert `account.ownerId === session.userId`
-before debiting.
-```
+The first finding of the complete example at the end of this file shows all of it.
 
 The title is a short sentence, no trailing period, no severity prefix, no emoji — the level
 line right below carries the severity.
@@ -329,10 +301,8 @@ per-item metadata, and **never** a `<!-- finding -->`:
 
 ## Language
 
-**The file's content is in English** — titles, findings, cuts, verdict. This holds even when
-the user's request came in another language: this file is the source of what goes to the PR,
-it is read by the team and it stays in the history. Translating at publish time is rework and
-a failure point; the file is born publishable.
+The report is in **English** — titles, findings, cuts, verdict — whatever the language of the
+request (`headless.md`, section 4). It is born publishable.
 
 ## A complete example
 
