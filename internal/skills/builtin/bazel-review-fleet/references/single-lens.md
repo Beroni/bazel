@@ -50,5 +50,5 @@ says:
 Copy `severity` and `class` verbatim from the JSON. `findings: []` is a legitimate result: the
 `**Verdict:**` line with `no findings` already says so.
 
-Write it to `.reviews/pr-<N>-<lens>.md`, validate it (section 3 of `headless.md`), fix until it
+Write it to a scratch file and validate it (section 3 of `headless.md`), fix until it
 passes, and print its content as your final output, with nothing around it.

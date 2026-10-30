@@ -123,7 +123,7 @@ closed vocabularies, the level line, `**Trigger:**` and `**Fix:**`. Nothing that
 spec goes into the report — no coverage section, no summary, no notes. `exploit-digger`'s
 `checked_ok` and `trust_boundaries` stay out.
 
-Write it to `.reviews/pr-<N>.md`, validate it (section 3 of `headless.md`), fix until it
+Write it to a scratch file and validate it (section 3 of `headless.md`), fix until it
 passes, and print the file's content as your final output, with nothing around it.
 
 ## Never

@@ -60,16 +60,17 @@ Rules that keep that honest:
   exactly. That format is also what Bazel uses to put a checkbox next to each finding:
   every `###` under `## Findings` or `## Cuts`, and every bullet under
   `## Needs human verification`. A heading outside those sections gets no checkbox.
-- Writing the report to `.reviews/` as well is allowed, and is how you run the validator.
-  That file dies with the clone; the printed report is the one that counts.
-- Validate before printing, with the path written out in full (the cwd is the clone, not the
-  skill directory):
+- **Never write inside the clone** — not `.reviews/`, not anywhere. A directory the PR
+  versions can be a symlink that sends the write somewhere else on the machine. To validate,
+  write the report to a fresh scratch file outside it and run the validator on that:
 
   ```bash
-  bash .claude/skills/bazel-review-fleet/references/validate-report.sh .reviews/pr-123.md
+  R=$(mktemp "${TMPDIR:-/tmp}/bazel-report.XXXXXX")   # then write the report to "$R"
+  bash .claude/skills/bazel-review-fleet/references/validate-report.sh "$R"
   ```
 
-  Exit 1 → fix what it pointed at and validate again.
+  Exit 1 → fix what it pointed at and validate again. The printed report is the one that
+  counts; the scratch file is only for the validator.
 
 ## 4. English
 

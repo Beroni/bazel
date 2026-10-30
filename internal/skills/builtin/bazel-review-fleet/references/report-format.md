@@ -35,21 +35,16 @@ Under Bazel the report is **the agent's final output**: Bazel saves it under its
 directory with its own header on top, shows it on its page, and hands that saved file to
 `bazel-post-report` when you publish. See `headless.md`, section 3.
 
-The skill also writes it to `.reviews/` in the clone, to run the validator on it:
+The skill validates it from a scratch file outside the clone (`headless.md`, section 3) and
+never writes inside the clone.
 
-```
-.reviews/pr-123.md                          # fleet
-.reviews/pr-123-senior-code-reviewer.md     # single lens: `-<lens-name>` suffix
-```
-
-That file dies with the clone; nothing reads it back. **The report carries no memory of
-previous runs**, and that is deliberate — it is a statement about one diff at one sha, not a
-ledger. Decisions the team took on earlier findings live on the PR, in resolved threads and
+**The report carries no memory of previous runs**, and that is deliberate — it is a statement
+about one diff at one sha, not a ledger. Decisions the team took on earlier findings live on the PR, in resolved threads and
 replies, and `bazel-post-report` is what reads them back.
 
 Every path the PR changes is part of the change set, `.claude/` included (`headless.md`,
-section 2). Writing the report is the **only** write a review makes to the working tree: it never applies
-a fix, never commits and never pushes.
+section 2). A review makes no write to the working tree at all: it never applies a fix, never
+commits and never pushes.
 
 ## Closed vocabularies
 
