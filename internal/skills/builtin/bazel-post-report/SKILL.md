@@ -216,8 +216,12 @@ Agrupa tudo numa notificação só, em vez de N. Grave com a ferramenta Write, e
 E envie:
 
 ```bash
-gh api -X POST repos/{owner}/{repo}/pulls/<N>/reviews --input '<work>/review.json'
+jq -e '.event == "COMMENT" and (keys | sort == ["body","comments","event"])' '<work>/review.json' >/dev/null &&
+  gh api -X POST repos/{owner}/{repo}/pulls/<N>/reviews --input '<work>/review.json'
 ```
+
+O `jq` é a trava do `COMMENT`: se ele recusar o arquivo, nada foi enviado. Conserte o JSON e rode
+de novo, sem tirar a checagem. Um `"` sem escape no corpo pode virar um `event` depois do seu.
 
 - **`event: COMMENT`, sempre.** Nunca `REQUEST_CHANGES`: isso bloqueia o merge em nome do
   usuário, e a decisão é dele — o veredito vai escrito no corpo e ele age. Nunca `APPROVE`,

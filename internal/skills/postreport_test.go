@@ -112,3 +112,53 @@ func TestPostReportPathCheckRunsNothing(t *testing.T) {
 		t.Error("the file name was executed")
 	}
 }
+
+// The JSON is typed by the model, and a quote from the report left unescaped can
+// add an `event`. The check is run as the skill writes it: nothing but a plain
+// COMMENT reaches the POST.
+func TestPostReportChecksThePayload(t *testing.T) {
+	for _, tool := range []string{"bash", "jq"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			t.Skip("no " + tool)
+		}
+	}
+	var recipe []string
+	lines := bashLines(postReportText(t))
+	for i, l := range lines {
+		if strings.HasPrefix(l, "jq -e ") {
+			recipe = lines[i : i+2]
+		}
+	}
+	if len(recipe) != 2 || !strings.Contains(recipe[1], "/reviews --input") {
+		t.Fatalf("the check should sit right before the POST, got %q", recipe)
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho posted\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cases := map[string]struct {
+		payload string
+		posted  bool
+	}{
+		"a comment":          {`{"body":"b","event":"COMMENT","comments":[{"path":"a","line":1,"side":"RIGHT","body":"c"}]}`, true},
+		"no inline comments": {`{"body":"b","event":"COMMENT","comments":[]}`, true},
+		"a later event wins": {`{"body":"b","event":"COMMENT","comments":[],"event":"APPROVE"}`, false},
+		"an extra key":       {`{"body":"b","event":"COMMENT","comments":[],"commit_id":"x"}`, false},
+		"not JSON":           {`{"body":"b"","event":"COMMENT"}`, false},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			work := t.TempDir()
+			if err := os.WriteFile(filepath.Join(work, "review.json"), []byte(c.payload), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			script := strings.NewReplacer("<work>", work, "<N>", "7").Replace(strings.Join(recipe, "\n"))
+			out, _ := exec.Command("bash", "-c", script).CombinedOutput()
+			if got := strings.Contains(string(out), "posted"); got != c.posted {
+				t.Errorf("posted = %v, want %v: %s", got, c.posted, out)
+			}
+		})
+	}
+}
