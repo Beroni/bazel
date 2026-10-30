@@ -10,6 +10,11 @@ export const OUT = path.join(E2E, '.out');
  */
 export const BAZEL_SRC = process.env.E2E_BAZEL_SRC ? path.resolve(process.env.E2E_BAZEL_SRC) : REPO;
 export const BIN = path.join(OUT, 'bin');
+/**
+ * The fake agent under the name `claude`, for tests that need the command name
+ * itself to matter. Used by absolute path: `claude` must stay off the server's PATH.
+ */
+export const FAKE_CLAUDE = path.join(OUT, 'fake-claude', 'claude');
 export const FIXTURES = path.join(E2E, 'fixtures');
 export const SCENARIO_FILES = path.join(FIXTURES, 'agent');
 export const SPECS = path.join(SCENARIO_FILES, 'specs');

@@ -32,6 +32,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -126,19 +127,32 @@ func waitFor(path string) {
 }
 
 // record appends the call to calls.jsonl: what the agent was given (argv,
-// prompt, cwd), which skills Bazel materialized in the working directory
-// (`skills`, with `builtin_skill` for bazel-post-report), and the GROK_* env
-// Bazel set, with whether $GROK_HOME/config.toml existed.
+// prompt, cwd), the confinement flags, the skills it could load, what the clone
+// looked like, and the GROK_* env Bazel set.
+//
+// `skills` are the ones a real Claude Code would load from Bazel: those of
+// --plugin-dir, or of <cwd>/.claude/skills on a base that still writes them in
+// the clone. `builtin_skill_source` says which of the two served
+// bazel-post-report, and `clone_skills` lists what is in the clone either way:
+// with a hostile PR that is the PR's own.
 func record(prompt string) {
 	cwd, _ := os.Getwd()
-	_, skillErr := os.Stat(filepath.Join(cwd, ".claude", "skills", "bazel-post-report", "SKILL.md"))
-	skills := []string{}
-	if entries, err := os.ReadDir(filepath.Join(cwd, ".claude", "skills")); err == nil {
-		for _, e := range entries {
-			if _, err := os.Stat(filepath.Join(cwd, ".claude", "skills", e.Name(), "SKILL.md")); err == nil {
-				skills = append(skills, e.Name())
-			}
+	plugin := argValue("--plugin-dir")
+	cloneSkills := skillsIn(filepath.Join(cwd, ".claude", "skills"))
+	skills, source := skillsIn(filepath.Join(plugin, "skills")), "plugin"
+	if plugin == "" {
+		skills, source = cloneSkills, "clone"
+	}
+	if !slices.Contains(skills, "bazel-post-report") {
+		source = ""
+	}
+	pluginName := ""
+	if raw, err := os.ReadFile(filepath.Join(plugin, ".claude-plugin", "plugin.json")); plugin != "" && err == nil {
+		var manifest struct {
+			Name string `json:"name"`
 		}
+		_ = json.Unmarshal(raw, &manifest)
+		pluginName = manifest.Name
 	}
 	grok := map[string]string{}
 	for _, kv := range os.Environ() {
@@ -147,16 +161,26 @@ func record(prompt string) {
 		}
 	}
 	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
+	gitStatus, _ := exec.Command("git", "status", "--porcelain").Output()
+	gitExclude, _ := os.ReadFile(filepath.Join(cwd, ".git", "info", "exclude"))
 	line, _ := json.Marshal(map[string]any{
-		"scenario":         name,
-		"argv":             os.Args[1:],
-		"cwd":              cwd,
-		"prompt":           prompt,
-		"builtin_skill":    skillErr == nil,
-		"skills":           skills,
-		"grok_env":         grok,
-		"grok_home_config": os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
-		"at":               time.Now().UTC().Format(time.RFC3339Nano),
+		"scenario":             name,
+		"argv":                 os.Args[1:],
+		"cwd":                  cwd,
+		"prompt":               prompt,
+		"builtin_skill":        source != "",
+		"builtin_skill_source": source,
+		"skills":               skills,
+		"clone_skills":         cloneSkills,
+		"plugin_dir":           plugin,
+		"plugin_name":          pluginName,
+		"setting_sources_user": argValue("--setting-sources") == "user",
+		"strict_mcp_config":    slices.Contains(os.Args[1:], "--strict-mcp-config"),
+		"git_status":           string(gitStatus),
+		"git_exclude":          string(gitExclude),
+		"grok_env":             grok,
+		"grok_home_config":     os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
+		"at":                   time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(stateDir, 0o755)
 	f, err := os.OpenFile(filepath.Join(stateDir, "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
@@ -167,6 +191,35 @@ func record(prompt string) {
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
 	f.Write(append(line, '\n'))
 	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// skillsIn lists the skills under dir: <dir>/<name>/SKILL.md.
+func skillsIn(dir string) []string {
+	out := []string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "SKILL.md")); err == nil {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// argValue reads a flag from argv, as `--flag value` or `--flag=value`.
+func argValue(flag string) string {
+	args := os.Args[1:]
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, flag+"="); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 var (

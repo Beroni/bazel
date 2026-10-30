@@ -74,18 +74,27 @@ for repo errors in the list, publish failures, clone failures.
 
 ## Fake agent (`e2e/fakes/agent`)
 
-Reads the whole prompt from stdin, appends `{scenario, argv, cwd, prompt,
-builtin_skill, skills, grok_env, grok_home_config, at}` to
+Reads the whole prompt from stdin, appends one record to
 `$FAKE_AGENT_STATE/calls.jsonl`, waits for `$FAKE_AGENT_STATE/$FAKE_AGENT_GATE`
 if that env is set, then plays `$FAKE_AGENT_SCENARIO[.jsonl|.txt|.md]` from
 the first directory of `$FAKE_AGENT_SCENARIOS` (`fixtures/agent`, then the
 synthesized `.out/scenarios`) that has it, line by line.
 
-- `skills`: the skills present in `<cwd>/.claude/skills/*/SKILL.md` — what
-  Bazel materialized in the clone; `builtin_skill` is the same check for
-  `bazel-post-report` alone.
-- `grok_env` / `grok_home_config`: the `GROK_*` env Bazel set for a
-  `grok-stream` step and whether `$GROK_HOME/config.toml` existed.
+The record (`bazel.agentCalls()`):
+
+- `scenario`, `argv`, `cwd`, `prompt`, `at`.
+- `skills`: what the agent could load from Bazel: the `--plugin-dir` skills, or
+  `<cwd>/.claude/skills` on a base that still writes them into the clone.
+  `builtin_skill` and `builtin_skill_source` (`plugin`, `clone` or empty) say
+  whether `bazel-post-report` was there and where from.
+- `plugin_dir`, `plugin_name`: `--plugin-dir` and the name in its
+  `.claude-plugin/plugin.json`.
+- `setting_sources_user`, `strict_mcp_config`: whether the flags that confine
+  Claude Code arrived.
+- `clone_skills`, `git_status`, `git_exclude`: the clone as the agent found it.
+  With a hostile PR, `clone_skills` holds the PR's own files.
+- `grok_env`, `grok_home_config`: the `GROK_*` env Bazel set for a `grok-stream`
+  step and whether `$GROK_HOME/config.toml` existed.
 
 Lines go to stdout verbatim, except directives:
 

@@ -23,8 +23,21 @@ export interface AgentCall {
   cwd: string;
   prompt: string;
   builtin_skill: boolean;
-  /** Skills present in <cwd>/.claude/skills when the agent started. */
+  /** Where bazel-post-report came from: 'plugin', 'clone' or '' (not there). */
+  builtin_skill_source: string;
+  /** Skills the agent could load from Bazel: --plugin-dir, or the clone on older bases. */
   skills: string[];
+  /** Skills in <cwd>/.claude/skills, whoever put them there. */
+  clone_skills: string[];
+  /** --plugin-dir and the name in its .claude-plugin/plugin.json. */
+  plugin_dir: string;
+  plugin_name: string;
+  /** Confinement of the PR's own Claude Code config. */
+  setting_sources_user: boolean;
+  strict_mcp_config: boolean;
+  /** `git status --porcelain` of the clone and its .git/info/exclude. */
+  git_status: string;
+  git_exclude: string;
   /** GROK_* env Bazel passed, and whether $GROK_HOME/config.toml existed. */
   grok_env: Record<string, string>;
   grok_home_config: boolean;
@@ -276,6 +289,12 @@ export class Bazel {
   savedReviews(): string[] {
     if (!fs.existsSync(this.reviewsDir)) return [];
     return fs.readdirSync(this.reviewsDir).filter((f) => f.endsWith('.md'));
+  }
+
+  /** Per-review plugin folders left in <BAZEL_HOME>/runtime. */
+  runtimes(): string[] {
+    const dir = path.join(this.bazelHome, 'runtime');
+    return fs.existsSync(dir) ? fs.readdirSync(dir) : [];
   }
 
   /** PR clones still on disk (Bazel makes them under TMPDIR as bazel-*). */

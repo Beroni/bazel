@@ -36,6 +36,8 @@ make e2e E2E_BAZEL_SRC=../bases/redesign
 make e2e E2E_BAZEL_SRC=../bases/fixes E2E_FIXED=BUG-QA-01,BUG-QA-02
 ```
 
+`SEC-01` (Claude Code confined to user settings) is one of those ids: use
+`knownBug`, never a skip, for a security guard, so losing it turns the suite red.
 `E2E_FIXED` lists the known bugs that base has fixed: their `knownBug(...)`
 tests must then pass instead of fail. The selectors in `harness/ui.ts` work on
 both UIs (testids first, master's role/text second), so a UI difference shows
@@ -130,8 +132,8 @@ skill would print, and the test checks what Bazel does with it.
 2. Add an agent that calls the skill:
    `{ name: '<name>', task: '/<name> {{number}}', env: { FAKE_AGENT_SCENARIO: '<name>' } }`.
 3. Assert, at least: the task reached the prompt (`agentCalls()[0].prompt`),
-   the skill was materialized in the clone when it is built in
-   (`agentCalls()[0].skills` contains `<name>`), the log lines per lens, the
+   the skill reached the agent when it is built in
+   (`agentCalls()[0].skills` contains `<name>`, from `--plugin-dir`), the log lines per lens, the
    report and findings (`job.html`, `findingPicks`), the token tally, and
    whether it may publish (`job.publishable`, MCP refusal if it posts).
    `tests/p1-formats.spec.ts` › "a synthesized spec…" is the template.

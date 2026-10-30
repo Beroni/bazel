@@ -73,6 +73,7 @@ Nothing else from the developer's shell is inherited.
 | `rawRequest(method, path, headers)` | raw HTTP with a chosen `Host` header |
 | `configText()` | config.yaml as Bazel wrote it |
 | `savedReviews()` | `*.md` in `reviewsDir` |
+| `runtimes()` | per-review plugin folders left in `<BAZEL_HOME>/runtime` (should be `[]` after a run) |
 | `clones()` | `bazel-*` dirs left in `TMPDIR` (should be `[]` without `--keep`) |
 | `serverLog()` | the server's stdout+stderr |
 
