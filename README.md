@@ -119,7 +119,9 @@ From the page you can:
 
 - **tick PRs** and choose **which agent** runs over them;
 - **filter the list**: by text (title, repo or author), by ownership
-  (`everyone` / `mine only`), by repository, and by review state —
+  (`everyone` / `mine only`), by repository owner (shown only when you watch
+  more than one owner; picking one narrows the repository selector to that
+  owner's repositories), by repository, and by review state —
   `not reviewed`, `✓ reviewed`, `⟳ changed since review`. With a filter on, the
   header counter becomes `12 of 92 PRs`. Filtering never unticks anything, but
   **review** only runs on what is currently visible;
@@ -142,9 +144,12 @@ Once a review finishes, the PR is **marked in the list** — and when it gets ne
 commits afterwards, the check turns into a warning:
 
 ```
-#482  ✓ reviewed 2h · published
-#479  ⟳ changed since review
+#482  ✓ 2h ↑
+#479  ⟳ changed
 ```
+
+`✓ 2h` is how long ago it was reviewed, `↑` says the review went to the PR, and
+the tooltip names the agent.
 
 The index lives in `<BAZEL_HOME>/reviews/.index.json`, keyed by the head commit
 seen at review time.
