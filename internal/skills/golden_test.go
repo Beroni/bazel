@@ -162,26 +162,3 @@ func TestGoldenUnderBazelHeader(t *testing.T) {
 		}
 	}
 }
-
-// TestCheckReport is the Go half of scripts/bazel-check.sh: pointed at a real
-// agent's output through BAZEL_CHECK_REPORT, it prints how the page would split
-// it. Skipped in a normal run.
-func TestCheckReport(t *testing.T) {
-	path := os.Getenv("BAZEL_CHECK_REPORT")
-	if path == "" {
-		t.Skip("BAZEL_CHECK_REPORT not set")
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	n := 0
-	for _, p := range store.SplitFindings(string(data)) {
-		if p.Finding {
-			n++
-			first, _, _ := strings.Cut(strings.TrimSpace(p.Text), "\n")
-			t.Logf("finding %d: %s", n, first)
-		}
-	}
-	t.Logf("SplitFindings: %d findings", n)
-}
