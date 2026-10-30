@@ -207,10 +207,14 @@ export class Bazel {
     await this.spawn();
   }
 
-  /** Stops the server and boots a new process over the same BAZEL_HOME. */
-  async restart(): Promise<void> {
+  /**
+   * Stops the server and boots a new process over the same BAZEL_HOME. With
+   * samePort a page left open reconnects by itself, like after a real restart.
+   */
+  async restart(opts: { samePort?: boolean; downMs?: number } = {}): Promise<void> {
     await this.stop();
-    await this.spawn();
+    if (opts.downMs) await new Promise((r) => setTimeout(r, opts.downMs));
+    await this.spawn(opts.samePort ? this.port : undefined);
   }
 
   private writeConfig(): void {
@@ -225,8 +229,8 @@ export class Bazel {
     }
   }
 
-  private async spawn(): Promise<void> {
-    this.port = await freePort();
+  private async spawn(port?: number): Promise<void> {
+    this.port = port ?? (await freePort());
     const log = fs.openSync(this.logFile, 'a');
     this.proc = spawn(path.join(BIN, 'bazel'), ['--addr', `127.0.0.1:${this.port}`, '--no-splash', ...(this.opts.flags ?? [])], {
       cwd: this.root,
