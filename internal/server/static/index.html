@@ -37,15 +37,15 @@
         </label>
       </div>
       <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
-        <button data-review="all" class="on">All</button>
-        <button data-review="none" title="not reviewed yet">New</button>
-        <button data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
-        <button data-review="changed" title="got new commits after the review">Changed</button>
+        <button data-review="all" class="on" aria-pressed="true">All</button>
+        <button aria-pressed="false" data-review="none" title="not reviewed yet">New</button>
+        <button aria-pressed="false" data-review="reviewed" title="reviewed, and unchanged since">Reviewed</button>
+        <button aria-pressed="false" data-review="changed" title="got new commits after the review">Changed</button>
       </div>
       <div class="row filters">
-        <div class="segmented" id="scope" data-testid="pr-scope">
-          <button data-scope="all" class="on">everyone</button>
-          <button data-scope="mine">mine only</button>
+        <div class="segmented" id="scope" role="group" aria-label="whose PRs" data-testid="pr-scope">
+          <button data-scope="all" class="on" aria-pressed="true">everyone</button>
+          <button data-scope="mine" aria-pressed="false">mine only</button>
         </div>
         <label class="check tiny"><input type="checkbox" id="hide-drafts" data-testid="pr-hide-drafts"> hide drafts</label>
       </div>
@@ -67,9 +67,9 @@
   </aside>
 
   <section class="pane main">
-    <div class="tabs">
-      <button class="tab on" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
-      <button class="tab" data-tab="saved" data-testid="tab-saved">Saved</button>
+    <div class="tabs" role="tablist" aria-label="queue or saved reviews">
+      <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
+      <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
       <div class="spacer"></div>
       <div class="conn" id="conn" data-testid="conn-status" data-state="closed" title="event stream">●</div>
     </div>

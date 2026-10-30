@@ -1386,7 +1386,10 @@ function togglePRs(hide) {
 }
 
 function renderTabs() {
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('on', t.dataset.tab === state.tab));
+  document.querySelectorAll('.tab').forEach((t) => {
+    t.classList.toggle('on', t.dataset.tab === state.tab);
+    t.setAttribute('aria-selected', String(t.dataset.tab === state.tab));
+  });
   if (state.tab === 'saved') loadSaved(); else renderJobs();
 }
 
@@ -1687,9 +1690,13 @@ function jobHead(job) {
 
 function jobTabs(job, view) {
   const bar = el('div', 'vtabs');
+  bar.setAttribute('role', 'tablist');
+  bar.setAttribute('aria-label', 'job detail');
   const tabs = [['overview', 'Overview'], ['history', 'History'], ['log', 'Live log'], ['report', 'Report']];
   for (const [key, name] of tabs) {
     const b = el('button', 'vtab' + (key === view ? ' on' : ''), name);
+    b.setAttribute('role', 'tab');
+    b.setAttribute('aria-selected', String(key === view));
     b.dataset.view = key;
     if (key === 'report' && job.state !== 'done') {
       b.disabled = true;
@@ -1925,7 +1932,10 @@ function wire() {
   document.querySelectorAll('#review-filter button').forEach((b) => {
     b.addEventListener('click', () => {
       state.reviewFilter = b.dataset.review;
-      document.querySelectorAll('#review-filter button').forEach((x) => x.classList.toggle('on', x === b));
+      document.querySelectorAll('#review-filter button').forEach((x) => {
+        x.classList.toggle('on', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
       renderPRs();
     });
   });
@@ -1935,7 +1945,10 @@ function wire() {
   document.querySelectorAll('#scope button').forEach((b) => {
     b.addEventListener('click', () => {
       state.scope = b.dataset.scope;
-      document.querySelectorAll('#scope button').forEach((x) => x.classList.toggle('on', x === b));
+      document.querySelectorAll('#scope button').forEach((x) => {
+        x.classList.toggle('on', x === b);
+        x.setAttribute('aria-pressed', String(x === b));
+      });
       renderPRs();
     });
   });
