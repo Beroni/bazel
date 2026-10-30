@@ -326,25 +326,27 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 	md, stale, found := store.LoadHistory(s.reviewsDir, pr.Repo, pr.Number, pr.HeadRefOid)
 	if found {
 		h := store.ParseHistory(md)
+		// The history is an agent's output, as a review is: its raw HTML shows
+		// as text rather than being sanitized away out of sight.
 		v.Found, v.Stale, v.CommitsRead = true, stale, h.CommitsRead
 		if h.WhatItDoes != "" {
-			v.WhatHTML = renderMarkdown(h.WhatItDoes)
+			v.WhatHTML = renderReviewMarkdown(h.WhatItDoes)
 		}
 		for _, d := range h.Decisions {
 			dv := decisionView{N: d.N, Title: d.Title, Sha: d.Sha, Shas: d.Shas, Source: d.Source, Rejected: d.Rejected}
 			if d.Body != "" {
-				dv.BodyHTML = renderMarkdown(d.Body)
+				dv.BodyHTML = renderReviewMarkdown(d.Body)
 			}
 			v.Decisions = append(v.Decisions, dv)
 		}
 		for _, q := range h.StillOpen {
-			v.StillOpen = append(v.StillOpen, renderMarkdown(q))
+			v.StillOpen = append(v.StillOpen, renderReviewMarkdown(q))
 		}
 		if h.StillOpenNote != "" {
-			v.OpenNote = renderMarkdown(h.StillOpenNote)
+			v.OpenNote = renderReviewMarkdown(h.StillOpenNote)
 		}
 		if h.Rest != "" {
-			v.RestHTML = renderMarkdown(h.Rest)
+			v.RestHTML = renderReviewMarkdown(h.Rest)
 		}
 	}
 	writeJSON(w, http.StatusOK, v)

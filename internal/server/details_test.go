@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,7 +90,7 @@ func TestPRDetailsCacheiaPorHead(t *testing.T) {
 // nothing shows up in the Saved tab — a history is not a review.
 func TestHistorySobDemanda(t *testing.T) {
 	t.Setenv("BAZEL_HOME", t.TempDir())
-	md := "Commits read: 2\n\n## What it does\nAdds X.\n\n## Decisions\n### 1. Use Y\n- Commit: abc1234 · description\nBecause Z.\n- Rejected: W.\n\n## Still open\n- Q?\n"
+	md := "Commits read: 2\n\n## What it does\nAdds <b>X</b> ![x](https://attacker.example/p.png).\n\n## Decisions\n### 1. Use Y\n- Commit: abc1234 · description\nBecause Z.\n- Rejected: W.\n\n## Still open\n- Q?\n"
 	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; printf '%s' \"$HIST\"")
 	no := false
 	cfg.HistoryAgent = config.AgentDef{Name: "history", Task: "/history-pr {{number}}", Checkout: &no, Env: map[string]string{"HIST": md}}
@@ -129,6 +130,11 @@ func TestHistorySobDemanda(t *testing.T) {
 	if !v.Found || v.Stale || v.CommitsRead != 2 || len(v.Decisions) != 1 || v.Decisions[0].Sha != "abc1234" ||
 		len(v.Decisions[0].Rejected) != 1 || len(v.StillOpen) != 1 || v.WhatHTML == "" {
 		t.Errorf("history after the job: %s", body)
+	}
+	// An agent's raw HTML shows as text, as in a review, and no image is
+	// fetched from this machine.
+	if !strings.Contains(v.WhatHTML, "&lt;b&gt;X&lt;/b&gt;") || strings.Contains(v.WhatHTML, "<img") {
+		t.Errorf("what it does: %s", v.WhatHTML)
 	}
 	marks := store.LoadMarks(srv.reviewsDir)
 	if _, ok := marks[testPR(482).Key()]; ok {

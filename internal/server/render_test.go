@@ -110,3 +110,21 @@ func TestRenderReviewOmiteMetadadoDoAchado(t *testing.T) {
 		}
 	}
 }
+
+// A markdown image is drawn as a link to it: an <img> would be fetched
+// straight from this machine as soon as the page shows it, telling whoever
+// wrote it the user's IP. A dangerous scheme still loses its link.
+func TestImagemViraLink(t *testing.T) {
+	src := "see ![the chart](https://attacker.example/p.png) and ![](https://x.example/q.png) and ![bad](javascript:alert(1))\n"
+	for name, render := range map[string]func(string) string{"description": renderMarkdown, "review": renderReviewMarkdown} {
+		got := render(src)
+		for _, want := range []string{`<a href="https://attacker.example/p.png" rel="nofollow">image: the chart</a>`, `<a href="https://x.example/q.png" rel="nofollow">image</a>`, "image: bad"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%s: missing %q in:\n%s", name, want, got)
+			}
+		}
+		if strings.Contains(got, "<img") || strings.Contains(got, "javascript") {
+			t.Errorf("%s: %s", name, got)
+		}
+	}
+}

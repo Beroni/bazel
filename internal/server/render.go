@@ -24,6 +24,9 @@ var md = goldmark.New(
 		extension.GFM,
 		extension.Footnote,
 	),
+	goldmark.WithRendererOptions(
+		renderer.WithNodeRenderers(util.Prioritized(imageAsLink{}, 100)),
+	),
 )
 
 // reviewMD converts a review that may go to the PR. Raw HTML there is not
@@ -38,9 +41,38 @@ var reviewMD = goldmark.New(
 		extension.Footnote,
 	),
 	goldmark.WithRendererOptions(
-		renderer.WithNodeRenderers(util.Prioritized(rawHTMLAsText{}, 100)),
+		renderer.WithNodeRenderers(
+			util.Prioritized(rawHTMLAsText{}, 100),
+			util.Prioritized(imageAsLink{}, 100),
+		),
 	),
 )
+
+// imageAsLink draws a markdown image as a link to it. An <img> would be
+// fetched straight from this machine as soon as the page shows it, with no
+// proxy like GitHub's camo in between: whoever put it in a PR description, or
+// got an agent to write it, would learn the user's IP and when the page was
+// read.
+type imageAsLink struct{}
+
+func (imageAsLink) RegisterFuncs(reg renderer.NodeRendererFuncRegisterer) {
+	reg.Register(ast.KindImage, renderImage)
+}
+
+func renderImage(w util.BufWriter, source []byte, n ast.Node, entering bool) (ast.WalkStatus, error) {
+	if !entering {
+		w.WriteString("</a>")
+		return ast.WalkContinue, nil
+	}
+	img := n.(*ast.Image)
+	w.WriteString(`<a href="`)
+	w.Write(util.EscapeHTML(util.URLEscape(img.Destination, true)))
+	w.WriteString(`">image`)
+	if n.HasChildren() {
+		w.WriteString(": ")
+	}
+	return ast.WalkContinue, nil
+}
 
 // rawHTMLAsText writes the markdown's raw HTML, inline and block, as escaped
 // text. A block goes in a <pre> so it does not run into the paragraph next to
