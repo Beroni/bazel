@@ -23,6 +23,8 @@ var golden = []struct {
 }{
 	{"fleet.md", true, 4},               // 2 findings, 1 cut, 1 needs-human item
 	{"exploit-needs-human.md", true, 3}, // 1 finding, 2 needs-human items
+	// Cuts go by lines_saved alone: a major cut after a bigger minor one.
+	{"cuts-order.md", true, 5},
 	{"single-lens-clean.md", true, 0},
 	// A failure report must never pass as a review: files: 0 is rejected on
 	// purpose, and there is nothing to tick.

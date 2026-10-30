@@ -273,8 +273,10 @@ prose goes to the PR verbatim with nothing assembled at publish time.
 
 ### Order within a section
 
-By `severity` (`critical` → `major` → `minor` → `nit`), and within it in the order the lens
-returned them. In `## Cuts`, by descending `lines_saved`.
+In `## Findings`: by `severity` (`critical` → `major` → `minor` → `nit`), and within it in the
+order the lens returned them. In `## Cuts`: by descending `lines_saved` **only** — a `major` cut
+of 25 lines goes after a `minor` one of 40. Never change a `severity` or a `lines_saved` to make
+an order fit.
 
 ## The sections
 

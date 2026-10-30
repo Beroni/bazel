@@ -189,7 +189,8 @@ pending_meta == NR - 1 {
     if (("lines_saved" in got) && got["lines_saved"] + 0 > lastsaved) err(NR, "cuts go from the biggest `lines_saved` to the smallest")
     if ("lines_saved" in got) lastsaved = got["lines_saved"] + 0
   } else if ("lines_saved" in got) err(NR, "`lines_saved` only exists in `## Cuts`")
-  if ("severity" in got) {
+  # Cuts are ordered by lines_saved alone; severity orders the other sections.
+  if (cur != "Cuts" && ("severity" in got)) {
     if (SEV[got["severity"]] < lastsev) err(NR, "findings out of order: `" got["severity"] "` after a lower severity")
     lastsev = SEV[got["severity"]]
   }
