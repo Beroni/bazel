@@ -259,10 +259,10 @@ async function loadPRs(force) {
     state.prs = data.prs || [];
     state.prsLoaded = true;
     // A fresh list may mean new commits, checks or reviews: the PR pages and
-    // histories read so far are read again when next drawn (review F3). The
-    // server's own cache keeps that cheap.
-    state.details = {};
-    state.histories = {};
+    // histories read so far are read again when next drawn (review F3), and
+    // stay in use until then. The server's own cache keeps that cheap.
+    markStale(state.details);
+    markStale(state.histories);
     // The repos on the Config page say "N open"; the count is this list.
     if (!$('#page-config').hidden) renderRepos();
     state.repoErrors = data.repo_errors || [];
@@ -1918,21 +1918,25 @@ const prPath = (pr) => `/api/prs/${pr.repo.split('/').map(encodeURIComponent).jo
 // use until the new read lands.
 function lazy(cache, key, url, onReady) {
   const have = cache[key] || {};
-  if (have.loading) return have.view ? have : null;
-  if (!have.stale && (have.view || have.error)) return have;
-  cache[key] = { loading: true, view: have.view };
+  const shown = have.view || have.error ? have : null;
+  if (have.loading) return shown;
+  if (shown && !have.stale) return shown;
+  cache[key] = { loading: true, view: have.view, error: have.error };
   api(have.retry ? url + (url.includes('?') ? '&' : '?') + 'retry=1' : url)
     .then((view) => { cache[key] = { view }; onReady(); })
     .catch((err) => { cache[key] = { error: err.message }; onReady(); });
-  return have.view ? cache[key] : null;
+  return shown && cache[key];
 }
+
+const markStale = (cache) => Object.values(cache).forEach((e) => { e.stale = true; });
 
 // retryButton forgets a failed read and draws again, which reads it again.
 // retry=1 tells the server this is someone asking, so its short memory of the
 // failure does not answer in GitHub's place.
-function retryButton(cache, key, redraw) {
+function retryButton(cacheName, key, redraw) {
   const b = tid(el('button', 'btn small', 'Retry'), 'retry');
-  b.addEventListener('click', () => { cache[key] = { retry: true }; redraw(); });
+  // By name: the map may have been replaced since this button was drawn.
+  b.addEventListener('click', () => { state[cacheName][key] = { retry: true }; redraw(); });
   return b;
 }
 
@@ -1974,7 +1978,7 @@ function renderPRPage(body, pr, job, redraw) {
   main.append(desc);
   if (err) {
     const p = tid(el('p', 'dim perr'), 'pr-error');
-    p.append(document.createTextNode('Could not read the rest of the PR from GitHub: ' + err + ' '), retryButton(state.details, pr.key, redraw));
+    p.append(document.createTextNode('Could not read the rest of the PR from GitHub: ' + err + ' '), retryButton('details', pr.key, redraw));
     main.append(p);
   }
 
@@ -2123,7 +2127,7 @@ function renderHistoryView(body, job) {
   if (!got) { box.append(el('p', 'dim', 'loading the history…')); return; }
   if (got.error) {
     const e = el('div', 'error-box', 'Could not read the history: ' + got.error + ' ');
-    e.append(retryButton(state.histories, pr.key, redraw));
+    e.append(retryButton('histories', pr.key, redraw));
     box.append(e);
     return;
   }
