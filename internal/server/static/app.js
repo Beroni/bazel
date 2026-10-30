@@ -34,6 +34,8 @@ const state = {
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
   views: {},         // job id -> tab open in its detail (see jobView)
+  details: {},       // PR key -> its page (see lazy), read again after a refresh
+  histories: {},     // PR key -> its history (see lazy)
   logFilter: {},     // job id -> agent picked in the live log, '' = all
   instance: null,    // id of the server process; changes when it restarts
 };
@@ -1853,20 +1855,30 @@ function ageOf(date) {
   return Math.floor(s / 86400) + 'd';
 }
 
-// prDetails returns the PR's page if it is loaded, and starts loading it when
-// not; onReady runs once it arrives.
-function prDetails(pr, onReady) {
-  state.details = state.details || {};
-  const key = pr.key;
-  const have = state.details[key];
-  if (have && have.view) return have.view;
+// prPath is a PR's path under /api/prs/.
+const prPath = (pr) => `/api/prs/${pr.repo.split('/').map(encodeURIComponent).join('/')}/${pr.number}`;
+
+// lazy reads url once into cache[key] and returns the entry — {view} or
+// {error} — or null while it loads; onReady runs when it settles. A failure
+// stays in the cache until someone asks again (the Retry button): a redraw
+// never refetches by itself, so a PR GitHub can't serve can't loop gh calls
+// (review F1).
+function lazy(cache, key, url, onReady) {
+  const have = cache[key];
+  if (have && (have.view || have.error)) return have;
   if (have && have.loading) return null;
-  state.details[key] = { loading: true };
-  const [owner, name] = pr.repo.split('/');
-  api(`/api/prs/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${pr.number}/details`)
-    .then((view) => { state.details[key] = { view }; onReady(); })
-    .catch((err) => { state.details[key] = { error: err.message }; onReady(); });
+  cache[key] = { loading: true };
+  api(url)
+    .then((view) => { cache[key] = { view }; onReady(); })
+    .catch((err) => { cache[key] = { error: err.message }; onReady(); });
   return null;
+}
+
+// retryButton forgets a failed read and draws again, which reads it again.
+function retryButton(cache, key, redraw) {
+  const b = tid(el('button', 'btn small', 'Retry'), 'retry');
+  b.addEventListener('click', () => { delete cache[key]; redraw(); });
+  return b;
 }
 
 function sectionLabel(text, extra) {
@@ -1879,8 +1891,12 @@ function sectionLabel(text, extra) {
 // open on it: it adds Bazel's line to the timeline and a small block with the
 // review's own facts at the end.
 function renderPRPage(body, pr, job, redraw) {
-  const d = prDetails(pr, redraw);
-  const err = state.details && state.details[pr.key] && state.details[pr.key].error;
+  // A PR outside the list is only read from GitHub because you opened it
+  // (offlist=1); the server rate-limits those reads.
+  const inList = state.prs.some((p) => p.key === pr.key);
+  const got = lazy(state.details, pr.key, prPath(pr) + '/details' + (inList ? '' : '?offlist=1'), redraw);
+  const d = got && got.view;
+  const err = got && got.error;
   const page = tid(el('div', 'prpage'), 'pr-page', { prKey: pr.key, loaded: !!d });
   const main = el('div', 'prmain');
   const side = el('aside', 'prside');
@@ -1901,7 +1917,11 @@ function renderPRPage(body, pr, job, redraw) {
   const desc = el('div', 'md pdesc');
   if (html) desc.innerHTML = html; else desc.append(el('p', 'dim', d || err ? '(no description)' : 'loading the PR…'));
   main.append(desc);
-  if (err) main.append(el('p', 'dim', 'Could not read the rest of the PR from GitHub: ' + err));
+  if (err) {
+    const p = tid(el('p', 'dim perr'), 'pr-error');
+    p.append(document.createTextNode('Could not read the rest of the PR from GitHub: ' + err + ' '), retryButton(state.details, pr.key, redraw));
+    main.append(p);
+  }
 
   // ACTIVITY: opened, each commit, and Bazel's reviews of it.
   if (d) {
@@ -2039,11 +2059,17 @@ function renderLogView(body, job) {
 function renderHistoryView(body, job) {
   const pr = job.pr;
   const redraw = () => { if (state.activeJob === job.id && jobView(job) === 'history') { delete $('#viewer').dataset.sig; renderViewer(); } };
-  const h = historyOf(pr, redraw);
+  const got = lazy(state.histories, pr.key, prPath(pr) + '/history', redraw);
   const box = tid(el('div', 'history'), 'history', { prKey: pr.key });
   body.append(box);
-  if (!h) { box.append(el('p', 'dim', 'loading the history…')); return; }
-  if (h.error) { box.append(el('div', 'error-box', 'Could not read the history: ' + h.error)); return; }
+  if (!got) { box.append(el('p', 'dim', 'loading the history…')); return; }
+  if (got.error) {
+    const e = el('div', 'error-box', 'Could not read the history: ' + got.error + ' ');
+    e.append(retryButton(state.histories, pr.key, redraw));
+    box.append(e);
+    return;
+  }
+  const h = got.view;
 
   const generate = (label) => {
     const b = tid(el('button', label === 'Generate' ? 'btn primary' : 'btn small ghost link', label),
@@ -2053,7 +2079,7 @@ function renderHistoryView(body, job) {
       b.disabled = true;
       clearAlert();
       try {
-        const view = await api(`/api/prs/${pr.repo.split('/').map(encodeURIComponent).join('/')}/${pr.number}/history`, { method: 'POST' });
+        const view = await api(prPath(pr) + '/history', { method: 'POST' });
         upsertJob(view);
         delete state.histories[pr.key];
         redraw();
@@ -2150,19 +2176,6 @@ function renderHistoryView(body, job) {
   }
 }
 
-// historyOf returns a PR's history view if loaded, and loads it otherwise.
-function historyOf(pr, onReady) {
-  state.histories = state.histories || {};
-  const have = state.histories[pr.key];
-  if (have && have.view) return have.view;
-  if (have && have.error) return { error: have.error };
-  if (have && have.loading) return null;
-  state.histories[pr.key] = { loading: true };
-  api(`/api/prs/${pr.repo.split('/').map(encodeURIComponent).join('/')}/${pr.number}/history`)
-    .then((view) => { state.histories[pr.key] = { view }; onReady(); })
-    .catch((err) => { state.histories[pr.key] = { error: err.message }; onReady(); });
-  return null;
-}
 
 
 function renderReportView(v, job) {
