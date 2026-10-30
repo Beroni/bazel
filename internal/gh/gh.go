@@ -380,6 +380,7 @@ func deriveRepoFromURL(urlStr string) string {
 	}
 	return ""
 }
+
 // detailFields is what the Overview needs beyond the list: the timeline, the
 // files, who reviews, labels and checks. One `gh pr view` brings all of it.
 const detailFields = "headRefOid,createdAt,body,commits,files,reviewRequests,latestReviews,labels,statusCheckRollup"
