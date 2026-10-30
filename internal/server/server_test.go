@@ -363,6 +363,12 @@ func TestEnqueueDedupesActivePR(t *testing.T) {
 	if first.ID != second.ID {
 		t.Errorf("o mesmo PR virou dois jobs: %s e %s", first.ID, second.ID)
 	}
+	// The same PR spelled with other case (config vs GitHub) is the same job.
+	shout := testPR(482)
+	shout.Repo = strings.ToUpper(shout.Repo)
+	if again, _ := m.Enqueue(shout, false, cfg.DefaultChoice()); again.ID != first.ID {
+		t.Errorf("%s e %s viraram dois jobs: %s e %s", shout.Key(), testPR(482).Key(), first.ID, again.ID)
+	}
 
 	// With another agent, though, it's another review — and it goes into the queue.
 	cfg.Agents = []config.AgentDef{{Name: "outra-lente"}}

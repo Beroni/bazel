@@ -341,9 +341,11 @@ func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history boo
 		return jobView{}, config.ErrNoAgents
 	}
 	m.mu.Lock()
+	// The config may spell a repository as beroni/bazel and GitHub as
+	// Beroni/bazel: both are the same PR.
 	for _, id := range m.order {
 		j := m.jobs[id]
-		if j.PR.Key() == pr.Key() && j.Choice.Name == choice.Name && j.History == history &&
+		if strings.EqualFold(j.PR.Key(), pr.Key()) && j.Choice.Name == choice.Name && j.History == history &&
 			(j.State == StateQueued || j.State == StateRunning) {
 			v := j.view()
 			m.mu.Unlock()
