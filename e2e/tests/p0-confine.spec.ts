@@ -34,6 +34,7 @@ const plain2 = (name: string, args: string[]) =>
 
 const AGENTS = [
   fleet('review-fleet'),
+  fleet('own-poster', { posts: true }),
   fleet('slow-lens', { env: { FAKE_AGENT_SCENARIO: 'claude-slow' } }),
   fleet('broken-claude', { env: { FAKE_AGENT_SCENARIO: 'fail-stderr' } }),
   fleet('sources-project', { command: 'fake-agent', args: [...STREAM, '--setting-sources', 'project'] }),
@@ -70,7 +71,9 @@ const PIPELINES = [
 function expectConfined(bazel: Bazel, call: AgentCall, userArgs?: string[]) {
   // First, ahead of the user's args: after a `--` a flag would be plain text.
   expect(call.argv.slice(0, 4), call.argv.join(' ')).toEqual([...CONFINED, '--plugin-dir']);
-  if (userArgs) expect(call.argv.slice(5)).toEqual(userArgs);
+  // --disallowedTools may come next: the test of SEC-07 is the one that requires it.
+  const rest = call.argv.slice(5);
+  if (userArgs) expect(rest[0] === '--disallowedTools' ? rest.slice(2) : rest).toEqual(userArgs);
   expect(call.setting_sources_user).toBe(true);
   expect(call.strict_mcp_config).toBe(true);
   // The plugin is Bazel's, outside the PR's tree.
@@ -306,6 +309,32 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     }
     expect(bazel.agentCalls()).toEqual([]);
     expect(bazel.runtimes()).toEqual([]);
+  });
+
+  // SEC-07: an agent runs with Bash and the user's gh login, inside code the PR
+  // wrote. Commands that change a PR or a repository are denied by name, whatever
+  // the PR talks the agent into. Only a step of the user's own that publishes
+  // keeps what publishing takes; bazel-post-report calls gh from its script.
+  test('an agent cannot merge, push or publish by itself', async ({ bazel }) => {
+    knownBug('SEC-07', 'no deny list on the agent\'s commands');
+    const { id } = await reviewRuns(bazel, 'review-fleet');
+    await bazel.api('POST', `/api/jobs/${id}/publish`, {});
+    await bazel.waitJob(id, (j) => j.posted || !!j.post_error, 25_000);
+    await reviewRuns(bazel, 'own-poster', 'acme/web-app#7');
+
+    const denied = (call: AgentCall) => {
+      expect(call.argv[5], call.argv.join(' ')).toBe('--disallowedTools');
+      return call.argv[6].split(',');
+    };
+    const [review, post, poster] = bazel.agentCalls();
+    for (const call of [review, post, poster]) {
+      expect(denied(call)).toEqual(expect.arrayContaining(['Bash(gh pr merge:*)', 'Bash(gh pr close:*)', 'Bash(git push:*)', 'Bash(gh repo delete:*)']));
+    }
+    for (const call of [review, post]) {
+      expect(denied(call)).toEqual(expect.arrayContaining(['Bash(gh pr comment:*)', 'Bash(gh pr review:*)', 'Bash(gh api -X:*)', 'Bash(gh api --method:*)']));
+    }
+    expect(denied(poster)).not.toContain('Bash(gh pr comment:*)');
+    expect(denied(poster)).not.toContain('Bash(gh api --method:*)');
   });
 
   test('flags already in the args are not repeated', async ({ bazel }) => {
