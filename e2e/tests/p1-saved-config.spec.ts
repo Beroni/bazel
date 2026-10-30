@@ -168,9 +168,11 @@ test.describe('P1 · server guard', () => {
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
   });
 
-  // SEC-06: a browser says where a request comes from, and Origin does not
-  // cover GET: a page elsewhere could read /api through a DNS trick or no-cors.
-  // A client that sends no such header (curl, MCP) goes on as before.
+  // SEC-06: Origin does not cover GET, so a page on another site can still make
+  // the browser fire one. It cannot read the answer (no CORS), and a POST is
+  // refused, but `<img src=…/api/prs?refresh=1>` runs `gh search prs` with the
+  // user's login: blind, and only spends quota. A client that sends no such
+  // header (curl, MCP) goes on as before.
   test('Sec-Fetch-Site cross-site or same-site is refused on /api, and only there', async ({ bazel }) => {
     knownBug('SEC-06', '/api answers cross-site fetches');
     for (const site of ['cross-site', 'same-site']) {
