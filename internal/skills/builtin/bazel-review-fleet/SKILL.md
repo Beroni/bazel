@@ -29,8 +29,8 @@ output, failures are reports too. Everything below assumes it.
 ## Step 1 — Resolve the scope once
 
 Follow section 2 of `headless.md`: repository, PR number, base, head sha, the
-`git diff origin/<base>...HEAD` command and its file list. Take `.reviews/` and `.claude/` out
-of it. Empty → failure report, stop.
+`git diff origin/<base>...HEAD` command and its file list — every path in it, `.claude/` and
+other agent configuration included. Empty → failure report, stop.
 
 **All three lenses read this exact scope.** If each lens resolved it on its own and one landed
 somewhere else, they would have reviewed different code, and deduplicating or comparing their

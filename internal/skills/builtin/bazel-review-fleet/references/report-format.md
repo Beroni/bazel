@@ -47,8 +47,8 @@ previous runs**, and that is deliberate — it is a statement about one diff at 
 ledger. Decisions the team took on earlier findings live on the PR, in resolved threads and
 replies, and `bazel-post-report` is what reads them back.
 
-`.reviews/` and `.claude/` are never part of the change set (`headless.md`, section 2).
-Writing the report is the **only** write a review makes to the working tree: it never applies
+Every path the PR changes is part of the change set, `.claude/` included (`headless.md`,
+section 2). Writing the report is the **only** write a review makes to the working tree: it never applies
 a fix, never commits and never pushes.
 
 ## Closed vocabularies

@@ -37,9 +37,12 @@ Rules that keep that honest:
   `$(git merge-base …)`: if a ref is missing, the substitution is empty, the command collapses
   into `...HEAD` and exits 0 with zero lines, which looks exactly like a clean diff.
 - **Never guess `main` or `master`.** The base is in the prompt and in `gh pr view`.
-- **Exclude `.reviews/` and `.claude/`** from the change set. Bazel writes its skills into
-  `.claude/` and keeps it out of `git status`; a report from an earlier run lives in
-  `.reviews/`. Neither is part of the PR.
+- **Review everything the PR changes, `.claude/` included.** The diff is between commits, so
+  nothing Bazel writes for its own run can show up in it. What does show up under `.claude/`
+  (settings, hooks, agents, commands, skills), in `.mcp.json`, `CLAUDE.md`, `AGENTS.md`,
+  `.github/` or any other agent or CI configuration is the PR's own change, and it is
+  **security-relevant by default**: a hook or an MCP server there runs code on the machine of
+  whoever opens the repository with an agent. Never drop a path from the change set.
 - **An empty change set is a failure, not a clean diff.** If `git diff --name-only` comes back
   empty, try `gh pr diff <N> --name-only` once. Still empty → failure report (section 5).
 
