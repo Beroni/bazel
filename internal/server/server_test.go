@@ -2355,7 +2355,8 @@ func TestRespostasRecusamFrame(t *testing.T) {
 		}
 		if got.Get("X-Frame-Options") != "DENY" ||
 			got.Get("Content-Security-Policy") != "frame-ancestors 'none'" ||
-			got.Get("X-Content-Type-Options") != "nosniff" {
+			got.Get("X-Content-Type-Options") != "nosniff" ||
+			got.Get("Referrer-Policy") != "no-referrer" {
 			t.Errorf("%s (%d): headers %v", c.name, w.Code, got)
 		}
 	}
