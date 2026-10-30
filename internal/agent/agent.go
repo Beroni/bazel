@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -152,6 +154,29 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}
 	total := len(choice.Steps)
 
+	// Before the clone and before any step: one bad step refuses the whole job,
+	// instead of failing midway through a review that can still be published.
+	for _, s := range choice.Steps {
+		err := checkLauncher(s)
+		if err == nil {
+			err = checkClaudeConfigDir(s, "")
+		}
+		if err == nil {
+			err = checkSettingSources(s.Args)
+		}
+		if err == nil {
+			err = checkPathFlags(s.Args, "")
+		}
+		if err != nil {
+			return Result{}, fmt.Errorf("`%s`: %w", s.Name, err)
+		}
+	}
+	// The publishing skill works over the PR's clone (it checks that the repo it
+	// is about to comment on is the PR's): without one it has nothing to check.
+	if step := builtinSemClone(choice); step != "" {
+		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel that works over the PR's clone — turn checkout on for it, or point it at a skill of your own", step)
+	}
+
 	var workdir string
 	if choice.NeedsCheckout() {
 		emit(Event{Kind: EventClone, Total: total, Name: pr.Key()})
@@ -164,17 +189,28 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		workdir = ws.Dir
 	}
 
-	// An embedded skill only exists inside the binary; Claude Code finds it on
-	// disk, in the working directory's .claude/skills. Its place is the PR's
-	// clone: it's born and dies with it, and the machine of whoever runs Bazel
-	// doesn't get anything in ~/.claude that nobody asked for.
-	if step := builtinSemClone(choice); step != "" {
-		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel, which needs the PR clone to be found — turn checkout on for it, or point it at a skill of your own", step)
+	// Now that the clone has a path: a flag that reads a file from it hands the
+	// PR's content to the agent as configuration.
+	for _, s := range choice.Steps {
+		if err := checkPathFlags(s.Args, workdir); err != nil {
+			return Result{}, fmt.Errorf("`%s`: %w", s.Name, err)
+		}
 	}
-	if workdir != "" && usaBuiltin(choice) {
-		if err := skills.Materialize(workdir); err != nil {
+
+	// Claude Code gets the embedded skills as a plugin in a folder of Bazel's,
+	// never in the clone, and that folder goes with the review — on success,
+	// error or cancel alike.
+	var plugin string
+	if runsClaudeAnywhere(choice) {
+		dir, err := newRuntime()
+		if err != nil {
 			return Result{}, err
 		}
+		defer os.RemoveAll(dir)
+		if err := skills.Materialize(dir); err != nil {
+			return Result{}, err
+		}
+		plugin = dir
 	}
 
 	diff, truncated, err := r.material(ctx, pr, choice)
@@ -188,6 +224,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// review's.
 	var fechado Usage
 	stopped := -1
+	neutralized := map[string]bool{}
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
@@ -198,12 +235,43 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
 
+		// Right before the agent starts, inside exec, with nothing in between:
+		// an earlier step can run commands in the clone, bring the files back
+		// with a git checkout, or swap a path the args name for a link into the
+		// clone. A step that does not pass stops the review: an agent never
+		// runs next to the PR's configuration.
+		guard := func() (string, error) {
+			if workdir == "" {
+				return "", nil
+			}
+			removed, err := workspace.Neutralize(workdir)
+			if err != nil {
+				return "", fmt.Errorf("%w: neutralizing the PR's agent configuration: %w", errRefused, err)
+			}
+			if len(removed) > 0 {
+				for _, rel := range removed {
+					neutralized[rel] = true
+				}
+				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
+					Text: "· removed from the clone, so that no agent runs them: " + logPaths(removed)})
+			}
+			err = checkPathFlags(step.Args, workdir)
+			if err == nil {
+				err = checkClaudeConfigDir(step, workdir)
+			}
+			if err != nil {
+				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
+			}
+			return neutralizedNote(len(neutralized)), nil
+		}
+
 		dir := workdir
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
+		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra)
 		stepStart := time.Now()
-		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir,
+		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -219,6 +287,12 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			func(l Limits) {
 				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
+		// A refused step ends the job: it must not turn into one failed section
+		// of a review that can still be published.
+		if errors.Is(err, errRefused) {
+			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
+			return Result{}, err
+		}
 		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
@@ -258,20 +332,375 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}, nil
 }
 
-// usaBuiltin says whether any step calls a skill that shipped in the binary.
-func usaBuiltin(choice config.Choice) bool {
+// gitGuard is the git configuration of every agent with a clone, the second
+// line behind gitGuardEnv's GIT_DIR: it comes in through the environment, so no
+// config of the PR's overrides it. safe.bareRepository only exists from git 2.38.
+var gitGuard = [][2]string{
+	{"safe.bareRepository", "explicit"},
+	{"core.fsmonitor", "false"},
+	{"core.hooksPath", "/dev/null"},
+}
+
+// gitGuardEnv returns the variables that pin git to the clone and add gitGuard
+// to env, after any entries GIT_CONFIG_COUNT already has there: the user's stay,
+// and the last one wins.
+//
+// A folder the PR versions can be a repository of its own, with a HEAD and a
+// config, and git obeys that config inside it: diff.external on a `git diff`, an
+// alias, core.sshCommand, core.fsmonitor on a `git status`. With GIT_DIR and
+// GIT_WORK_TREE git never looks for a repository, in any folder and on any
+// version, so the only config it reads is the clone's. gh and `git -C` work
+// as usual; git in another repository does not, which a throwaway clone can
+// live with.
+func gitGuardEnv(env []string, clone string) []string {
+	base := 0
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				base = n
+			}
+		}
+	}
+	out := []string{"GIT_DIR=" + filepath.Join(clone, ".git"), "GIT_WORK_TREE=" + clone}
+	for i, kv := range gitGuard {
+		out = append(out, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", base+i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", base+i, kv[1]))
+	}
+	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
+}
+
+// agentGrace is how long an agent's process and pipes get to finish once it has
+// exited or been killed.
+const agentGrace = 5 * time.Second
+
+// errRefused marks a step Bazel would not start: the whole job stops, instead of
+// that step failing inside a review.
+var errRefused = errors.New("refused to start the agent")
+
+// neutralizedNote tells the agent why those paths are missing from the working
+// tree. The review still covers them: they are the PR's change like any other,
+// and the ones a reviewer most wants to read. It gives their number and never
+// their names: a path is the PR's text, and in the prompt, in Bazel's voice, it
+// would be an instruction. The names are in the job's log.
+func neutralizedNote(n int) string {
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("\n\nBazel removed %d path(s) from the working tree before you ran (.claude, .codex, .grok and "+
+		".mcp.json, at any depth), because agent CLIs execute them. They are still in git and still part of the review: "+
+		"the diff shows them, and `git show HEAD:<path>` reads them.", n)
+}
+
+// logPaths writes paths for one line of the job's log: at most maxLoggedPaths,
+// and any that is not plain text quoted, so a file name cannot fake a line.
+func logPaths(paths []string) string {
+	shown := paths
+	if len(shown) > maxLoggedPaths {
+		shown = shown[:maxLoggedPaths]
+	}
+	out := make([]string, 0, len(shown)+1)
+	for _, p := range shown {
+		if q := strconv.Quote(p); q != `"`+p+`"` {
+			p = q
+		}
+		out = append(out, p)
+	}
+	if extra := len(paths) - len(shown); extra > 0 {
+		out = append(out, fmt.Sprintf("and %d more", extra))
+	}
+	return strings.Join(out, ", ")
+}
+
+// maxLoggedPaths caps what one PR can put in the log.
+const maxLoggedPaths = 20
+
+// runsClaude says whether a step runs Claude Code: its command is `claude`, or
+// resolves to it, or it speaks Claude's stream-json. Only the command and the
+// format count, never the args: a `--model claude` on another CLI is not Claude
+// Code, and flags injected there break it. A command that shows neither (a
+// wrapper called `cc`) counts as another CLI, and so does a shell, whose
+// `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
+// protects those runs.
+func runsClaude(step config.ResolvedAgent) bool {
+	if isShell(step.Command) || isLauncher(step.Command) {
+		return false
+	}
+	return isClaudeCommand(step.Command) || outputFormat(step.Format, step.Args) == "claude-stream"
+}
+
+// programName is a command's base name as a program: lower case, because the
+// macOS and Windows filesystems ignore case, and with no Windows extension.
+func programName(command string) string {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// isClaudeCommand says whether command is Claude Code, by name or through PATH
+// and symlinks: an npm install ends in its package, the native one in
+// ~/.local/share/claude/versions/<version>, where the file is the version.
+func isClaudeCommand(command string) bool {
+	if programName(command) == "claude" {
+		return true
+	}
+	path, err := exec.LookPath(command)
+	if err != nil {
+		return false
+	}
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return false
+	}
+	slashed := filepath.ToSlash(real)
+	return programName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
+		strings.Contains(slashed, "/claude/versions/")
+}
+
+// isShell says whether command is a shell.
+func isShell(command string) bool {
+	switch programName(command) {
+	case "sh", "bash", "zsh", "dash", "ksh", "fish":
+		return true
+	}
+	return false
+}
+
+// isLauncher says whether command picks what it runs at run time. With the
+// clone as working directory, that choice is the PR's: npx runs the
+// node_modules the PR versions, an .npmrc points the registry at its server,
+// and a .yarnrc runs a file of its own — all before any flag of Bazel's counts.
+func isLauncher(command string) bool {
+	switch programName(command) {
+	case "npx", "npm", "pnpx", "pnpm", "yarn", "bun", "bunx", "uv", "uvx", "pipx", "env":
+		return true
+	}
+	return false
+}
+
+// checkLauncher refuses a command that would decide inside the clone what to
+// run: a launcher, or a relative path, which resolves in the clone too.
+func checkLauncher(step config.ResolvedAgent) error {
+	if !step.Checkout {
+		return nil
+	}
+	if isLauncher(step.Command) {
+		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", step.Command)
+	}
+	if strings.ContainsAny(step.Command, `/\`) && !filepath.IsAbs(step.Command) {
+		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", step.Command)
+	}
+	return nil
+}
+
+// runsClaudeAnywhere says whether any step of the choice runs Claude Code.
+func runsClaudeAnywhere(choice config.Choice) bool {
 	for _, s := range choice.Steps {
-		if skills.IsBuiltin(skills.TaskSkill(s.Task)) {
+		if s.Reserved == "" && runsClaude(s) {
 			return true
 		}
 	}
 	return false
 }
 
-// builtinSemClone returns the step that calls an embedded skill without a clone
-// to write it into — without the PR's working directory it has nowhere to
-// exist, and writing it into the folder of whoever ran Bazel would be littering
-// someone else's project.
+// newRuntime creates the folder one review's embedded skills are written to,
+// under <BAZEL_HOME>/runtime: Bazel's own, outside the PR's clone, and only
+// readable by the user.
+func newRuntime() (string, error) {
+	home, err := config.Dir()
+	if err != nil {
+		return "", err
+	}
+	// Absolute: the agent runs with the clone as its working directory, and a
+	// relative BAZEL_HOME would point --plugin-dir inside it.
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Join(home, "runtime")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(parent, "")
+}
+
+// confineClaude adds the flags that keep the PR's own Claude Code
+// configuration from running on this machine, whatever args the user set:
+//
+//   - --setting-sources user: the clone's .claude/settings.json is never read,
+//     so its hooks (which run shell commands, with the user's gh login at hand),
+//     permissions and env do not apply;
+//   - --strict-mcp-config: MCP servers come only from --mcp-config, never from
+//     the clone's .mcp.json, which a PR can also switch on from its settings;
+//   - --plugin-dir: the embedded skills, which --setting-sources user would
+//     otherwise hide along with the clone's .claude/skills.
+//
+// The flags go first and never at the end: after a `--`, anything is plain text
+// to the CLI, and an appended flag would look added and do nothing. For the same
+// reason a flag found after a `--` does not count as already there.
+// checkSettingSources has already refused any --setting-sources but user.
+func confineClaude(args []string, plugin string) []string {
+	own := args
+	if end := slices.Index(args, "--"); end >= 0 {
+		own = args[:end]
+	}
+	var flags []string
+	if !slices.ContainsFunc(own, func(a string) bool {
+		return a == "--setting-sources" || strings.HasPrefix(a, "--setting-sources=")
+	}) {
+		flags = append(flags, "--setting-sources", "user")
+	}
+	if !slices.Contains(own, "--strict-mcp-config") {
+		flags = append(flags, "--strict-mcp-config")
+	}
+	if plugin != "" {
+		flags = append(flags, "--plugin-dir", plugin)
+	}
+	return slices.Concat(flags, args)
+}
+
+// checkSettingSources refuses a --setting-sources other than user, wherever it
+// is in the args: there is no safe way to honor one that reads the project.
+func checkSettingSources(args []string) error {
+	for i, a := range args {
+		value, found := "", false
+		switch {
+		case a == "--setting-sources":
+			found = true
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
+		case strings.HasPrefix(a, "--setting-sources="):
+			found, value = true, strings.TrimPrefix(a, "--setting-sources=")
+		}
+		if found && strings.TrimSpace(value) != "user" {
+			return fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
+		}
+	}
+	return nil
+}
+
+// checkClaudeConfigDir refuses a CLAUDE_CONFIG_DIR, set on the step or inherited,
+// that is relative or inside the clone: it is where `--setting-sources user`
+// reads the user's settings, so there it would read the PR's, hooks included.
+func checkClaudeConfigDir(step config.ResolvedAgent, clone string) error {
+	dir, ok := step.Env["CLAUDE_CONFIG_DIR"]
+	if !ok {
+		dir = os.Getenv("CLAUDE_CONFIG_DIR")
+	}
+	if dir == "" {
+		return nil
+	}
+	if !filepath.IsAbs(dir) {
+		return fmt.Errorf("CLAUDE_CONFIG_DIR %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", dir)
+	}
+	if clone != "" && insideDir(dir, clone) {
+		return fmt.Errorf("CLAUDE_CONFIG_DIR %q is inside the PR's clone, where the PR controls the settings: point it outside", dir)
+	}
+	return nil
+}
+
+// pathFlags are the CLI flags whose value is read as configuration: settings
+// with hooks, MCP servers that start commands, plugins, agents, folders the
+// agent gets access to, system prompts. In a file the PR controls, each one is
+// the PR configuring the agent.
+var pathFlags = []string{
+	"--settings", "--mcp-config", "--plugin-dir", "--plugin-dir-no-mcp", "--add-dir", "--agents",
+	"--project-config-root", "--append-system-prompt-file", "--system-prompt-file",
+	"--append-subagent-system-prompt-file",
+}
+
+// variadicPathFlags take several values in a row.
+var variadicPathFlags = []string{"--mcp-config", "--add-dir"}
+
+// pathValues returns the values args gives flag, in both spellings.
+func pathValues(args []string, i int, flag string) ([]string, bool) {
+	if v, ok := strings.CutPrefix(args[i], flag+"="); ok {
+		return []string{v}, true
+	}
+	if args[i] != flag {
+		return nil, false
+	}
+	var values []string
+	for _, v := range args[i+1:] {
+		if strings.HasPrefix(v, "-") && v != "-" {
+			break
+		}
+		values = append(values, v)
+		if !slices.Contains(variadicPathFlags, flag) {
+			break
+		}
+	}
+	return values, true
+}
+
+// checkPathFlags refuses a pathFlag in the args of any step unless its value
+// is an absolute path outside the clone. A relative path resolves inside the
+// clone, where the agent runs; so does anything that is not a path at all,
+// like the inline JSON --settings and --mcp-config also take, which a config
+// has no reason to need here and which cannot be told apart from a mistake.
+// /proc and /dev/fd are refused too: they lead to the process's cwd, the clone.
+func checkPathFlags(args []string, clone string) error {
+	for i := range args {
+		for _, flag := range pathFlags {
+			values, found := pathValues(args, i, flag)
+			if !found {
+				continue
+			}
+			if len(values) == 0 {
+				return fmt.Errorf("%s has no value: it must be an absolute path outside the PR's clone", flag)
+			}
+			for _, v := range values {
+				if !filepath.IsAbs(v) {
+					return fmt.Errorf("%s %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it, where the PR controls the file", flag, v)
+				}
+				if strings.HasPrefix(v, "/proc/") || strings.HasPrefix(v, "/dev/fd/") {
+					return fmt.Errorf("%s %q leads to the process's working directory, the PR's clone: point it at a real file outside", flag, v)
+				}
+				if clone != "" && insideDir(v, clone) {
+					return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the file: point it outside", flag, v)
+				}
+				if info, err := os.Lstat(v); err == nil && info.Mode()&os.ModeSymlink != 0 {
+					if _, err := filepath.EvalSymlinks(v); err != nil {
+						return fmt.Errorf("%s %q is a link that leads nowhere, so it cannot be checked: point it at a real file outside the PR's clone", flag, v)
+					}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// insideDir says whether path is dir or below it, comparing the paths as
+// written and with symlinks resolved: on macOS the temp folder is itself a
+// link, and a path outside can link back in, in any of its folders.
+func insideDir(path, dir string) bool {
+	within := func(p, d string) bool {
+		rel, err := filepath.Rel(d, p)
+		return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+	}
+	return within(filepath.Clean(path), filepath.Clean(dir)) || within(resolveExisting(path), resolveExisting(dir))
+}
+
+// resolveExisting resolves symlinks in the longest part of path that exists:
+// a file not there yet, under a folder that links into the clone, is in the
+// clone all the same.
+func resolveExisting(path string) string {
+	path = filepath.Clean(path)
+	for prefix, rest := path, ""; ; {
+		if real, err := filepath.EvalSymlinks(prefix); err == nil {
+			return filepath.Join(real, rest)
+		}
+		parent := filepath.Dir(prefix)
+		if parent == prefix {
+			return path
+		}
+		prefix, rest = parent, filepath.Join(filepath.Base(prefix), rest)
+	}
+}
+
+// builtinSemClone returns the step that calls an embedded skill with checkout
+// off: the publishing skill checks the PR's clone, so it needs one.
 func builtinSemClone(choice config.Choice) string {
 	for _, s := range choice.Steps {
 		if !s.Checkout && skills.IsBuiltin(skills.TaskSkill(s.Task)) {
@@ -426,7 +855,7 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -455,24 +884,51 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		defer os.RemoveAll(createdHome)
 	}
 
-	cmd := exec.CommandContext(ctx, step.Command, step.Args...)
+	args := step.Args
+	if runsClaude(step) {
+		args = confineClaude(step.Args, plugin)
+	}
+	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory
-	cmd.Stdin = strings.NewReader(prompt)
-	if len(step.Env) > 0 {
+	if len(step.Env) > 0 || workdir != "" {
 		cmd.Env = os.Environ()
 		for k, v := range step.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
 	}
-	stdout, err := cmd.StdoutPipe()
+	if workdir != "" {
+		cmd.Env = append(cmd.Env, gitGuardEnv(cmd.Env, workdir)...)
+	}
+	// Pipes of our own, not StdoutPipe: Wait has to return when the agent exits,
+	// even if something it left behind still holds its output open.
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return "", Usage{}, err
 	}
-	stderr, err := cmd.StderrPipe()
+	defer stdout.Close()
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
+		stdoutW.Close()
 		return "", Usage{}, err
 	}
-	if err := cmd.Start(); err != nil {
+	defer stderr.Close()
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	cmd.WaitDelay = agentGrace // a child holding stdin must not hold Wait
+	ownProcessGroup(cmd)
+
+	// The last thing before the process: the smaller the gap between checking
+	// the clone and reading it, the less there is to race.
+	note, err := guard()
+	if err != nil {
+		stdoutW.Close()
+		stderrW.Close()
+		return "", Usage{}, err
+	}
+	cmd.Stdin = strings.NewReader(prompt + note)
+	err = cmd.Start()
+	stdoutW.Close()
+	stderrW.Close()
+	if err != nil {
 		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
 
@@ -515,9 +971,18 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		})
 	}()
 
-	// The pipes have to reach EOF before Wait: it closes them.
-	wg.Wait()
+	// However the agent ends — done, failed, cancelled, out of time — what it
+	// left running dies with it. Between steps the clone must stay as the guard
+	// left it, and a background process could write to it. That also closes the
+	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
+	killProcessGroup(cmd)
+	stray := time.AfterFunc(agentGrace, func() {
+		stdout.Close()
+		stderr.Close()
+	})
+	wg.Wait()
+	stray.Stop()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)

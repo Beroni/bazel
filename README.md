@@ -197,10 +197,11 @@ restart.
 
 One entry in that list is marked **in Bazel** and is never `✗`:
 `bazel-post-report`, the skill that takes a review you have read to the PR. It
-travels inside the binary and is written into the PR's throwaway clone —
-`.claude/skills/bazel-post-report/` — right before the agent runs, which is
-where Claude Code looks for a project's skills. Nothing is installed on your
-machine, and nothing is left behind when the clone goes.
+travels inside the binary and, right before a Claude Code agent runs, is
+written as a Claude Code plugin into a folder of Bazel's —
+`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone — that the agent loads with
+`--plugin-dir`. Nothing is installed on your machine, and the folder is removed
+when the review ends, however it ends.
 
 This is what makes **publish** true on a machine that has never installed a
 skill. Before it existed, the default `post_agent` called a `/post-report` that
@@ -663,6 +664,18 @@ agents:
 > out the scope. The agent runs in a throwaway clone and review skills are
 > read-only: they report, they don't fix.
 
+> **The PR's own agent configuration.** Bazel adds
+> `--setting-sources user --strict-mcp-config` to every step it recognizes as
+> Claude Code (see [Security model](#security-model)). The other CLIs have their own rules:
+> Codex loads a project's `.codex/` layers (config, hooks, rules) only when the
+> project is trusted, and the clone is a fresh temporary path — do not mark a
+> parent of your temp directory as trusted in `~/.codex/config.toml`. Bazel also
+> removes `.codex/` and `.grok/` from the clone either way. Grok runs
+> with Bazel's own `GROK_HOME`, with Claude and Cursor compatibility (skills,
+> agents, hooks, MCP, rules) turned off. Codex still reads the PR's `AGENTS.md`
+> as instructions, and any CLI reads the PR's files: a review of an untrusted PR
+> is a run over untrusted text.
+
 ## Environment variables
 
 | Variable | Effect |
@@ -680,6 +693,72 @@ loopback, rejects a `Host` that isn't local (blocking DNS rebinding) and rejects
 `POST` from another origin (blocking a random tab from firing reviews in your
 name). `/mcp` sits behind the same checks. Don't put this behind a public IP
 without authentication in front.
+
+**The PR's own agent configuration does not run.** The agent works inside the
+clone of someone else's PR, and a PR can ship a `.claude/settings.json` whose
+hooks run shell commands — with your `gh` login at hand —, a `.mcp.json` that
+starts a server, or a command that runs one when it expands. Three things stop
+that, in layers, and the first is the one that does not depend on knowing which
+CLI is running:
+
+- **It is not there.** Right before each step starts, of any CLI, Bazel removes
+  every `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
+  clone's working tree, at any depth (Claude Code also finds a nested
+  `.claude/skills`) and in any spelling the disk folds into those names (on
+  macOS, `.CLAUDE` is `.claude`), without following symlinks. The job's log says
+  what went.
+  They stay in git, so a review still sees them in the diff and with
+  `git show HEAD:<path>`, and the agent is told so. If they cannot be removed,
+  the review stops.
+- **Claude Code is told to ignore it.** A step whose command is `claude`, or
+  resolves to it through `PATH` and symlinks, or that speaks Claude's stream-json
+  (`format: claude-stream`, or that output in its `args` with no format) gets
+  `--setting-sources user --strict-mcp-config --plugin-dir <runtime>` ahead of
+  your `args`, and the built-in skills arrive as a plugin from outside the
+  clone. Any other command, like a wrapper called `cc`, has the first layer only.
+- **Nothing points back into the clone.** Every step is checked before the clone
+  is even made, and again right before it starts, with symlinks resolved: an
+  earlier step can turn a safe path into a link. One bad step refuses the whole
+  job. Another `--setting-sources` is refused, and so is `--settings`,
+  `--mcp-config`, `--plugin-dir`, `--add-dir`, the other flags that read
+  configuration, and `CLAUDE_CONFIG_DIR`, with anything but an absolute path
+  outside the clone.
+- **No launchers in the clone.** With checkout on, `npx`, `bunx`, `npm`, `pnpm`,
+  `yarn`, `uvx`, `pipx`, `env` and relative paths are refused as a `command`,
+  before the clone: they decide what to run from the working directory, and the
+  PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
+  `command` at an installed binary, and set variables with `env:`.
+- **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
+  `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
+  `core.fsmonitor=false` and `core.hooksPath=/dev/null` through `GIT_CONFIG_*`,
+  after your own entries. A repository the PR nests in a folder would otherwise
+  run its own config on an ordinary `git diff` or `git status`. `gh` and `git -C`
+  work as usual; a test suite that creates repositories of its own will not.
+  The pin works on any git; 2.38 or newer is recommended, because
+  `safe.bareRepository` does nothing before that.
+
+What is still on you:
+
+- **`sh -c` as a command is your own.** A shell takes no flags for what it calls,
+  so `sh -c 'claude …'` runs with the first layer only, and anything your script
+  does is yours.
+- **Your own hooks run in the clone.** `--setting-sources user` keeps your
+  `~/.claude`: your skills, agents, plugins and hooks load, and your hooks run
+  with the hostile clone as their working directory. A hook that calls a
+  formatter, `npx` or `make` runs the PR's config or scripts with your login.
+- **A step can leave something running only by leaving on purpose.** Each agent
+  runs in a process group of its own, killed when the step ends, however it ends,
+  and when Bazel shuts down, closing the terminal included. A process that
+  starts its own session with `setsid` escapes that, and could still write to
+  the clone.
+- **The agent still reads what the PR says.** A confined Claude Code does not
+  load the PR's `CLAUDE.md`, but an unrecognized wrapper does, and any agent
+  reads the PR's code and comments. That is prompt injection, not execution, but
+  the agent has `Bash` and your `gh` login: be careful with PRs from people you
+  do not trust.
+- **Codex and Grok.** See [Using another agent CLI](#using-another-agent-cli).
+  Their project folders are removed; what else each one reads from a repository
+  has not been verified against the real CLIs.
 
 ## Development
 

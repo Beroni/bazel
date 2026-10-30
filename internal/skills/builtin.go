@@ -24,10 +24,10 @@ var builtinFS embed.FS
 // builtinRoot is the folder inside the embed.
 const builtinRoot = "builtin"
 
-// SkillsSubdir is where Claude Code looks for a project's skills, relative
-// to the agent's working directory. One level only: `.claude/skills/<name>/`
-// is discovered, `.claude/skills/<group>/<name>/` is not.
-const SkillsSubdir = ".claude/skills"
+// PluginName is the Claude Code plugin the embedded skills are packaged as.
+// Claude Code also finds a plugin's skills by their bare name, so a task keeps
+// calling `/bazel-post-report`.
+const PluginName = "bazel"
 
 // Builtin lists the embedded skills, in alphabetical order.
 func Builtin() []Skill {
@@ -63,72 +63,66 @@ func IsBuiltin(name string) bool {
 	return false
 }
 
-// Materialize writes the embedded skills to <dir>/.claude/skills, which is
-// where Claude Code finds them when it runs with dir as its working directory.
+// Materialize writes the embedded skills into dir as a Claude Code plugin —
+// dir/.claude-plugin/plugin.json, dir/skills/<name>/…, and any
+// dir/agents/<name>.md — for the agent to load with --plugin-dir.
 //
-// dir is the PR's temporary clone: the skill is born and dies with it, and the
-// machine running Bazel gains nothing in ~/.claude/skills that the person did
-// not ask for. The files also go into the clone's exclude, so they don't show
-// up in the `git status` of an agent that looks at it.
+// dir is a fresh folder Bazel owns, outside the PR's clone. Nothing is
+// written to the clone: it is the PR author's tree, where a directory can be
+// a symlink pointing anywhere, and where Claude Code would also read the PR's
+// own .claude/ (settings, hooks, skills) next to Bazel's. The agent runs with
+// --setting-sources user, which ignores that project configuration, and finds
+// the embedded skills through the plugin instead.
 func Materialize(dir string) error {
 	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("no working directory to materialize the built-in skills into")
+		return fmt.Errorf("no directory to materialize the built-in skills into")
+	}
+	manifest := fmt.Sprintf("{\n  \"name\": %q,\n  \"description\": \"Skills that ship inside Bazel\"\n}\n", PluginName)
+	if err := writeFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest)); err != nil {
+		return fmt.Errorf("writing the built-in plugin into %s: %w", dir, err)
 	}
 	err := fs.WalkDir(builtinFS, builtinRoot, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
+		if err != nil || d.IsDir() {
 			return err
 		}
 		rel, err := filepath.Rel(builtinRoot, p)
 		if err != nil {
 			return err
 		}
-		if rel == "." {
-			return nil
-		}
-		dest := filepath.Join(dir, SkillsSubdir, rel)
-		if d.IsDir() {
-			return os.MkdirAll(dest, 0o755)
-		}
 		data, err := builtinFS.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		if err := writeFile(filepath.Join(dir, "skills", rel), data); err != nil {
 			return err
 		}
-		return os.WriteFile(dest, data, 0o644)
+		// A subagent is found by name, not by the skill that uses it: the
+		// plugin's agents/ is where Claude Code looks.
+		if agent, ok := agentFile(rel); ok {
+			return writeFile(filepath.Join(dir, "agents", agent), data)
+		}
+		return nil
 	})
 	if err != nil {
 		return fmt.Errorf("writing the built-in skills into %s: %w", dir, err)
 	}
-	excludeClaude(dir)
 	return nil
 }
 
-// excludeClaude adds .claude/ to the clone's exclude. It is best effort: the
-// clone is disposable, and an agent that runs `git status` has no reason to
-// see the skill Bazel just wrote there. Without a repository, there is nothing to do.
-func excludeClaude(dir string) {
-	info := filepath.Join(dir, ".git", "info")
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err != nil {
-		return
+// writeFile writes data to path, creating the folders on the way.
+func writeFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
 	}
-	if err := os.MkdirAll(info, 0o755); err != nil {
-		return
+	return os.WriteFile(path, data, 0o644)
+}
+
+// agentFile says whether rel (relative to the embed root) is a subagent
+// definition — `<skill>/agents/<name>.md` — and returns its file name.
+func agentFile(rel string) (string, bool) {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	if len(parts) != 3 || parts[1] != "agents" || !strings.HasSuffix(parts[2], ".md") {
+		return "", false
 	}
-	path := filepath.Join(info, "exclude")
-	atual, _ := os.ReadFile(path)
-	if strings.Contains(string(atual), "\n.claude/") || strings.HasPrefix(string(atual), ".claude/") {
-		return
-	}
-	linha := ".claude/\n"
-	if len(atual) > 0 && !strings.HasSuffix(string(atual), "\n") {
-		linha = "\n" + linha
-	}
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	f.WriteString(linha)
+	return parts[2], true
 }

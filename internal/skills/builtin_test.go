@@ -38,62 +38,54 @@ func TestBuiltinTrazAPostReport(t *testing.T) {
 	}
 }
 
-// Materialize writes into the clone, where Claude Code looks for the project's
-// skills. Only one level below .claude/skills: nesting is not discovered.
-func TestMaterializeEscreveNoClone(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, ".git", "info"), 0o755); err != nil {
-		t.Fatalf("preparando o clone falso: %v", err)
-	}
-
+// Materialize writes a Claude Code plugin into the folder it is given, and
+// nowhere else: that folder is Bazel's, outside the PR's clone.
+func TestMaterializeWritesAPlugin(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "runtime-x")
 	if err := Materialize(dir); err != nil {
 		t.Fatalf("Materialize: %v", err)
 	}
 
-	skill := filepath.Join(dir, ".claude", "skills", "bazel-post-report", "SKILL.md")
-	data, err := os.ReadFile(skill)
+	manifest, err := os.ReadFile(filepath.Join(dir, ".claude-plugin", "plugin.json"))
 	if err != nil {
-		t.Fatalf("a skill devia estar em %s: %v", skill, err)
+		t.Fatalf("plugin.json: %v", err)
+	}
+	if !strings.Contains(string(manifest), `"name": "bazel"`) {
+		t.Errorf("the plugin is named %q: %s", PluginName, manifest)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "skills", "bazel-post-report", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("the skill should be in the plugin's skills/: %v", err)
 	}
 	if !strings.Contains(string(data), "name: bazel-post-report") {
-		t.Error("o SKILL.md escrito devia ser o embarcado")
+		t.Error("the SKILL.md written should be the embedded one")
 	}
 
-	// The clone is disposable, but an agent that runs `git status` in it has no
-	// reason to see the skill Bazel just wrote.
-	exclude, err := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
-	if err != nil {
-		t.Fatalf("exclude: %v", err)
+	// Nothing outside dir: no .claude/, no .git/info/exclude, nothing next to it.
+	entries, _ := os.ReadDir(parent)
+	if len(entries) != 1 || entries[0].Name() != "runtime-x" {
+		t.Errorf("Materialize wrote outside its folder: %v", entries)
 	}
-	if !strings.Contains(string(exclude), ".claude/") {
-		t.Errorf("o .claude devia entrar no exclude do clone: %q", exclude)
+	if err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err == nil && (d.Name() == ".claude" || d.Name() == ".git") {
+			t.Errorf("Materialize wrote %s, which is a project's, not a plugin's", p)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
 	}
 
-	// Running again is idempotent: same skill, a single line in the exclude.
+	// Running again over the same folder is harmless.
 	if err := Materialize(dir); err != nil {
-		t.Fatalf("Materialize duas vezes: %v", err)
-	}
-	exclude2, _ := os.ReadFile(filepath.Join(dir, ".git", "info", "exclude"))
-	if strings.Count(string(exclude2), ".claude/") != 1 {
-		t.Errorf("o exclude não devia acumular linha: %q", exclude2)
+		t.Fatalf("Materialize twice: %v", err)
 	}
 }
 
-// Without a working directory there is nowhere to write, and writing to the
-// folder of whoever ran Bazel would mean dirtying someone else's project.
-func TestMaterializeRecusaSemDiretorio(t *testing.T) {
+// Without a folder there is nowhere to write, and the current directory —
+// maybe someone's project — is not a fallback.
+func TestMaterializeRefusesNoDir(t *testing.T) {
 	if err := Materialize("  "); err == nil {
-		t.Error("Materialize sem diretório devia dar erro")
-	}
-}
-
-// A folder without a repository doesn't break: the exclude is best effort.
-func TestMaterializeSemGit(t *testing.T) {
-	dir := t.TempDir()
-	if err := Materialize(dir); err != nil {
-		t.Fatalf("Materialize sem .git: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dir, ".claude", "skills", "bazel-post-report", "SKILL.md")); err != nil {
-		t.Errorf("a skill devia ter sido escrita mesmo assim: %v", err)
+		t.Error("Materialize with no folder should fail")
 	}
 }

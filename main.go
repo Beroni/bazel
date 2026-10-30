@@ -35,8 +35,13 @@ var (
 	styBold = lipgloss.NewStyle().Foreground(lipgloss.Color("#f97316")).Bold(true)
 )
 
+// shutdownSignals end Bazel by cancelling its jobs. SIGHUP is the terminal
+// closing: an agent runs in a process group of its own, so without this one it
+// would outlive Bazel, with Bash and the gh login, and nobody watching.
+var shutdownSignals = []os.Signal{os.Interrupt, syscall.SIGTERM, syscall.SIGHUP}
+
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), shutdownSignals...)
 	defer stop()
 
 	args := os.Args[1:]

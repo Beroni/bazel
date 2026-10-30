@@ -16,8 +16,8 @@ Leva ao PR um review que **já existe e já foi aprovado por um humano**. O Baze
 agente, salvou o markdown, mostrou na tela, e a pessoa clicou em publicar. Seu trabalho
 começa depois disso: pegar aquele arquivo e transformá-lo em comentário de review no GitHub.
 
-Esta skill vem embarcada no binário do Bazel e é materializada no clone do PR antes de você
-rodar. Ela existe para que publicar funcione em qualquer máquina, sem depender de nada
+Esta skill vem embarcada no binário do Bazel e chega a você como plugin, numa pasta do Bazel
+fora do clone do PR. Ela existe para que publicar funcione em qualquer máquina, sem depender de nada
 instalado em `~/.claude/skills`.
 
 ## O que já foi decidido antes de você

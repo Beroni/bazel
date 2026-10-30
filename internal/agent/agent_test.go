@@ -874,18 +874,14 @@ func TestPublishableBody(t *testing.T) {
 	})
 }
 
-// An embedded skill needs to exist on disk for Claude Code to find it, and its
-// place is the clone. Without a clone it has nowhere to exist, and writing it
-// into the folder of whoever ran Bazel would be littering someone else's project.
+// The publishing skill works over the PR's clone: a step that calls it with
+// checkout off is refused before anything runs.
 func TestBuiltinPrecisaDoClone(t *testing.T) {
 	comClone := config.Choice{Name: "publicar", Steps: []config.ResolvedAgent{
 		{Name: "bazel-post-report", Task: "/bazel-post-report {{review_file}}", Checkout: true},
 	}}
 	if got := builtinSemClone(comClone); got != "" {
 		t.Errorf("com checkout ligado não há o que reclamar, veio %q", got)
-	}
-	if !usaBuiltin(comClone) {
-		t.Error("a task chama uma skill embarcada")
 	}
 
 	semClone := config.Choice{Name: "publicar", Steps: []config.ResolvedAgent{
@@ -898,7 +894,7 @@ func TestBuiltinPrecisaDoClone(t *testing.T) {
 	propria := config.Choice{Name: "publicar", Steps: []config.ResolvedAgent{
 		{Name: "post-report", Task: "/post-report {{review_file}}", Checkout: false},
 	}}
-	if usaBuiltin(propria) || builtinSemClone(propria) != "" {
+	if builtinSemClone(propria) != "" {
 		t.Error("a skill do usuário não é embarcada — checkout: false nela é escolha dele")
 	}
 }

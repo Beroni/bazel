@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/beroni/bazel/internal/agent"
@@ -234,6 +235,9 @@ type Manager struct {
 
 	queue chan queued
 
+	// running counts the jobs inside run, for Wait.
+	running atomic.Int32
+
 	mu    sync.Mutex
 	jobs  map[string]*Job
 	order []string
@@ -381,6 +385,16 @@ func (m *Manager) trimLocked() {
 	}
 }
 
+// Wait gives the running jobs up to d to return after the context is cancelled.
+// An agent runs in a process group of its own, so a Ctrl-C at the terminal does
+// not reach it: it dies when its job sees the cancel, and Bazel has to still be
+// here for that.
+func (m *Manager) Wait(d time.Duration) {
+	for deadline := time.Now().Add(d); m.running.Load() > 0 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func (m *Manager) worker() {
 	for q := range m.queue {
 		m.run(q)
@@ -388,6 +402,8 @@ func (m *Manager) worker() {
 }
 
 func (m *Manager) run(q queued) {
+	m.running.Add(1)
+	defer m.running.Add(-1)
 	job := q.job
 	ctx, cancel := context.WithCancel(m.ctx)
 	defer cancel()
