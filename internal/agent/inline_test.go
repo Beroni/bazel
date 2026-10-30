@@ -141,7 +141,9 @@ func TestRunCutsPreambleOnlyForBuiltins(t *testing.T) {
 	if !strings.HasPrefix(res.Body, "<!-- review-fleet:v1") {
 		t.Errorf("a built-in's preamble goes: %q", res.Body)
 	}
-	if !slices.ContainsFunc(log, func(l string) bool { return strings.Contains(l, "cut from before the report") && strings.Contains(l, "Validated") }) {
+	if !slices.ContainsFunc(log, func(l string) bool {
+		return strings.Contains(l, "cut from before the report") && strings.Contains(l, "Validated")
+	}) {
 		t.Errorf("what was cut should be in the job's log: %q", log)
 	}
 

@@ -404,7 +404,6 @@ func nextIs(lines []string, i int, want []string) bool {
 	return false
 }
 
-
 // gitGuard is the git configuration of every agent with a clone, the second
 // line behind gitGuardEnv's GIT_DIR: it comes in through the environment, so no
 // config of the PR's overrides it. safe.bareRepository only exists from git 2.38.
