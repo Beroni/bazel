@@ -8,7 +8,9 @@ const DETAILS = '/api/prs/acme/api-core/101/details';
 const HISTORY = '/api/prs/acme/api-core/101/history';
 
 async function needsPRPage(bazel: Bazel) {
-  const r = await fetch(bazel.url + DETAILS);
+  // Probe with a repo that is not watched: a JSON 404 means the route exists,
+  // and nothing is fetched or cached for the PR under test.
+  const r = await fetch(bazel.url + '/api/prs/not/watched/1/details');
   test.skip(!(r.headers.get('content-type') ?? '').includes('json'), 'this base has no PR page routes');
 }
 
@@ -64,6 +66,25 @@ test.describe('P1 · PR page (Overview)', () => {
   });
 });
 
+test.describe('P1 · PR page escapes what the PR author wrote', () => {
+  test('a commit title and a label with HTML show as text, nothing runs', async ({ app, bazel }) => {
+    await needsPRPage(bazel);
+    bazel.updatePR('acme/api-core#101', {
+      commits: [{ oid: 'aaaa101', messageHeadline: '<img src=x onerror="window.__xss=1"> E2E-XSS-COMMIT', committedDate: '2026-10-21T12:00:00Z', authors: [{ login: 'alice' }] }],
+      labels: [{ name: '<b>e2e-xss-label</b>' }],
+    });
+    await ui.prRow(app, 'Add rate limiter to the public API').click();
+    const page = app.getByTestId('pr-page');
+    await expect(page).toHaveAttribute('data-loaded', 'true');
+    await expect(page.getByText('<img src=x onerror="window.__xss=1"> E2E-XSS-COMMIT')).toBeVisible();
+    await expect(page.getByTestId('pr-label')).toContainText('<b>e2e-xss-label</b>');
+    // The page has its own <img>/<b> (avatars, branch names): look for ours only.
+    expect(await page.locator('[onerror], img[src="x"]').count()).toBe(0);
+    expect(await page.locator('b', { hasText: 'e2e-xss-label' }).count()).toBe(0);
+    expect(await app.evaluate(() => (window as any).__xss)).toBeUndefined();
+  });
+});
+
 test.describe('P1 · History', () => {
   test.use({
     bazelOptions: {
@@ -113,6 +134,29 @@ test.describe('P1 · History', () => {
     expect((await bazel.api('GET', HISTORY)).json.stale).toBe(true);
   });
 
+  test('Regenerate after the head moved: stale notice, a second run, fresh again', async ({ app, bazel }) => {
+    await bazel.api('GET', '/api/prs');
+    await needsPRPage(bazel);
+    const first = await bazel.api('POST', HISTORY);
+    await bazel.waitJob(first.json.id, (j) => j.state === 'done');
+    bazel.updatePR('acme/api-core#101', { headRefOid: 'dddd-moved' });
+    await bazel.api('GET', '/api/prs?refresh=1');
+
+    const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
+    await bazel.waitJob(id, (j) => j.state === 'done');
+    await app.reload();
+    await openJob(app, 'Add rate limiter to the public API');
+    await app.getByRole('tab', { name: 'History' }).click();
+    const box = app.getByTestId('history');
+    await expect(box).toContainText('Written at an older head of this PR');
+    await expect(app.getByTestId('history-generate')).toHaveCount(0);
+    await app.getByTestId('history-regenerate').click();
+    await expect.poll(() => bazel.agentCalls().filter((c) => c.prompt.startsWith('/history-pr')).length).toBe(2);
+    await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.stale ?? false, { timeout: 20_000 }).toBe(false);
+    await expect(box).not.toContainText('Written at an older head of this PR');
+    await expect(app.getByTestId('history-decision')).toHaveCount(2);
+  });
+
   test('the History tab of a job generates it and lists the decisions', async ({ app, bazel }) => {
     await needsPRPage(bazel);
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
@@ -123,5 +167,30 @@ test.describe('P1 · History', () => {
     await app.getByTestId('history-generate').click();
     await expect(app.getByTestId('history-decision')).toHaveCount(2, { timeout: 20_000 });
     await expect(app.getByTestId('history-decision').first()).toHaveAttribute('data-n', '1');
+  });
+});
+
+test.describe('P1 · History escapes what the agent wrote', () => {
+  test.use({
+    bazelOptions: {
+      config: {
+        history_agent: { name: 'history', task: '/history-pr {{number}}', command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'history-html' } },
+      },
+    },
+  });
+
+  test('HTML in a decision title, its source and body never runs', async ({ app, bazel }) => {
+    await needsPRPage(bazel);
+    const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
+    await bazel.waitJob(id, (j) => j.state === 'done');
+    await app.reload();
+    await openJob(app, 'Add rate limiter to the public API');
+    await app.getByRole('tab', { name: 'History' }).click();
+    await app.getByTestId('history-generate').click();
+    const decision = app.getByTestId('history-decision');
+    await expect(decision).toHaveCount(1, { timeout: 20_000 });
+    await expect(decision).toContainText('E2E-DECISION-HTML');
+    expect(await app.getByTestId('history').locator('[onerror], img[src="x"], script').count()).toBe(0);
+    expect(await app.evaluate(() => (window as any).__xss)).toBeUndefined();
   });
 });

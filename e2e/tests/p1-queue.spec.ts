@@ -21,7 +21,8 @@ test.describe('P1 · queue', () => {
       await bazel.enqueue('acme/api-core#102', 'slow-lens'),
       await bazel.enqueue('acme/web-app#7', 'slow-lens'),
     ];
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    // Two clones before two agents: slow when the laptop is busy.
+    await expect.poll(() => bazel.agentCalls().length, { timeout: 25_000 }).toBe(2);
     const states = await Promise.all(ids.map(async (id) => (await bazel.job(id)).state));
     expect(states.sort()).toEqual(['queued', 'running', 'running']);
     bazel.release('release-slow');

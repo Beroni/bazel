@@ -243,6 +243,14 @@ export class Bazel {
     fs.writeFileSync(file, JSON.stringify(prs, null, 2));
   }
 
+  /** Adds a PR to this test's prs.json (same shape as the fixture file). */
+  addPR(pr: Record<string, unknown>): void {
+    const file = path.join(this.fixturesDir, 'prs.json');
+    const prs = JSON.parse(fs.readFileSync(file, 'utf8'));
+    prs.push({ baseRefName: 'main', isDraft: false, additions: 1, deletions: 0, changedFiles: 1, updatedAgo: '3h', reviewDecision: '', body: '', ...pr });
+    fs.writeFileSync(file, JSON.stringify(prs, null, 2));
+  }
+
   /** Reads config.yaml back (Bazel writes YAML; the harness writes JSON). */
   configText(): string {
     return fs.readFileSync(this.configPath, 'utf8');

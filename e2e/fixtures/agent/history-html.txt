@@ -1,0 +1,10 @@
+#!# A history whose texts carry raw HTML: the History tab must show it as text.
+Commits read: 1
+
+## What it does
+E2E-HISTORY-HTML-WHAT <img src=x onerror="window.__xss=3">
+
+## Decisions
+### 1. <img src=x onerror="window.__xss=2"> E2E-DECISION-HTML
+- Commit: aaaa101 · <b>source</b>
+Body with <script>window.__xss=4</script> inside.
