@@ -325,28 +325,36 @@ func neutralizedNote(paths []string) string {
 // `npx @anthropic-ai/claude-code`, `bunx @anthropic-ai/claude-code@latest`.
 const claudePackage = "@anthropic-ai/claude-code"
 
-// runsClaude says whether a step runs Claude Code: the `claude` command, under
-// any name that resolves to it; a launcher that names its package; or a step
-// that speaks its stream-json. A command that shows none of this is treated as
-// another CLI, and so is a shell: `sh -c '…'` runs a script, and flags before
-// or after the -c never reach what it calls. workspace.Neutralize is what
-// protects those runs, not the flags.
+// runsClaude says whether a step runs Claude Code: a command with claude in its
+// name, under any name that resolves to it; a launcher that names it; or a step
+// that speaks its stream-json. This is best effort and is not what protects a
+// run: a command that shows none of this (a wrapper called `cc`, `node cli.js`)
+// counts as another CLI, and so does a shell — `sh -c '…'` runs a script, and
+// flags before or after the -c never reach what it calls. workspace.Neutralize
+// is what protects those runs.
 func runsClaude(step config.ResolvedAgent) bool {
 	if isShell(step.Command) {
 		return false
 	}
-	if isClaudeBinary(step.Command) || claudePackageArg(step.Args) >= 0 {
+	if strings.Contains(programName(step.Command), "claude") || resolvesToClaude(step.Command) || claudePackageArg(step.Args) >= 0 {
 		return true
 	}
 	return step.Format == "claude-stream" || isStreamJSON(step.Args)
 }
 
-// isClaudeBinary says whether command is Claude Code itself, looking through
-// PATH and symlinks: a `ai -> claude` link keeps the real program.
-func isClaudeBinary(command string) bool {
-	if filepath.Base(command) == "claude" {
-		return true
+// programName is a command's base name as a program: lower case, because the
+// macOS and Windows filesystems ignore case, and with no Windows extension.
+func programName(command string) string {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
 	}
+	return name
+}
+
+// resolvesToClaude says whether command, through PATH and symlinks, is Claude
+// Code: a `ai -> claude` link keeps the real program.
+func resolvesToClaude(command string) bool {
 	path, err := exec.LookPath(command)
 	if err != nil {
 		return false
@@ -355,7 +363,7 @@ func isClaudeBinary(command string) bool {
 	if err != nil {
 		return false
 	}
-	return filepath.Base(real) == "claude" || strings.Contains(real, claudePackage)
+	return programName(real) == "claude" || strings.Contains(real, claudePackage)
 }
 
 // claudePackageArg returns the index of the arg a launcher runs Claude Code
@@ -363,13 +371,13 @@ func isClaudeBinary(command string) bool {
 // claude`) — or -1.
 func claudePackageArg(args []string) int {
 	return slices.IndexFunc(args, func(a string) bool {
-		return strings.Contains(a, claudePackage) || filepath.Base(a) == "claude"
+		return strings.Contains(a, claudePackage) || programName(a) == "claude"
 	})
 }
 
 // isShell says whether command is a shell.
 func isShell(command string) bool {
-	switch filepath.Base(command) {
+	switch programName(command) {
 	case "sh", "bash", "zsh", "dash", "ksh", "fish":
 		return true
 	}
@@ -391,6 +399,12 @@ func runsClaudeAnywhere(choice config.Choice) bool {
 // readable by the user.
 func newRuntime() (string, error) {
 	home, err := config.Dir()
+	if err != nil {
+		return "", err
+	}
+	// Absolute: the agent runs with the clone as its working directory, and a
+	// relative BAZEL_HOME would point --plugin-dir inside it.
+	home, err = filepath.Abs(home)
 	if err != nil {
 		return "", err
 	}
@@ -523,10 +537,8 @@ func insideDir(path, dir string) bool {
 	return within(filepath.Clean(path), filepath.Clean(dir)) || within(resolve(path), resolve(dir))
 }
 
-// builtinSemClone returns the step that calls an embedded skill without a clone
-// to write it into — without the PR's working directory it has nowhere to
-// exist, and writing it into the folder of whoever ran Bazel would be littering
-// someone else's project.
+// builtinSemClone returns the step that calls an embedded skill with checkout
+// off: the publishing skill checks the PR's clone, so it needs one.
 func builtinSemClone(choice config.Choice) string {
 	for _, s := range choice.Steps {
 		if !s.Checkout && skills.IsBuiltin(skills.TaskSkill(s.Task)) {

@@ -124,10 +124,21 @@ func TestRunsClaude(t *testing.T) {
 		{config.ResolvedAgent{Command: "mise", Args: []string{"exec", "--", "claude", "-p"}, Format: "plain"}, true},
 		// A shell takes no flags for what it runs: Neutralize protects this one.
 		{config.ResolvedAgent{Command: "sh", Args: []string{"-c", "claude -p"}, Format: "claude-stream"}, false},
+		{config.ResolvedAgent{Command: "claude.exe", Format: "plain"}, true},
+		{config.ResolvedAgent{Command: `C:\x\claude.cmd`, Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "Claude", Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "claude-wrapper", Format: "plain"}, true},
+		{config.ResolvedAgent{Command: "node", Args: []string{"/x/cli.js", "--output-format", "stream-json"}, Format: "plain"}, true},
 		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, false},
 		{config.ResolvedAgent{Command: "grok", Format: "grok-stream"}, false},
 		{config.ResolvedAgent{Command: "echo", Args: []string{"report"}}, false},
 		{config.ResolvedAgent{Command: "unrelated", Format: "plain"}, false},
+		// Nothing shows these are Claude Code: Neutralize protects them.
+		{config.ResolvedAgent{Command: "cc", Args: []string{"-p"}, Format: "plain"}, false},
+		{config.ResolvedAgent{Command: "node", Args: []string{"/x/cli.js", "-p"}, Format: "plain"}, false},
+		{config.ResolvedAgent{Command: "pi", Args: []string{"--model", "claude-haiku"}, Format: "plain"}, false},
+		// A shell takes no flags, whatever it says it speaks.
+		{config.ResolvedAgent{Command: "bash", Args: []string{"-c", "claude -p --output-format stream-json"}}, false},
 	}
 	for _, c := range cases {
 		if got := runsClaude(c.step); got != c.want {
@@ -286,6 +297,21 @@ func TestReviewCleansPluginOnCancel(t *testing.T) {
 	entries, _ := os.ReadDir(runtime)
 	if len(entries) != 0 {
 		t.Errorf("a cancelled review left %d runtime folders behind", len(entries))
+	}
+}
+
+// --plugin-dir is read with the clone as working directory, so it is absolute
+// even when BAZEL_HOME is not.
+func TestRuntimeIsAbsolute(t *testing.T) {
+	t.Chdir(t.TempDir())
+	t.Setenv("BAZEL_HOME", "relative-home")
+	dir, err := newRuntime()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	if !filepath.IsAbs(dir) {
+		t.Errorf("runtime %q should be absolute", dir)
 	}
 }
 
