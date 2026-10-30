@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -164,17 +165,25 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		workdir = ws.Dir
 	}
 
-	// An embedded skill only exists inside the binary; Claude Code finds it on
-	// disk, in the working directory's .claude/skills. Its place is the PR's
-	// clone: it's born and dies with it, and the machine of whoever runs Bazel
-	// doesn't get anything in ~/.claude that nobody asked for.
+	// The publishing skill works over the PR's clone (it checks that the repo it
+	// is about to comment on is the PR's): without one it has nothing to check.
 	if step := builtinSemClone(choice); step != "" {
-		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel, which needs the PR clone to be found — turn checkout on for it, or point it at a skill of your own", step)
+		return Result{}, fmt.Errorf("`%s` runs a skill built into Bazel that works over the PR's clone — turn checkout on for it, or point it at a skill of your own", step)
 	}
-	if workdir != "" && usaBuiltin(choice) {
-		if err := skills.Materialize(workdir); err != nil {
+	// Claude Code gets the embedded skills as a plugin in a folder of Bazel's,
+	// never in the clone, and that folder goes with the review — on success,
+	// error or cancel alike.
+	var plugin string
+	if runsClaudeAnywhere(choice) {
+		dir, err := newRuntime()
+		if err != nil {
 			return Result{}, err
 		}
+		defer os.RemoveAll(dir)
+		if err := skills.Materialize(dir); err != nil {
+			return Result{}, err
+		}
+		plugin = dir
 	}
 
 	diff, truncated, err := r.material(ctx, pr, choice)
@@ -203,7 +212,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			dir = "" // inherits the current directory
 		}
 		stepStart := time.Now()
-		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir,
+		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir, plugin,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -258,14 +267,89 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}, nil
 }
 
-// usaBuiltin says whether any step calls a skill that shipped in the binary.
-func usaBuiltin(choice config.Choice) bool {
+// runsClaude says whether a step runs Claude Code: the `claude` command, or
+// any command whose output is Claude's stream-json.
+func runsClaude(step config.ResolvedAgent) bool {
+	if filepath.Base(step.Command) == "claude" {
+		return true
+	}
+	if step.Format != "" {
+		return step.Format == "claude-stream"
+	}
+	return isStreamJSON(step.Args)
+}
+
+// runsClaudeAnywhere says whether any step of the choice runs Claude Code.
+func runsClaudeAnywhere(choice config.Choice) bool {
 	for _, s := range choice.Steps {
-		if skills.IsBuiltin(skills.TaskSkill(s.Task)) {
+		if s.Reserved == "" && runsClaude(s) {
 			return true
 		}
 	}
 	return false
+}
+
+// newRuntime creates the folder one review's embedded skills are written to,
+// under <BAZEL_HOME>/runtime: Bazel's own, outside the PR's clone, and only
+// readable by the user.
+func newRuntime() (string, error) {
+	home, err := config.Dir()
+	if err != nil {
+		return "", err
+	}
+	parent := filepath.Join(home, "runtime")
+	if err := os.MkdirAll(parent, 0o700); err != nil {
+		return "", err
+	}
+	return os.MkdirTemp(parent, "")
+}
+
+// confineClaude adds the flags that keep the PR's own Claude Code
+// configuration from running on this machine, whatever args the user set:
+//
+//   - --setting-sources user: the clone's .claude/settings.json is never read,
+//     so its hooks (which run shell commands, with the user's gh login at hand),
+//     permissions and env do not apply;
+//   - --strict-mcp-config: MCP servers come only from --mcp-config, never from
+//     the clone's .mcp.json, which a PR can also switch on from its settings;
+//   - --plugin-dir: the embedded skills, which --setting-sources user would
+//     otherwise hide along with the clone's .claude/skills.
+//
+// A flag already in args is not repeated. A --setting-sources that also reads
+// the project is refused: there is no safe way to honor it.
+func confineClaude(args []string, plugin string) ([]string, error) {
+	out := append([]string(nil), args...)
+	sources, strict := false, false
+	for i, a := range args {
+		value, isSources := "", false
+		switch {
+		case a == "--setting-sources":
+			isSources = true
+			if i+1 < len(args) {
+				value = args[i+1]
+			}
+		case strings.HasPrefix(a, "--setting-sources="):
+			isSources, value = true, strings.TrimPrefix(a, "--setting-sources=")
+		case a == "--strict-mcp-config":
+			strict = true
+		}
+		if isSources {
+			if strings.TrimSpace(value) != "user" {
+				return nil, fmt.Errorf("the agent's args set --setting-sources %q, but Bazel runs Claude Code with --setting-sources user only: any other source reads the PR's own .claude/settings.json, whose hooks run commands on this machine — remove the flag from the args", value)
+			}
+			sources = true
+		}
+	}
+	if !sources {
+		out = append(out, "--setting-sources", "user")
+	}
+	if !strict {
+		out = append(out, "--strict-mcp-config")
+	}
+	if plugin != "" {
+		out = append(out, "--plugin-dir", plugin)
+	}
+	return out, nil
 }
 
 // builtinSemClone returns the step that calls an embedded skill without a clone
@@ -426,7 +510,7 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -448,7 +532,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		defer os.RemoveAll(createdHome)
 	}
 
-	cmd := exec.CommandContext(ctx, step.Command, step.Args...)
+	args := step.Args
+	if runsClaude(step) {
+		if args, err = confineClaude(step.Args, plugin); err != nil {
+			return "", Usage{}, err
+		}
+	}
+	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory
 	cmd.Stdin = strings.NewReader(prompt)
 	if len(step.Env) > 0 {
