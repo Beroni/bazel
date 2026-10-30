@@ -212,7 +212,9 @@ func (s *Server) Run(ctx context.Context) error {
 	close(s.done)
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	return srv.Shutdown(shutCtx)
+	shutErr := srv.Shutdown(shutCtx)
+	s.jobs.Wait(5 * time.Second)
+	return shutErr
 }
 
 // URL is the address to open in the browser.

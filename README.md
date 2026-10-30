@@ -736,9 +736,10 @@ What is still on you:
   `~/.claude`: your skills, agents, plugins and hooks load, and your hooks run
   with the hostile clone as their working directory. A hook that calls a
   formatter, `npx` or `make` runs the PR's config or scripts with your login.
-- **A step can leave something running.** The checks run right before each
-  agent starts, but a background process an earlier step left behind can still
-  write to the clone after them.
+- **A step can leave something running only by leaving on purpose.** Each agent
+  runs in a process group of its own, killed when the step ends, however it ends,
+  and when Bazel shuts down. A process that starts its own session with `setsid`
+  escapes that, and could still write to the clone.
 - **The agent still reads what the PR says.** A confined Claude Code does not
   load the PR's `CLAUDE.md`, but an unrecognized wrapper does, and any agent
   reads the PR's code and comments. That is prompt injection, not execution, but

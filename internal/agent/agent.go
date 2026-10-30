@@ -353,6 +353,10 @@ func gitGuardEnv(env []string) []string {
 	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
 }
 
+// agentGrace is how long an agent's process and pipes get to finish once it has
+// exited or been killed.
+const agentGrace = 5 * time.Second
+
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
 var errRefused = errors.New("refused to start the agent")
@@ -853,24 +857,36 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if workdir != "" {
 		cmd.Env = append(cmd.Env, gitGuardEnv(cmd.Env)...)
 	}
-	stdout, err := cmd.StdoutPipe()
+	// Pipes of our own, not StdoutPipe: Wait has to return when the agent exits,
+	// even if something it left behind still holds its output open.
+	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
 		return "", Usage{}, err
 	}
-	stderr, err := cmd.StderrPipe()
+	defer stdout.Close()
+	stderr, stderrW, err := os.Pipe()
 	if err != nil {
+		stdoutW.Close()
 		return "", Usage{}, err
 	}
+	defer stderr.Close()
+	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
+	cmd.WaitDelay = agentGrace // a child holding stdin must not hold Wait
+	ownProcessGroup(cmd)
+
 	// The last thing before the process: the smaller the gap between checking
 	// the clone and reading it, the less there is to race.
 	note, err := guard()
 	if err != nil {
-		stdout.Close()
-		stderr.Close()
+		stdoutW.Close()
+		stderrW.Close()
 		return "", Usage{}, err
 	}
 	cmd.Stdin = strings.NewReader(prompt + note)
-	if err := cmd.Start(); err != nil {
+	err = cmd.Start()
+	stdoutW.Close()
+	stderrW.Close()
+	if err != nil {
 		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
 
@@ -913,9 +929,18 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		})
 	}()
 
-	// The pipes have to reach EOF before Wait: it closes them.
-	wg.Wait()
+	// However the agent ends — done, failed, cancelled, out of time — what it
+	// left running dies with it. Between steps the clone must stay as the guard
+	// left it, and a background process could write to it. That also closes the
+	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
+	killProcessGroup(cmd)
+	stray := time.AfterFunc(agentGrace, func() {
+		stdout.Close()
+		stderr.Close()
+	})
+	wg.Wait()
+	stray.Stop()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 		return "", Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
