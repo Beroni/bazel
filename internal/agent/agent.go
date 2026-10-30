@@ -326,6 +326,34 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}, nil
 }
 
+// gitGuard is the git configuration of every agent with a clone. A folder the PR
+// versions can be a repository of its own, with HEAD and a config: a `git status`
+// inside it runs the core.fsmonitor that config names. These settings come in
+// through the environment, so no config of the PR's overrides them.
+var gitGuard = [][2]string{
+	{"safe.bareRepository", "explicit"},
+	{"core.fsmonitor", "false"},
+	{"core.hooksPath", "/dev/null"},
+}
+
+// gitGuardEnv returns the variables that add gitGuard to env, after any entries
+// GIT_CONFIG_COUNT already has there: the user's stay, and the last one wins.
+func gitGuardEnv(env []string) []string {
+	base := 0
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
+			if n, err := strconv.Atoi(v); err == nil && n > 0 {
+				base = n
+			}
+		}
+	}
+	out := make([]string, 0, 2*len(gitGuard)+1)
+	for i, kv := range gitGuard {
+		out = append(out, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", base+i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", base+i, kv[1]))
+	}
+	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
+}
+
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
 var errRefused = errors.New("refused to start the agent")
@@ -772,11 +800,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory
-	if len(step.Env) > 0 {
+	if len(step.Env) > 0 || workdir != "" {
 		cmd.Env = os.Environ()
 		for k, v := range step.Env {
 			cmd.Env = append(cmd.Env, k+"="+v)
 		}
+	}
+	if workdir != "" {
+		cmd.Env = append(cmd.Env, gitGuardEnv(cmd.Env)...)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
