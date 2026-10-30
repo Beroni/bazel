@@ -17,9 +17,9 @@
 
 ```sh
 cd e2e
-npx playwright test -g 'publish' --headed --workers 1     # watch
-npx playwright test -g 'publish' --debug                  # step with the inspector
-npx playwright show-trace .out/results/<dir>/trace.zip
+./node_modules/.bin/playwright test -g 'publish' --headed --workers 1     # watch
+./node_modules/.bin/playwright test -g 'publish' --debug                  # step with the inspector
+./node_modules/.bin/playwright show-trace .out/results/<dir>/trace.zip
 jq -c '.argv' .out/runs/bz-*/gh/calls.jsonl               # what reached "GitHub"
 jq -r '.prompt' .out/runs/bz-*/agent/calls.jsonl | less   # exact prompts
 ```

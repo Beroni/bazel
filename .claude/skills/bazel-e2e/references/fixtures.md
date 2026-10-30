@@ -11,15 +11,18 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh --version` | `gh version 0.0.0-fake (e2e)` |
 | `gh auth status` | ok, logged in as `gh.json.user` |
 | `gh api user --jq .login` | `gh.json.user` (default `e2e-user`) |
-| `gh api …` (anything else) | `{}`-ish JSON; stdin recorded if `--input -` |
-| `gh search prs … -- "repo:a repo:b"` | PRs of those repos, `--json` fields only, `--limit` |
+| `gh api --method POST repos/O/R/pulls/N/reviews --input -` | fake review URL; stdin recorded; unknown PR → 404, bad payload → 422 |
+| `gh search prs … -- "repo:a repo:b"` | PRs of those repos, `--json` fields only, `--limit`; a field gh's search does not have → `Unknown JSON field` |
 | `gh pr list --repo R …` | PRs of R |
 | `gh pr view N --repo R --json …` | one object; unknown PR → GraphQL-style error |
 | `gh pr diff N --repo R` | `diff` from the fixture, or one generated from `files` |
-| `gh pr comment N --repo R --body-file -` | prints a fake comment URL; stdin recorded |
+| `gh pr comment N --repo R --body-file -` | prints a fake comment URL; stdin recorded; unknown PR or empty body fails |
 | `gh repo clone R DIR -- ARGS` | `git clone ARGS file://<state>/repos/R.git DIR` |
 | `gh pr checkout N` (in a clone) | `git checkout -B <headRefName> origin/<headRefName>` |
-| anything else | exit 1, `fake gh: unsupported: gh …` |
+| anything else, any other `gh api` included | exit 1, `fake gh: unsupported: gh …` |
+
+`gh search prs`, `gh pr list` and `gh pr view` check `--json` against the field
+lists of `gh <cmd> --help` (gh 2.87.3), in `searchFields` and `prFields`.
 
 The origin repo is built once per server (atomic rename): `main` with a
 README, plus one branch per PR (`headRefName`) adding the PR's `files` (or
@@ -175,7 +178,8 @@ claude -p --output-format stream-json --verbose < prompt.txt > /tmp/raw.jsonl
 node e2e/tools/stream.mjs scrub /tmp/raw.jsonl > e2e/fixtures/agent/<name>.jsonl
 ```
 
-`scrub` drops session ids, uuids, cwd, MCP/plugin lists and `mcp__*` tools,
+`scrub` refuses a line starting with `#!` (it would run as a directive), and
+drops session ids, uuids, cwd, MCP/plugin lists and `mcp__*` tools,
 rewrites home and temp paths, emails and token-looking strings, and replaces
 tool results with `(scrubbed)` (errors keep 200 chars). Then read the file:
 shorten it, replace the report with a small one carrying `E2E-…` markers, keep

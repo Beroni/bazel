@@ -2,7 +2,7 @@
 
 ```
 e2e/
-  playwright.config.ts     4 workers, fully parallel, traces kept on failure
+  playwright.config.ts     6 workers, fully parallel, traces kept on failure
   harness/
     paths.ts               BIN, FIXTURES, SAFE_PATH, safeEnv()
     global-setup.ts        go build bazel + fakes; preflight; ~/.bazel guard
@@ -76,9 +76,12 @@ Nothing else from the developer's shell is inherited.
 | `runtimes()` | per-review plugin folders left in `<BAZEL_HOME>/runtime` (should be `[]` after a run) |
 | `clones()` | `bazel-*` dirs left in `TMPDIR` (should be `[]` without `--keep`) |
 | `serverLog()` | the server's stdout+stderr |
+| `extraOrigins` | origins this test's pages may also visit (a proxy in front of Bazel) |
+| `blocked` | URLs the context route aborted |
 
-`app` is `page` after `goto(bazel.url)`, with `dialog → accept()` and a route
-that aborts anything not on `127.0.0.1`. To assert a confirm's text, add your
+`app` is `page` after `goto(bazel.url)`, with `dialog → accept()`. The `context`
+fixture routes every page: `bazel.mayVisit(url)` compares the parsed origin, so
+`http://127.0.0.1:7777@attacker.invalid/` is not local. To assert a confirm's text, add your
 own `page.on('dialog', …)` listener — both run.
 
 `bazelOptions.config` may be a function of the server (`(bz) => ({…})`) when a

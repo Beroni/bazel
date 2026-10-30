@@ -18,11 +18,11 @@ reached GitHub by reading the fake gh's call log. No network, no real reviews.
 ## Run
 
 ```sh
-make e2e                                   # whole suite, ~25s, 6 workers
+make e2e                                   # whole suite, ~30s, 6 workers
 make e2e E2E_ARGS="tests/p0-publish.spec.ts"
 make e2e E2E_ARGS="-g 'cancel' --headed"   # watch it
 make e2e E2E_ARGS="--repeat-each 5 --workers 8"   # hunt flakes
-cd e2e && npx playwright show-report .out/report
+cd e2e && ./node_modules/.bin/playwright show-report .out/report
 ```
 
 ### Against another base
@@ -32,7 +32,7 @@ specs stay the same, only the binary under test changes:
 
 ```sh
 git worktree add --detach ../bases/redesign <branch-or-commit>
-make e2e E2E_BAZEL_SRC=../bases/redesign
+make e2e E2E_BAZEL_SRC=../bases/redesign   # relative to the repo root
 make e2e E2E_BAZEL_SRC=../bases/fix E2E_FIXED=BUG-QA-12
 ```
 
@@ -44,10 +44,11 @@ tests must then pass instead of fail. The selectors in `harness/ui.ts` follow
 the current UI only: a base from before #30 will not pass. A UI change shows up
 as a helper to adjust there, not as an edit in every test.
 
-First run installs `@playwright/test` (pinned to 1.58.2, which matches the
-Chromium build 1208 already in `~/Library/Caches/ms-playwright`) from the npm
-cache with `--prefer-offline`; no browser download happens. `globalSetup`
-builds `bazel`, `gh` and `fake-agent` into `e2e/.out/bin` every run (in
+`make e2e` installs `@playwright/test` (pinned to 1.58.2, which matches the
+Chromium build 1208 in `~/Library/Caches/ms-playwright`) with
+`npm ci --offline`, and Go builds with `GOPROXY=off`: it never reaches the
+network. On a machine without those caches, `make e2e-setup` fetches them once;
+it is the only target that uses the network. `globalSetup` builds `bazel`, `gh` and `fake-agent` into `e2e/.out/bin` every run (in
 parallel, on Go's build cache) and synthesizes `fixtures/agent/specs/*.json`
 into `e2e/.out/scenarios/`.
 
@@ -65,15 +66,21 @@ delete the `knownBug` line, or list the id in `E2E_FIXED` for that base).
 - Never add `/opt/homebrew/bin`, `~/.local/bin` or the developer's `PATH` to
   the server env. Need a new tool? Symlink it into `BIN` in `global-setup.ts`.
 - Never point a test at a real repo, a real skill or a real model.
-- The page is routed: any request not to `http://127.0.0.1:*` is aborted.
-- A gh call the fake does not implement fails the test that made it (the
-  `bazel` fixture checks the call log at teardown): teach the fake, then test it.
+- Every page of the context is routed: a request whose parsed origin is not
+  this Bazel (or in `bazel.extraOrigins`) is aborted and kept in `bazel.blocked`.
+  Service workers are off, so nothing runs around the route.
+- A gh call the fake does not implement exits 1 and fails the test that made it
+  (the `bazel` fixture checks the call log at teardown): teach the fake, then
+  test it. The fakes fail closed: there is no catch-all answer, and a `--json`
+  field gh would refuse is refused.
+- A capture is data: `scrub` refuses a line that the replay would run as a
+  directive.
 
 ## Debug a failure
 
 1. Read the failure in the list output. A failed test keeps its temp root and
    attaches `server.log`, `gh-calls.json`, `agent-calls.json` and the root path.
-2. `npx playwright show-trace e2e/.out/results/<test>/trace.zip` — DOM,
+2. `e2e/node_modules/.bin/playwright show-trace e2e/.out/results/<test>/trace.zip` — DOM,
    network and console at each step.
 3. In the kept root (`e2e/.out/runs/bz-*`): `bazel-home/config.yaml` (what the
    server ran with), `bazel-home/reviews/` (saved reviews, `.index.json`,
