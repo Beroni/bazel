@@ -195,7 +195,7 @@ object, no prose before or after, no markdown fence:
       "confidence": 9,
       "body": "SQL injection: `req.body.email` is concatenated into the query; the attacker controls the WHERE clause.",
       "fix": "db.query('... WHERE email = ?', [email])",
-      "ref": "CWE-89 / OWASP A03"
+      "ref": "CWE-89,OWASP-A03"
     }
   ],
   "verdict": "request_changes"
@@ -232,8 +232,9 @@ object, no prose before or after, no markdown fence:
   mark it low confidence.
 - `body`: specific and traced — what is wrong and why it matters. One or two lines, no
   hedging.
-- `fix`: the concrete correction, shown. `ref`: CWE / OWASP / spec for security or standards
-  findings; `null` when it does not apply.
+- `fix`: the concrete correction, shown. `ref`: CWE / OWASP / spec ids for security or standards
+  findings, with no spaces and several joined by `,` (`CWE-89,OWASP-A03`) — it is copied
+  verbatim into the report's metadata, where a space breaks it; `null` when it does not apply.
 - Order by severity (`critical` → `major` → `minor` → `nit`), and within it by descending
   confidence.
 - `verdict`: `request_changes` if there is any `critical`; `comment` if there are only

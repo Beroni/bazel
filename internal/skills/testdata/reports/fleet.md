@@ -19,7 +19,7 @@ verdict: request_changes
 ## Findings
 
 ### Transfer debits any account by id
-<!-- finding severity=critical class=authz lenses=senior-code-reviewer+exploit-digger path=src/api/transfer.ts line=88 side=RIGHT confidence=9 ref=CWE-639 -->
+<!-- finding severity=critical class=authz lenses=senior-code-reviewer+exploit-digger path=src/api/transfer.ts line=88 side=RIGHT confidence=9 ref=CWE-639,OWASP-A01 -->
 
 **critical · authz** (senior-code-reviewer + exploit-digger)
 

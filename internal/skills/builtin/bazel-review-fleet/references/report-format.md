@@ -219,7 +219,7 @@ All on one line, `key=value` separated by spaces, in this order:
 | `start_line` | no | For a line range; comes with `line` and, if `LEFT`, with `start_side`. |
 | `confidence` | no | Whatever the lens returned: `8`–`10` from `senior-code-reviewer`, `high`/`medium`/`low` from `exploit-digger`. |
 | `lines_saved` | no | Integer. **Required** on every finding in the `## Cuts` section. |
-| `ref` | no | CWE/OWASP, as the lens returned it. |
+| `ref` | no | CWE/OWASP ids, no spaces, several joined by `,` (`CWE-89,OWASP-A03`). The lenses emit it that way. |
 
 No value contains a space, so no value is quoted. If you feel the urge to quote, the value is
 wrong.
