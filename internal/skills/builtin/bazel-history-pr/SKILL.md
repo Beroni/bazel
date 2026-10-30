@@ -36,15 +36,8 @@ names, ignoring case (the prompt carries the spelling from Bazel's config). Miss
 
 All the commands are in `.claude/skills/bazel-history-pr/references/data-collection.md`.
 **Read it before running anything** — it has the pagination rules and the two endpoints people
-confuse. Seven reads, in parallel when you can:
-
-1. `gh pr view` — title, body, state, base, labels, decision
-2. `/pulls/{n}/commits` — the attempts
-3. `/pulls/{n}/reviews` — verdicts with `submitted_at`
-4. `/pulls/{n}/comments` — inline comments (`path`, `line`, `in_reply_to_id`)
-5. `/issues/{n}/comments` — conversation comments
-6. `/issues/{n}/timeline` — force-pushes, ready-for-review, renames, linked issues
-7. GraphQL `reviewThreads` — `isResolved` / `isOutdated`, which REST does not expose
+confuse. Seven reads (`gh pr view`, commits, reviews, inline comments, conversation comments,
+the timeline and the GraphQL `reviewThreads`), in parallel when you can.
 
 Keep each response as a JSON file under a scratch directory (`$TMPDIR` or `/tmp`), not inside
 the clone, and work from the files.
@@ -104,12 +97,9 @@ Bazel would read them as review findings.
 1. **`gh pr view --json comments` is not the review comments.** Conversation comments live in
    `/issues/{n}/comments`; inline review comments live in `/pulls/{n}/comments`. Stop at the
    first and the whole review→fix loop disappears while the report still reads fine.
-2. **Pagination silently truncates.** REST lists return 30 per page with exit 0.
-   `--paginate` on every list call, and cross-check counts with `gh pr view --json commits`.
-3. **Force-push erases what a review was about.** A thread's `original_commit_id` can point at
-   a commit that no longer exists (422). Mark where history was rewritten; never drop those
-   threads.
-4. **A merged PR is not a finished conversation.** Threads stay open after merge; report what
+2. **Pagination and force-pushes** — `data-collection.md` has both: `--paginate` on every list,
+   and threads anchored to commits a force-push erased, which are never dropped.
+3. **A merged PR is not a finished conversation.** Threads stay open after merge; report what
    was open when it landed.
 
 ## Never
