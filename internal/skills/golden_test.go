@@ -162,3 +162,24 @@ func TestGoldenUnderBazelHeader(t *testing.T) {
 		}
 	}
 }
+
+// The History tab reads what bazel-history-pr prints: a section the parser does
+// not find is a blank part of the page, with no error anywhere.
+func TestGoldenHistoryParses(t *testing.T) {
+	h := store.ParseHistory(readGolden(t, "history.md"))
+	if h.Meta["repo"] != "beroni/bazel" || h.Meta["threads"] != "1 (0 resolved, 1 open)" {
+		t.Errorf("header = %v", h.Meta)
+	}
+	if h.CommitsRead != 4 {
+		t.Errorf("commits read = %d", h.CommitsRead)
+	}
+	if !strings.Contains(h.WhatItDoes, "Actual footprint") {
+		t.Errorf("what it does = %q", h.WhatItDoes)
+	}
+	if len(h.Decisions) != 2 || h.Decisions[1].N != 2 || len(h.Decisions[1].Rejected) != 1 {
+		t.Fatalf("decisions = %+v", h.Decisions)
+	}
+	if len(h.StillOpen) != 1 || !strings.Contains(h.Rest, "## Timeline") {
+		t.Errorf("still open = %v, rest = %.60q", h.StillOpen, h.Rest)
+	}
+}

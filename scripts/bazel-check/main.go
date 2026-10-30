@@ -105,6 +105,14 @@ func main() {
 			fmt.Print(string(out))
 		}
 	}
+	if strings.HasPrefix(res.Body, "<!-- history-pr:v1") {
+		h := store.ParseHistory(res.Body)
+		check("the History tab reads its header", h.Meta["repo"] != "" && h.Meta["pr"] != "")
+		check("the History tab reads what it does", strings.TrimSpace(h.WhatItDoes) != "")
+		check("the History tab reads the decisions", len(h.Decisions) > 0)
+		check("commits read match the header", strconv.Itoa(h.CommitsRead) == h.Meta["commits"])
+		fmt.Printf("  %d decision(s), %d still open\n", len(h.Decisions), len(h.StillOpen))
+	}
 	fmt.Printf("  %d finding(s) on the page\n  report: %s\n", store.Findings(res.Body), keep)
 	if failed {
 		os.Exit(1)
