@@ -44,6 +44,8 @@ export interface AgentCall {
   /** `git status --porcelain` of the clone and its .git/info/exclude. */
   git_status: string;
   git_exclude: string;
+  /** What `git config --get` answers in the clone for the guarded settings. */
+  git_config: Record<string, string>;
   /** GROK_* env Bazel passed, and whether $GROK_HOME/config.toml existed. */
   grok_env: Record<string, string>;
   grok_home_config: boolean;

@@ -99,6 +99,8 @@ The record (`bazel.agentCalls()`):
   CLI uses (`.claude/settings.json`, `.mcp.json`, …). This is the real check on
   a case-insensitive disk: a PR's `.CLAUDE/` answers to `.claude/`.
   `config_anywhere`: the same names at any depth and in any case.
+- `git_config`: what `git config --get` answers in the clone for
+  `safe.bareRepository`, `core.fsmonitor`, `core.hooksPath` and `e2e.user`.
 - `clone_skills`, `git_status`, `git_exclude`: the clone as the agent found it.
 - `grok_env`, `grok_home_config`: the `GROK_*` env Bazel set for a `grok-stream`
   step and whether `$GROK_HOME/config.toml` existed.

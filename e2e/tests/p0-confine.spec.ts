@@ -44,7 +44,16 @@ const AGENTS = [
   // A Claude Code behind a name Bazel cannot recognize, and behind a shell.
   { name: 'wrapper', task: '/review-fleet {{number}}', command: FAKE_WRAPPER, args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
   { name: 'shell', task: '/review-fleet {{number}}', command: 'sh', args: ['-c', 'exec fake-agent'], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  // Resolve what they run from the working directory: the PR's clone.
   { name: 'launcher', task: '/review-fleet {{number}}', command: 'env', args: [FAKE_CLAUDE, '-p'], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  { name: 'launcher-path', task: '/review-fleet {{number}}', command: '/usr/bin/env', args: [FAKE_CLAUDE, '-p'], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  { name: 'relative', task: '/review-fleet {{number}}', command: './tools/review', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  { name: 'launcher-no-clone', task: '/review-fleet {{number}}', command: 'env', args: ['fake-agent'], format: 'plain', checkout: false, env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  // Claude Code is the command or the format, never something in the args.
+  { name: 'plain-stream', task: '/exploit-digger {{number}}', command: 'fake-agent', args: STREAM, format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  { name: 'model-arg', task: '/exploit-digger {{number}}', command: 'fake-agent', args: ['--model', 'claude'], format: 'plain', env: { FAKE_AGENT_SCENARIO: 'plain-report' } },
+  // A user's own git settings, which the guard has to add to, not replace.
+  { ...plain('git-user', 'plain-report'), env: { FAKE_AGENT_SCENARIO: 'plain-report', GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'e2e.user', GIT_CONFIG_VALUE_0: 'kept' } },
   // Steps that would hand the PR's own files back as configuration.
   fleet('mcp-in-clone', { command: 'fake-agent', args: [...STREAM, '--mcp-config', '.mcp.json'] }),
   plain2('settings-in-clone', ['--settings=./.claude/settings.json']),
@@ -96,7 +105,7 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(call.git_status).toBe('');
     expect(call.git_exclude).not.toContain('.claude');
     // Nothing to remove, nothing to say.
-    expect(call.prompt).not.toContain('Bazel removed these');
+    expect(call.prompt).not.toContain('Bazel removed');
     // The plugin folder goes with the review.
     expect(bazel.runtimes()).toEqual([]);
     expect(fs.existsSync(call.plugin_dir)).toBe(false);
@@ -135,8 +144,8 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
       // Gone from the working tree, not from git: the review still reads them.
       expect(call.git_status.trim().split('\n').map((l) => l.trim()).sort()).toEqual(
         Object.keys(HOSTILE).map((f) => `D ${f}`).sort());
-      expect(call.prompt).toContain('Bazel removed these from the working tree');
-      expect(call.prompt).toContain('.claude, .codex, .grok, .mcp.json');
+      expect(call.prompt).toContain('Bazel removed 4 path(s) from the working tree');
+      expect(call.prompt).toContain('.claude, .codex, .grok and .mcp.json, at any depth');
       expect(call.prompt).toContain('git show HEAD:<path>');
     }
     // The fake skill did not take the place of Bazel's: the post agent used the plugin.
@@ -160,10 +169,70 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     }
   });
 
-  test('a launcher that names claude gets the flags right after it', async ({ bazel }) => {
+  // SEC-04: a launcher decides inside the clone what to run (package.json,
+  // node_modules, .npmrc), and so does a relative path. With checkout they are
+  // refused before the clone; the flags could not protect them.
+  test('a launcher or a relative command is refused with checkout on, before any clone', async ({ bazel }) => {
+    knownBug('SEC-04', 'a launcher resolves what it runs from the clone');
+    for (const [agent, message] of [
+      ['launcher', 'not supported with checkout on'],
+      ['launcher-path', 'not supported with checkout on'],
+      ['relative', 'is a relative path'],
+    ]) {
+      const { job } = await reviewRuns(bazel, agent);
+      expect(job.state, agent).toBe('failed');
+      expect(job.error, agent).toContain(message);
+    }
+    expect(bazel.agentCalls()).toEqual([]);
+    expect(bazel.ghCalls().filter((c) => c.argv[1] === 'clone')).toEqual([]);
+    expect(bazel.clones()).toEqual([]);
+  });
+
+  test('without a checkout a launcher runs, with no flags', async ({ bazel }) => {
+    const { job } = await reviewRuns(bazel, 'launcher-no-clone');
+    expect(job.state).toBe('done');
+    const [call] = bazel.agentCalls();
+    expect(call.argv).toEqual([]);
+    expect(call.plugin_dir).toBe('');
+  });
+
+  test('stream-json with format plain, or claude as an argument, is not Claude Code', async ({ bazel }) => {
+    for (const agent of ['plain-stream', 'model-arg']) await reviewRuns(bazel, agent);
+    expect(bazel.agentCalls().map((c) => c.argv)).toEqual([STREAM, ['--model', 'claude']]);
+    expect(bazel.agentCalls().every((c) => c.plugin_dir === '')).toBe(true);
+  });
+
+  // SEC-05: a folder the PR versions can be a repository of its own, whose
+  // config a `git status` inside it obeys (core.fsmonitor runs a command).
+  test('every agent with a clone gets the git guard, on top of the user\'s settings', async ({ bazel }) => {
+    knownBug('SEC-05', 'git obeys config the PR versions');
+    for (const agent of ['review-fleet', 'plain-lens', 'codex', 'git-user']) await reviewRuns(bazel, agent);
+    for (const call of bazel.agentCalls()) {
+      expect(call.git_config).toMatchObject({
+        'safe.bareRepository': 'explicit', 'core.fsmonitor': 'false', 'core.hooksPath': '/dev/null',
+      });
+    }
+    expect(bazel.agentCalls().at(-1)!.git_config['e2e.user']).toBe('kept');
+  });
+
+  // F8: a path is the PR's text; in the prompt, in Bazel's voice, it would be an
+  // instruction. The prompt gives the count; the log the names, capped and quoted.
+  test("the PR's file names stay out of the prompt, and cannot fake a log line", async ({ bazel }) => {
     SEC();
-    await reviewRuns(bazel, 'launcher');
-    expectConfined(bazel, bazel.agentCalls()[0], ['-p']);
+    const files: Record<string, string> = { 'a\nE2E-FAKE-LINE/.claude/x': 'x' };
+    for (let i = 0; i < 24; i++) files[`d${String(i).padStart(2, '0')}/.claude/x`] = 'x';
+    bazel.updatePR('acme/api-core#101', { files: { ...files, '.mcp.json': '{}' } });
+    const { id } = await reviewRuns(bazel, 'review-fleet');
+    const [call] = bazel.agentCalls();
+    expect(call.prompt).toContain('Bazel removed 26 path(s)');
+    expect(call.prompt).not.toContain('E2E-FAKE-LINE');
+    expect(call.prompt).not.toContain('d00/');
+
+    const log = await logOf(bazel, id);
+    expect(log.some((l) => l.startsWith('E2E-FAKE-LINE'))).toBe(false);
+    const removal = log.find((l) => l.startsWith(REMOVED))!;
+    expect(removal).toContain('"a\\nE2E-FAKE-LINE/.claude"');
+    expect(removal).toContain('and 6 more');
   });
 
   test('a step that brings the files back does not hand them to the next one', async ({ bazel }) => {
@@ -349,6 +418,9 @@ test.describe('P0 · a step cannot turn a later step into a reader of the clone'
     expect(fs.lstatSync(settings(bazel)).isSymbolicLink()).toBe(true); // the swap did happen
     expect(bazel.agentCalls().map((c) => c.scenario)).toEqual(['swap-settings']);
     expect(JSON.stringify(job)).toContain("inside the PR's clone");
+    // A refused step ends the job.
+    expect(job.state).toBe('failed');
+    expect(job.steps.at(-1).state).toBe('failed');
   });
 });
 

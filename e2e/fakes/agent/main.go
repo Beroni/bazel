@@ -190,6 +190,7 @@ func record(prompt string) {
 		"config_anywhere":      configAnywhere(cwd),
 		"git_status":           string(gitStatus),
 		"git_exclude":          string(gitExclude),
+		"git_config":           gitConfig(cwd),
 		"grok_env":             grok,
 		"grok_home_config":     os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
 		"at":                   time.Now().UTC().Format(time.RFC3339Nano),
@@ -261,6 +262,20 @@ func configAnywhere(dir string) []string {
 		}
 		return nil
 	})
+	return out
+}
+
+// gitConfig is the value git itself reads in dir for the settings Bazel guards,
+// plus one a user could have set: env, config files and all.
+func gitConfig(dir string) map[string]string {
+	out := map[string]string{}
+	for _, key := range []string{"safe.bareRepository", "core.fsmonitor", "core.hooksPath", "e2e.user"} {
+		cmd := exec.Command("git", "config", "--get", key)
+		cmd.Dir = dir
+		if v, err := cmd.Output(); err == nil {
+			out[key] = strings.TrimSpace(string(v))
+		}
+	}
 	return out
 }
 
