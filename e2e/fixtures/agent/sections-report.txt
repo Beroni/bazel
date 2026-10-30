@@ -1,0 +1,13 @@
+# Sections E2E-SECTIONS
+
+Summary line of the report.
+
+## Findings
+
+### S1 · major · One finding
+
+E2E-SECTION-FINDING a body. ![chart](https://attacker.example/report.png)
+
+## Test plan
+
+E2E-SECTION-MORE run the suite.

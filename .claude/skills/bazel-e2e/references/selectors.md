@@ -14,7 +14,7 @@ Rules for the UI side:
 
 ## Contract
 
-Status: **implemented on feat/redesign (459ef21)**, not on origin/master yet.
+Status: **implemented on feat/redesign (bd7240a)**, not on origin/master yet.
 `harness/ui.ts` uses the testid when the page has it and master's role/text
 otherwise; the whole suite passes on both. P0 = used by the P0 tests.
 
@@ -45,6 +45,19 @@ Differences on the redesign, already handled by the helpers:
   "reviewing" (data-state unchanged, plus `reviewing`); one tag per row.
 - Card state, agent, "✓ published" and tokens are sr-only text (testids
   `job-state`, `job-published`, `job-tokens` unchanged).
+- PR page (Overview): `pr-page` (`data-pr-key`, `data-loaded`), `pr-activity`,
+  `pr-files`, `pr-reviewer` (`data-login`, `data-state`), `pr-label`, `pr-check`
+  (`data-name`, `data-state`), `pr-error` (stays until Retry) and `retry`, the
+  Retry of any load error. A job of a PR shows in `pr-activity`; a history job
+  says "is writing / wrote the history with" and gives no "reviewing" tag.
+- History tab: `history` (`data-pr-key`), `history-generate`,
+  `history-regenerate`, `history-decision` (`data-n`).
+- `review-more`: the `<details>` "More from the report". `data-publishes=true`:
+  open, labelled "also goes to the PR"; `false`: closed, no label.
+- A markdown image becomes a link "image: alt" in the PR body, reviews and
+  History: there is no `<img>`. The publish confirm says "Goes to the PR: N of M
+  findings (whole bodies)…". Before `/api/prs` answers the list says it is
+  loading, never "no open PRs".
 - `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
 - Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
   just now", "⟳ changed since review"); tests match both.
