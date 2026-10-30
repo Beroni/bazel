@@ -221,7 +221,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// review's.
 	var fechado Usage
 	stopped := -1
-	var neutralized []string
+	neutralized := map[string]bool{}
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
@@ -247,17 +247,15 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			}
 			if len(removed) > 0 {
 				for _, rel := range removed {
-					if !slices.Contains(neutralized, rel) {
-						neutralized = append(neutralized, rel)
-					}
+					neutralized[rel] = true
 				}
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
-					Text: "· removed from the clone, so that no agent runs them: " + strings.Join(removed, ", ")})
+					Text: "· removed from the clone, so that no agent runs them: " + logPaths(removed)})
 			}
 			if err := checkPathFlags(step.Args, workdir); err != nil {
 				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
 			}
-			return neutralizedNote(neutralized), nil
+			return neutralizedNote(len(neutralized)), nil
 		}
 
 		dir := workdir
@@ -285,6 +283,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		// A refused step ends the job: it must not turn into one failed section
 		// of a review that can still be published.
 		if errors.Is(err, errRefused) {
+			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
 		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
@@ -360,14 +359,40 @@ var errRefused = errors.New("refused to start the agent")
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,
-// and the ones a reviewer most wants to read.
-func neutralizedNote(paths []string) string {
-	if len(paths) == 0 {
+// and the ones a reviewer most wants to read. It gives their number and never
+// their names: a path is the PR's text, and in the prompt, in Bazel's voice, it
+// would be an instruction. The names are in the job's log.
+func neutralizedNote(n int) string {
+	if n == 0 {
 		return ""
 	}
-	return "\n\nBazel removed these from the working tree before you ran, because agent CLIs execute them: " +
-		strings.Join(paths, ", ") + ". They are still in git and still part of the review: the diff shows them, and `git show HEAD:<path>` reads them."
+	return fmt.Sprintf("\n\nBazel removed %d path(s) from the working tree before you ran (.claude, .codex, .grok and "+
+		".mcp.json, at any depth), because agent CLIs execute them. They are still in git and still part of the review: "+
+		"the diff shows them, and `git show HEAD:<path>` reads them.", n)
 }
+
+// logPaths writes paths for one line of the job's log: at most maxLoggedPaths,
+// and any that is not plain text quoted, so a file name cannot fake a line.
+func logPaths(paths []string) string {
+	shown := paths
+	if len(shown) > maxLoggedPaths {
+		shown = shown[:maxLoggedPaths]
+	}
+	out := make([]string, 0, len(shown)+1)
+	for _, p := range shown {
+		if q := strconv.Quote(p); q != `"`+p+`"` {
+			p = q
+		}
+		out = append(out, p)
+	}
+	if extra := len(paths) - len(shown); extra > 0 {
+		out = append(out, fmt.Sprintf("and %d more", extra))
+	}
+	return strings.Join(out, ", ")
+}
+
+// maxLoggedPaths caps what one PR can put in the log.
+const maxLoggedPaths = 20
 
 // runsClaude says whether a step runs Claude Code: its command is `claude`, or
 // resolves to it, or it speaks Claude's stream-json. Only the command and the

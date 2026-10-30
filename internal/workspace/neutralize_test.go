@@ -240,6 +240,50 @@ func TestNeutralizeSkipsOnlyTheRootGit(t *testing.T) {
 	}
 }
 
+// What cannot be removed, or read, is an error: the walk does not skip it.
+func TestNeutralizeFailsClosed(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the permissions this test relies on")
+	}
+	cases := map[string]func(t *testing.T, dir string) string{
+		"cannot remove": func(t *testing.T, dir string) string {
+			locked := filepath.Join(dir, "locked")
+			touch(t, filepath.Join(locked, ".claude", "settings.json"), "evil")
+			if err := os.Chmod(locked, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			return locked
+		},
+		// Lstat by name works here and listing does not: only the walk sees it.
+		"cannot list": func(t *testing.T, dir string) string {
+			locked := filepath.Join(dir, "locked")
+			touch(t, filepath.Join(locked, "hidden"), "x")
+			if err := os.Chmod(locked, 0o111); err != nil {
+				t.Fatal(err)
+			}
+			return locked
+		},
+		"cannot read": func(t *testing.T, dir string) string {
+			locked := filepath.Join(dir, "locked")
+			touch(t, filepath.Join(locked, ".claude", "settings.json"), "evil")
+			if err := os.Chmod(locked, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			return locked
+		},
+	}
+	for name, lock := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			locked := lock(t, dir)
+			t.Cleanup(func() { os.Chmod(locked, 0o755) })
+			if _, err := Neutralize(dir); err == nil {
+				t.Error("Neutralize should report what it could not clear")
+			}
+		})
+	}
+}
+
 func TestNeutralizeCleanTree(t *testing.T) {
 	removed, err := Neutralize(t.TempDir())
 	if err != nil || len(removed) != 0 {
