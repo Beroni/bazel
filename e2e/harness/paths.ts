@@ -5,10 +5,11 @@ export const REPO = path.resolve(E2E, '..');
 export const OUT = path.join(E2E, '.out');
 /**
  * The Bazel source tree under test. Defaults to this repo; point it at another
- * checkout (E2E_BAZEL_SRC=../bases/redesign) to run this suite against another
- * base without copying e2e/ there. The fakes always come from this repo.
+ * checkout (E2E_BAZEL_SRC=../bases/redesign, relative to the repo root) to run
+ * this suite against another base without copying e2e/ there. The fakes always
+ * come from this repo.
  */
-export const BAZEL_SRC = process.env.E2E_BAZEL_SRC ? path.resolve(process.env.E2E_BAZEL_SRC) : REPO;
+export const BAZEL_SRC = process.env.E2E_BAZEL_SRC ? path.resolve(REPO, process.env.E2E_BAZEL_SRC) : REPO;
 export const BIN = path.join(OUT, 'bin');
 /**
  * The fake agent under the name `claude`, for tests that need the command name
