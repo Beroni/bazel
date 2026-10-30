@@ -1373,6 +1373,10 @@ function syncSelectAll() {
 }
 
 function renderPRs() {
+  // Until the first answer the list says it is loading (or why it failed); a
+  // job event, the filter or "select all" drawing it then would say "no open
+  // PRs" instead. loadPRs draws it when the list lands.
+  if (!state.prsLoaded) return;
   const list = $('#pr-list');
   const prs = visiblePRs();
   // A rebuild must not drop the keyboard focus: note which row's title or
