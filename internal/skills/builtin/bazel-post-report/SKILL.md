@@ -2,8 +2,8 @@
 name: bazel-post-report
 description: Publishes to GitHub a review Bazel has already produced and a person has already
   read on screen — the markdown whose path comes in the prompt. Posts a single review with
-  inline comments, reacts 👍 to what is already on the PR instead of repeating it, stands down
-  on findings the team already settled in a resolved or replied-to thread, and posts an
+  inline comments, reacts 👍 to what is already on the PR instead of repeating it, lists what
+  the PR already settled in a resolved or replied-to thread instead of posting it again, and posts an
   all-clear when there were no findings. Ships inside Bazel; not the same as a `post-report`
   you may have installed, which resolves the file on its own and asks before posting.
 allowed-tools: Read Grep Glob Bash
@@ -104,8 +104,8 @@ payload, checking in this order — the first row that matches wins:
 
 | Situation | Destination |
 |---|---|
-| Already on the PR **and settled** (thread resolved, or somebody replied) | **Nothing written, no 👍.** Out of the verdict; listed as already settled. |
-| Already on the PR | **👍 on the existing comment.** Nothing posted. |
+| Already on the PR **in a thread that was resolved or replied to** | **Not posted again, no 👍.** Still counts toward the verdict. Listed as *already settled on the PR (by @login)*. |
+| Already on the PR, in a comment by someone other than the PR's author | **👍 on the existing comment.** Nothing posted. |
 | No `path`/`line` (`-`), sha mismatch, or a line outside the diff | the review body |
 | Everything else | an inline comment |
 
@@ -113,17 +113,27 @@ The order matters: a settled finding is also a duplicate, and checking duplicate
 a 👍 it should never get.
 
 **Same finding** = same file **and** lines within 5 of each other **and** same root cause. It
-counts the same whether the existing comment is someone else's or from an earlier run.
+counts the same whether the existing comment is a reviewer's or from an earlier run — but
+**never the PR author's**: the author explaining their own line ("intended for admin flows")
+does not absorb a finding about it. A finding that matches only the author's comments is
+posted as if they were not there.
 Different wording of the same bug **is** a duplicate — that is the case that fools you most.
 The same file with two different bugs is not. `bazel-review-fleet` deduplicates its lenses with
 this same predicate.
 
-**Settled** means the matching comment sits in a thread that was **resolved**, or that somebody
-**replied to**. That is a decision the team took in writing; you do not reopen it. A settled
-finding writes nothing to GitHub, does not count toward the published verdict (two settled
-`critical`s do not block a merge the team unblocked), and is listed — file, line, who decided —
-in the review body and in your stdout. `isOutdated` is **not** settlement; it only means the
-lines moved.
+**Settled** means the matching comment sits in a thread that was **resolved**, or that
+somebody **replied to**. A human read this finding in Bazel and chose to publish it, so a thread
+state on GitHub never makes it disappear in silence:
+
+- it is not posted again and gets no 👍 — the thread already holds the discussion;
+- it **still counts toward the verdict** written in the body: the report's verdict is the one
+  you publish;
+- it is listed, in the review body and in your stdout, as
+  `already settled on the PR (by @login)` with its file and line. `@login` is who resolved the
+  thread (`resolvedBy`) or who wrote the last reply — whoever that is, the PR's author
+  included, so the person in Bazel sees who closed it.
+
+`isOutdated` is **not** settlement; it only means the lines moved.
 
 Filtering duplicates is not filtering severity: an unsettled `critical` already on the PR still
 counts toward the verdict in the body. It just does not become a second comment.
@@ -168,9 +178,8 @@ Commands and payload shapes: `publishing.md`.
 - **`event: COMMENT`, always.** Never `REQUEST_CHANGES` — that blocks the merge in the user's
   name. Never `APPROVE`, not even when the report says `approve`. The verdict goes written in
   the body.
-- The body carries: the verdict (the report's, and the published one when settled findings
-  changed it), the scope line from the report's header (`scope_cmd`, `files`, `lenses_ran`),
-  findings that go to the body, the open questions, the already-settled list, and
+- The body carries: the report's verdict, the scope line from the report's header (`scope_cmd`, `files`, `lenses_ran`),
+  findings that go to the body, the open questions, the *already settled on the PR* list, and
   ``Reviewed at `<short sha>`.``
 - If the API rejects **one** comment for an invalid line, it rejects the **whole review**.
   Remove that comment, send the rest, and say which one fell out.
@@ -181,19 +190,20 @@ Commands and payload shapes: `publishing.md`.
   coverage line from the report's header and its sha marker. Look for the marker first: same
   sha already cleared → 👍 it, do not post another; different sha → post a new one and never
   edit or delete the old.
-- **Every finding a duplicate** → only the 👍s. No empty review, and no all-clear: there were
-  findings, just already said.
-- **Every finding settled** → nothing is written at all, not even a 👍.
+- **Every finding a duplicate or settled** → only the 👍s on the duplicates. No empty review,
+  and no all-clear: there were findings, just already said. Your stdout lists every settled
+  one.
 
 ## Step 6 — Say what happened
 
 Your stdout goes back to the review's card in Bazel. End it with the real count, in markdown:
 
 ```
-6 findings: 3 posted inline, 1 was already on the PR (👍 on @someone's comment),
-2 were already settled (thread resolved by @someone on src/api/transfer.ts:88).
-Published verdict: comment — the report said request_changes, and both criticals were among
-the settled ones. The review body carried the verdict, the settled list and 2 open questions.
+6 findings: 3 posted inline, 1 was already on the PR (👍 on @someone's comment).
+2 already settled on the PR, not posted again:
+- src/api/transfer.ts:88 (critical · authz) — thread resolved by @someone
+- src/lib/auth.ts:12 (major · logic) — replied to by @author
+Verdict in the body: request_changes. The body also carried the settled list and 2 open questions.
 ```
 
 If a gate stopped you or the API refused something, say which and why.
@@ -203,7 +213,8 @@ If a gate stopped you or the API refused something, say which and why.
 - Never ask. Bazel already confirmed.
 - Never `APPROVE` or `REQUEST_CHANGES` in the user's name.
 - Never repost a finding already on the PR — not reworded, not expanded.
-- Never re-raise or 👍 a finding whose thread was resolved or replied to.
+- Never re-raise or 👍 a finding whose thread was resolved or replied to — and never leave it
+  out of the verdict or of the settled list.
 - Never reply to, resolve or close an existing thread. The 👍 is the only write you make on
   someone else's comment.
 - Never edit or delete an all-clear from an earlier sha.

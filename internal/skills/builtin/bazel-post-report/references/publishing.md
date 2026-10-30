@@ -27,10 +27,10 @@ query($owner:String!, $repo:String!, $number:Int!) {
   repository(owner:$owner, name:$repo) {
     pullRequest(number:$number) {
       reviewThreads(first:100) {
-        nodes { isResolved isOutdated comments(first:1) { nodes { databaseId } } }
+        nodes { isResolved isOutdated resolvedBy { login } comments(first:1) { nodes { databaseId } } }
       } } } }' \
   --jq '.data.repository.pullRequest.reviewThreads.nodes[]
-        | {root: .comments.nodes[0].databaseId, isResolved, isOutdated}'
+        | {root: .comments.nodes[0].databaseId, isResolved, isOutdated, resolvedBy: .resolvedBy.login}'
 ```
 
 The `:owner` / `:repo` placeholders that work in the REST paths above **do not work in
@@ -89,27 +89,16 @@ If **every** finding is a duplicate, the payload ends up with no comments at all
 an empty review, and **do not post the all-clear**: the all-clear is for zero findings, and
 here there are findings, just already said. Let the 👍 speak and report it in stdout.
 
-## A finding that was already settled — stand down
+## A finding that was already settled — list it, do not repost
 
-A duplicate whose thread was **resolved**, or which somebody **replied to**, is not just
-already said: it was already decided. It gets no comment and **no 👍** — a 👍 on a thread
-someone closed with "intentional" reads as the fleet insisting, which is the opposite of what
-happened.
+The rule and what the summary says are in `bazel-post-report/SKILL.md`. What the survey gives
+you, with no extra call:
 
 ```bash
-# is this existing comment settled? (from the survey above, no extra call)
-#   resolved  → its root id appears in call 3 with isResolved: true
-#   discussed → some comment in call 1 has in_reply_to_id == its root id
+#   resolved  → its root id appears in call 3 with isResolved: true; who → resolvedBy
+#   discussed → some comment in call 1 has in_reply_to_id == its root id; who → that comment's user
+#   by the PR's author → compare user with `gh pr view <N> --json author --jq .author.login`
 ```
-
-Any reply is a human reply: **this skill never replies to a thread** (the 👍 is the only write
-it makes to somebody else's comment), so a reply can only have come from a person.
-
-`isOutdated` is not settlement — it only means the lines moved. Judge by `isResolved` and by
-replies, and leave staleness to the sha gate.
-
-Nothing is written to GitHub for a settled finding. It is reported in stdout and listed in the
-review body, so the decision is visible without being relitigated.
 
 ## A single review with inline comments (preferred)
 
