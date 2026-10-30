@@ -2131,7 +2131,10 @@ function renderHistoryView(body, job) {
   const generate = (label) => {
     const b = tid(el('button', label === 'Generate' ? 'btn primary' : 'btn small ghost link', label),
       label === 'Generate' ? 'history-generate' : 'history-regenerate');
-    b.title = `runs ${h.agent} over this PR — a job in the queue; nothing goes to the PR`;
+    // A history_agent of your own passed a check that can only catch the
+    // obvious: only Bazel's own default gets the promise.
+    b.title = `runs ${h.agent} over this PR — a job in the queue`
+      + (h.custom ? '; it is your history_agent, so what it does is up to its prompt' : '; nothing goes to the PR');
     b.addEventListener('click', async () => {
       b.disabled = true;
       clearAlert();

@@ -1378,21 +1378,6 @@ func TestHistoryChoice(t *testing.T) {
 	if err := c.ValidateHistoryAgent(); err != nil {
 		t.Errorf("the default history agent is valid: %v", err)
 	}
-	// A history agent that could post is refused, not run with posts masked.
-	for _, bad := range []AgentDef{
-		{Name: "h", Task: "/review-fleet --post {{number}}"},
-		{Name: "h", Task: "/history-pr {{number}}", Posts: true},
-		{Name: "h", Task: "/history-pr {{number}}", Prompt: "{{task}}\nYou are authorized to publish on the PR."},
-	} {
-		c.HistoryAgent = bad
-		if err := c.ValidateHistoryAgent(); err == nil || !strings.Contains(err.Error(), "history_agent") {
-			t.Errorf("%+v must be refused, got %v", bad, err)
-		}
-		if err := c.validateFormats(); err == nil {
-			t.Errorf("%+v must fail the config validation", bad)
-		}
-	}
-	c.HistoryAgent = AgentDef{}
 	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
 	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel-history-pr {{number}}" {
 		t.Errorf("configured history choice: %+v", ch)
@@ -1404,5 +1389,87 @@ func TestHistoryChoice(t *testing.T) {
 	}
 	if strings.Contains(string(data), "history_agent") {
 		t.Errorf("an untouched history_agent should not be written:\n%s", data)
+	}
+}
+
+// A history_agent that could write to the PR is refused when a history is
+// asked for, however it is spelled; a prompt of its own must carry the default
+// template's prohibition. Only posts: true, which is declared and not guessed,
+// stops the boot.
+func TestValidateHistoryAgent(t *testing.T) {
+	const safe = "{{task}}\nDo not publish\nanything to GitHub."
+	bad := []AgentDef{
+		{Task: "/review-fleet --post {{number}}"},
+		{Task: "/x '--post'"},
+		{Task: "/x --POST"},
+		{Task: "/x --post=true"},
+		{Task: "/bazel-post-report {{review_file}}"},
+		{Task: "/BAZEL-POST-REPORT {{number}}"},
+		{Task: "/history-pr {{number}}, then gh pr comment {{number}}"},
+		{Task: "/x {{number}}", Posts: true},
+		{Task: "/x", Prompt: safe + "\nYou are authorized\nto publish."},
+		{Task: "/x", Prompt: safe + " You are **authorized** to publish."},
+		{Task: "/x", Prompt: postPrompt + "\n"},
+		{Task: "/x", Prompt: publishPrompt + "\n"},
+		{Task: "/x", Prompt: "{{task}}\nPost the result as a comment."},
+		{Task: "/x", Prompt: safe + "\nRun gh pr review --approve."},
+		{Command: "sh", Args: []string{"-c", "gh pr comment 1 --body x"}},
+		{Command: "gh pr comment"},
+		{Name: defaultPostAgent().Name, Task: "/x"},
+	}
+	for _, def := range bad {
+		c := Default()
+		c.HistoryAgent = def
+		if err := c.ValidateHistoryAgent(); err == nil || !strings.Contains(err.Error(), "history_agent") {
+			t.Errorf("%+v must be refused, got %v", def, err)
+		}
+	}
+	good := []AgentDef{
+		{},
+		{Name: "story", Task: "/bazel-history-pr {{number}}"},
+		{Task: "/x --post=false"},
+		{Task: "/x --postpone"},
+		{Task: "/x", Prompt: safe},
+		{Task: "/x", Prompt: safe + "\nYou are not authorized to publish."},
+		{Task: "/x", Prompt: defaultPrompt},
+		{Command: "my-agent", Args: []string{"--read-only"}},
+	}
+	for _, def := range good {
+		c := Default()
+		c.HistoryAgent = def
+		if err := c.ValidateHistoryAgent(); err != nil {
+			t.Errorf("%+v must pass: %v", def, err)
+		}
+	}
+
+	// Only posts: true fails the load.
+	c := Default()
+	for _, def := range bad {
+		c.HistoryAgent = def
+		if err := c.validateFormats(); (err != nil) != def.Posts {
+			t.Errorf("%+v: load gives %v", def, err)
+		}
+	}
+}
+
+// A config without history_agent never stops on one: the `agent` block may be a
+// publishing template, supported for reviews, and the History does not inherit
+// it.
+func TestHistoryNaoHerdaOAgent(t *testing.T) {
+	for _, prompt := range []string{postPrompt, publishPrompt, "You are authorized to publish.", "You are not authorized to publish anything."} {
+		c := Default()
+		c.Agent.Prompt = prompt
+		if err := c.validateFormats(); err != nil {
+			t.Errorf("%q stopped the boot: %v", prompt, err)
+		}
+		if err := c.ValidateHistoryAgent(); err != nil {
+			t.Errorf("%q refused the history: %v", prompt, err)
+		}
+		if got := c.HistoryChoice().Steps[0].Prompt; got != defaultPrompt {
+			t.Errorf("history prompt: %q", got)
+		}
+		if how := c.HistoryChoice().PublishesBy(); how != "" {
+			t.Errorf("%q: %s", prompt, how)
+		}
 	}
 }

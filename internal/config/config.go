@@ -216,18 +216,25 @@ const noPublishLine = "do not publish anything to GitHub"
 // promptForbidsPosting says whether the prompt carries the default template's
 // prohibition, ignoring line breaks and case.
 func promptForbidsPosting(prompt string) bool {
-	flat := strings.ToLower(strings.Join(strings.Fields(prompt), " "))
-	return strings.Contains(flat, strings.ToLower(noPublishLine))
+	return strings.Contains(flatten(prompt), strings.ToLower(noPublishLine))
+}
+
+// flatten is text as it reads: lower case, on one line, without the quotes and
+// emphasis that would split a phrase or a flag.
+func flatten(text string) string {
+	bare := strings.NewReplacer("`", "", "*", "", "_", "", "'", "", `"`, "").Replace(text)
+	return strings.ToLower(strings.Join(strings.Fields(bare), " "))
 }
 
 // promptAuthorizesPosting recognizes the templates that allow writing to the
 // PR — the postPrompt, the publishPrompt and any prompt that says the same in
-// its own words.
+// its own words. "Not authorized to publish" says the opposite.
 func promptAuthorizesPosting(prompt string) bool {
-	if prompt == postPrompt || prompt == publishPrompt {
+	flat := flatten(prompt)
+	if flat == flatten(postPrompt) || flat == flatten(publishPrompt) {
 		return true
 	}
-	return strings.Contains(strings.ToLower(prompt), "authorized to publish")
+	return strings.Contains(strings.ReplaceAll(flat, "not authorized to publish", ""), "authorized to publish")
 }
 
 // Agent describes how to invoke the AI agent that does the review.
@@ -1010,18 +1017,71 @@ func (c *Config) validateFormats() error {
 	if err := validateFormat(c.HistoryAgent.Format); err != nil {
 		return fmt.Errorf("invalid format for history_agent: %w", err)
 	}
-	return c.ValidateHistoryAgent()
-}
-
-// ValidateHistoryAgent refuses a history_agent that could write to the PR:
-// posts: true, a task with --post, a prompt that authorizes publishing. The
-// History tab promises nothing goes to the PR, so such an agent is an error
-// in the config, never something to run with its flag quietly turned off.
-func (c *Config) ValidateHistoryAgent() error {
-	if how := c.HistoryChoice().PublishesBy(); how != "" {
-		return fmt.Errorf("history_agent %s — the History tab never publishes; drop posts, --post or the publishing prompt", how)
+	// Only what is declared stops the boot. The patterns in ValidateHistoryAgent
+	// can be wrong, and a false positive must cost one History, not the server.
+	if c.HistoryAgent.Posts {
+		return errors.New("history_agent has posts: true — the History tab never publishes; drop it")
 	}
 	return nil
+}
+
+// ValidateHistoryAgent refuses a history_agent that could write to the PR.
+// It looks only at what the user wrote there: with no history_agent the task
+// and the prompt are Bazel's own, and the `agent` block is not inherited. It
+// runs when a history is asked for, and a refusal stops that history only.
+//
+// A list of words can show that an agent publishes, never that it does not, so
+// a prompt of its own has to carry the default template's prohibition, the
+// same rule the bare `agent` block lives by.
+func (c *Config) ValidateHistoryAgent() error {
+	def := c.HistoryAgent
+	refuse := func(why string) error {
+		return fmt.Errorf("history_agent %s — the History tab never publishes", why)
+	}
+	named := def
+	if strings.TrimSpace(named.Name) == "" {
+		named.Name = "history"
+	}
+	switch {
+	case def.Posts:
+		return refuse("has posts: true")
+	case c.isPostAgent(named):
+		return refuse("is the post agent")
+	case c.mentionsPublishing(def.Task):
+		return refuse(fmt.Sprintf("has a task that publishes: %q", def.Task))
+	case c.mentionsPublishing(def.Command + " " + strings.Join(def.Args, " ")):
+		return refuse("has a command or args that publish")
+	case strings.TrimSpace(def.Prompt) == "":
+		return nil
+	case promptAuthorizesPosting(def.Prompt):
+		return refuse("has a prompt that authorizes publishing")
+	case c.mentionsPublishing(def.Prompt):
+		return refuse("has a prompt that tells it to publish")
+	case !promptForbidsPosting(def.Prompt):
+		return refuse(fmt.Sprintf("has a prompt that does not say %q", noPublishLine))
+	}
+	return nil
+}
+
+// HistoryCustom says the user wrote a history_agent: then what it does is
+// theirs to answer for, and ValidateHistoryAgent can only catch the obvious.
+func (c *Config) HistoryCustom() bool {
+	d := c.HistoryAgent
+	return strings.TrimSpace(d.Task+d.Prompt+d.Command) != "" || len(d.Args) > 0
+}
+
+// publishCommandRe matches, in flattened text, the flag and the gh commands
+// that write to a PR. --post=false is the flag turned off.
+var publishCommandRe = regexp.MustCompile(`(^|\s)--post(=true)?(\s|$)|\bgh (pr (comment|review|merge|edit|close)|issue comment)\b`)
+
+// mentionsPublishing says whether the text calls the built-in post skill, which
+// only publishes, passes --post or runs a gh command that writes to the PR.
+func (c *Config) mentionsPublishing(text string) bool {
+	flat := flatten(text)
+	if publishCommandRe.MatchString(flat) {
+		return true
+	}
+	return strings.Contains(flat, "/"+flatten(skills.TaskSkill(defaultPostAgent().Task)))
 }
 
 func validateFormat(format string) error {
@@ -1406,12 +1466,17 @@ func (c *Config) HistoryChoice() Choice {
 	if def.Description == "" {
 		def.Description = "the PR's story: what it does, the decisions taken, what is still open"
 	}
+	// Not the `agent` block's: that one may be a publishing template, and this
+	// agent must read and report, whatever the reviews do.
+	if strings.TrimSpace(def.Prompt) == "" {
+		def.Prompt = defaultPrompt
+	}
 	ra := c.resolve(def)
 	if def.Checkout == nil {
 		ra.Checkout = true
 	}
 	// Not a review: nothing of it is offered for publishing. Whether the agent
-	// could post on its own is not masked here — ValidateHistoryAgent refuses it.
+	// could post on its own is not masked here: ValidateHistoryAgent refuses it.
 	ra.Publishable = false
 	return Choice{Name: ra.Name, Description: ra.Description, Posts: ra.Posts, Steps: []ResolvedAgent{ra}}
 }

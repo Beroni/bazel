@@ -251,3 +251,26 @@ func TestPRDetailsLimites(t *testing.T) {
 		t.Errorf("cache holds %d entries, want at most 3", size)
 	}
 }
+
+// A history_agent that publishes is refused when a history is asked for, with
+// the reason, and nothing is queued.
+func TestHistoryRecusaAgentQuePublica(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sleep", "30")
+	cfg.HistoryAgent = config.AgentDef{Name: "h", Task: "/bazel-post-report {{review_file}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.prs = []gh.PR{testPR(482)}
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("POST", "http://127.0.0.1:7777/api/prs/acme/api-core/482/history", nil))
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "history_agent") {
+		t.Errorf("generate: %d %s", w.Code, w.Body)
+	}
+	if views := srv.jobViews(); len(views) != 0 {
+		t.Errorf("a refused history must not queue a job: %v", views)
+	}
+}
