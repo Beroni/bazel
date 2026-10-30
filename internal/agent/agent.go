@@ -562,12 +562,37 @@ func checkSettingSources(args []string) error {
 }
 
 // pathFlags are the CLI flags whose value is read as configuration: settings
-// with hooks, MCP servers that start commands, plugins, folders the agent gets
-// access to, system prompts. In a file the PR controls, each one is the PR
-// configuring the agent.
+// with hooks, MCP servers that start commands, plugins, agents, folders the
+// agent gets access to, system prompts. In a file the PR controls, each one is
+// the PR configuring the agent.
 var pathFlags = []string{
-	"--settings", "--mcp-config", "--plugin-dir", "--add-dir",
-	"--append-system-prompt-file", "--system-prompt-file",
+	"--settings", "--mcp-config", "--plugin-dir", "--plugin-dir-no-mcp", "--add-dir", "--agents",
+	"--project-config-root", "--append-system-prompt-file", "--system-prompt-file",
+	"--append-subagent-system-prompt-file",
+}
+
+// variadicPathFlags take several values in a row.
+var variadicPathFlags = []string{"--mcp-config", "--add-dir"}
+
+// pathValues returns the values args gives flag, in both spellings.
+func pathValues(args []string, i int, flag string) ([]string, bool) {
+	if v, ok := strings.CutPrefix(args[i], flag+"="); ok {
+		return []string{v}, true
+	}
+	if args[i] != flag {
+		return nil, false
+	}
+	var values []string
+	for _, v := range args[i+1:] {
+		if strings.HasPrefix(v, "-") && v != "-" {
+			break
+		}
+		values = append(values, v)
+		if !slices.Contains(variadicPathFlags, flag) {
+			break
+		}
+	}
+	return values, true
 }
 
 // checkPathFlags refuses a pathFlag in the args of any step unless its value
@@ -575,29 +600,23 @@ var pathFlags = []string{
 // clone, where the agent runs; so does anything that is not a path at all,
 // like the inline JSON --settings and --mcp-config also take, which a config
 // has no reason to need here and which cannot be told apart from a mistake.
-// Refusing is what keeps a misconfigured step from running at all: --mcp-config
-// and --add-dir take several values, and all of them are checked.
+// /proc and /dev/fd are refused too: they lead to the process's cwd, the clone.
 func checkPathFlags(args []string, clone string) error {
-	for i, a := range args {
+	for i := range args {
 		for _, flag := range pathFlags {
-			var values []string
-			switch {
-			case a == flag:
-				for _, v := range args[i+1:] {
-					if strings.HasPrefix(v, "-") {
-						break
-					}
-					values = append(values, v)
-				}
-				if len(values) == 0 {
-					return fmt.Errorf("%s has no value: it must be an absolute path outside the PR's clone", flag)
-				}
-			case strings.HasPrefix(a, flag+"="):
-				values = []string{strings.TrimPrefix(a, flag+"=")}
+			values, found := pathValues(args, i, flag)
+			if !found {
+				continue
+			}
+			if len(values) == 0 {
+				return fmt.Errorf("%s has no value: it must be an absolute path outside the PR's clone", flag)
 			}
 			for _, v := range values {
 				if !filepath.IsAbs(v) {
 					return fmt.Errorf("%s %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it, where the PR controls the file", flag, v)
+				}
+				if strings.HasPrefix(v, "/proc/") || strings.HasPrefix(v, "/dev/fd/") {
+					return fmt.Errorf("%s %q leads to the process's working directory, the PR's clone: point it at a real file outside", flag, v)
 				}
 				if clone != "" && insideDir(v, clone) {
 					return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the file: point it outside", flag, v)

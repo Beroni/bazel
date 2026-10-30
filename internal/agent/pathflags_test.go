@@ -53,6 +53,24 @@ func TestCheckPathFlags(t *testing.T) {
 	}
 }
 
+// Only the flags that take several values read past the first one: the next
+// word after --settings is not its value.
+func TestCheckPathFlagsSingleValue(t *testing.T) {
+	clone := t.TempDir()
+	ok := filepath.Join(t.TempDir(), "s.json")
+	if err := checkPathFlags([]string{"--settings", ok, "review this"}, clone); err != nil {
+		t.Errorf("the prompt after --settings is not its value: %v", err)
+	}
+	if err := checkPathFlags([]string{"--mcp-config", ok, "-", "rel.json"}, clone); err == nil {
+		t.Error("a lone - does not end the values of --mcp-config")
+	}
+	for _, v := range []string{"/proc/self/cwd/.mcp.json", "/dev/fd/3"} {
+		if err := checkPathFlags([]string{"--mcp-config", v}, clone); err == nil {
+			t.Errorf("%s leads into the clone and should be refused", v)
+		}
+	}
+}
+
 // --mcp-config and --add-dir take several values: one bad value is enough.
 func TestCheckPathFlagsSeveralValues(t *testing.T) {
 	clone := t.TempDir()
