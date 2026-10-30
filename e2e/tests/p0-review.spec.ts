@@ -47,8 +47,8 @@ test.describe('P0 · review', () => {
 
     // The PR is marked reviewed in the list.
     await ui.filter(app).fill('');
-    // "✓ reviewed just now" on master, "✓ just now" since #25.
-    await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^✓ (reviewed )?(just now|\d+[mhd])/);
+    // "✓ reviewed just now" on master, "✓ just now" since #25, "reviewed now" on the redesign.
+    await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^(✓ )?(reviewed )?(just now|now|\d+[mhd])/);
   });
 
   test('the live log signs each line with the agent or lens that wrote it', async ({ bazel }) => {

@@ -1,5 +1,5 @@
 import { test, expect, knownBug } from '../harness/fixtures';
-import { expandFindings, openJob, ui } from '../harness/ui';
+import { expandFindings, openJob, showMeters, ui } from '../harness/ui';
 
 const plain = (name: string, scenario: string, extra: Record<string, unknown> = {}) =>
   ({ name, task: `/exploit-digger {{number}}`, command: 'fake-agent', args: [], format: 'plain', env: { FAKE_AGENT_SCENARIO: scenario }, ...extra });
@@ -100,14 +100,18 @@ test.describe('P1 · tokens and quota', () => {
   test('quota from rate_limit_event: hidden on a fresh server, then "claude session 86% · week 16%"', async ({ app, bazel }) => {
     const fresh = (await bazel.api('GET', '/api/state')).json.limits;
     expect(fresh?.session?.utilization ?? 0).toBe(0);
-    await expect(app.getByText(/^claude session/)).toHaveCount(0);
+    await expect(ui.quota(app)).toBeHidden();
 
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
-    const quota = app.getByText('claude session 86% · week 16%');
+    await showMeters(app);
+    const quota = ui.quota(app);
+    await expect(quota).toHaveText('claude session 86% · week 16%');
     await expect(quota).toBeVisible();
     await expect(quota).toHaveAttribute('title', /session resets at .*\n.*week resets at/s);
+    const short = app.getByTestId('quota-short'); // redesign: the bar only says this much
+    if (await short.count()) await expect(short).toHaveText('86% of session used');
   });
 
   test('the session total in the top bar adds up the jobs', async ({ app, bazel }) => {
@@ -116,7 +120,9 @@ test.describe('P1 · tokens and quota', () => {
     await bazel.waitJob(a, (j) => j.state === 'done');
     await bazel.waitJob(b, (j) => j.state === 'done');
     await app.reload();
-    await expect(app.getByText('3,6M tokens · $4.18', { exact: true })).toBeVisible();
+    await showMeters(app);
+    await expect(ui.spendTotal(app)).toHaveText('3,6M tokens · $4.18');
+    await expect(ui.spendTotal(app)).toBeVisible();
   });
 });
 

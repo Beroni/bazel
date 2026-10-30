@@ -1,15 +1,20 @@
 import { test, expect, knownBug } from '../harness/fixtures';
-import { filterByReview, selectByLabel, ui } from '../harness/ui';
+import { filterByReview, openFilters, selectByLabel, ui } from '../harness/ui';
 
 test.describe('P1 · list filters', () => {
   test('ownership, drafts and repository filters narrow the list and the counter', async ({ app }) => {
     await expect(ui.prCount(app)).toHaveText('5 PRs');
+    await openFilters(app);
     await ui.scope(app, 'mine').click();
     await expect(ui.prCount(app)).toHaveText('2 of 5 PRs');
+    await openFilters(app);
     await ui.scope(app, 'all').click();
+    await openFilters(app);
     await ui.hideDrafts(app).check();
     await expect(ui.prCount(app)).toHaveText('4 of 5 PRs');
+    await openFilters(app);
     await ui.hideDrafts(app).uncheck();
+    await openFilters(app);
     // "acme/web-app (2)" on master, "web-app (2)" when one owner is shown (#25).
     await selectByLabel(ui.repoFilter(app), /web-app \(2\)$/);
     await expect(ui.prCount(app)).toHaveText('2 of 5 PRs');
@@ -44,8 +49,8 @@ test.describe('P1 · list filters', () => {
     expect(json.prs.find((p: any) => p.key === 'acme/api-core#101').changed_since_review).toBe(true);
     await app.reload();
     await filterByReview(app, 'all');
-    // "⟳ changed since review" on master, "⟳ changed" since #25.
-    await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^⟳ changed( since review)?$/);
+    // "⟳ changed since review" on master, "⟳ changed" since #25, "changed" on the redesign.
+    await expect(ui.reviewTag(ui.prRow(app, 'Add rate limiter to the public API'))).toHaveText(/^(⟳ )?changed( since review)?$/);
     const changed = await bazel.tool('list_prs', { status: 'changed' });
     expect(changed.out.prs.map((p: any) => p.key)).toEqual(['acme/api-core#101']);
   });

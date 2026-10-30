@@ -14,6 +14,10 @@ function tid(scope: Page | Locator, id: string, fallback: Locator): Locator {
 }
 
 export const ui = {
+  /** Claude quota ("claude session 86% · week 16%"); in the #meter popover on the redesign. */
+  quota: (p: Page) => tid(p, 'quota', p.getByText(/^claude session/)),
+  /** Session spend ("3,6M tokens · $4.18"); in the #meter popover on the redesign. */
+  spendTotal: (p: Page) => tid(p, 'spend-total', p.getByText(/^[\d,.]+[kM]? tokens( · \$[\d.]+)?$/)),
   /** Header counter: "5 PRs", "1 of 5 PRs · 1 ticked". */
   prCount: (p: Page) => tid(p, 'pr-count', p.getByText(/^\d+( of \d+)? PRs?( · \d+ ticked)?$/)),
   /** Who the server thinks you are (the gh login). */
@@ -80,6 +84,24 @@ export async function expandFindings(viewer: Locator): Promise<void> {
     const t = toggles.nth(i);
     if ((await t.getAttribute('aria-expanded')) === 'false') await t.click();
   }
+}
+
+/**
+ * The redesign keeps the PR filters (scope, drafts, owner, repo) in a popover
+ * behind `pr-filter-menu`; master shows them inline. Opens it when needed.
+ */
+export async function openFilters(page: Page): Promise<void> {
+  const menu = page.getByTestId('pr-filter-menu');
+  if ((await menu.count()) && (await menu.getAttribute('aria-expanded')) !== 'true') await menu.click();
+}
+
+/**
+ * The redesign keeps count, spend, quota and login in a popover that shows on
+ * hover/focus of #meter; master shows them in the bar. Call before toBeVisible.
+ */
+export async function showMeters(page: Page): Promise<void> {
+  const meter = page.locator('#meter');
+  if (await meter.count()) await meter.hover();
 }
 
 /** Ticks the PRs matching `text` through the filter + "select all". */

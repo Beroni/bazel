@@ -35,6 +35,16 @@ Differences on the redesign, already handled by the helpers:
   `expandFindings(viewer)` before asserting on text inside a finding's body.
   Labels changed: "↗ Publish" and "As comment" (testids unchanged);
   `pick-summary` reads "N of M findings".
+- Sidebar/header (79f3807): the PR filters (`pr-scope`, `pr-hide-drafts`,
+  `pr-owner-filter`, `pr-repo-filter`) live in `pr-filter-pop`, opened by
+  `pr-filter-menu` (`aria-expanded`) — call `openFilters(page)` first.
+  `pr-count`, `spend-total`, `quota` and `whoami` live in the `#meter`
+  popover (hover/focus); `toHaveText` works as is, `toBeVisible` needs
+  `showMeters(page)`. `quota-short` reads "N% of session used".
+- `pr-review-tag` texts: "reviewed now" / "reviewed 2h", "changed",
+  "reviewing" (data-state unchanged, plus `reviewing`); one tag per row.
+- Card state, agent, "✓ published" and tokens are sr-only text (testids
+  `job-state`, `job-published`, `job-tokens` unchanged).
 - `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
 - Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
   just now", "⟳ changed since review"); tests match both.
