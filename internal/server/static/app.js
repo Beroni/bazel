@@ -82,6 +82,14 @@ const operable = (node, name, fn) => {
   });
   return node;
 };
+// prLink is the PR's key as a link to it on GitHub, in a new tab.
+const prLink = (pr) => {
+  const a = el('a', null, pr.key);
+  a.href = pr.url;
+  a.target = '_blank';
+  a.rel = 'noreferrer';
+  return a;
+};
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -443,10 +451,7 @@ function openPR(key) {
   h.append(el('span', 'num', '#' + pr.number), document.createTextNode(' ' + pr.title));
 
   const sub = el('div', 'meta');
-  const link = el('a', null, pr.key);
-  link.href = pr.url;
-  link.target = '_blank';
-  link.rel = 'noreferrer';
+  const link = prLink(pr);
   sub.append(
     link,
     el('span', null, '@' + pr.author),
@@ -613,12 +618,17 @@ async function postJob(id, btn) {
   }
 }
 
+// fetchSaved loads the list of saved reviews into state.saved.
+async function fetchSaved() {
+  const data = await api('/api/reviews');
+  state.saved = data.reviews || [];
+}
+
 async function loadSaved() {
   const rail = $('#rail');
   rail.innerHTML = '';
   try {
-    const data = await api('/api/reviews');
-    state.saved = data.reviews || [];
+    await fetchSaved();
   } catch (err) {
     banner(err.message);
     state.saved = [];
@@ -1126,7 +1136,7 @@ function logLineEl(id, l) {
 
 // logFilter is the agent picked in the column, or '' for all of them.
 function logFilter(id) {
-  return (state.logFilter || {})[id] || '';
+  return state.logFilter[id] || '';
 }
 
 // pushLine writes a line to the stream and keeps the reader at the end if they
@@ -1170,7 +1180,6 @@ function fillLogAgents(col, id) {
   const had = col.contains(document.activeElement) ? document.activeElement.dataset.agent : null;
   col.innerHTML = '';
   const pick = (who) => {
-    state.logFilter = state.logFilter || {};
     state.logFilter[id] = who;
     const wrap = $('#log-terms');
     if (wrap) {
@@ -1209,11 +1218,11 @@ function appendLog(id, lines) {
   if (col && col.dataset.job === id) fillLogAgents(col, id);
 }
 
-// total is what the server says it has — the log of a finished review is only
-// fetched when someone opens it, and until then "0 lines" would be a lie.
-function logCountLabel(id, total) {
+// logCountLabel is the line count under the agent column, with the older
+// lines the 500-line window dropped.
+function logCountLabel(id) {
   const st = logState(id);
-  const n = Math.max(st.next, total || 0);
+  const n = st.next;
   return `${n} line${n === 1 ? '' : 's'}` + (st.dropped ? ` · ${st.dropped} older dropped` : '');
 }
 
@@ -1567,7 +1576,7 @@ function label(job) {
 }
 
 // fillState writes the state inside a .state, with the time unit outside the
-// uppercase. It doesn't clear the element: the card's colored dot is already there.
+// uppercase. It appends to the element without clearing it.
 function fillState(span, job) {
   const [texto, tempo] = labelParts(job);
   // Waiting for you to publish is only half an ending: the warning color is
@@ -1680,10 +1689,7 @@ function jobHead(job) {
   const head = el('div', 'job-head');
   const grow = el('div', 'grow');
   const kicker = el('div', 'kicker');
-  const link = el('a', null, job.pr.key);
-  link.href = job.pr.url;
-  link.target = '_blank';
-  link.rel = 'noreferrer';
+  const link = prLink(job.pr);
   kicker.append(link, document.createTextNode(' · ' + job.pr.author));
   grow.append(kicker, el('h2', null, job.pr.title));
   head.append(grow, fillState(el('span', 'state state-pill ' + job.state), job));
@@ -1740,10 +1746,7 @@ function renderOverview(body, job) {
     dd.append(...vals);
     facts.append(el('dt', null, k), dd);
   };
-  const link = el('a', null, job.pr.key);
-  link.href = job.pr.url;
-  link.target = '_blank';
-  link.rel = 'noreferrer';
+  const link = prLink(job.pr);
   fact('PR', link);
   fact('Author', '@' + job.pr.author);
   fact('Branch', `${job.pr.branch} → ${job.pr.base}`);
@@ -1812,16 +1815,14 @@ function renderHistoryView(body, job) {
 // screen — the History tab only needs the list.
 async function refreshSavedList() {
   try {
-    const data = await api('/api/reviews');
-    state.saved = data.reviews || [];
+    await fetchSaved();
     if (state.tab === 'queue') renderViewer();
   } catch {
     // The history is a convenience: without the list it shows the session only.
   }
 }
 
-function renderReportView(body, job) {
-  const v = body;
+function renderReportView(v, job) {
   const html = state.bodies[job.id];
   if (!html) {
     v.append(el('p', 'dim', 'loading review…'));
@@ -1859,8 +1860,9 @@ function renderReportView(body, job) {
     total = decorateFindings(md, key);
   }
 
-  // The actions come after the review, not before: this is where you arrive
-  // when you're done reading — the moment to decide whether this goes to the PR.
+  // The actions come after the review, in a bar pinned to the panel's bottom:
+  // what goes to the PR is decided by reading, and each action still asks a
+  // confirm() that lists what stays out.
   if (!job.publishing && job.publishable === false) {
     // An agent that produces no review has nowhere to publish. Saying so here
     // beats showing nothing: you have just read the report and the next
