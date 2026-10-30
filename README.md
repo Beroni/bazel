@@ -768,7 +768,9 @@ CLI is running:
   (`format: claude-stream`, or that output in its `args` with no format) gets
   `--setting-sources user --strict-mcp-config --plugin-dir <runtime>` ahead of
   your `args`, and the built-in skills arrive as a plugin from outside the
-  clone. Any other command, like a wrapper called `cc`, has the first layer only.
+  clone. It also gets a `--disallowedTools` list of GitHub writes (`gh pr merge`,
+  `gh api -X`, `git push`…): a brake on what a steered agent runs by itself, not
+  a wall. Any other command, like a wrapper called `cc`, has the first layer only.
 - **Nothing points back into the clone.** Every step is checked before the clone
   is even made, and again right before it starts, with symlinks resolved: an
   earlier step can turn a safe path into a link. One bad step refuses the whole

@@ -13,7 +13,8 @@ import (
 )
 
 func TestConfineClaude(t *testing.T) {
-	guard := []string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}
+	denied := []string{"--disallowedTools", strings.Join(deniedCommands, ",")}
+	guard := slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}, denied)
 
 	base := []string{"-p", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
 	got := confineClaude(base, "/rt/x")
@@ -36,7 +37,7 @@ func TestConfineClaude(t *testing.T) {
 
 	// Without a plugin dir (no embedded skill to load), the guard flags still go.
 	got = confineClaude([]string{"-p"}, "")
-	if !slices.Equal(got, []string{"--setting-sources", "user", "--strict-mcp-config", "-p"}) {
+	if !slices.Equal(got, slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config"}, denied, []string{"-p"})) {
 		t.Errorf("no plugin: %q", got)
 	}
 }

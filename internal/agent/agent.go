@@ -611,6 +611,10 @@ func newRuntime() (string, error) {
 //   - --plugin-dir: the embedded skills, which --setting-sources user would
 //     otherwise hide along with the clone's .claude/skills.
 //
+// --disallowedTools keeps the agent's own Bash from the GitHub writes no step
+// needs. bazel-post-report's script calls gh from inside, so it is not affected.
+// It matches commands, so it is a brake and not a wall.
+//
 // The flags go first and never at the end: after a `--`, anything is plain text
 // to the CLI, and an appended flag would look added and do nothing. For the same
 // reason a flag found after a `--` does not count as already there.
@@ -632,7 +636,17 @@ func confineClaude(args []string, plugin string) []string {
 	if plugin != "" {
 		flags = append(flags, "--plugin-dir", plugin)
 	}
+	flags = append(flags, "--disallowedTools", strings.Join(deniedCommands, ","))
 	return slices.Concat(flags, args)
+}
+
+// deniedCommands are the Bash commands no agent runs by itself: they change a PR
+// or a repository, and publishing goes through its script.
+var deniedCommands = []string{
+	"Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr edit:*)",
+	"Bash(gh pr ready:*)", "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr lock:*)",
+	"Bash(gh issue:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)", "Bash(gh repo edit:*)",
+	"Bash(gh workflow run:*)", "Bash(gh api -X:*)", "Bash(gh api --method:*)", "Bash(git push:*)",
 }
 
 // checkSettingSources refuses a --setting-sources other than user, wherever it
