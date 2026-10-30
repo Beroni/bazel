@@ -204,13 +204,14 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   // opens the PR's `.CLAUDE/settings.json`. The fake opens the lower-case path,
   // as a CLI would. The last two are the ones APFS folds and a ToLower would not
   // all catch: U+212A (Kelvin) folds to k, U+017F (long s) to s.
-  for (const [what, file, top] of [
-    ['upper case', '.CLAUDE/settings.json', '.CLAUDE'],
-    ['upper case .mcp.json', '.MCP.JSON', '.MCP.JSON'],
-    ['mixed case', '.Codex/config.toml', '.Codex'],
-    ['a subfolder', 'sub/.Claude/settings.json', 'sub/.Claude'],
-    ['Kelvin sign', '.gro\u212a/config.toml', '.gro\u212a'],
-    ['long s', '.mcp.j\u017fon', '.mcp.j\u017fon'],
+  // The log may name either spelling: the PR's, or the one a CLI opens.
+  for (const [what, file, top, canonical] of [
+    ['upper case', '.CLAUDE/settings.json', '.CLAUDE', '.claude'],
+    ['upper case .mcp.json', '.MCP.JSON', '.MCP.JSON', '.mcp.json'],
+    ['mixed case', '.Codex/config.toml', '.Codex', '.codex'],
+    ['a subfolder', 'sub/.Claude/settings.json', 'sub/.Claude', 'sub/.claude'],
+    ['Kelvin sign', '.gro\u212a/config.toml', '.gro\u212a', '.grok'],
+    ['long s', '.mcp.j\u017fon', '.mcp.j\u017fon', '.mcp.json'],
   ]) {
     test(`agent config in another case is removed: ${what}`, async ({ bazel }) => {
       knownBug('SEC-02', 'the sweep compares agent config names exactly');
@@ -224,7 +225,7 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
       expect(call.agent_config).toEqual([]);
       // The fixture did make the variant: it is deleted from a tracked tree.
       expect(call.git_status).toContain(' D ');
-      expect((await logOf(bazel, id)).some((l) => l.startsWith(REMOVED) && l.includes(top))).toBe(true);
+      expect((await logOf(bazel, id)).some((l) => l.startsWith(REMOVED) && (l.includes(top) || l.includes(canonical)))).toBe(true);
     });
   }
 
