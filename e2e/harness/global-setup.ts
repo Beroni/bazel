@@ -2,7 +2,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { BAZEL_SRC, BIN, FAKE_CLAUDE, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
+import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
@@ -30,6 +30,7 @@ export default async function globalSetup() {
   fs.rmSync(path.dirname(FAKE_CLAUDE), { recursive: true, force: true });
   fs.mkdirSync(path.dirname(FAKE_CLAUDE), { recursive: true });
   fs.symlinkSync(`${BIN}/fake-agent`, FAKE_CLAUDE);
+  fs.symlinkSync(`${BIN}/fake-agent`, FAKE_WRAPPER);
 
   // Preflight: under the server's environment `gh` must be the fake, and
   // `claude`/`codex`/`grok` must not resolve at all.

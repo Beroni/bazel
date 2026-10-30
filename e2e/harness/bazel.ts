@@ -35,6 +35,8 @@ export interface AgentCall {
   /** Confinement of the PR's own Claude Code config. */
   setting_sources_user: boolean;
   strict_mcp_config: boolean;
+  /** What is left of .claude, .codex, .grok and .mcp.json in the clone (Lstat). */
+  agent_config: string[];
   /** `git status --porcelain` of the clone and its .git/info/exclude. */
   git_status: string;
   git_exclude: string;

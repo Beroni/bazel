@@ -20,6 +20,7 @@
 //	#!block              block until killed (max 120s)
 //	#!repeat <n> <text>  print text n times; {i} becomes 1..n
 //	#!gh-review          publish the review file named in the prompt with gh
+//	#!sh <command>       run a shell command in the working directory
 //	#!# <comment>        ignored
 package main
 
@@ -96,6 +97,10 @@ func main() {
 			w.Flush()
 		case "gh-review":
 			publish(prompt)
+		case "sh":
+			if out, err := exec.Command("/bin/sh", "-c", arg).CombinedOutput(); err != nil {
+				fail(6, "fake-agent: #!sh "+arg+": "+err.Error()+": "+string(out))
+			}
 		default:
 			fail(2, "fake-agent: unknown directive "+line)
 		}
@@ -130,6 +135,7 @@ func waitFor(path string) {
 // prompt, cwd), the confinement flags, the skills it could load, what the clone
 // looked like, and the GROK_* env Bazel set.
 //
+// `agent_config` is what is left of .claude, .codex, .grok and .mcp.json.
 // `skills` are the ones a real Claude Code would load from Bazel: those of
 // --plugin-dir, or of <cwd>/.claude/skills on a base that still writes them in
 // the clone. `builtin_skill_source` says which of the two served
@@ -175,7 +181,8 @@ func record(prompt string) {
 		"plugin_dir":           plugin,
 		"plugin_name":          pluginName,
 		"setting_sources_user": argValue("--setting-sources") == "user",
-		"strict_mcp_config":    slices.Contains(os.Args[1:], "--strict-mcp-config"),
+		"strict_mcp_config":    strictMCP(),
+		"agent_config":         agentConfig(cwd),
 		"git_status":           string(gitStatus),
 		"git_exclude":          string(gitExclude),
 		"grok_env":             grok,
@@ -208,9 +215,34 @@ func skillsIn(dir string) []string {
 	return out
 }
 
-// argValue reads a flag from argv, as `--flag value` or `--flag=value`.
+// strictMCP says whether --strict-mcp-config came before any `--`.
+func strictMCP() bool {
+	args := os.Args[1:]
+	if end := slices.Index(args, "--"); end >= 0 {
+		args = args[:end]
+	}
+	return slices.Contains(args, "--strict-mcp-config")
+}
+
+// agentConfig lists what is left in dir of the paths that make an agent CLI
+// run something. Lstat: a dangling symlink is still the PR's file.
+func agentConfig(dir string) []string {
+	out := []string{}
+	for _, rel := range []string{".claude", ".codex", ".grok", ".mcp.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); err == nil {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// argValue reads a flag from argv, as `--flag value` or `--flag=value`. It
+// stops at `--`, like a real CLI: what comes after is text, not a flag.
 func argValue(flag string) string {
 	args := os.Args[1:]
+	if end := slices.Index(args, "--"); end >= 0 {
+		args = args[:end]
+	}
 	for i, a := range args {
 		if a == flag && i+1 < len(args) {
 			return args[i+1]

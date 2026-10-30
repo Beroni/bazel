@@ -1,0 +1,5 @@
+#!# A step that puts the PR's agent config back, as a git checkout in the clone would.
+#!sh git checkout HEAD -- .claude .codex .grok .mcp.json
+# Restored E2E-RESTORED
+
+Nothing to report.

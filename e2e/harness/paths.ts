@@ -15,6 +15,8 @@ export const BIN = path.join(OUT, 'bin');
  * itself to matter. Used by absolute path: `claude` must stay off the server's PATH.
  */
 export const FAKE_CLAUDE = path.join(OUT, 'fake-claude', 'claude');
+/** The fake agent under a name that says nothing: a wrapper Bazel cannot recognize. */
+export const FAKE_WRAPPER = path.join(OUT, 'fake-claude', 'review-wrapper');
 export const FIXTURES = path.join(E2E, 'fixtures');
 export const SCENARIO_FILES = path.join(FIXTURES, 'agent');
 export const SPECS = path.join(SCENARIO_FILES, 'specs');

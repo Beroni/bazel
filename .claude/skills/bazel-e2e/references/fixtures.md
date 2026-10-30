@@ -51,6 +51,8 @@ the redesign's Overview) take gh's shape in the fixture: `createdAt`, `commits`
 asked with `--json files` it comes back as gh's list (`path`, `additions`,
 `deletions`).
 
+`symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
+
 `url` defaults to `https://github.com/<repo>/pull/<n>`; `updatedAt` (ISO) or
 `updatedAgo` (Go duration); `baseRefName` defaults to `main`.
 `changedFiles: 0` makes Bazel refuse the review ("no changed files").
@@ -91,8 +93,9 @@ The record (`bazel.agentCalls()`):
   `.claude-plugin/plugin.json`.
 - `setting_sources_user`, `strict_mcp_config`: whether the flags that confine
   Claude Code arrived.
+- `agent_config`: what is left of `.claude`, `.codex`, `.grok` and `.mcp.json`
+  (Lstat, so a dangling symlink counts). Must be `[]` when an agent starts.
 - `clone_skills`, `git_status`, `git_exclude`: the clone as the agent found it.
-  With a hostile PR, `clone_skills` holds the PR's own files.
 - `grok_env`, `grok_home_config`: the `GROK_*` env Bazel set for a `grok-stream`
   step and whether `$GROK_HOME/config.toml` existed.
 
@@ -105,6 +108,7 @@ Lines go to stdout verbatim, except directives:
 | `#!exit 2` | exit now with code 2 |
 | `#!wait name` | block until `$FAKE_AGENT_STATE/name` exists (the test calls `bazel.release('name')`); 120 s cap |
 | `#!block` | sleep 120 s (to be killed: cancel, timeout) |
+| `#!sh <command>` | run a shell command in the working directory, e.g. a `git checkout` that restores files |
 | `#!repeat 650 line {i}` | print the line 650 times, `{i}` = 1..650 |
 | `#!gh-review` | read the review file from `/bazel-post-report <path>` in the prompt and the PR from "The repository R is cloned … PR #N"; run `gh api --method POST repos/R/pulls/N/reviews --input -` with `{"event":"COMMENT","body":<file>}` |
 | `#!# text` | comment |

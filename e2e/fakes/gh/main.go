@@ -49,6 +49,8 @@ type fixturePR struct {
 	ReviewDecision string            `json:"reviewDecision"`
 	Diff           string            `json:"diff,omitempty"`
 	Files          map[string]string `json:"files,omitempty"` // what the PR branch adds
+	// Symlinks maps a path in the branch to its target, committed as a link.
+	Symlinks map[string]string `json:"symlinks,omitempty"`
 	// The PR page fields (gh pr view --json …). Missing ones are synthesized
 	// from the rest: one commit at headRefOid, files from Files, empty lists.
 	CreatedAt         string `json:"createdAt,omitempty"`
@@ -432,6 +434,13 @@ func origin(repo string) (string, error) {
 		}
 		for _, path := range sortedKeys(files) {
 			write(filepath.Join(src, path), files[path]+"\n")
+		}
+		for _, path := range sortedKeys(p.Symlinks) {
+			link := filepath.Join(src, path)
+			_ = os.MkdirAll(filepath.Dir(link), 0o755)
+			if err := os.Symlink(p.Symlinks[path], link); err != nil {
+				return "", err
+			}
 		}
 		if err := gitAll(src, [][]string{{"add", "-A"}, {"commit", "-q", "-m", p.Title}}); err != nil {
 			return "", err
