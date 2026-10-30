@@ -3,9 +3,12 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
@@ -133,5 +136,84 @@ func TestHistorySobDemanda(t *testing.T) {
 	}
 	if saved, _ := store.List(srv.reviewsDir); len(saved) != 0 {
 		t.Errorf("a history must not land in Saved: %v", saved)
+	}
+}
+
+// The details cache is bounded and gh is never hammered: a failed read is not
+// retried for a while, an entry goes stale after detailsTTL even at the same
+// head, a PR outside the list is only read on explicit request and a few
+// times a minute, and the cache never holds more than detailsMax entries.
+func TestPRDetailsLimites(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	srv.prs[0].HeadRefOid = "aaa"
+	calls, fail := 0, false
+	srv.fetchDetails = func(_ context.Context, repo string, number int) (gh.Details, error) {
+		calls++
+		if fail {
+			return gh.Details{}, errors.New("HTTP 403: API rate limit exceeded")
+		}
+		return gh.Details{HeadRefOid: "aaa"}, nil
+	}
+	now := time.Unix(1_000_000, 0)
+	timeNow = func() time.Time { return now }
+	oldMax, oldPer := detailsMax, offListPerMin
+	t.Cleanup(func() { timeNow = time.Now; detailsMax, offListPerMin = oldMax, oldPer })
+	h := srv.Handler()
+	get := func(path string) int {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+path, nil))
+		return w.Code
+	}
+	listed := "/api/prs/acme/api-core/482/details"
+
+	// A failure is kept: asking again within detailsErrTTL does not call gh.
+	fail = true
+	if code := get(listed); code != http.StatusBadGateway || calls != 1 {
+		t.Fatalf("failed read: %d, %d calls", code, calls)
+	}
+	if code := get(listed); code != http.StatusBadGateway || calls != 1 {
+		t.Errorf("a failure must not be retried at once: %d, %d calls", code, calls)
+	}
+	now = now.Add(detailsErrTTL + time.Second)
+	fail = false
+	if code := get(listed); code != http.StatusOK || calls != 2 {
+		t.Errorf("after the error window: %d, %d calls", code, calls)
+	}
+	// Same head, but checks and reviews move: stale after detailsTTL.
+	get(listed)
+	if calls != 2 {
+		t.Errorf("within the TTL the cache answers: %d calls", calls)
+	}
+	now = now.Add(detailsTTL + time.Second)
+	if get(listed); calls != 3 {
+		t.Errorf("past the TTL it is read again: %d calls", calls)
+	}
+
+	// Outside the list: refused without offlist=1, rate limited with it.
+	offListPerMin = 2
+	if code := get("/api/prs/acme/api-core/7/details"); code != http.StatusNotFound || calls != 3 {
+		t.Errorf("off-list without asking: %d, %d calls", code, calls)
+	}
+	for n, want := range []int{http.StatusOK, http.StatusOK, http.StatusTooManyRequests} {
+		if code := get(fmt.Sprintf("/api/prs/acme/api-core/%d/details?offlist=1", 100+n)); code != want {
+			t.Errorf("off-list read %d: %d, want %d", n, code, want)
+		}
+	}
+	now = now.Add(time.Minute)
+	if code := get("/api/prs/acme/api-core/200/details?offlist=1"); code != http.StatusOK {
+		t.Errorf("a minute later off-list reads are allowed again: %d", code)
+	}
+
+	// The cache keeps at most detailsMax entries.
+	detailsMax, offListPerMin = 3, 100
+	for n := 300; n < 310; n++ {
+		get(fmt.Sprintf("/api/prs/acme/api-core/%d/details?offlist=1", n))
+	}
+	srv.detMu.Lock()
+	size := len(srv.details)
+	srv.detMu.Unlock()
+	if size > 3 {
+		t.Errorf("cache holds %d entries, want at most 3", size)
 	}
 }

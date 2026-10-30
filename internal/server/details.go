@@ -11,16 +11,138 @@ import (
 	"github.com/beroni/bazel/internal/store"
 )
 
-// detailsEntry is one PR's page as served, and the head sha it was read at.
+// detailsEntry is one PR's page as served, the head sha it was read at, and
+// the error when the read failed.
 type detailsEntry struct {
 	sha  string
 	at   time.Time
 	view detailsView
+	err  string
 }
 
-// detailsTTL bounds the cache of a PR the list doesn't know (its head can't be
-// compared), so it is read again after a while instead of never.
-const detailsTTL = 2 * time.Minute
+// The details cache. Checks and reviews change without a new commit, so even
+// at the same head an entry is read again after detailsTTL. A failed read is
+// not retried before detailsErrTTL, whoever asks. At most detailsMax entries
+// are kept, the oldest going first. A PR that is not in the list is only read
+// when the page asks for it explicitly (offlist=1), and at most offListPerMin
+// times a minute: the list bounds what the page needs, and nothing else
+// should be able to spend the machine's GitHub quota.
+var (
+	detailsTTL    = time.Minute
+	detailsErrTTL = 30 * time.Second
+	detailsMax    = 256
+	offListPerMin = 6
+	timeNow       = time.Now
+)
+
+func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
+	repo, number, code, err := s.watchedRef(r)
+	if err != nil {
+		writeErr(w, code, err)
+		return
+	}
+	pr, listed := s.listedPR(repo, number)
+	if !listed && r.URL.Query().Get("offlist") != "1" {
+		writeErr(w, http.StatusNotFound, errors.New("that PR is not in the list; ask with offlist=1 to read it from GitHub"))
+		return
+	}
+	key := strings.ToLower(repo) + "#" + strconv.Itoa(number)
+	now := timeNow()
+
+	s.detMu.Lock()
+	e, ok := s.details[key]
+	if ok && (!listed || e.sha == pr.HeadRefOid || e.err != "") {
+		if e.err != "" && now.Sub(e.at) < detailsErrTTL {
+			s.detMu.Unlock()
+			writeErr(w, http.StatusBadGateway, errors.New(e.err))
+			return
+		}
+		if e.err == "" && now.Sub(e.at) < detailsTTL {
+			s.detMu.Unlock()
+			writeJSON(w, http.StatusOK, e.view)
+			return
+		}
+	}
+	if !listed {
+		recent := s.offList[:0]
+		for _, t := range s.offList {
+			if now.Sub(t) < time.Minute {
+				recent = append(recent, t)
+			}
+		}
+		s.offList = recent
+		if len(s.offList) >= offListPerMin {
+			s.detMu.Unlock()
+			writeErr(w, http.StatusTooManyRequests, errors.New("too many reads of PRs outside the list; wait a minute"))
+			return
+		}
+		s.offList = append(s.offList, now)
+	}
+	s.detMu.Unlock()
+
+	d, err := s.fetchDetails(r.Context(), repo, number)
+	entry := detailsEntry{sha: d.HeadRefOid, at: now}
+	if err != nil {
+		entry.sha, entry.err = pr.HeadRefOid, err.Error()
+	} else {
+		entry.view = detailsViewOf(d)
+	}
+	s.detMu.Lock()
+	s.putDetails(key, entry)
+	s.detMu.Unlock()
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, entry.view)
+}
+
+// putDetails stores an entry, dropping the oldest when the cache is full.
+// Call with detMu held.
+func (s *Server) putDetails(key string, e detailsEntry) {
+	delete(s.details, key)
+	for len(s.details) >= detailsMax {
+		oldest, at := "", time.Time{}
+		for k, v := range s.details {
+			if oldest == "" || v.at.Before(at) {
+				oldest, at = k, v.at
+			}
+		}
+		delete(s.details, oldest)
+	}
+	s.details[key] = e
+}
+
+// watchedRef reads {owner}/{name}/{number} from the path and returns the
+// repository with the config's spelling — so ACME/api and acme/api are one
+// PR — or why the request is refused.
+func (s *Server) watchedRef(r *http.Request) (string, int, int, error) {
+	repo := r.PathValue("owner") + "/" + r.PathValue("name")
+	number, err := strconv.Atoi(r.PathValue("number"))
+	if err != nil || number <= 0 {
+		return "", 0, http.StatusBadRequest, errors.New("invalid PR number")
+	}
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	for _, w := range s.cfg.Repos {
+		if strings.EqualFold(w, repo) {
+			return w, number, 0, nil
+		}
+	}
+	return "", 0, http.StatusNotFound, errors.New("not a watched repository")
+}
+
+// listedPR is the PR as the current list has it, if it is there.
+func (s *Server) listedPR(repo string, number int) (gh.PR, bool) {
+	s.prMu.RLock()
+	defer s.prMu.RUnlock()
+	for _, pr := range s.prs {
+		if pr.Number == number && strings.EqualFold(pr.Repo, repo) {
+			return pr, true
+		}
+	}
+	return gh.PR{}, false
+}
 
 // detailsView is what the Overview draws: the PR's description, its timeline
 // of commits, the files it touches, who reviews it, labels and checks.
@@ -60,64 +182,6 @@ type reviewerView struct {
 type checkView struct {
 	Name  string `json:"name"`
 	State string `json:"state"`
-}
-
-func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
-	repo := r.PathValue("owner") + "/" + r.PathValue("name")
-	number, err := strconv.Atoi(r.PathValue("number"))
-	if err != nil || number <= 0 {
-		writeErr(w, http.StatusBadRequest, errors.New("invalid PR number"))
-		return
-	}
-	if !s.watched(repo) {
-		writeErr(w, http.StatusNotFound, errors.New("not a watched repository"))
-		return
-	}
-	key := strings.ToLower(repo) + "#" + strconv.Itoa(number)
-	head := s.knownHead(repo, number)
-
-	s.detMu.Lock()
-	e, ok := s.details[key]
-	s.detMu.Unlock()
-	if ok && (head != "" && e.sha == head || head == "" && time.Since(e.at) < detailsTTL) {
-		writeJSON(w, http.StatusOK, e.view)
-		return
-	}
-	d, err := s.fetchDetails(r.Context(), repo, number)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
-	}
-	v := detailsViewOf(d)
-	s.detMu.Lock()
-	s.details[key] = detailsEntry{sha: d.HeadRefOid, at: time.Now(), view: v}
-	s.detMu.Unlock()
-	writeJSON(w, http.StatusOK, v)
-}
-
-// watched says whether repo is one of the configured repositories: the page
-// only asks about those, and nothing else should drive a gh call.
-func (s *Server) watched(repo string) bool {
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-	for _, r := range s.cfg.Repos {
-		if strings.EqualFold(r, repo) {
-			return true
-		}
-	}
-	return false
-}
-
-// knownHead is the head sha the PR list has for this PR, or "".
-func (s *Server) knownHead(repo string, number int) string {
-	s.prMu.RLock()
-	defer s.prMu.RUnlock()
-	for _, pr := range s.prs {
-		if pr.Number == number && strings.EqualFold(pr.Repo, repo) {
-			return pr.HeadRefOid
-		}
-	}
-	return ""
 }
 
 func detailsViewOf(d gh.Details) detailsView {
@@ -231,29 +295,21 @@ type decisionView struct {
 	Rejected []string `json:"rejected"`
 }
 
-// prOf finds a watched PR by repo and number: from the list when it is
-// there, from gh otherwise.
+// prOf finds a watched PR by repo and number, with the config's spelling of
+// the repository: from the list when it is there, from gh otherwise.
 func (s *Server) prOf(r *http.Request) (gh.PR, int, error) {
-	repo := r.PathValue("owner") + "/" + r.PathValue("name")
-	number, err := strconv.Atoi(r.PathValue("number"))
-	if err != nil || number <= 0 {
-		return gh.PR{}, http.StatusBadRequest, errors.New("invalid PR number")
+	repo, number, code, err := s.watchedRef(r)
+	if err != nil {
+		return gh.PR{}, code, err
 	}
-	if !s.watched(repo) {
-		return gh.PR{}, http.StatusNotFound, errors.New("not a watched repository")
+	if pr, ok := s.listedPR(repo, number); ok {
+		return pr, 0, nil
 	}
-	s.prMu.RLock()
-	for _, pr := range s.prs {
-		if pr.Number == number && strings.EqualFold(pr.Repo, repo) {
-			s.prMu.RUnlock()
-			return pr, 0, nil
-		}
-	}
-	s.prMu.RUnlock()
 	pr, err := gh.Get(r.Context(), repo, number)
 	if err != nil {
 		return gh.PR{}, http.StatusBadGateway, err
 	}
+	pr.Repo = repo
 	return pr, 0, nil
 }
 

@@ -89,6 +89,7 @@ type Server struct {
 	// test's.
 	detMu        sync.Mutex
 	details      map[string]detailsEntry
+	offList      []time.Time // reads of PRs outside the list, last minute
 	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
 }
 
