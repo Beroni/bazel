@@ -17,7 +17,7 @@ func TestConfineClaude(t *testing.T) {
 	guard := slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}, denied)
 
 	base := []string{"-p", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
-	got := confineClaude(base, "/rt/x")
+	got := confineClaude(base, "/rt/x", deniedCommands)
 	if want := slices.Concat(guard, base); !slices.Equal(got, want) {
 		t.Errorf("the flags go first:\n got %q\nwant %q", got, want)
 	}
@@ -27,7 +27,7 @@ func TestConfineClaude(t *testing.T) {
 
 	// The user's args already confine it: nothing is repeated.
 	own := []string{"-p", "--model", "haiku", "--setting-sources=user", "--strict-mcp-config"}
-	got = confineClaude(own, "/rt/y")
+	got = confineClaude(own, "/rt/y", deniedCommands)
 	if joined := strings.Join(got, " "); strings.Count(joined, "setting-sources") != 1 || strings.Count(joined, "--strict-mcp-config") != 1 {
 		t.Errorf("flags already in the args were repeated: %q", got)
 	}
@@ -36,7 +36,7 @@ func TestConfineClaude(t *testing.T) {
 	}
 
 	// Without a plugin dir (no embedded skill to load), the guard flags still go.
-	got = confineClaude([]string{"-p"}, "")
+	got = confineClaude([]string{"-p"}, "", deniedCommands)
 	if !slices.Equal(got, slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config"}, denied, []string{"-p"})) {
 		t.Errorf("no plugin: %q", got)
 	}
@@ -66,12 +66,12 @@ func TestCheckSettingSources(t *testing.T) {
 // After a `--` everything is positional: the flags must come before it, and a
 // flag found after it is text, not a flag already set.
 func TestConfineClaudeDoubleDash(t *testing.T) {
-	got := confineClaude([]string{"-p", "--", "some text"}, "/rt/x")
+	got := confineClaude([]string{"-p", "--", "some text"}, "/rt/x", deniedCommands)
 	if sep := slices.Index(got, "--"); sep < 0 || slices.Index(got, "--setting-sources") > sep || slices.Index(got, "--strict-mcp-config") > sep || slices.Index(got, "--plugin-dir") > sep {
 		t.Errorf("every flag must sit before the --: %q", got)
 	}
 
-	got = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "")
+	got = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "", deniedCommands)
 	sep := slices.Index(got, "--")
 	if !slices.Contains(got[:sep], "--strict-mcp-config") || !slices.Contains(got[:sep], "--setting-sources") {
 		t.Errorf("a flag after the -- is text and does not count: %q", got)
@@ -405,4 +405,37 @@ func pluginFrom(t *testing.T, body string) string {
 	}
 	t.Fatalf("no --plugin-dir reached the agent:\n%s", body)
 	return ""
+}
+
+// Publishing has to keep working: a skill of the user's own types the gh commands
+// itself, while the built-in leaves them to its script and needs none of them.
+func TestDeniedFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		step   config.ResolvedAgent
+		denied bool
+	}{
+		{"a review", config.ResolvedAgent{Task: "/review-fleet 26"}, true},
+		{"a built-in review", config.ResolvedAgent{Task: "/bazel-review-fleet 26"}, true},
+		{"the built-in post agent", config.ResolvedAgent{Task: "/bazel-post-report r.md", Posts: true}, true},
+		{"the built-in, in capitals", config.ResolvedAgent{Task: "/BAZEL-POST-REPORT r.md", Posts: true}, true},
+		{"a post agent of the user's", config.ResolvedAgent{Task: "/post-report r.md", Posts: true}, false},
+		{"a review with --post", config.ResolvedAgent{Task: "/review-fleet 26 --post", Posts: true}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := deniedFor(c.step)
+			for _, cmd := range publishCommands {
+				if slices.Contains(got, cmd) != c.denied {
+					t.Errorf("%s: denied = %v, want %v", cmd, !c.denied, c.denied)
+				}
+			}
+			// Nobody publishes with these, so nobody gets them.
+			for _, cmd := range []string{"Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh repo delete:*)"} {
+				if !slices.Contains(got, cmd) {
+					t.Errorf("%s should stay denied", cmd)
+				}
+			}
+		})
+	}
 }
