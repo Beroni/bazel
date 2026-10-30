@@ -19,6 +19,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -122,15 +123,11 @@ func dispatch(args []string) int {
 	case is(args, "auth", "status"):
 		fmt.Fprintf(os.Stderr, "github.com\n  ✓ Logged in to github.com account %s (fake)\n", cfg.User)
 		return 0
-	case is(args, "api", "user"):
+	case is(args, "api", "user") && flag(args, "--jq") == ".login":
 		fmt.Println(cfg.User)
 		return 0
 	case is(args, "api"):
-		if failed("api") {
-			return 1
-		}
-		fmt.Println(`{"id":1,"html_url":"https://github.invalid/fake"}`)
-		return 0
+		return apiCall(args)
 	case is(args, "search", "prs"):
 		return searchPRs(args)
 	case is(args, "pr", "list"):
@@ -140,12 +137,7 @@ func dispatch(args []string) int {
 	case is(args, "pr", "diff"):
 		return diffPR(args)
 	case is(args, "pr", "comment"):
-		if failed("comment") {
-			return 1
-		}
-		repo := flag(args, "--repo")
-		fmt.Printf("https://github.invalid/%s/pull/%s#issuecomment-1\n", repo, args[2])
-		return 0
+		return comment(args)
 	case is(args, "repo", "clone"):
 		return cloneRepo(args)
 	case is(args, "pr", "checkout"):
@@ -277,6 +269,79 @@ func rows(args []string, prs []fixturePR) []map[string]any {
 	return out
 }
 
+// The --json fields gh accepts, from `gh <command> --help` (gh 2.87). A field out
+// of the list is refused like gh refuses it, so the fake cannot answer what the
+// real one would not.
+var (
+	searchFields = strings.Split("assignees,author,authorAssociation,body,closedAt,commentsCount,createdAt,id,isDraft,isLocked,isPullRequest,labels,number,repository,state,title,updatedAt,url", ",")
+	prFields     = strings.Split("additions,assignees,author,autoMergeRequest,baseRefName,baseRefOid,body,changedFiles,closed,closedAt,closingIssuesReferences,comments,commits,createdAt,deletions,files,fullDatabaseId,headRefName,headRefOid,headRepository,headRepositoryOwner,id,isCrossRepository,isDraft,labels,latestReviews,maintainerCanModify,mergeCommit,mergeStateStatus,mergeable,mergedAt,mergedBy,milestone,number,potentialMergeCommit,projectCards,projectItems,reactionGroups,reviewDecision,reviewRequests,reviews,state,statusCheckRollup,title,updatedAt,url", ",")
+)
+
+func badFields(args, known []string) bool {
+	for _, f := range strings.Split(flag(args, "--json"), ",") {
+		if !slices.Contains(known, f) {
+			fmt.Fprintf(os.Stderr, "Unknown JSON field: %q\nAvailable fields:\n  %s\n", f, strings.Join(known, "\n  "))
+			return true
+		}
+	}
+	return false
+}
+
+var reviewsRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`)
+
+// apiCall answers the one write the fake models: a review on a known PR, with
+// its payload. Anything else was not thought through, so it fails.
+func apiCall(args []string) int {
+	if len(args) != 6 || flag(args, "--method") != "POST" || flag(args, "--input") != "-" {
+		return unsupported(args)
+	}
+	m := reviewsRe.FindStringSubmatch(args[3])
+	if m == nil {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	n, _ := strconv.Atoi(m[2])
+	if _, ok := find(m[1], n); !ok {
+		fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+		return 1
+	}
+	var review struct {
+		Event string `json:"event"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(stdin), &review); err != nil || strings.TrimSpace(review.Body) == "" ||
+		!slices.Contains([]string{"COMMENT", "APPROVE", "REQUEST_CHANGES"}, review.Event) {
+		fmt.Fprintln(os.Stderr, "gh: Validation Failed (HTTP 422)")
+		return 1
+	}
+	fmt.Printf("{\"id\":1,\"html_url\":\"https://github.invalid/%s/pull/%d#pullrequestreview-1\"}\n", m[1], n)
+	return 0
+}
+
+// comment answers `gh pr comment N --repo R --body-file -` on a known PR.
+func comment(args []string) int {
+	n, err := strconv.Atoi(args[2])
+	repo := flag(args, "--repo")
+	if err != nil || repo == "" || flag(args, "--body-file") != "-" || len(args) != 7 {
+		return unsupported(args)
+	}
+	if failed("comment") {
+		return 1
+	}
+	if _, ok := find(repo, n); !ok {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a PullRequest with the number of %d.\n", n)
+		return 1
+	}
+	if strings.TrimSpace(stdin) == "" {
+		fmt.Fprintln(os.Stderr, "body cannot be blank")
+		return 1
+	}
+	fmt.Printf("https://github.invalid/%s/pull/%d#issuecomment-1\n", repo, n)
+	return 0
+}
+
 // synthesized answers the PR page fields a fixture left out, in gh's shape.
 // `files` is always gh's list: the fixture's files map is the branch content.
 func synthesized(p fixturePR, field string) (any, bool) {
@@ -310,7 +375,7 @@ func synthesized(p fixturePR, field string) (any, bool) {
 }
 
 func searchPRs(args []string) int {
-	if failed("search") {
+	if failed("search") || badFields(args, searchFields) {
 		return 1
 	}
 	repos := map[string]bool{}
@@ -330,7 +395,7 @@ func searchPRs(args []string) int {
 
 func listPRs(args []string) int {
 	repo := flag(args, "--repo")
-	if failed("list:" + repo) {
+	if failed("list:"+repo) || badFields(args, prFields) {
 		return 1
 	}
 	var hit []fixturePR
@@ -362,7 +427,7 @@ func find(repo string, number int) (fixturePR, bool) {
 func viewPR(args []string) int {
 	repo := flag(args, "--repo")
 	n, _ := strconv.Atoi(args[2])
-	if failed(fmt.Sprintf("view:%s#%d", repo, n)) {
+	if failed(fmt.Sprintf("view:%s#%d", repo, n)) || badFields(args, prFields) {
 		return 1
 	}
 	p, ok := find(repo, n)
@@ -465,6 +530,10 @@ func cloneRepo(args []string) int {
 	}
 	repo, dir := args[2], args[3]
 	if failed("clone:" + repo) {
+		return 1
+	}
+	if !slices.ContainsFunc(loadPRs(), func(p fixturePR) bool { return strings.EqualFold(p.Repo, repo) }) {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a Repository with the name '%s'. (repository)\n", repo)
 		return 1
 	}
 	src, err := origin(repo)
