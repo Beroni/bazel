@@ -60,7 +60,12 @@ $BODY
 Write only the final report to stdout, in Markdown.
 PROMPT
 
-# 5. The agent, with the flags confineClaude adds ahead of Bazel's default args.
+# 5. The agent, with the git guard the Runner sets and the flags confineClaude
+#    adds ahead of Bazel's default args.
+export GIT_CONFIG_COUNT=3
+export GIT_CONFIG_KEY_0=safe.bareRepository GIT_CONFIG_VALUE_0=explicit
+export GIT_CONFIG_KEY_1=core.fsmonitor GIT_CONFIG_VALUE_1=false
+export GIT_CONFIG_KEY_2=core.hooksPath GIT_CONFIG_VALUE_2=/dev/null
 ARGS=(--setting-sources user --strict-mcp-config --plugin-dir "$PLUGIN"
   -p --output-format stream-json --verbose --allowedTools Read,Grep,Glob,Bash,Agent)
 [ -n "$MODEL" ] && ARGS+=(--model "$MODEL")

@@ -57,7 +57,7 @@ Rules that keep that honest:
   whoever opens the repository with an agent. Never drop a path from the change set.
 - **Read that configuration through git.** Before you ran, Bazel removed every `.claude/`,
   `.codex/`, `.grok/` and `.mcp.json` from the working tree, at any depth, so that no agent CLI
-  runs them; the prompt lists what went. They are still in the commits: `git diff` shows them,
+  runs them; the prompt says how many went. They are still in the commits: `git diff` shows them,
   and `git show HEAD:<path>` reads them. A missing file is not a finding, and `git status`
   showing them as deleted is Bazel's doing, not the PR's: only the diff between commits says
   what the PR changed.
