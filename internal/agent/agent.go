@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -197,6 +198,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// review's.
 	var fechado Usage
 	stopped := -1
+	var neutralized []string
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
@@ -207,12 +209,33 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
 
+		// Before every step, not only the first: an earlier step can run
+		// commands in the clone, and bring the files back with a git checkout.
+		// What cannot be removed stops the review: an agent never runs next to
+		// the PR's configuration.
+		if workdir != "" {
+			removed, err := workspace.Neutralize(workdir)
+			if err != nil {
+				return Result{}, fmt.Errorf("neutralizing the PR's agent configuration: %w", err)
+			}
+			if len(removed) > 0 {
+				for _, rel := range removed {
+					if !slices.Contains(neutralized, rel) {
+						neutralized = append(neutralized, rel)
+					}
+				}
+				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
+					Text: "· removed from the clone, so that no agent runs them: " + strings.Join(removed, ", ")})
+			}
+		}
+
 		dir := workdir
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
+		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra) + neutralizedNote(neutralized)
 		stepStart := time.Now()
-		body, used, err := r.exec(ctx, step, buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra), dir, plugin,
+		body, used, err := r.exec(ctx, step, prompt, dir, plugin,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -265,6 +288,17 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		Workdir:   workdir,
 		StoppedAt: stopped,
 	}, nil
+}
+
+// neutralizedNote tells the agent why those paths are missing from the working
+// tree. The review still covers them: they are the PR's change like any other,
+// and the ones a reviewer most wants to read.
+func neutralizedNote(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	return "\n\nBazel removed these from the working tree before you ran, because agent CLIs execute them: " +
+		strings.Join(paths, ", ") + ". They are still in git and still part of the review: the diff shows them, and `git show HEAD:<path>` reads them."
 }
 
 // runsClaude says whether a step runs Claude Code: the `claude` command, or
