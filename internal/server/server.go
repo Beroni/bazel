@@ -89,7 +89,8 @@ type Server struct {
 	// test's.
 	detMu        sync.Mutex
 	details      map[string]detailsEntry
-	offList      []time.Time // reads of PRs outside the list, last minute
+	reading      map[string]*detailsRead // reads under way, by the same key
+	offList      []time.Time             // reads of PRs outside the list, last minute
 	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
 }
 
@@ -114,6 +115,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	return &Server{
 		instance:     instance,
 		details:      map[string]detailsEntry{},
+		reading:      map[string]*detailsRead{},
 		fetchDetails: gh.GetDetails,
 		cfg:          cfg,
 		me:           me,

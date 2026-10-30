@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -39,7 +40,8 @@ var (
 	offListPerMin = 6
 	timeNow       = time.Now
 
-	detailsRetryGap = 5 * time.Second
+	detailsRetryGap    = 5 * time.Second
+	detailsReadTimeout = time.Minute
 )
 
 func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
@@ -48,10 +50,35 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, err)
 		return
 	}
+	view, code, err := s.prDetails(r, repo, number)
+	if err != nil {
+		writeErr(w, code, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// detailsRead is a read of one PR under way: whoever asks for that PR
+// meanwhile waits for it instead of starting another gh.
+type detailsRead struct {
+	done  chan struct{}
+	entry detailsEntry
+}
+
+// answer is the entry as a handler returns it.
+func (e detailsEntry) answer() (detailsView, int, error) {
+	if e.err != "" {
+		return detailsView{}, http.StatusBadGateway, errors.New(e.err)
+	}
+	return e.view, http.StatusOK, nil
+}
+
+// prDetails is one PR's page, from the cache or from GitHub, under the limits
+// described above; on a refusal the int is the status to answer with.
+func (s *Server) prDetails(r *http.Request, repo string, number int) (detailsView, int, error) {
 	pr, listed := s.listedPR(repo, number)
 	if !listed && r.URL.Query().Get("offlist") != "1" {
-		writeErr(w, http.StatusNotFound, errors.New("that PR is not in the list; ask with offlist=1 to read it from GitHub"))
-		return
+		return detailsView{}, http.StatusNotFound, errors.New("that PR is not in the list; ask with offlist=1 to read it from GitHub")
 	}
 	key := strings.ToLower(repo) + "#" + strconv.Itoa(number)
 	now := timeNow()
@@ -63,13 +90,11 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 			wait := detailsRetryGap - now.Sub(e.retried)
 			if r.URL.Query().Get("retry") != "1" {
 				s.detMu.Unlock()
-				writeErr(w, http.StatusBadGateway, errors.New(e.err))
-				return
+				return e.answer()
 			}
 			if wait > 0 {
 				s.detMu.Unlock()
-				writeErr(w, http.StatusTooManyRequests, fmt.Errorf("%s — try again in %ds", e.err, (wait+time.Second-1)/time.Second))
-				return
+				return detailsView{}, http.StatusTooManyRequests, fmt.Errorf("%s — try again in %ds", e.err, (wait+time.Second-1)/time.Second)
 			}
 			// Stamped before the read: a second click while it runs is refused.
 			e.retried = now
@@ -77,8 +102,16 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 		}
 		if e.err == "" && now.Sub(e.at) < detailsTTL {
 			s.detMu.Unlock()
-			writeJSON(w, http.StatusOK, e.view)
-			return
+			return e.answer()
+		}
+	}
+	if read, ok := s.reading[key]; ok {
+		s.detMu.Unlock()
+		select {
+		case <-read.done:
+			return read.entry.answer()
+		case <-r.Context().Done():
+			return detailsView{}, http.StatusBadGateway, r.Context().Err()
 		}
 	}
 	if !listed {
@@ -91,30 +124,42 @@ func (s *Server) handlePRDetails(w http.ResponseWriter, r *http.Request) {
 		s.offList = recent
 		if len(s.offList) >= offListPerMin {
 			s.detMu.Unlock()
-			writeErr(w, http.StatusTooManyRequests, errors.New("too many reads of PRs outside the list; wait a minute"))
-			return
+			return detailsView{}, http.StatusTooManyRequests, errors.New("too many reads of PRs outside the list; wait a minute")
 		}
 		s.offList = append(s.offList, now)
 	}
+	read := &detailsRead{done: make(chan struct{}), entry: detailsEntry{err: "the read of this PR failed"}}
+	s.reading[key] = read
 	s.detMu.Unlock()
+	defer func() {
+		s.detMu.Lock()
+		delete(s.reading, key)
+		s.detMu.Unlock()
+		close(read.done)
+	}()
 
-	d, err := s.fetchDetails(r.Context(), repo, number)
+	// Others may be waiting on this read, and a tab that closes does not make
+	// its answer any less useful: it runs to its own timeout.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), detailsReadTimeout)
+	defer cancel()
+	d, err := s.fetchDetails(ctx, repo, number)
 	// The sha is the list's, the one this entry is compared with: GitHub's head
 	// is newer when the list is behind, and then no read would ever match.
-	entry := detailsEntry{sha: pr.HeadRefOid, at: now}
+	// The time is the end of the read: a gh that took 30s to fail must not
+	// come back already expired.
+	read.entry = detailsEntry{sha: pr.HeadRefOid, at: timeNow()}
 	if err != nil {
-		entry.err, entry.retried = err.Error(), e.retried
+		read.entry.err, read.entry.retried = err.Error(), e.retried
 	} else {
-		entry.view = detailsViewOf(d)
+		read.entry.view = detailsViewOf(d)
 	}
-	s.detMu.Lock()
-	s.putDetails(key, entry)
-	s.detMu.Unlock()
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
-		return
+	// A canceled read says nothing about the PR.
+	if !errors.Is(err, context.Canceled) {
+		s.detMu.Lock()
+		s.putDetails(key, read.entry)
+		s.detMu.Unlock()
 	}
-	writeJSON(w, http.StatusOK, entry.view)
+	return read.entry.answer()
 }
 
 // putDetails stores an entry, dropping the oldest when the cache is full.

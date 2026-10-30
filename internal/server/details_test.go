@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -303,5 +304,85 @@ func TestPRDetailsListaAtrasada(t *testing.T) {
 	srv.prs[0].HeadRefOid = "new"
 	if get(); calls != 2 {
 		t.Errorf("a newer list reads again: %d calls", calls)
+	}
+}
+
+// Many tabs asking at once for a PR nobody has read cost one gh call, and they
+// all get its answer.
+func TestPRDetailsLeituraEmVoo(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	var calls atomic.Int32
+	release := make(chan struct{})
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		calls.Add(1)
+		<-release
+		return gh.Details{HeadRefOid: "aaa"}, nil
+	}
+	h := srv.Handler()
+	const n = 40
+	codes := make(chan int, n)
+	for range n {
+		go func() {
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/prs/acme/api-core/482/details", nil))
+			codes <- w.Code
+		}()
+	}
+	for deadline := time.Now().Add(5 * time.Second); calls.Load() == 0 && time.Now().Before(deadline); {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond) // the others reach the wait
+	close(release)
+	for range n {
+		if code := <-codes; code != http.StatusOK {
+			t.Errorf("status %d", code)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("%d gh calls for one PR", got)
+	}
+}
+
+// The tab that started a read may go away: the read goes on, its result is
+// kept, and a canceled read never lands in the cache as a failure.
+func TestPRDetailsLeituraCancelada(t *testing.T) {
+	srv := newTestServer(t)
+	srv.prs = []gh.PR{testPR(482)}
+	started, release := make(chan struct{}), make(chan struct{})
+	var seen error
+	srv.fetchDetails = func(ctx context.Context, _ string, _ int) (gh.Details, error) {
+		close(started)
+		<-release
+		seen = ctx.Err()
+		return gh.Details{HeadRefOid: "aaa"}, nil
+	}
+	h := srv.Handler()
+	path := "http://127.0.0.1:7777/api/prs/acme/api-core/482/details"
+	ctx, leave := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil).WithContext(ctx))
+	}()
+	<-started
+	leave()
+	close(release)
+	<-done
+	if seen != nil {
+		t.Errorf("the tab leaving reached the read: %v", seen)
+	}
+	srv.fetchDetails = func(context.Context, string, int) (gh.Details, error) {
+		return gh.Details{}, context.Canceled
+	}
+	srv.detMu.Lock()
+	delete(srv.details, "acme/api-core#482")
+	srv.detMu.Unlock()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", path, nil))
+	srv.detMu.Lock()
+	_, kept := srv.details["acme/api-core#482"]
+	srv.detMu.Unlock()
+	if kept {
+		t.Error("a canceled read must not be cached")
 	}
 }
