@@ -2103,7 +2103,13 @@ function renderHistoryView(body, job) {
       const main = el('div', 'dmain');
       const t = el('div', 'dtitle');
       t.append(el('b', null, d.title));
-      if (d.sha || d.source) t.append(el('span', 'dmeta', [d.sha, d.source].filter(Boolean).join(' · ')));
+      // One commit, or the first of several with "+N" (all of them in its tooltip).
+      const sha = d.sha && d.shas && d.shas.length > 1 ? `${d.sha} +${d.shas.length - 1}` : d.sha;
+      if (sha || d.source) {
+        const meta = el('span', 'dmeta', [sha, d.source].filter(Boolean).join(' · '));
+        if (d.shas && d.shas.length > 1) meta.title = d.shas.join(', ');
+        t.append(meta);
+      }
       main.append(t);
       if (d.body_html) {
         const b = el('div', 'md dbody');
@@ -2120,8 +2126,13 @@ function renderHistoryView(body, job) {
     }
     box.append(list);
   }
-  if (h.still_open_html.length) {
+  if (h.still_open_html.length || h.still_open_note_html) {
     box.append(sectionLabel('Still open'));
+    if (h.still_open_note_html) {
+      const note = el('div', 'md dbody');
+      note.innerHTML = h.still_open_note_html;
+      box.append(note);
+    }
     for (const q of h.still_open_html) {
       const row = el('div', 'open-q');
       const txt = el('div', 'md');

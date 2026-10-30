@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -100,5 +101,49 @@ func TestSaveLoadHistory(t *testing.T) {
 	}
 	if _, err := os.Stat(dir + "/history"); err != nil {
 		t.Error(err)
+	}
+}
+
+// A real bazel-history-pr output (PR #22), from before the skill settled on
+// one sha per Commit line and a flat Still open list — so it doubles as the
+// edge case: the header block is read and dropped, a list of shas keeps the
+// first as Sha, nested still-open lines stay with their item, the prose above
+// the list is its note, and the extra sections land in Rest.
+func TestParseHistoryRealOutput(t *testing.T) {
+	data, err := os.ReadFile("testdata/history-pr-22.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := ParseHistory(string(data))
+	if h.Meta["head_sha"] != "6fe788fee32d4fe1d7099e1478164921e5bd83fe" || h.Meta["commits"] != "11" || h.Meta["pr"] != "22" {
+		t.Errorf("meta: %v", h.Meta)
+	}
+	if h.CommitsRead != 11 || h.WhatItDoes == "" || len(h.Decisions) != 7 {
+		t.Fatalf("commits %d, what %d chars, %d decisions", h.CommitsRead, len(h.WhatItDoes), len(h.Decisions))
+	}
+	if d := h.Decisions[5]; d.Sha != "4a2a946" || len(d.Shas) != 5 || d.Source != "commit message" {
+		t.Errorf("a list of shas: %+v", d)
+	}
+	if d := h.Decisions[4]; d.Sha != "fdec568" || d.Source != "thread with @Duukaa (T1–T12)" {
+		t.Errorf("thread source: %+v", d)
+	}
+	if !strings.HasPrefix(h.StillOpenNote, "All 12 threads were open") {
+		t.Errorf("still-open note: %q", h.StillOpenNote)
+	}
+	if len(h.StillOpen) != 15 {
+		t.Errorf("still open: %d top-level items, want 15", len(h.StillOpen))
+	}
+	if it := h.StillOpen[12]; !strings.Contains(it, "Manager.keep") {
+		t.Errorf("nested lines must stay with their item: %q", it)
+	}
+	for _, bad := range []string{"<!--", "history-pr:v1", "# History — PR #22"} {
+		if strings.Contains(h.Rest, bad) {
+			t.Errorf("rest still has %q", bad)
+		}
+	}
+	for _, want := range []string{"## Review ↔ fix loop", "## Timeline", "## Stats", "## Gaps"} {
+		if !strings.Contains(h.Rest, want) {
+			t.Errorf("rest lost %q", want)
+		}
 	}
 }

@@ -216,6 +216,7 @@ type historyView struct {
 	WhatHTML    string         `json:"what_html,omitempty"`
 	Decisions   []decisionView `json:"decisions"`
 	StillOpen   []string       `json:"still_open_html"`
+	OpenNote    string         `json:"still_open_note_html,omitempty"`
 	RestHTML    string         `json:"rest_html,omitempty"`
 	Job         *jobView       `json:"job,omitempty"`
 }
@@ -224,6 +225,7 @@ type decisionView struct {
 	N        int      `json:"n"`
 	Title    string   `json:"title"`
 	Sha      string   `json:"sha,omitempty"`
+	Shas     []string `json:"shas,omitempty"`
 	Source   string   `json:"source,omitempty"`
 	BodyHTML string   `json:"body_html,omitempty"`
 	Rejected []string `json:"rejected"`
@@ -273,7 +275,7 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 			v.WhatHTML = renderMarkdown(h.WhatItDoes)
 		}
 		for _, d := range h.Decisions {
-			dv := decisionView{N: d.N, Title: d.Title, Sha: d.Sha, Source: d.Source, Rejected: d.Rejected}
+			dv := decisionView{N: d.N, Title: d.Title, Sha: d.Sha, Shas: d.Shas, Source: d.Source, Rejected: d.Rejected}
 			if d.Body != "" {
 				dv.BodyHTML = renderMarkdown(d.Body)
 			}
@@ -281,6 +283,9 @@ func (s *Server) handleHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		for _, q := range h.StillOpen {
 			v.StillOpen = append(v.StillOpen, renderMarkdown(q))
+		}
+		if h.StillOpenNote != "" {
+			v.OpenNote = renderMarkdown(h.StillOpenNote)
 		}
 		if h.Rest != "" {
 			v.RestHTML = renderMarkdown(h.Rest)
