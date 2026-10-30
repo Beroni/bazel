@@ -77,6 +77,7 @@ FLAGS
   --jobs <n>           concurrent reviews (default 2)
   --open               open the browser
   --keep               keep the throwaway PR clones
+  --log-dir <dir>      write each job's whole log to a file in dir
   --no-splash          skip the opening animation
   --version            version
 
@@ -125,6 +126,7 @@ func serve(ctx context.Context, args []string) error {
 		Addr:        addr,
 		Concurrency: jobs,
 		Keep:        hasFlag(args, "--keep"),
+		LogDir:      flagValue(args, "--log-dir"),
 		Version:     version,
 	})
 	if err != nil {

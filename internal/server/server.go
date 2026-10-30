@@ -51,6 +51,8 @@ type Options struct {
 	Concurrency int
 	Keep        bool
 	Version     string
+	// LogDir turns on the job logs on disk over the config's log_dir.
+	LogDir string
 }
 
 // Server is the web interface.
@@ -115,6 +117,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	}
 	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
 	jobs.idPrefix = instance[:4] + "-"
+	jobs.logDir = jobLogDir(cfg, opts.LogDir)
 	return &Server{
 		instance:     instance,
 		details:      map[string]detailsEntry{},
@@ -130,6 +133,23 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs:         jobs,
 		done:         make(chan struct{}),
 	}, nil
+}
+
+// jobLogDir gets the folder for the job logs ready and clears old ones. A folder
+// that cannot be used turns them off with a line on the terminal: they are a
+// debugging aid, and the server is worth more.
+func jobLogDir(cfg *config.Config, flag string) string {
+	dir, err := cfg.ResolvedLogDir(flag)
+	if err == nil && dir != "" {
+		if err = os.MkdirAll(dir, 0o700); err == nil {
+			err = pruneJobLogs(dir, cfg.ResolvedLogKeep())
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: job logs are off: %v\n", err)
+		return ""
+	}
+	return dir
 }
 
 // newInstanceID makes the id that tells one server process from the next.

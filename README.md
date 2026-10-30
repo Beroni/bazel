@@ -252,6 +252,15 @@ The log is a window over the last **500 lines** per review, held in memory. It
 does not travel over SSE: the page remembers where it stopped and fetches only
 what is missing, once a second. The agent's stderr is included, in another color.
 
+To keep the whole log, set `log_dir` in the config or start with `--log-dir
+<dir>`: every job then writes each line, as it arrives and without the window's
+limits, to `<job-id>-<pr>.log`, and the job's Live log and Overview say where.
+The lines are what the log shows, so with `claude-stream` they are the readable
+ones, not the raw events. It is off by default. At boot only the newest
+`log_keep` files stay (200 by default); nothing else in that folder is touched.
+The files hold whatever the agent wrote, so they are readable by you alone. A
+folder that cannot be used turns this off with a line on the terminal.
+
 `format` chooses how Bazel reads stdout: `claude-stream`, `codex-json`,
 `grok-stream`, or `plain`. Leaving it out preserves the old behavior: arguments that ask for
 Claude `stream-json` use the Claude adapter; all other commands use plain
@@ -449,6 +458,8 @@ include_drafts: false
 
 reviews_dir: ""   # empty = <BAZEL_HOME>/reviews
 max_diff_bytes: 400000   # only used if the prompt has {{diff}}
+log_dir: ""       # empty = job logs stay in memory; see "The live log"
+log_keep: 200     # job log files kept at boot
 skills_dir: ""    # empty = ~/.claude/skills
 
 # The base every named agent inherits from.

@@ -30,6 +30,11 @@ type Config struct {
 	ReviewsDir string `yaml:"reviews_dir"`
 	// MaxDiffBytes truncates huge diffs before sending them to the agent.
 	MaxDiffBytes int `yaml:"max_diff_bytes"`
+	// LogDir, when set, gets each job's whole log, one file per job. The page
+	// keeps only a window. Off by default.
+	LogDir string `yaml:"log_dir,omitempty"`
+	// LogKeep is how many of those files stay; older ones go at boot.
+	LogKeep int `yaml:"log_keep,omitempty"`
 	// SkillsDir is where the agent's skills live. Empty = ~/.claude/skills.
 	SkillsDir string `yaml:"skills_dir"`
 
@@ -570,6 +575,29 @@ func (c *Config) Save() error {
 		return err
 	}
 	return os.WriteFile(path, data, 0o644)
+}
+
+// defaultLogKeep is how many job logs stay on disk unless log_keep says otherwise.
+const defaultLogKeep = 200
+
+// ResolvedLogDir returns the folder for job logs, flag over config; empty is off.
+func (c *Config) ResolvedLogDir(flag string) (string, error) {
+	dir := strings.TrimSpace(flag)
+	if dir == "" {
+		dir = strings.TrimSpace(c.LogDir)
+	}
+	if dir == "" {
+		return "", nil
+	}
+	return expandHome(dir)
+}
+
+// ResolvedLogKeep is how many job logs to keep.
+func (c *Config) ResolvedLogKeep() int {
+	if c.LogKeep > 0 {
+		return c.LogKeep
+	}
+	return defaultLogKeep
 }
 
 // ResolvedReviewsDir returns the absolute reviews directory. If reviews_dir is
