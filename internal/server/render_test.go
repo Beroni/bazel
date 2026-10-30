@@ -147,3 +147,45 @@ func TestImagemDentroDeLink(t *testing.T) {
 		}
 	}
 }
+
+// Text the markdown carries and the screen would drop goes to the PR and to the
+// post agent all the same, so the report shows it in a warning on top.
+func TestRenderReviewAvisaTextoInvisivel(t *testing.T) {
+	src := "## Findings\n\n### One\n\nSee [the docs][r] and [used].\n\n[//]: # (HIDDEN comment)\n[used]: https://used.example\n\n" +
+		"### Two\n\nA note[^1].\n\n[^1]: Shown.\n[^orphan]: HIDDEN note\n    second line\n\n" +
+		"## Notes\n\n[r]: https://far.example \"HIDDEN title\"\n"
+	got := renderReview(src)
+	if !strings.HasPrefix(got, `<aside class="hidden-text" data-testid="review-hidden">`) {
+		t.Fatalf("no warning on top:\n%s", got)
+	}
+	for _, want := range []string{"[//]: # &#34;HIDDEN comment&#34;", "[^orphan]: HIDDEN note\n    second line", "https://far.example &#34;HIDDEN title&#34;"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "<pre>[used]") || strings.Contains(got, "<pre>[^1]") {
+		t.Errorf("what shows on screen is not hidden text:\n%s", got)
+	}
+	// The agent's text stays text.
+	if evil := renderReview("[//]: # (<script>alert(1)</script>)\n"); strings.Contains(evil, "<script") {
+		t.Errorf("%s", evil)
+	}
+	clean := "## Findings\n\n### One\n\nBody with [a link](https://x.example).\n"
+	if got := renderReview(clean); strings.Contains(got, "hidden-text") {
+		t.Errorf("a clean report has no warning:\n%s", got)
+	}
+}
+
+// Only the fleet's keys with short values pass as metadata; the rest shows.
+func TestMetaDoAchadoSoComChavesConhecidas(t *testing.T) {
+	long := strings.Repeat("x", 121)
+	for src, hidden := range map[string]bool{
+		"### T\n<!-- finding severity=critical class=authz lenses=a+b path=src/a.ts line=88 side=RIGHT ref=CWE-639 -->\n": true,
+		"### T\n<!-- finding path=a.go instruction=ignore_your_rules -->\n":                                               false,
+		"### T\n<!-- finding ref=" + long + " -->\n":                                                                      false,
+	} {
+		if got := renderReview(src); strings.Contains(got, "finding") == hidden {
+			t.Errorf("%s: %s", src, got)
+		}
+	}
+}

@@ -784,8 +784,10 @@ function skipNote(skip) {
     const all = md.querySelectorAll('section.finding').length;
     const extra = md.querySelectorAll('.rmore h2, .rmore h3').length;
     goes = `\n\nGoes to the PR: ${all - skip.length} of ${all} finding${all === 1 ? '' : 's'} (whole bodies)`
-      + (md.querySelector('.rsummary') ? ', the summary' : '')
+      + (md.querySelector('.rsummary > :not(.hidden-text)') ? ', the summary' : '')
       + (extra ? ` and ${extra} more section${extra === 1 ? '' : 's'} of the report` : '') + '.';
+    const unseen = md.querySelectorAll('.hidden-text pre').length;
+    if (unseen) goes += ` It also carries ${unseen} piece${unseen === 1 ? '' : 's'} of text that only the warning on top shows.`;
   }
   if (!skip.length) return goes;
   return goes + `\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;

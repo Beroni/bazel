@@ -578,6 +578,10 @@ main.no-prs .burger span { background: var(--accent); }
 }
 .section-label:first-child { margin-top: 0; }
 .md.context { opacity: .7; }
+/* Text only the markdown has: it goes to the PR, so it shows here. */
+.hidden-text { border: 1px solid var(--warn); border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 14px; font-size: 13px; }
+.hidden-text p { margin: 0 0 6px; color: var(--warn); }
+.hidden-text pre { margin: 4px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* The checkbox of each finding: unticked, it is left behind on publishing.
    What dims is the content, not the box — the box is what brings it back. */

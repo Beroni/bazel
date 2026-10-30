@@ -13,7 +13,9 @@ import (
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer"
+	"github.com/yuin/goldmark/text"
 	"github.com/yuin/goldmark/util"
 )
 
@@ -172,7 +174,9 @@ func isFindingMeta(blk *ast.HTMLBlock, text string) bool {
 	return findingMetaRe.MatchString(strings.TrimSpace(text))
 }
 
-var findingMetaRe = regexp.MustCompile(`^<!-- finding(?: [a-z_]+=[^\s<>]+)* -->$`)
+// findingMetaRe is that comment: the keys the fleet writes, each a short value.
+// Anything longer or stranger is text someone wants the post agent to read.
+var findingMetaRe = regexp.MustCompile(`^<!-- finding(?: (?:id|severity|class|lenses|path|file|line|start_line|side|ref)=[^\s<>]{1,120})* -->$`)
 
 // policy cleans the HTML after it is converted.
 //
@@ -221,10 +225,12 @@ func convert(conv goldmark.Markdown, src string) string {
 // The wrapper stays outside sanitization: it is our HTML, not the agent's.
 func renderReview(body string) string {
 	parts := store.SplitFindings(body)
+	note := hiddenNote(parts)
 	if len(parts) <= 1 {
-		return renderReviewMarkdown(body)
+		return note + renderReviewMarkdown(body)
 	}
 	var b strings.Builder
+	b.WriteString(note)
 	idx := 0
 	for _, p := range parts {
 		if !p.Finding {
@@ -236,5 +242,64 @@ func renderReview(body string) string {
 		b.WriteString("</section>")
 		idx++
 	}
+	return b.String()
+}
+
+// footnoteDefRe is one footnote definition, with its indented continuation.
+var footnoteDefRe = regexp.MustCompile(`(?m)^ {0,3}\[\^([^\]\n]+)\]:.*(?:\n[ \t]+.*)*`)
+
+// hiddenText is what the markdown of one part carries and no screen shows, but
+// GitHub receives and the post agent reads: link reference definitions that no
+// link here uses, such as the `[//]: # (comment)` idiom, the titles of those
+// that are used, and footnotes nothing refers to. Each part is rendered alone,
+// so a definition used only by another part counts as hidden here: the screen
+// shows that link as plain brackets.
+func hiddenText(src string) []string {
+	ctx := parser.NewContext()
+	doc := reviewMD.Parser().Parse(text.NewReader([]byte(src)), parser.WithContext(ctx))
+	used := map[string]bool{}
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if l, ok := n.(*ast.Link); ok && entering {
+			used[string(l.Destination)] = true
+		}
+		return ast.WalkContinue, nil
+	})
+	var out []string
+	for _, r := range ctx.References() {
+		if used[string(r.Destination())] && len(r.Title()) == 0 {
+			continue
+		}
+		def := fmt.Sprintf("[%s]: %s", r.Label(), r.Destination())
+		if len(r.Title()) > 0 {
+			def += fmt.Sprintf(" %q", r.Title())
+		}
+		out = append(out, def)
+	}
+	body := footnoteDefRe.ReplaceAllString(src, "")
+	for _, m := range footnoteDefRe.FindAllStringSubmatch(src, -1) {
+		if !strings.Contains(body, "[^"+m[1]+"]") {
+			out = append(out, strings.TrimSpace(m[0]))
+		}
+	}
+	return out
+}
+
+// hiddenNote warns, above the report, about the text only the markdown has, and
+// shows it: what is published has to be what was read. It is our HTML, with the
+// agent's text escaped.
+func hiddenNote(parts []store.Part) string {
+	var items []string
+	for _, p := range parts {
+		items = append(items, hiddenText(p.Text)...)
+	}
+	if len(items) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString(`<aside class="hidden-text" data-testid="review-hidden"><p>This text is in the report's markdown and shows nowhere else. If the report is published it goes along, and the post agent reads it:</p>`)
+	for _, it := range items {
+		b.WriteString("<pre>" + html.EscapeString(it) + "</pre>")
+	}
+	b.WriteString("</aside>")
 	return b.String()
 }
