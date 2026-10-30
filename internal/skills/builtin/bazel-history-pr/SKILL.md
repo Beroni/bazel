@@ -77,15 +77,20 @@ Never write "fixed in `abc123`" for an inferred link. **Resolved does not mean f
 outdated means even less: report the GitHub flags as what they are, apart from your evidence
 level.
 
-## Step 5 — Read the attempt arc
+## Step 5 — Read the attempt arc as decisions
 
 The first approach; each pivot (revert, file created then deleted, the same file rewritten,
-retitle, draft→ready); the pressure points (files with the most commits); and what every
-force-push rewrote. Describe what the commits show; never judge the author.
+retitle, draft→ready); each change a review asked for and got; the pressure points (files with
+the most commits); and what every force-push rewrote. Each of those is a **decision** in the
+report: a `###` under `## Decisions`, with the commit that carries it, where its reason comes
+from, and the alternatives the record shows were dropped. Describe what the commits show;
+never judge the author.
 
 ## Step 6 — Print the report
 
-Format and section order: `.claude/skills/bazel-history-pr/references/report-format.md`. Write
+Format and section order: `.claude/skills/bazel-history-pr/references/report-format.md`.
+Bazel's History tab parses `## What it does`, `## Decisions` and `## Still open` from it, so
+those three follow the spec to the letter. Write
 it to a scratch file if that helps, then print the **whole report** as your final output, with
 nothing around it. If something could not be collected (a deleted fork, force-pushed commits,
 a 403), it goes in the report's Gaps section — a named gap is context, a hidden one makes the

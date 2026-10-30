@@ -36,9 +36,26 @@ It is the answer to "is this report still current?" — compare `head_sha` again
 `gh pr view <N> --json headRefOid`. Different means commits landed after this reading; rerun
 rather than trusting the timeline's tail.
 
+## The page reads this report
+
+Bazel's History tab parses the report (`store.ParseHistory`) and draws three sections from it:
+`## What it does`, `## Decisions` (one card per `###`) and `## Still open`. Every other `##`
+is shown under "More from the history", whole. So the three parsed sections carry the story,
+and their shape is exact:
+
+- the heading names below, verbatim (case does not matter to the parser, but keep them as
+  written);
+- each decision is a `###`, numbered `1.`, `2.`…;
+- its first line is `- Commit: <short sha> · <source>`, when a commit carries it;
+- any number of `- Rejected: <alternative> — <why>` lines;
+- `## Still open` is a list of `- ` items.
+
 ## Sections, in this order
 
-### 1. About
+Right after the header block, one line `Commits read: N` (the commits you actually listed),
+a blank line, then the H1 `# History — PR #<N> · <title>`.
+
+### 1. `## What it does`
 
 What the PR is for, in two parts kept apart because they are two different claims:
 
@@ -51,30 +68,47 @@ If the stated intent and the footprint diverge — a body describing a bugfix ov
 adds a subsystem — say so in one line. Do not judge it; a reader who knows about the gap
 reads the diff differently, and that is the whole point.
 
-### 2. Timeline
+### 2. `## Decisions`
 
-One table, every event, ascending. This is the spine.
+The arc of how the author got to the current diff, one `###` per decision, in the order they
+were taken. A decision is a choice the record shows: the first approach, each pivot (a
+revert, a file added then deleted, the same file rewritten, a retitle, draft→ready), and each
+change a review asked for and got.
 
 ```markdown
-| UTC | Δ | Who | Event | Detail |
-|---|---|---|---|---|
-| 03-02 09:14 | — | someuser | opened | draft, base `develop` |
-| 03-02 11:40 | 2h26m | someuser | 4 commits | first pass: store token in localStorage |
-| 03-03 08:02 | 20h22m | reviewer1 | review: CHANGES_REQUESTED | 3 threads, all on token storage |
-| 03-03 14:55 | 6h53m | someuser | commit `4f2a10c` | moves token to memory — T2 (inferred) |
-| 03-05 10:30 | 1d19h | someuser | force-push | 12 commits rewritten; T1 anchored pre-push |
-| 03-08 16:02 | … | reviewer2 | merged | 2 threads still open |
+### 2. Move the refresh token server-side
+- Commit: 9de41b2 · thread with @reviewer1 (T2)
+The first attempt kept the token in memory (`4f2a10c`, inferred from the thread on
+`src/auth/refresh.ts:88`); the reviewer replied "still client-side", and this commit moved it
+behind an httpOnly cookie. Confirmed: the message cites the thread.
+- Rejected: token in localStorage — readable from JS, raised in T1.
+- Rejected: token in memory — lost on reload, raised in T2.
 ```
 
-- `Δ` is the gap from the previous row. It is what makes a stall visible, and stalls are
-  usually where the story is.
-- Thread ids (`T1`, `T2`, …) are yours, assigned in section 3 and referenced here.
-- Bot batches collapse into one row (`github-actions | 14 check runs | 3 red, then green`).
-- A force-push always gets its own row, with what it rewrote.
+- **`- Commit:`** — the short sha (7 hex) of the commit that carries the decision, then ` · `,
+  then where the reason comes from: `description`, `commit message`, `thread with @login
+  (T<n>)`, `review by @login`, or `diff` when nothing written explains it. Leave the line out
+  when no commit carries the decision (agreed in a thread, never pushed).
+- **The body** says what was decided and why, and spells out the evidence level of every
+  causal link (**confirmed** / **inferred** / **unanswered**, see the SKILL). Never write "fixed
+  in `abc123`" for an inferred link.
+- **`- Rejected:`** — an alternative the record shows was tried or proposed and dropped, and
+  why. Only what the commits or comments show; never invent an alternative to have one.
+- Pressure points (files with the most commits) and what force-pushes erased go in the body
+  of the decision they belong to.
 
-### 3. Review ↔ fix loop
+Describe, do not appraise. This report gets read by the people it describes.
 
-One block per thread, open threads first:
+### 3. `## Still open`
+
+What a reader still has to deal with, one `- ` item each: unresolved threads (with ids),
+failing checks, questions asked and never answered, review requests never fulfilled. If the
+PR is merged, this lists what was open **when it landed** — merging does not resolve anything.
+Nothing open → `- Nothing open.`
+
+### 4. `## Review ↔ fix loop`
+
+One block per inline thread, open threads first:
 
 ```markdown
 #### T2 — `src/auth/refresh.ts:88` — open · not outdated
@@ -87,42 +121,35 @@ server-side. Thread never resolved.
 ```
 
 Required in every block: the anchor (`path:line`), the ask in the reviewer's own words, the
-evidence level (**confirmed** / **inferred** / **unanswered**) spelled out, and the GitHub
-flags (`resolved by X`, `outdated`) kept separate from your own evidence.
+evidence level spelled out, and the GitHub flags (`resolved by X`, `outdated`) kept separate
+from your own evidence. No threads → leave the section out.
 
-Never write "fixed in `abc123`" for an inferred link. The reader is deciding what to trust,
-and a confident wrong link costs more than an honest gap.
+### 5. `## Timeline`
 
-### 4. How the author approached it
+One table, every event, ascending:
 
-Prose, four to eight sentences. The arc the commits show:
+```markdown
+| UTC | Δ | Who | Event | Detail |
+|---|---|---|---|---|
+| 03-02 09:14 | — | someuser | opened | draft, base `develop` |
+| 03-03 08:02 | 20h22m | reviewer1 | review: CHANGES_REQUESTED | 3 threads, all on token storage |
+| 03-05 10:30 | 1d19h | someuser | force-push | 12 commits rewritten; T1 anchored pre-push |
+```
 
-- the first approach, before any review touched it
-- each pivot — a revert, a file added then deleted, the same file rewritten three times, a
-  draft→ready flip, a retitle
-- the pressure points — files with the most commits touching them; that is where the problem
-  was actually hard, and where a reviewer should start
-- what force-pushes removed from the record
+`Δ` is the gap from the previous row — stalls are usually where the story is. Thread ids are
+the ones from section 4. Bot batches collapse into one row. A force-push always gets its own
+row, with what it rewrote.
 
-Describe, do not appraise. This report gets read by the people it describes.
-
-### 5. Open items
-
-What a reader still has to deal with: unresolved threads (with ids), failing checks,
-questions asked and never answered, review requests never fulfilled. If the PR is merged,
-this section lists what was open **when it landed** — merging does not resolve anything.
-
-### 6. Stats
+### 6. `## Stats`
 
 Small table: time to first review, number of review rounds, commits after the first review,
 longest gap, cycle time open→merge, top three most-churned files, human vs bot comment count.
 
-### 7. Gaps
+### 7. `## Gaps`
 
 Anything you could not read: force-pushed commits, a 403, a deleted fork, a truncated list
-you could not paginate. One line each, naming the section it affects.
-
-A named gap is context. An unnamed one makes every other section unverifiable.
+you could not paginate. One line each, naming the section it affects. Nothing missing → leave
+the section out.
 
 ## Rules
 

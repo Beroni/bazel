@@ -15,12 +15,35 @@ force_pushes: 0
 generated_at: 2026-10-29T12:00:00Z
 -->
 
-# PR #26 — Translate comments to English
+Commits read: 4
 
-## About
+# History — PR #26 · Translate comments to English
+
+## What it does
 
 **Stated:** translate every Go comment to English.
 **Actual footprint:** 31 files under `internal/`, comments only, no tests changed.
+
+## Decisions
+
+### 1. Translate package by package
+- Commit: cb76209 · description
+One pass over every package, comments only.
+
+### 2. Fix the mistranslations a reviewer found
+- Commit: 5fa7311 · thread with @reviewer (T1)
+Touches `internal/store/findings.go` after the thread; inferred.
+- Rejected: leaving Portuguese test names — kept out of scope, said in the description.
+
+## Still open
+
+- T1 is still open.
+
+## Review ↔ fix loop
+
+#### T1 — `internal/store/findings.go:12` — open · not outdated
+**reviewer, 10-28 15:20:** "This comment was mistranslated."
+**Answered by:** `5fa7311` (10-28 18:00) — *inferred*: touches the file after the thread.
 
 ## Timeline
 
@@ -29,26 +52,8 @@ generated_at: 2026-10-29T12:00:00Z
 | 10-28 10:00 | — | beroni | opened | base `master` |
 | 10-28 15:20 | 5h20m | reviewer | review: COMMENTED | 1 thread on `internal/store/findings.go` |
 
-## Review ↔ fix loop
-
-#### T1 — `internal/store/findings.go:12` — open · not outdated
-**reviewer, 10-28 15:20:** "This comment was mistranslated."
-**Answered by:** `5fa7311` (10-28 18:00) — *inferred*: touches the file after the thread.
-
-## How the author approached it
-
-One pass translating every package, then a fix-up commit for mistranslations.
-
-## Open items
-
-- T1 is still open.
-
 ## Stats
 
 | Metric | Value |
 |---|---|
 | Review rounds | 1 |
-
-## Gaps
-
-- None.
