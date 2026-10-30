@@ -49,6 +49,14 @@ type fixturePR struct {
 	ReviewDecision string            `json:"reviewDecision"`
 	Diff           string            `json:"diff,omitempty"`
 	Files          map[string]string `json:"files,omitempty"` // what the PR branch adds
+	// The PR page fields (gh pr view --json …). Missing ones are synthesized
+	// from the rest: one commit at headRefOid, files from Files, empty lists.
+	CreatedAt         string `json:"createdAt,omitempty"`
+	Commits           []any  `json:"commits,omitempty"`
+	ReviewRequests    []any  `json:"reviewRequests,omitempty"`
+	LatestReviews     []any  `json:"latestReviews,omitempty"`
+	Labels            []any  `json:"labels,omitempty"`
+	StatusCheckRollup []any  `json:"statusCheckRollup,omitempty"`
 }
 
 // settings is gh.json: who is logged in and which calls fail on purpose.
@@ -256,13 +264,47 @@ func rows(args []string, prs []fixturePR) []map[string]any {
 		_ = json.Unmarshal(raw, &all)
 		row := map[string]any{}
 		for _, f := range fields {
-			if v, ok := all[f]; ok {
+			if v, ok := synthesized(p, f); ok {
+				row[f] = v
+			} else if v, ok := all[f]; ok {
 				row[f] = v
 			}
 		}
 		out = append(out, row)
 	}
 	return out
+}
+
+// synthesized answers the PR page fields a fixture left out, in gh's shape.
+// `files` is always gh's list: the fixture's files map is the branch content.
+func synthesized(p fixturePR, field string) (any, bool) {
+	switch field {
+	case "files":
+		out := []map[string]any{}
+		for _, path := range sortedKeys(p.Files) {
+			out = append(out, map[string]any{"path": path, "additions": strings.Count(p.Files[path], "\n") + 1, "deletions": 0})
+		}
+		return out, true
+	case "createdAt":
+		if p.CreatedAt == "" {
+			return p.UpdatedAt, true
+		}
+	case "commits":
+		if p.Commits == nil {
+			return []map[string]any{{
+				"oid": p.HeadRefOid, "messageHeadline": p.Title, "committedDate": p.UpdatedAt,
+				"authors": []map[string]string{{"login": p.Author.Login, "name": p.Author.Login}},
+			}}, true
+		}
+	case "reviewRequests", "latestReviews", "labels", "statusCheckRollup":
+		raw, _ := json.Marshal(p)
+		var all map[string]any
+		_ = json.Unmarshal(raw, &all)
+		if _, ok := all[field]; !ok {
+			return []any{}, true
+		}
+	}
+	return nil, false
 }
 
 func searchPRs(args []string) int {

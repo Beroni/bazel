@@ -1,44 +1,146 @@
 [
   {
-    "repo": "acme/api-core", "number": 101,
+    "repo": "acme/api-core",
+    "number": 101,
     "title": "Add rate limiter to the public API",
     "body": "Adds a **token bucket** in front of `/v1`.",
-    "additions": 120, "deletions": 8, "changedFiles": 3, "updatedAgo": "2h",
-    "headRefName": "feat/rate-limit", "headRefOid": "aaaa101", "baseRefName": "main",
-    "author": {"login": "alice"}, "reviewDecision": "REVIEW_REQUIRED",
-    "files": {"internal/limit/bucket.go": "package limit // token bucket"}
+    "additions": 120,
+    "deletions": 8,
+    "changedFiles": 3,
+    "updatedAgo": "2h",
+    "headRefName": "feat/rate-limit",
+    "headRefOid": "aaaa101",
+    "baseRefName": "main",
+    "author": {
+      "login": "alice"
+    },
+    "reviewDecision": "REVIEW_REQUIRED",
+    "files": {
+      "internal/limit/bucket.go": "package limit // token bucket"
+    },
+    "createdAt": "2026-10-20T12:00:00Z",
+    "commits": [
+      {
+        "oid": "a0a0101",
+        "messageHeadline": "E2E-COMMIT-1 add the bucket",
+        "committedDate": "2026-10-20T12:00:00Z",
+        "authors": [
+          {
+            "login": "alice",
+            "name": "Alice"
+          }
+        ]
+      },
+      {
+        "oid": "aaaa101",
+        "messageHeadline": "E2E-COMMIT-2 wire it into /v1",
+        "committedDate": "2026-10-21T12:00:00Z",
+        "authors": [
+          {
+            "login": "alice",
+            "name": "Alice"
+          }
+        ]
+      }
+    ],
+    "reviewRequests": [
+      {
+        "login": "bob"
+      }
+    ],
+    "latestReviews": [
+      {
+        "author": {
+          "login": "carol"
+        },
+        "state": "APPROVED"
+      }
+    ],
+    "labels": [
+      {
+        "name": "e2e-label-perf"
+      }
+    ],
+    "statusCheckRollup": [
+      {
+        "name": "ci/test",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS"
+      },
+      {
+        "name": "lint",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE"
+      }
+    ]
   },
   {
-    "repo": "acme/api-core", "number": 102,
+    "repo": "acme/api-core",
+    "number": 102,
     "title": "Fix nil pointer on empty config",
     "body": "Guards `cfg.Server` before use.",
-    "additions": 12, "deletions": 3, "changedFiles": 1, "updatedAgo": "5h",
-    "headRefName": "fix/nil-config", "headRefOid": "bbbb102", "baseRefName": "main",
-    "author": {"login": "e2e-user"}, "reviewDecision": "APPROVED"
+    "additions": 12,
+    "deletions": 3,
+    "changedFiles": 1,
+    "updatedAgo": "5h",
+    "headRefName": "fix/nil-config",
+    "headRefOid": "bbbb102",
+    "baseRefName": "main",
+    "author": {
+      "login": "e2e-user"
+    },
+    "reviewDecision": "APPROVED"
   },
   {
-    "repo": "acme/api-core", "number": 103,
+    "repo": "acme/api-core",
+    "number": 103,
     "title": "WIP: experimental gRPC gateway",
     "body": "Not ready.",
     "isDraft": true,
-    "additions": 900, "deletions": 0, "changedFiles": 14, "updatedAgo": "30h",
-    "headRefName": "wip/grpc", "headRefOid": "cccc103", "baseRefName": "main",
-    "author": {"login": "bob"}, "reviewDecision": ""
+    "additions": 900,
+    "deletions": 0,
+    "changedFiles": 14,
+    "updatedAgo": "30h",
+    "headRefName": "wip/grpc",
+    "headRefOid": "cccc103",
+    "baseRefName": "main",
+    "author": {
+      "login": "bob"
+    },
+    "reviewDecision": ""
   },
   {
-    "repo": "acme/web-app", "number": 7,
+    "repo": "acme/web-app",
+    "number": 7,
     "title": "Dark mode toggle in settings",
     "body": "Adds a toggle and persists it in `localStorage`.",
-    "additions": 64, "deletions": 10, "changedFiles": 4, "updatedAgo": "1h",
-    "headRefName": "feat/dark-mode", "headRefOid": "dddd007", "baseRefName": "main",
-    "author": {"login": "carol"}, "reviewDecision": "CHANGES_REQUESTED"
+    "additions": 64,
+    "deletions": 10,
+    "changedFiles": 4,
+    "updatedAgo": "1h",
+    "headRefName": "feat/dark-mode",
+    "headRefOid": "dddd007",
+    "baseRefName": "main",
+    "author": {
+      "login": "carol"
+    },
+    "reviewDecision": "CHANGES_REQUESTED"
   },
   {
-    "repo": "acme/web-app", "number": 8,
+    "repo": "acme/web-app",
+    "number": 8,
     "title": "Bump dependencies",
     "body": "",
-    "additions": 30, "deletions": 30, "changedFiles": 2, "updatedAgo": "50h",
-    "headRefName": "chore/deps", "headRefOid": "eeee008", "baseRefName": "main",
-    "author": {"login": "e2e-user"}, "reviewDecision": ""
+    "additions": 30,
+    "deletions": 30,
+    "changedFiles": 2,
+    "updatedAgo": "50h",
+    "headRefName": "chore/deps",
+    "headRefOid": "eeee008",
+    "baseRefName": "main",
+    "author": {
+      "login": "e2e-user"
+    },
+    "reviewDecision": ""
   }
 ]

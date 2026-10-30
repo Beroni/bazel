@@ -1,0 +1,17 @@
+Commits read: 2
+
+## What it does
+E2E-HISTORY-WHAT adds a token bucket in front of /v1.
+
+## Decisions
+### 1. E2E-DECISION-ONE token bucket over a fixed window
+- Commit: a0a0101 · the first commit
+Bursty clients get a fair share.
+- Rejected: Fixed window — spikes at the boundary.
+
+### 2. E2E-DECISION-TWO limits per API key
+- Commit: aaaa101
+Per key, not per IP.
+
+## Still open
+- E2E-STILL-OPEN should the limit be configurable?

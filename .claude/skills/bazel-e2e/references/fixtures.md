@@ -42,6 +42,15 @@ An array. Each entry is a gh PR plus `repo`:
 }
 ```
 
+PR page fields (`gh pr view --json headRefOid,createdAt,body,commits,files,reviewRequests,latestReviews,labels,statusCheckRollup`,
+the redesign's Overview) take gh's shape in the fixture: `createdAt`, `commits`
+(`oid`, `messageHeadline`, `committedDate`, `authors`), `reviewRequests`,
+`latestReviews` (`author.login`, `state`), `labels` (`name`), `statusCheckRollup`
+(`name`, `status`, `conclusion`). Left out, they are synthesized: one commit at
+`headRefOid`, empty lists. `files` in the fixture is the branch content (a map);
+asked with `--json files` it comes back as gh's list (`path`, `additions`,
+`deletions`).
+
 `url` defaults to `https://github.com/<repo>/pull/<n>`; `updatedAt` (ISO) or
 `updatedAgo` (Go duration); `baseRefName` defaults to `main`.
 `changedFiles: 0` makes Bazel refuse the review ("no changed files").
