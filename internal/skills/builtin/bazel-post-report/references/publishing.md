@@ -106,7 +106,7 @@ gh api -X POST repos/:owner/:repo/pulls/<N>/reviews --input /tmp/review.json
 - `path`, `line`, `side` come from the finding's `<!-- finding … -->`; `side: "LEFT"` for a
   removed line; a range adds `start_line` (and `start_side`).
 - `body` is the finding's prose verbatim — it already opens with its level line (see
-  `.claude/skills/bazel-review-fleet/references/report-format.md`) — plus `ref` as a trailing
+  `<plugin>/skills/bazel-review-fleet/references/report-format.md`) — plus `ref` as a trailing
   line when there is one.
 - `event` is `COMMENT`, always.
 - One comment on an invalid line makes the API reject the **whole** review: drop that comment,

@@ -7,10 +7,19 @@ the skill. When a `SKILL.md` and this file disagree, this file wins — except w
 prints what it published.
 
 Bazel clones the PR into a throwaway directory, checks the PR out, writes its built-in skills
-into `.claude/skills/` (and the lens agents into `.claude/agents/`), and runs one agent
-process with that directory as its working directory. Nobody is watching the terminal. What
+as a plugin into a folder of its own — outside the clone — and runs one agent process with the
+clone as its working directory. Nobody is watching the terminal. What
 the process prints at the end **is** the review: Bazel saves it, shows it on its page, and may
 later publish it.
+
+## 0. `<plugin>`
+
+Every path in these skills that starts with `<plugin>/` is inside the folder Bazel wrote its
+built-in skills to: `<plugin>/skills/<skill>/…` and `<plugin>/agents/<agent>.md`. Under Claude
+Code, `<plugin>` is two levels above the base directory it shows when it loads the skill
+(`<plugin>/skills/<skill>`); when the skill came inlined in the prompt, the prompt names it.
+Write it out as an absolute path in every command: the shell runs in the clone, and the
+plugin is not there.
 
 ## 1. Nobody answers
 
@@ -61,7 +70,7 @@ Rules that keep that honest:
   ```` ```markdown ```` fence, do not add a sentence before or after it, do not end with the
   path of a file. Whatever you print is what Bazel shows and what can go to the PR.
 - The rest of this section is for **review reports** (`bazel-review-fleet` and the lenses).
-  They follow `.claude/skills/bazel-review-fleet/references/report-format.md`
+  They follow `<plugin>/skills/bazel-review-fleet/references/report-format.md`
   exactly. That format is also what Bazel uses to put a checkbox next to each finding:
   every `###` under `## Findings` or `## Cuts`, and every bullet under
   `## Needs human verification`. A heading outside those sections gets no checkbox.
@@ -71,7 +80,7 @@ Rules that keep that honest:
 
   ```bash
   R=$(mktemp "${TMPDIR:-/tmp}/bazel-report.XXXXXX")   # then write the report to "$R"
-  bash .claude/skills/bazel-review-fleet/references/validate-report.sh "$R"
+  bash "<plugin>/skills/bazel-review-fleet/references/validate-report.sh" "$R"
   ```
 
   Exit 1 → fix what it pointed at and validate again. The printed report is the one that

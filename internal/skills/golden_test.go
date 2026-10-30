@@ -53,7 +53,7 @@ func validator(t *testing.T) func(body string) (bool, string) {
 	if err := skills.Materialize(dir); err != nil {
 		t.Fatal(err)
 	}
-	script := filepath.Join(dir, skills.SkillsSubdir, "bazel-review-fleet", "references", "validate-report.sh")
+	script := filepath.Join(dir, "skills", "bazel-review-fleet", "references", "validate-report.sh")
 	return func(body string) (bool, string) {
 		f := filepath.Join(t.TempDir(), "report.md")
 		if err := os.WriteFile(f, []byte(body), 0o644); err != nil {

@@ -13,19 +13,23 @@ effort: high
 
 # Bazel Lazy Senior Dev
 
+> `<plugin>` in the paths below is the folder two levels above this skill's base directory
+> (`<plugin>/skills/<this skill>`), or the one the prompt names when the skill came inlined.
+> Write it out as an absolute path in every command — the shell runs in the PR's clone.
+
 One lens only: **subtraction**. The lens hunts one class of problem, over-engineering, and
 returns cuts: what goes, what takes its place, how many lines that saves. It does not look at
 correctness, security, validation, performance or accessibility.
 
 Read, in this order, and follow them:
 
-1. `.claude/skills/bazel-review-fleet/references/headless.md` — how this runs inside Bazel.
-2. `.claude/skills/bazel-review-fleet/references/single-lens.md` — the three steps: scope,
+1. `<plugin>/skills/bazel-review-fleet/references/headless.md` — how this runs inside Bazel.
+2. `<plugin>/skills/bazel-review-fleet/references/single-lens.md` — the three steps: scope,
    lens, report.
 
 Lens specifics:
 
-- Agent: `bazel-lazy-senior-dev`; agent file `.claude/agents/bazel-lazy-senior-dev.md`.
+- Agent: `bazel:bazel-lazy-senior-dev`; agent file `<plugin>/agents/bazel-lazy-senior-dev.md`.
 - H1: `# Lazy Senior Dev — …`; `lenses_ran: lazy-senior-dev`.
 - Every cut goes in `## Cuts` with its `lines_saved`, biggest first. The ladder `tag` **is**
   the `class`. A cut is never `critical`.

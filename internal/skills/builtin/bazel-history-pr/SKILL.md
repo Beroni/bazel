@@ -12,11 +12,15 @@ effort: high
 
 # Bazel History PR
 
+> `<plugin>` in the paths below is the folder two levels above this skill's base directory
+> (`<plugin>/skills/<this skill>`), or the one the prompt names when the skill came inlined.
+> Write it out as an absolute path in every command — the shell runs in the PR's clone.
+
 Reads a pull request end to end and writes down its story: **what it is about**, **how the
 author tried to solve it**, and **how the review↔fix loop actually went**. It looks at the
 *process*, not at whether the code is right — that is `bazel-review-fleet`.
 
-**Read `.claude/skills/bazel-review-fleet/references/headless.md` first** and follow its
+**Read `<plugin>/skills/bazel-review-fleet/references/headless.md` first** and follow its
 sections 1 (nobody answers), 3 (the report is your final output — only its first two bullets:
 a history is not a review report and is never validated), 4 (English) and 6 (write nothing
 else). Its section 2 does not apply: this skill reads the PR through the API, not the diff.
@@ -34,7 +38,7 @@ names, ignoring case (the prompt carries the spelling from Bazel's config). Miss
 
 ## Step 2 — Collect the raw material
 
-All the commands are in `.claude/skills/bazel-history-pr/references/data-collection.md`.
+All the commands are in `<plugin>/skills/bazel-history-pr/references/data-collection.md`.
 **Read it before running anything** — it has the pagination rules and the two endpoints people
 confuse. Seven reads (`gh pr view`, commits, reviews, inline comments, conversation comments,
 the timeline and the GraphQL `reviewThreads`), in parallel when you can.
@@ -81,7 +85,7 @@ never judge the author.
 
 ## Step 6 — Print the report
 
-Format and section order: `.claude/skills/bazel-history-pr/references/report-format.md`.
+Format and section order: `<plugin>/skills/bazel-history-pr/references/report-format.md`.
 Bazel's History tab parses `## What it does`, `## Decisions` and `## Still open` from it, so
 those three follow the spec to the letter. Write
 it to a scratch file if that helps, then print the **whole report** as your final output, with

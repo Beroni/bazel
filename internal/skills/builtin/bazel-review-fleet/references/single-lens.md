@@ -28,9 +28,10 @@ of the repo, or of the user's request.
 ```
 
 - **With the `Agent` tool**: one `Agent` call with the lens's `subagent_type`
-  (`bazel-<lens>`) and `run_in_background: false`, and wait for it in the same turn.
+  (`bazel:bazel-<lens>` — the plugin's agents carry its name) and `run_in_background: false`,
+  and wait for it in the same turn.
 - **Without it**, or if the agent type is unknown: read the lens's agent file
-  (`.claude/agents/bazel-<lens>.md`, also at `.claude/skills/bazel-<lens>/agents/`) and do the
+  (`<plugin>/agents/bazel-<lens>.md`) and do the
   pass yourself, following it to the letter, down to the JSON.
 
 Prose or malformed JSON back → ask again (or redo the pass). Never guess its content, and
@@ -38,7 +39,7 @@ never replace the lens with a generic review of your own.
 
 ## Step 3 — Print the report
 
-Format: `.claude/skills/bazel-review-fleet/references/report-format.md`. For a single lens it
+Format: `<plugin>/skills/bazel-review-fleet/references/report-format.md`. For a single lens it
 says:
 
 - the H1 is the lens's (`# Senior Code Reviewer — …`, `# Exploit Digger — …`,

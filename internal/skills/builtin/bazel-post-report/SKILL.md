@@ -13,15 +13,19 @@ effort: high
 
 # Bazel Post Report
 
+> `<plugin>` in the paths below is the folder two levels above this skill's base directory
+> (`<plugin>/skills/<this skill>`), or the one the prompt names when the skill came inlined.
+> Write it out as an absolute path in every command — the shell runs in the PR's clone.
+
 Takes to the PR a review that **already exists and a human already approved**. Bazel ran the
 agent, saved the markdown, showed it on screen, and the person clicked publish. Your job starts
 there: turn that file into a review on GitHub.
 
-From `.claude/skills/bazel-review-fleet/references/headless.md`, sections 1 (nobody answers)
+From `<plugin>/skills/bazel-review-fleet/references/headless.md`, sections 1 (nobody answers)
 and 4 (English) apply. Its sections 2, 3, 5 and 6 do not: you publish a review that already
 exists, you never run the validator, and what you print is what you did (Step 6), not a
 report. The `gh` commands and the exact shape of every comment are in
-`.claude/skills/bazel-post-report/references/publishing.md`; read it before Step 2.
+`<plugin>/skills/bazel-post-report/references/publishing.md`; read it before Step 2.
 
 ## What was decided before you
 
@@ -58,7 +62,7 @@ reviewed. Only what comes after the first `---` line is the report, and only the
 becomes comments — the header is Bazel's metadata.
 
 The report is normally in the format of
-`.claude/skills/bazel-review-fleet/references/report-format.md`: a `<!-- review-fleet:v1 … -->`
+`<plugin>/skills/bazel-review-fleet/references/report-format.md`: a `<!-- review-fleet:v1 … -->`
 header and, under each `###`, a `<!-- finding … -->` line with `path`, `line`, `side`. **Do not
 run `validate-report.sh` on this file**: when the person unticks every finding of a section,
 the section is left empty, which the validator rejects although the file is exactly what was

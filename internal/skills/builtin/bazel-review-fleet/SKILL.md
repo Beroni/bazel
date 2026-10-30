@@ -13,6 +13,10 @@ effort: high
 
 # Bazel Review Fleet
 
+> `<plugin>` in the paths below is the folder two levels above this skill's base directory
+> (`<plugin>/skills/<this skill>`), or the one the prompt names when the skill came inlined.
+> Write it out as an absolute path in every command — the shell runs in the PR's clone.
+
 Three review lenses, one diff, one verdict. Each lens has a different objective function, and
 the point of the fleet is that they **disagree productively**:
 
@@ -22,7 +26,7 @@ the point of the fleet is that they **disagree productively**:
 | `exploit-digger` | recall | adversarial bug classes, assuming one exists |
 | `lazy-senior-dev` | subtraction | code that should not exist |
 
-**Read `.claude/skills/bazel-review-fleet/references/headless.md` first.** It says how this
+**Read `<plugin>/skills/bazel-review-fleet/references/headless.md` first.** It says how this
 runs inside Bazel: nobody answers, the scope comes from the prompt, the report is your final
 output, failures are reports too. Everything below assumes it.
 
@@ -44,16 +48,16 @@ needs `senior-code-reviewer` alone.
 
 ## Step 3 — Run the lenses
 
-The lens instructions are the agent files Bazel wrote into the clone:
+The lens instructions are the agent files of the plugin:
 
 | Lens | Agent | File |
 |---|---|---|
-| `senior-code-reviewer` | `bazel-senior-code-reviewer` | `.claude/agents/bazel-senior-code-reviewer.md` |
-| `exploit-digger` | `bazel-exploit-digger` | `.claude/agents/bazel-exploit-digger.md` |
-| `lazy-senior-dev` | `bazel-lazy-senior-dev` | `.claude/agents/bazel-lazy-senior-dev.md` |
+| `senior-code-reviewer` | `bazel:bazel-senior-code-reviewer` | `<plugin>/agents/bazel-senior-code-reviewer.md` |
+| `exploit-digger` | `bazel:bazel-exploit-digger` | `<plugin>/agents/bazel-exploit-digger.md` |
+| `lazy-senior-dev` | `bazel:bazel-lazy-senior-dev` | `<plugin>/agents/bazel-lazy-senior-dev.md` |
 
 Every lens gets **the same** scope block, verbatim — the one in Step 2 of
-`.claude/skills/bazel-review-fleet/references/single-lens.md`, language line included.
+`<plugin>/skills/bazel-review-fleet/references/single-lens.md`, language line included.
 
 **With the `Agent` tool** (Claude Code): one message, one `Agent` call per lens with its
 `subagent_type` and **`run_in_background: false`**, so the three run in parallel and you wait
@@ -107,7 +111,7 @@ Cuts never drive `request_changes`: a simplification does not block a merge.
 
 ## Step 6 — Print the report
 
-The format is `.claude/skills/bazel-review-fleet/references/report-format.md`, and only that.
+The format is `<plugin>/skills/bazel-review-fleet/references/report-format.md`, and only that.
 Read it before writing: the header, the title-and-summary block, the three sections, the
 closed vocabularies, the level line, `**Trigger:**` and `**Fix:**`. Nothing that is not in the
 spec goes into the report — no coverage section, no summary, no notes. `exploit-digger`'s

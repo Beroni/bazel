@@ -185,8 +185,9 @@ func Inline(task, plugin string) string {
 		args = "none"
 	}
 	return fmt.Sprintf("Run the `%s` skill below. This agent does not load skills by itself, so its "+
-		"instructions are inlined here. Its files are in %s/skills/%s/ and the agents it names in "+
-		"%s/agents/.\n\nArguments: %s\n\n%s", s.Name, plugin, s.Name, plugin, args, body)
+		"instructions are inlined here. `<plugin>` in them is %s: the skill's files are in "+
+		"%s/skills/%s/, the agents it names in %s/agents/.\n\nArguments: %s\n\n%s",
+		s.Name, plugin, plugin, s.Name, plugin, args, body)
 }
 
 // withoutFrontmatter drops the YAML block between the two `---` at the top.

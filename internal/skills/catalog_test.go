@@ -76,17 +76,18 @@ func TestCatalogFrontmatter(t *testing.T) {
 func TestCatalogFollowsHeadless(t *testing.T) {
 	for _, s := range Builtin() {
 		data, _ := builtinFS.ReadFile(s.Dir + "/SKILL.md")
-		if !strings.Contains(string(data), ".claude/skills/bazel-review-fleet/references/headless.md") {
+		if !strings.Contains(string(data), "<plugin>/skills/bazel-review-fleet/references/headless.md") {
 			t.Errorf("%s does not point at headless.md", s.Name)
 		}
 	}
 }
 
-// The skills name files by their path in the clone. Every one of those paths
-// has to exist in what Materialize writes, or the agent reads nothing and
-// improvises.
+// The skills name files by their path in the plugin (`<plugin>/skills/…`,
+// `<plugin>/agents/…`). Every one of those paths has to exist in what
+// Materialize writes, or the agent reads nothing and improvises.
 func TestCatalogPathsExist(t *testing.T) {
-	ref := regexp.MustCompile(`\.claude/(skills|agents)/[A-Za-z0-9_./<>-]*[A-Za-z0-9_>]`)
+	ref := regexp.MustCompile(`<plugin>/(skills|agents)/[A-Za-z0-9_./<>-]*[A-Za-z0-9_>]`)
+	checked := 0
 	dir := t.TempDir()
 	if err := Materialize(dir); err != nil {
 		t.Fatal(err)
@@ -97,10 +98,12 @@ func TestCatalogPathsExist(t *testing.T) {
 		}
 		data, _ := builtinFS.ReadFile(p)
 		for _, m := range ref.FindAllString(string(data), -1) {
-			if strings.Contains(m, "<") || m == ".claude/skills" || m == ".claude/agents" {
+			rel := strings.TrimPrefix(m, "<plugin>/")
+			if strings.Contains(rel, "<") {
 				continue
 			}
-			if _, err := os.Stat(filepath.Join(dir, m)); err != nil {
+			checked++
+			if _, err := os.Stat(filepath.Join(dir, rel)); err != nil {
 				t.Errorf("%s mentions %s, which Materialize does not write", p, m)
 			}
 		}
@@ -108,6 +111,9 @@ func TestCatalogPathsExist(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if checked < 20 {
+		t.Errorf("only %d plugin paths checked — did the skills stop naming their files?", checked)
 	}
 }
 
@@ -169,11 +175,11 @@ func TestMaterializeWritesAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, a := range []string{"bazel-senior-code-reviewer", "bazel-exploit-digger", "bazel-lazy-senior-dev"} {
-		if _, err := os.Stat(filepath.Join(dir, AgentsSubdir, a+".md")); err != nil {
-			t.Errorf("the lens %s should be in %s: %v", a, AgentsSubdir, err)
+		if _, err := os.Stat(filepath.Join(dir, "agents", a+".md")); err != nil {
+			t.Errorf("the lens %s should be in the plugin's agents/: %v", a, err)
 		}
 	}
-	info, err := os.Stat(filepath.Join(dir, SkillsSubdir, "bazel-review-fleet", "references", "validate-report.sh"))
+	info, err := os.Stat(filepath.Join(dir, "skills", "bazel-review-fleet", "references", "validate-report.sh"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,11 +189,11 @@ func TestMaterializeWritesAgents(t *testing.T) {
 }
 
 func TestInline(t *testing.T) {
-	got := Inline("/bazel-review-fleet 26")
+	got := Inline("/bazel-review-fleet 26", "/rt/plugin")
 	if strings.HasPrefix(got, "/") {
 		t.Fatal("a built-in task should be expanded, not left as a slash command")
 	}
-	for _, want := range []string{"`bazel-review-fleet`", "Arguments: 26", "# Bazel Review Fleet", ".claude/agents/"} {
+	for _, want := range []string{"`bazel-review-fleet`", "Arguments: 26", "# Bazel Review Fleet", "`<plugin>` in them is /rt/plugin", "/rt/plugin/agents/"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("inlined task lacks %q", want)
 		}
@@ -195,11 +201,11 @@ func TestInline(t *testing.T) {
 	if strings.Contains(got, "allowed-tools:") {
 		t.Error("the frontmatter is for Claude Code, not for the prompt")
 	}
-	if got := Inline("/bazel-history-pr"); !strings.Contains(got, "Arguments: none") {
+	if got := Inline("/bazel-history-pr", "/rt"); !strings.Contains(got, "Arguments: none") {
 		t.Errorf("no arguments should say so: %q", got[:120])
 	}
 	for _, task := range []string{"/review-fleet 26", "Review this PR.", ""} {
-		if got := Inline(task); got != task {
+		if got := Inline(task, "/rt"); got != task {
 			t.Errorf("Inline(%q) should leave a non-built-in task alone, got %q", task, got)
 		}
 	}
@@ -209,14 +215,14 @@ func TestInline(t *testing.T) {
 // an empty body (review F7).
 func TestInlineOddTasks(t *testing.T) {
 	for _, task := range []string{"/bazel-review-fleet\r\n26", "/BAZEL-REVIEW-FLEET 26", "  /bazel-review-fleet 26  "} {
-		got := Inline(task)
+		got := Inline(task, "/rt")
 		if !strings.Contains(got, "# Bazel Review Fleet") {
 			t.Errorf("Inline(%q) lost the skill body:\n%.200s", task, got)
 		}
 	}
 	// `//name` is not a slash command for a built-in; it must not become an
 	// envelope with no instructions.
-	if got := Inline("//bazel-review-fleet 26"); got != "//bazel-review-fleet 26" {
+	if got := Inline("//bazel-review-fleet 26", "/rt"); got != "//bazel-review-fleet 26" {
 		t.Errorf("a double slash should be left alone, got %.120q", got)
 	}
 }
