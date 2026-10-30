@@ -1880,7 +1880,8 @@ function renderReportView(body, job) {
   // What the review cost, at its end — which is where you arrive after reading.
   const custo = gasto(job);
   const foot = tid(el('p', 'dim tokens-foot'), 'review-footer');
-  foot.textContent = [custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to]
+  foot.textContent = [custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to,
+    job.workdir && 'clone kept at ' + job.workdir, job.truncated && 'diff truncated']
     .filter(Boolean).join(' · ');
   if (custo) foot.title = gastoTitle(job);
   v.append(foot);
