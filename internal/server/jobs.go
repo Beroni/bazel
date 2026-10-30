@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -26,6 +27,25 @@ const (
 	StateFailed   State = "failed"
 	StateCanceled State = "canceled"
 )
+
+// refused is a publish request turned down for something on Bazel's side — the
+// job is unknown, not finished, or not publishable — rather than a GitHub
+// failure. The handler answers it with its status instead of 502.
+type refused struct {
+	error
+	status int
+}
+
+func refuse(status int, err error) error { return refused{err, status} }
+
+// refusalStatus is the status a refused error carries, or def for any other.
+func refusalStatus(err error, def int) int {
+	var rf refused
+	if errors.As(err, &rf) {
+		return rf.status
+	}
+	return def
+}
 
 var (
 	// errPublishBusy refuses a second publish while one is still in flight.
@@ -129,6 +149,11 @@ type Job struct {
 	gen int
 
 	cancel context.CancelFunc
+
+	// removed is set under the Manager lock when Remove takes the job out. The
+	// worker may still be finishing it; publish refuses it from then on, so
+	// the page never gets the card back after job_gone.
+	removed bool
 }
 
 func (j *Job) duration() time.Duration {
@@ -217,6 +242,19 @@ type Manager struct {
 	jobs  map[string]*Job
 	order []string
 	seq   int
+	// idPrefix makes job ids unique across restarts (the first characters of
+	// the server instance): the seq starts over on every boot, and "j3" from a
+	// page or an MCP client of the old process must not name the new j3.
+	idPrefix string
+
+	// pubMu orders the broadcasts about a job: publish holds it from the
+	// removed check until its event is out, and Remove sends job_gone under
+	// it. A "job" event that saw the job alive therefore always goes out
+	// before the job_gone, never after. Taken before mu, never inside it.
+	pubMu sync.Mutex
+	// beforeBroadcast, when set, runs in publish between taking the view and
+	// broadcasting it. Only tests set it, to land a Remove in that window.
+	beforeBroadcast func()
 
 	// limits is the latest reading of Claude's quota. It belongs to no job: it
 	// is the machine's, and holds for the whole page.
@@ -227,6 +265,12 @@ type Manager struct {
 // NewManager starts the worker pool. concurrency caps how many agents run at
 // once: each review clones a repository and starts a process, so this is what
 // separates "reviewing two PRs" from "bringing down the laptop".
+// nextIDLocked makes the id of a new job. Callers hold m.mu.
+func (m *Manager) nextIDLocked() string {
+	m.seq++
+	return fmt.Sprintf("%sj%d", m.idPrefix, m.seq)
+}
+
 func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, concurrency int, keep bool, hub *Hub) *Manager {
 	if concurrency < 1 {
 		concurrency = 1
@@ -274,7 +318,6 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 			return v, nil
 		}
 	}
-	m.seq++
 	steps := make([]jobStep, 0, len(choice.Steps))
 	for _, st := range choice.Steps {
 		// The `publish` step does not get its own row: what shows on screen is
@@ -286,7 +329,7 @@ func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, e
 		steps = append(steps, jobStep{Name: st.Name, State: StateQueued})
 	}
 	job := &Job{
-		ID:       fmt.Sprintf("j%d", m.seq),
+		ID:       m.nextIDLocked(),
 		PR:       pr,
 		Mine:     mine,
 		Choice:   choice,
@@ -702,6 +745,7 @@ func (m *Manager) Remove(id string) error {
 		job.State = StateCanceled
 		job.FinishedAt = time.Now()
 	}
+	job.removed = true
 	delete(m.jobs, id)
 	for i, other := range m.order {
 		if other == id {
@@ -714,7 +758,9 @@ func (m *Manager) Remove(id string) error {
 	if vivo && cancel != nil {
 		cancel()
 	}
+	m.pubMu.Lock()
 	m.hub.Broadcast("job_gone", map[string]string{"id": id})
+	m.pubMu.Unlock()
 	return nil
 }
 
@@ -724,7 +770,7 @@ func (m *Manager) Cancel(id string) error {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return fmt.Errorf("job %q does not exist", id)
+		return refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	switch job.State {
 	case StateQueued:
@@ -776,7 +822,7 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	// Already publishing: return the card as is, instead of sending the post
 	// agent to the same PR twice.
@@ -891,9 +937,8 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 	}
 
 	choice := m.cfg.PostChoice()
-	m.seq++
 	job := &Job{
-		ID:        fmt.Sprintf("j%d", m.seq),
+		ID:        m.nextIDLocked(),
 		PR:        pr,
 		Mine:      mine,
 		Choice:    choice,
@@ -936,11 +981,11 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	if job.State != StateDone {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("that review has not finished")
+		return jobView{}, refuse(http.StatusConflict, errors.New("that review has not finished"))
 	}
 	if job.posting {
 		m.mu.Unlock()
@@ -952,7 +997,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	}
 	if !job.Choice.Publishable {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name)
+		return jobView{}, refuse(http.StatusConflict, fmt.Errorf("what %q produces does not go to the PR", job.Choice.Name))
 	}
 	res := job.Result
 	// Pasting as a comment is the same destination through another door: from
@@ -960,7 +1005,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	body, _, err := agent.PublishableBody(res, job.Choice)
 	if err != nil {
 		m.mu.Unlock()
-		return jobView{}, err
+		return jobView{}, refuse(http.StatusConflict, err)
 	}
 	res.Body = store.DropFindings(body, skip)
 	// The lock is released around gh.Comment; posting keeps a second click
@@ -995,7 +1040,7 @@ func (m *Manager) Dismiss(id string) (jobView, error) {
 	job, ok := m.jobs[id]
 	if !ok {
 		m.mu.Unlock()
-		return jobView{}, fmt.Errorf("job %q does not exist", id)
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	if job.posting {
 		m.mu.Unlock()
@@ -1073,8 +1118,17 @@ func (m *Manager) Active() int {
 }
 
 func (m *Manager) publish(job *Job) {
+	m.pubMu.Lock()
+	defer m.pubMu.Unlock()
 	m.mu.Lock()
+	if job.removed {
+		m.mu.Unlock()
+		return
+	}
 	view := job.view()
 	m.mu.Unlock()
+	if m.beforeBroadcast != nil {
+		m.beforeBroadcast()
+	}
 	m.hub.Broadcast("job", view)
 }

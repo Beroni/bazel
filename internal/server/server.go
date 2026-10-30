@@ -64,9 +64,10 @@ type Server struct {
 	jobs       *Manager
 	done       chan struct{}
 
-	// instance is random per server process. Job ids restart at j1 on every
-	// boot, so the page uses it to tell a restarted server from a dropped
-	// connection and to forget what it cached under the old ids.
+	// instance is random per server process. Job ids carry its first
+	// characters (see Manager.idPrefix), and the page uses it to tell a
+	// restarted server from a dropped connection and to forget what it cached
+	// under the old ids.
 	instance string
 
 	// cfgMu protects the config fields the interface edits (repos).
@@ -100,6 +101,8 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	if err != nil {
 		return nil, err
 	}
+	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
+	jobs.idPrefix = instance[:4] + "-"
 	return &Server{
 		instance:   instance,
 		cfg:        cfg,
@@ -108,7 +111,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		configPath: configPath,
 		opts:       opts,
 		hub:        hub,
-		jobs:       NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub),
+		jobs:       jobs,
 		done:       make(chan struct{}),
 	}, nil
 }
@@ -169,7 +172,50 @@ func (s *Server) Handler() http.Handler {
 	// running an agent, just spoken by machine.
 	mux.HandleFunc("/mcp", s.handleMCP)
 
-	return s.guard(mux)
+	return secureHeaders(s.guard(s.sameInstance(mux)))
+}
+
+// instanceHeader carries the server instance the page was loaded from.
+const instanceHeader = "X-Bazel-Instance"
+
+// sameInstance refuses an action on a job sent by a page of another server
+// process. The instance prefix already keeps an old id from naming a new job
+// by accident, but this is what tells the page why it was refused, so it
+// resyncs at once rather than showing a bare 404. The page sends the instance
+// it knows on every write under /api/jobs/; a mismatch is 409 and nothing
+// happens. A request without the header (MCP, curl, tests) goes through as
+// before.
+func (s *Server) sameInstance(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead && strings.HasPrefix(r.URL.Path, "/api/jobs/") {
+			if got := r.Header.Get(instanceHeader); got != "" && got != s.instance {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"error": "the server restarted — this page is stale; reload",
+					"stale": true,
+				})
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// secureHeaders goes on every response, the guard's refusals included. The
+// page must not load inside another site's frame: a hidden iframe on
+// 127.0.0.1 keeps a local Host, passes the guard, and could walk a click to
+// "Publish inline review" and its confirm (clickjacking). X-Frame-Options is
+// for older browsers, frame-ancestors for the rest. nosniff keeps the browser
+// to the declared types — every response here declares one. no-referrer keeps
+// a click on a link from telling the other site this page's address.
+func secureHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		h := w.Header()
+		h.Set("X-Frame-Options", "DENY")
+		h.Set("Content-Security-Policy", "frame-ancestors 'none'")
+		h.Set("X-Content-Type-Options", "nosniff")
+		h.Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
+	})
 }
 
 // semCache tells the browser not to keep what comes embedded in the binary.
@@ -621,7 +667,7 @@ func (s *Server) handleJobRemove(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 	if err := s.jobs.Cancel(r.PathValue("id")); err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
@@ -635,7 +681,10 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
 	if err != nil {
-		status := http.StatusBadGateway
+		// 502 is only for gh failing to post. A request Bazel turns down —
+		// unknown job, not finished, not publishable, busy, already posted — is
+		// the client's (BUG-QA-05).
+		status := refusalStatus(err, http.StatusBadGateway)
 		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
 			status = http.StatusConflict
 		}
@@ -650,7 +699,7 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -668,7 +717,8 @@ func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
 	}
 	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		// Unknown job is 404, like /post; every other refusal is 409.
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -734,15 +784,17 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	repo := strings.TrimSpace(req.Repo)
-	if !strings.Contains(strings.TrimPrefix(repo, "https://github.com/"), "/") {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid repository: %q (use owner/repo)", repo))
+	// Exactly owner/name (BUG-QA-03): "acme/" used to go in as "acme", and a PR
+	// URL as "acme/web-app/pull/7", because only the slash was checked.
+	repo, err := config.NormalizeRepo(req.Repo)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 
 	s.cfgMu.Lock()
 	added := s.cfg.AddRepo(repo)
-	err := s.cfg.Save()
+	err = s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {

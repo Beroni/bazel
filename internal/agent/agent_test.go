@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"strings"
 	"testing"
@@ -1004,5 +1005,49 @@ func TestReviewCobraCadaModeloPelaTabela(t *testing.T) {
 	}
 	if len(res.Steps) != 1 || res.Steps[0].Usage.Model != "claude-opus-5-5" || res.Steps[0].Usage.CostUSD != 9 {
 		t.Errorf("passo devia levar o principal e o custo da tabela: %+v", res.Steps)
+	}
+}
+
+// The done line in the log prices the run like the Runner does: with a price
+// table, the card, the footer and the saved file show the table's number, and
+// the log used to show the provider's total_cost_usd instead (BUG-QA-01).
+func TestDoneLineUsesTheSamePriceAsTheCard(t *testing.T) {
+	table := pricing.Table{"m-known": {Input: 2, Output: 10}}
+	result := `{"type":"result","subtype":"success","result":"ok","duration_ms":4000,"total_cost_usd":9.99,` +
+		`"usage":{"input_tokens":1000000,"output_tokens":100000},` +
+		`"modelUsage":{"m-known":{"inputTokens":1000000,"outputTokens":100000,"costUSD":9.99}}}`
+
+	p := streamParser{pricing: &table}
+	var done string
+	for _, e := range p.line(result) {
+		done = e.Text
+	}
+	card := priced(p.spend(), p.models(), &table)
+	if want := fmt.Sprintf("$%.2f", card.CostUSD); card.CostUSD != 3 || !strings.HasSuffix(done, want) {
+		t.Errorf("done line %q should end with the card's %s (table price $3.00)", done, want)
+	}
+
+	// Without a table both keep the provider's number.
+	var raw streamParser
+	for _, e := range raw.line(result) {
+		done = e.Text
+	}
+	if !strings.HasSuffix(done, "$9.99") {
+		t.Errorf("with no table the done line keeps total_cost_usd: %q", done)
+	}
+}
+
+// The Grok done line prices the run like the Runner, too: with a row for the
+// model in the table, the log shows the table's number, not total_cost_usd.
+func TestGrokDoneLineUsesTheTable(t *testing.T) {
+	table := pricing.Table{"grok-x": {Input: 2, Output: 10}}
+	p := grokAdapter{model: "grok-x", pricing: &table}
+	var done string
+	for _, e := range p.line(`{"type":"end","stopReason":"end_turn","usage":{"input_tokens":1000000,"output_tokens":100000,"total_tokens":1100000},"total_cost_usd":9.99}`) {
+		done = e.Text
+	}
+	card := priced(p.usage(), nil, &table)
+	if card.CostUSD != 3 || !strings.HasSuffix(done, "$3.00") {
+		t.Errorf("done line %q should carry the card's $%.2f", done, card.CostUSD)
 	}
 }

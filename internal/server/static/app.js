@@ -56,14 +56,28 @@ const el = (tag, cls, text) => {
 };
 
 async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
+  const headers = { 'Content-Type': 'application/json', ...(opts.headers || {}) };
+  // Every write names the server instance this page knows: after a restart the
+  // server refuses an action meant for a job of the old process, and says so.
+  if (opts.method && opts.method !== 'GET' && state.instance) headers['X-Bazel-Instance'] = state.instance;
+  const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(body.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    // The page is from another server process: say so, and bring the queue,
+    // the PRs and the saved list up to date before anything else is tried.
+    if (res.status === 409 && body.stale) {
+      err.stale = true;
+      // Not the page's warning: once resynced the page is no longer stale, and
+      // loadPRs puts back whatever warning the page already had. With the
+      // instance adopted meanwhile, adoptInstance would do nothing and this
+      // would stay up, so the resync is asked for directly.
+      banner('the server restarted — this page is stale; bringing it up to date');
+      api('/api/state')
+        .then((st) => (st.instance === state.instance ? resync() : adoptInstance(st.instance)))
+        .catch(() => {});
+    }
     throw err;
   }
   return body;
@@ -105,11 +119,40 @@ function gastoTitle(job) {
     : "tokens this review's agents consumed, sub-agents included";
 }
 
+// The banner carries two kinds of message. Routine ones — the config warning,
+// a repository error — are rewritten by every refresh of the list. An error
+// from an action you took (a publish that failed) is an alert: it stays until
+// you dismiss it or act again, because the refresh that follows a failed
+// publish used to wipe it before anyone could read it.
 function banner(msg) {
+  state.bannerMsg = msg || '';
+  drawBanner();
+}
+
+function alertError(msg) {
+  state.alert = msg || '';
+  drawBanner();
+}
+
+function clearAlert() {
+  if (state.alert) alertError('');
+}
+
+function drawBanner() {
   const b = $('#banner');
-  if (!msg) { b.hidden = true; return; }
-  b.textContent = msg;
-  b.hidden = false;
+  const msg = state.alert || state.bannerMsg;
+  b.textContent = '';
+  b.hidden = !msg;
+  if (!msg) return;
+  b.classList.toggle('alert', !!state.alert);
+  b.append(el('span', null, msg));
+  if (state.alert) {
+    const x = el('button', 'banner-x', '✕');
+    x.title = 'dismiss';
+    x.setAttribute('aria-label', 'dismiss this message');
+    x.addEventListener('click', clearAlert);
+    b.append(x);
+  }
 }
 
 // --- loading ---
@@ -163,6 +206,7 @@ async function loadPRs(force) {
   try {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
     state.prs = data.prs || [];
+    state.prsLoaded = true;
     state.repoErrors = data.repo_errors || [];
     // With no repository error the banner goes back to the config warning, if
     // there is one: clearing here wiped exactly what startup had to say.
@@ -177,6 +221,12 @@ async function loadPRs(force) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'failed: ' + err.message);
     list.append(p);
+    // With no list there is nothing a ticked "select all" could have selected.
+    if (!state.prsLoaded) {
+      const box = $('#select-all');
+      box.checked = false;
+      box.indeterminate = false;
+    }
   } finally {
     $('#refresh').disabled = false;
   }
@@ -199,10 +249,10 @@ function connect() {
   };
 }
 
-// adoptInstance keeps the id of the server process. Job ids restart at j1 on
-// every boot, so with a different id everything the page cached by job id
-// (review body, split, ticks, log) belongs to another job, or to none. It
-// forgets all that and redoes what depended on it.
+// adoptInstance keeps the id of the server process. Jobs do not outlive it, so
+// with a different id everything the page cached by job id (review body,
+// split, ticks, log) belongs to a job that is gone. It forgets all that and
+// redoes what depended on it.
 function adoptInstance(id) {
   if (!id || id === state.instance) return;
   const anterior = state.instance;
@@ -298,6 +348,7 @@ async function removeJob(id, btn) {
 // --- actions ---
 
 function startReview() {
+  clearAlert();
   return reviewRefs(markedPRs());
 }
 
@@ -428,7 +479,10 @@ async function openJob(id) {
 
 async function cancelJob(id) {
   try { await api(`/api/jobs/${encodeURIComponent(id)}/cancel`, { method: 'POST' }); }
-  catch (err) { banner(err.message); }
+  catch (err) {
+    banner(err.message);
+    if (err.status === 404) dropJob(id);
+  }
 }
 
 // publishJob tells the agent to publish the review on screen. It is the "I read
@@ -442,7 +496,9 @@ async function publishJob(id, btn) {
   if (!job) return;
   const skip = skipList(pickKey('job', id));
   if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}`)) return;
+  const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
+  clearAlert();
   try {
     const view = await api(`/api/jobs/${encodeURIComponent(id)}/publish`, { method: 'POST', body: JSON.stringify({ skip }) });
     upsertJob(view);
@@ -451,9 +507,10 @@ async function publishJob(id, btn) {
     renderJobs();
     renderViewer();
   } catch (err) {
-    banner(err.status === 409 ? conflictNote(err) : err.message);
-    if (err.status === 409) refreshJob(id);
-    if (btn) { btn.disabled = false; btn.textContent = 'publish inline review'; }
+    const recusa = err.status === 409 || err.status === 404;
+    alertError(recusa ? conflictNote(err) : err.message);
+    if (recusa) refreshJob(id);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 
@@ -470,7 +527,10 @@ async function refreshJob(id) {
   try {
     upsertJob(await api('/api/jobs/' + encodeURIComponent(id)));
   } catch (err) {
-    // The job may have gone with the server; the banner already said what matters.
+    // A 404 means the server no longer has the job (removed in another tab,
+    // or a restart): the card goes, the same way job_gone takes it. Any other
+    // failure leaves it; the banner already said what matters.
+    if (err.status === 404) dropJob(id);
   }
 }
 
@@ -478,11 +538,13 @@ async function refreshJob(id) {
 // waiting, and nothing goes to the PR. The saved review stays in the Saved tab.
 async function dismissJob(id, btn) {
   if (btn) btn.disabled = true;
+  clearAlert();
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/dismiss`, { method: 'POST' }));
   } catch (err) {
-    banner(err.status === 409 ? `Could not keep it here: ${err.message}.` : err.message);
-    if (err.status === 409) refreshJob(id);
+    const recusa = err.status === 409 || err.status === 404;
+    alertError(recusa ? `Could not keep it here: ${err.message}.` : err.message);
+    if (recusa) refreshJob(id);
     if (btn) btn.disabled = false;
   }
 }
@@ -495,13 +557,19 @@ async function postJob(id, btn) {
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
   if (!confirm(aviso + skipNote(skip))) return;
+  const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
+  clearAlert();
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
   } catch (err) {
-    banner(err.status === 409 ? conflictNote(err) : 'failed to publish: ' + err.message);
-    if (err.status === 409) refreshJob(id);
-    if (btn) { btn.disabled = false; btn.textContent = 'publish to the PR'; }
+    // 409 and 404 are Bazel turning the request down (busy, already posted,
+    // not finished, not publishable, gone): the card on screen is stale. Only
+    // a 502 is GitHub failing to take the comment.
+    const recusa = err.status === 409 || err.status === 404;
+    alertError(recusa ? conflictNote(err) : 'failed to publish: ' + err.message);
+    if (recusa) refreshJob(id);
+    if (btn) { btn.disabled = false; btn.textContent = label; }
   }
 }
 
@@ -571,6 +639,7 @@ async function publishSaved(name, btn) {
   const skip = skipList(pickKey('saved', name));
   if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}`)) return;
   btn.disabled = true;
+  clearAlert();
   try {
     const job = await api('/api/reviews/' + encodeURIComponent(name) + '/publish', { method: 'POST', body: JSON.stringify({ skip }) });
     upsertJob(job);
@@ -581,7 +650,7 @@ async function publishSaved(name, btn) {
     renderJobs();
     renderViewer();
   } catch (err) {
-    banner(err.message);
+    alertError(err.message);
     btn.disabled = false;
   }
 }
@@ -595,12 +664,13 @@ async function commentSaved(name, btn) {
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
+  clearAlert();
   try {
     await api('/api/reviews/' + encodeURIComponent(name) + '/comment', { method: 'POST', body: JSON.stringify({ skip }) });
     btn.textContent = '✓ commented on ' + alvo;
     loadPRs(false);
   } catch (err) {
-    banner('failed to publish: ' + err.message);
+    alertError('failed to publish: ' + err.message);
     btn.disabled = false;
     btn.textContent = antes;
   }
@@ -1060,6 +1130,7 @@ function logPanel(job, open) {
 }
 
 function renderStats() {
+  syncSelectAll();
   const total = state.prs.length;
   const shown = visiblePRs().length;
   const marked = markedPRs().length;
@@ -1069,6 +1140,21 @@ function renderStats() {
     ? `${total} PR${total === 1 ? '' : 's'}`
     : `${shown} of ${total} PRs`;
   $('#stats').textContent = conta + (marked ? ` · ${marked} ticked` : '');
+}
+
+// syncSelectAll makes the "select all" box say what is true: checked only when
+// there are visible PRs and every one of them is ticked, half-checked when some
+// are. It runs on every render of the list once the list has arrived, so a box
+// ticked while it was still loading (it selected nothing) clears itself when
+// the PRs come in, instead of staying checked over an empty selection
+// (BUG-QA-06). Before the first answer there is no list to derive it from.
+function syncSelectAll() {
+  if (!state.prsLoaded) return;
+  const box = $('#select-all');
+  const shown = visiblePRs();
+  const ticked = shown.filter((pr) => state.selected.has(pr.key)).length;
+  box.checked = shown.length > 0 && ticked === shown.length;
+  box.indeterminate = ticked > 0 && ticked < shown.length;
 }
 
 function renderPRs() {
@@ -1142,6 +1228,15 @@ function reviewTags(pr) {
   t.title = `reviewed ${ago(pr.reviewed_at)} by ${pr.review_agent || 'an agent'}`
     + (pr.review_posted ? ', and published on the PR' : '');
   return [t];
+}
+
+// selectVisible is "select all": it ticks, or unticks, only the PRs the filter
+// shows. Ticks on PRs a filter is hiding stay as they are — filtering never
+// unticks anything, and neither does a box that only sees the visible list.
+function selectVisible(on) {
+  for (const pr of visiblePRs()) {
+    if (on) state.selected.add(pr.key); else state.selected.delete(pr.key);
+  }
 }
 
 function toggle(key, on) {
@@ -1601,11 +1696,7 @@ function wire() {
   });
   $('#toggle-prs').addEventListener('click', () => togglePRs(!state.prsHidden));
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
-  $('#select-all').addEventListener('change', (e) => {
-    state.selected.clear();
-    if (e.target.checked) visiblePRs().forEach((pr) => state.selected.add(pr.key));
-    renderPRs();
-  });
+  $('#select-all').addEventListener('change', (e) => { selectVisible(e.target.checked); renderPRs(); });
   document.querySelectorAll('#scope button').forEach((b) => {
     b.addEventListener('click', () => {
       state.scope = b.dataset.scope;
