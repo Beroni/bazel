@@ -174,8 +174,9 @@ func TestNeutralizeRunsBeforeEveryStep(t *testing.T) {
 // The guard adds to GIT_CONFIG_COUNT, so what the user already set stays, and
 // reads the last value, which is the one git gets.
 func TestGitGuardEnv(t *testing.T) {
-	got := gitGuardEnv([]string{"PATH=/bin", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=a.b", "GIT_CONFIG_VALUE_0=c"})
+	got := gitGuardEnv([]string{"PATH=/bin", "GIT_CONFIG_COUNT=1", "GIT_CONFIG_COUNT=2", "GIT_CONFIG_KEY_0=a.b", "GIT_CONFIG_VALUE_0=c"}, "/tmp/clone")
 	for _, want := range []string{
+		"GIT_DIR=/tmp/clone/.git", "GIT_WORK_TREE=/tmp/clone",
 		"GIT_CONFIG_KEY_2=safe.bareRepository", "GIT_CONFIG_VALUE_2=explicit",
 		"GIT_CONFIG_KEY_3=core.fsmonitor", "GIT_CONFIG_VALUE_3=false",
 		"GIT_CONFIG_KEY_4=core.hooksPath", "GIT_CONFIG_VALUE_4=/dev/null",
@@ -185,43 +186,92 @@ func TestGitGuardEnv(t *testing.T) {
 			t.Errorf("%q missing from %q", want, got)
 		}
 	}
-	if got := gitGuardEnv([]string{"PATH=/bin"}); !slices.Contains(got, "GIT_CONFIG_KEY_0=safe.bareRepository") || !slices.Contains(got, "GIT_CONFIG_COUNT=3") {
+	if got := gitGuardEnv([]string{"PATH=/bin"}, "/tmp/clone"); !slices.Contains(got, "GIT_CONFIG_KEY_0=safe.bareRepository") || !slices.Contains(got, "GIT_CONFIG_COUNT=3") {
 		t.Errorf("no count yet: %q", got)
 	}
 }
 
-// A folder the PR versions as a repository of its own: a `git status` inside it
-// runs the fsmonitor its config names. The control proves it, and with Bazel's
-// environment nothing runs.
-func TestEmbeddedRepoDoesNotRunFsmonitor(t *testing.T) {
-	state := hostileClone(t, "wrapper")
-	sentinel := filepath.Join(state, "fsmonitor-ran")
-	gitStatus := "#!/bin/sh\nmkdir -p vendor/lib/objects/info vendor/lib/refs/heads\n" +
-		"echo 'ref: refs/heads/main' > vendor/lib/HEAD\n" +
-		"printf '[core]\\n\\trepositoryformatversion = 0\\n\\tworktree = .\\n\\tfsmonitor = \"touch " + sentinel + "\"\\n' > vendor/lib/config\n" +
-		"cd vendor/lib && git status >/dev/null 2>&1\ntouch \"$BAZEL_TEST_DIR/ran\"\necho report\n"
+// embeddedRepo builds, in the agent's working directory, what a PR can version:
+// a folder that is a repository of its own, with one tracked file changed and a
+// config that runs sentinel on the command the case exercises.
+const embeddedRepo = `env -u GIT_DIR -u GIT_WORK_TREE -u GIT_CONFIG_COUNT sh -c '
+  mkdir -p vendor/work && cd vendor/work &&
+  git init -q && echo one > a.txt && git add a.txt &&
+  git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm x &&
+  echo two > a.txt && mv a.txt .. && mv .git ../lib && cd .. && rmdir work &&
+  git config --file lib/config core.worktree .. &&
+  git config --file lib/config core.bare false &&
+  git config --file lib/config diff.external "touch $0" &&
+  git config --file lib/config alias.x "!touch $0" &&
+  git config --file lib/config core.fsmonitor "touch $0" &&
+  git config --file lib/config core.sshCommand "touch $0"
+' "$BAZEL_TEST_SENTINEL"
+cd vendor/lib
+`
+
+// The commands an agent runs anyway, in a folder the PR versions as a repository
+// of its own. Each case has a control: with no guard the PR's config runs, on the
+// git in PATH, and through Bazel it does not.
+func TestEmbeddedRepoConfigDoesNotRun(t *testing.T) {
+	for name, command := range map[string]string{
+		"diff.external":   "git diff",
+		"alias":           "git x",
+		"core.fsmonitor":  "git status",
+		"core.sshCommand": "git ls-remote ssh://example.invalid/x.git",
+	} {
+		t.Run(name, func(t *testing.T) {
+			state := hostileClone(t, "wrapper")
+			sentinel := filepath.Join(state, "git-ran")
+			t.Setenv("BAZEL_TEST_SENTINEL", sentinel)
+			script := "#!/bin/sh\n" + embeddedRepo + command + " >/dev/null 2>&1\ntouch \"$BAZEL_TEST_DIR/ran\"\necho report\n"
+			bin := filepath.SplitList(os.Getenv("PATH"))[0]
+			if err := os.WriteFile(filepath.Join(bin, "gitter"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+
+			control := exec.Command("gitter")
+			control.Dir = t.TempDir()
+			control.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+			if out, err := control.CombinedOutput(); err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			if _, err := os.Stat(sentinel); err != nil {
+				t.Fatalf("the control should run the PR's config: this test would prove nothing (%v)", err)
+			}
+			os.Remove(sentinel)
+
+			cfg := config.Default()
+			cfg.Agent.Checkout = true
+			cfg.Agent.Prompt = "{{task}}"
+			cfg.Agent.TimeoutSeconds = 30
+			cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "gitter", Format: "plain"}}
+			choice, err := cfg.ChoiceByName("lens")
+			if err != nil {
+				t.Fatal(err)
+			}
+			pr := testPR()
+			pr.BaseRefName = ""
+			if _, err := New(cfg).Review(context.Background(), pr, choice, nil); err != nil {
+				t.Fatalf("Review: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(state, "ran")); err != nil {
+				t.Fatal("the agent never got to the command")
+			}
+			if _, err := os.Stat(sentinel); err == nil {
+				t.Errorf("%s ran the PR's config inside the agent's environment", command)
+			}
+		})
+	}
+}
+
+// git in a subfolder still answers about the clone.
+func TestAgentGitSeesTheClone(t *testing.T) {
+	hostileClone(t, "wrapper")
+	script := "#!/bin/sh\ngit rev-parse --show-toplevel\nmkdir -p sub && cd sub && git rev-parse --show-prefix && git log --oneline -1 >/dev/null && echo log-ok\n"
 	bin := filepath.SplitList(os.Getenv("PATH"))[0]
-	if err := os.WriteFile(filepath.Join(bin, "gitter"), []byte(gitStatus), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(bin, "gitter"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	// Control: the same script with no guard in its environment.
-	if err := exec.Command("git", "--version").Run(); err != nil {
-		t.Skip("no git")
-	}
-	dir := t.TempDir()
-	control := exec.Command("gitter")
-	control.Dir = dir
-	control.Stdin = strings.NewReader("")
-	control.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
-	if out, err := control.CombinedOutput(); err != nil {
-		t.Fatalf("%v: %s", err, out)
-	}
-	if _, err := os.Stat(sentinel); err != nil {
-		t.Skip("this git does not run a nested repository's fsmonitor: the control has nothing to prove")
-	}
-	os.Remove(sentinel)
-
 	cfg := config.Default()
 	cfg.Agent.Checkout = true
 	cfg.Agent.Prompt = "{{task}}"
@@ -233,11 +283,12 @@ func TestEmbeddedRepoDoesNotRunFsmonitor(t *testing.T) {
 	}
 	pr := testPR()
 	pr.BaseRefName = ""
-	if _, err := New(cfg).Review(context.Background(), pr, choice, nil); err != nil {
+	res, err := New(cfg).Review(context.Background(), pr, choice, nil)
+	if err != nil {
 		t.Fatalf("Review: %v", err)
 	}
-	if _, err := os.Stat(sentinel); err == nil {
-		t.Error("the embedded repository ran its fsmonitor inside the agent's environment")
+	if !strings.Contains(res.Body, "sub/") || !strings.Contains(res.Body, "log-ok") {
+		t.Errorf("git in a subfolder should work on the clone:\n%s", res.Body)
 	}
 }
 

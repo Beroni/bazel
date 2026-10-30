@@ -325,19 +325,27 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	}, nil
 }
 
-// gitGuard is the git configuration of every agent with a clone. A folder the PR
-// versions can be a repository of its own, with HEAD and a config: a `git status`
-// inside it runs the core.fsmonitor that config names. These settings come in
-// through the environment, so no config of the PR's overrides them.
+// gitGuard is the git configuration of every agent with a clone, the second
+// line behind gitGuardEnv's GIT_DIR: it comes in through the environment, so no
+// config of the PR's overrides it. safe.bareRepository only exists from git 2.38.
 var gitGuard = [][2]string{
 	{"safe.bareRepository", "explicit"},
 	{"core.fsmonitor", "false"},
 	{"core.hooksPath", "/dev/null"},
 }
 
-// gitGuardEnv returns the variables that add gitGuard to env, after any entries
-// GIT_CONFIG_COUNT already has there: the user's stay, and the last one wins.
-func gitGuardEnv(env []string) []string {
+// gitGuardEnv returns the variables that pin git to the clone and add gitGuard
+// to env, after any entries GIT_CONFIG_COUNT already has there: the user's stay,
+// and the last one wins.
+//
+// A folder the PR versions can be a repository of its own, with a HEAD and a
+// config, and git obeys that config inside it: diff.external on a `git diff`, an
+// alias, core.sshCommand, core.fsmonitor on a `git status`. With GIT_DIR and
+// GIT_WORK_TREE git never looks for a repository, in any folder and on any
+// version, so the only config it reads is the clone's. gh and `git -C` work
+// as usual; git in another repository does not, which a throwaway clone can
+// live with.
+func gitGuardEnv(env []string, clone string) []string {
 	base := 0
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, "GIT_CONFIG_COUNT="); ok {
@@ -346,7 +354,7 @@ func gitGuardEnv(env []string) []string {
 			}
 		}
 	}
-	out := make([]string, 0, 2*len(gitGuard)+1)
+	out := []string{"GIT_DIR=" + filepath.Join(clone, ".git"), "GIT_WORK_TREE=" + clone}
 	for i, kv := range gitGuard {
 		out = append(out, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", base+i, kv[0]), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", base+i, kv[1]))
 	}
@@ -855,7 +863,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 	}
 	if workdir != "" {
-		cmd.Env = append(cmd.Env, gitGuardEnv(cmd.Env)...)
+		cmd.Env = append(cmd.Env, gitGuardEnv(cmd.Env, workdir)...)
 	}
 	// Pipes of our own, not StdoutPipe: Wait has to return when the agent exits,
 	// even if something it left behind still holds its output open.
