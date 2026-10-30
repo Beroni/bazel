@@ -607,17 +607,12 @@ async function postJob(id, btn) {
   }
 }
 
-// fetchSaved loads the list of saved reviews into state.saved.
-async function fetchSaved() {
-  const data = await api('/api/reviews');
-  state.saved = data.reviews || [];
-}
-
 async function loadSaved() {
   const rail = $('#rail');
   rail.innerHTML = '';
   try {
-    await fetchSaved();
+    const data = await api('/api/reviews');
+    state.saved = data.reviews || [];
   } catch (err) {
     banner(err.message);
     state.saved = [];
