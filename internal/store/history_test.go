@@ -2,6 +2,7 @@ package store
 
 import (
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,4 +175,50 @@ func TestHistoryNaoVazaEntrePRs(t *testing.T) {
 	if _, err := SaveHistory(dir, "../x", 1, "aaa", "no"); err == nil {
 		t.Error("a path segment like .. must be refused")
 	}
+}
+
+// The file comes from an agent, whose text a PR can steer, and a history that
+// panics would break the tab on every later head too (LoadHistory falls back
+// to the newest file). Shas of any case come out lower case.
+func TestParseHistoryEntradasEstranhas(t *testing.T) {
+	head := "## Decisions\n### 1. T\n"
+	cases := []struct {
+		name, line, sha string
+		shas            []string
+	}{
+		{"upper case", "- Commit: ABCDEF1", "abcdef1", nil},
+		{"a hex word", "- Commit: ADDED · x", "added", nil},
+		{"mixed", "- Commit: AbC1234 — y", "abc1234", nil},
+		{"several, upper case", "- Commit: `ABCD`, `EF12`", "abcd", []string{"abcd", "ef12"}},
+		{"not a sha", "- Commit: nope", "", nil},
+		{"empty", "- Commit:", "", nil},
+		{"too short", "- Commit: abc", "", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := ParseHistory(head + c.line + "\n")
+			if len(h.Decisions) != 1 {
+				t.Fatalf("decisions: %+v", h.Decisions)
+			}
+			d := h.Decisions[0]
+			if d.Sha != c.sha || !slices.Equal(d.Shas, c.shas) {
+				t.Errorf("sha %q shas %q, want %q %q", d.Sha, d.Shas, c.sha, c.shas)
+			}
+		})
+	}
+	for _, md := range []string{
+		"", "##", "## ", "## Decisions", "## Decisions\n###", "## Decisions\n### 1.", "## Decisions\n- Commit: ADDED",
+		"## Still open\n  indented first", "## Still open\n- \n  x", "<!-- history-pr:v1", "<!-- history-pr:v1 -->\n",
+		"Commits read: x", "\x00\xff\xfe", strings.Repeat("## Decisions\n### 1. a\n- Commit: F00D\n", 50),
+	} {
+		ParseHistory(md)
+	}
+}
+
+func FuzzParseHistory(f *testing.F) {
+	f.Add("## Decisions\n### 1. T\n- Commit: ADDED · x\n- Rejected: y\n## Still open\n- q\n  more\n")
+	f.Add("<!-- history-pr:v1\ncommits: 2\n-->\n# H1\n## What it does\nx\n")
+	f.Fuzz(func(t *testing.T, md string) {
+		ParseHistory(md)
+	})
 }

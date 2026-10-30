@@ -59,7 +59,7 @@ var (
 	reCommitsRead = regexp.MustCompile(`(?im)^\s*commits read:\s*(\d+)\s*$`)
 	reDecision    = regexp.MustCompile(`^###\s+(?:(\d+)[.)]\s*)?(.+?)\s*$`)
 	reCommitLine  = regexp.MustCompile(`(?i)^[-*]\s*commit:\s*(` + "`?" + `[0-9a-f]{4,40}` + "`?" + `(?:\s*,\s*` + "`?" + `[0-9a-f]{4,40}` + "`?" + `)*)\s*(?:[·—-]\s*(.+))?$`)
-	reShas        = regexp.MustCompile(`[0-9a-f]{4,40}`)
+	reShas        = regexp.MustCompile(`(?i)[0-9a-f]{4,40}`)
 	reMetaBlock   = regexp.MustCompile(`(?s)^\s*<!--\s*history-pr:v\d+\b(.*?)-->\s*`)
 	reRejected    = regexp.MustCompile(`(?i)^[-*]\s*rejected:\s*(.+)$`)
 	reBullet      = regexp.MustCompile(`^\s*[-*]\s+(.+)$`)
@@ -131,10 +131,16 @@ func ParseHistory(md string) History {
 				continue
 			}
 			if m := reCommitLine.FindStringSubmatch(trim); m != nil && cur.Sha == "" {
-				cur.Shas = reShas.FindAllString(m[1], -1)
-				cur.Sha, cur.Source = cur.Shas[0], strings.TrimSpace(m[2])
-				if len(cur.Shas) == 1 {
-					cur.Shas = nil
+				// reCommitLine accepted m[1] with the same alphabet, so there
+				// is always a sha; an agent's text never gets to index empty.
+				shas := reShas.FindAllString(strings.ToLower(m[1]), -1)
+				if len(shas) == 0 {
+					body = append(body, line)
+					continue
+				}
+				cur.Sha, cur.Source = shas[0], strings.TrimSpace(m[2])
+				if len(shas) > 1 {
+					cur.Shas = shas
 				}
 				continue
 			}
