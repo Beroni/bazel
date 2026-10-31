@@ -777,14 +777,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	// Subscribed before the page can know the stream is open: what happens
+	// after the page reads the state must not fall in between.
+	ch := s.hub.Subscribe()
+	defer s.hub.Unsubscribe(ch)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	ch := s.hub.Subscribe()
-	defer s.hub.Unsubscribe(ch)
 
 	// The stream opens with the instance id. EventSource reconnects by itself
 	// after a restart, and this first event is how the page learns the job ids
