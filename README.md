@@ -243,7 +243,9 @@ prefix: your `review-fleet` and Bazel's `bazel-review-fleet` live side by side,
 and you pick one by choosing the agent. The same goes for publishing: point
 `post_agent.task` at your own skill, or build an agent out of it in the panel. A
 `post_agent` you have edited is never rewritten — only the old untouched default
-is migrated to the built-in.
+is migrated to the built-in. Publishing is safe from this: the
+`post_agent` always runs `/bazel:bazel-post-report`, even from a config saved with
+the bare name, which is left as it is in the file.
 
 Everything the page does is written to `config.yaml`, and you can edit it by
 hand for what the page doesn't offer — another model, another executable, your
