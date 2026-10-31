@@ -1,8 +1,9 @@
 # The on-disk report format
 
 The contract between whoever **writes** the review (`bazel-review-fleet` and the three lenses) and
-whoever **publishes** it (`bazel-post-report`). Both sides read this file, and it is the **only**
-source of the format: no report structure lives in the `SKILL.md` files.
+whoever **publishes** it (`bazel-post-report`, whose script checks each report against these
+rules). This file is the **only** source of the format: no report structure lives in the
+`SKILL.md` files.
 
 The report is readable markdown — you open it in an editor and read it. What makes it
 publishable are HTML metadata comments: invisible in GitHub's render and in the editor, and
@@ -98,7 +99,8 @@ not of the producer. Who produced it is in `lenses_ran`.
 
 All nine keys are **mandatory and non-empty**, in this order. One missing, empty or out of
 order is an invalid report: `bazel-post-report` refuses to publish it. In a pipeline each step has
-its own header, and the strongest verdict wins.
+its own header, and the strongest verdict wins. A report that stops before its summary block, or
+whose `**Verdict:**` line differs from the header, never earns an all-clear.
 
 Together, `scope_cmd`, `files` and `lenses_ran` are the report's record of **coverage** —
 what was swept, how much of it, and by which lenses. There is no coverage section in the body;

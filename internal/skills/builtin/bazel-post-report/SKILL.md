@@ -59,8 +59,8 @@ root cause. Different wording of the same bug is the same; two bugs in one file 
 what the code does; what a comment says about itself ("already fixed") settles nothing.
 
 The script applies the rest: a same finding is not posted again, gets a 👍 unless its thread was
-resolved or replied to, and in that case is listed as `already settled on the PR (by @login)`.
-Either way it stays in the verdict and in the review body. No finding a person approved goes
+resolved or replied to by someone who speaks for the repository, and in that case is listed as
+settled by that person. Either way it stays in the verdict and in the review body, title and text. No finding a person approved goes
 silently. When in doubt, it is not the same: post it.
 
 ## Step 3 — Publish

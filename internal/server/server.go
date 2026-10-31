@@ -1306,7 +1306,11 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Unlock()
 	// post_skill goes along so the page does not offer it as an agent: it only
 	// publishes when it runs as the publish step.
-	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
+	builtin := []string{}
+	for _, sk := range skills.Builtin() {
+		builtin = append(builtin, sk.Name)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post, "builtin": builtin})
 }
 
 // installedSkills reads the skills from disk on every call: installing a skill

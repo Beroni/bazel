@@ -9,7 +9,7 @@ cwd in the next is how a report ends up mixing two PRs:
 ```bash
 R=owner/repo     # from the URL/argument, or `gh repo view --json nameWithOwner --jq .nameWithOwner`
 N=123
-OUT="${TMPDIR:-/tmp}/bazel-history-pr-$N"   # mkdir -p it; outside the clone
+OUT=$(mktemp -d "${TMPDIR:-/tmp}/bazel-history-pr.XXXXXX")   # outside the clone; reuse what it prints, rm -rf it at the end
 ```
 
 `gh` reads any repo you have access to with `--repo`/`repos/$R/…`. **Nothing here needs the clone**
@@ -113,7 +113,7 @@ The only source for events that are not commits or comments. The ones worth rows
 REST does not expose resolved/outdated. This does:
 
 ```bash
-gh api graphql --paginate -F owner="${R%%/*}" -F repo="${R##*/}" -F pr="$N" -f query='
+gh api graphql --paginate -f owner="${R%%/*}" -f repo="${R##*/}" -F pr="$N" -f query='
 query($owner:String!,$repo:String!,$pr:Int!,$endCursor:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$pr){

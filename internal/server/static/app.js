@@ -12,6 +12,7 @@ const state = {
   agents: [],         // picker choices: agents and pipelines
   limits: null,       // Claude quota: session (5h) and week (7d)
   skills: [],         // skills installed on the machine
+  builtinSkills: new Set(),
   pipeSteps: [],      // steps the pipeline builder is putting together
   pipeName: '',       // name the builder will give the pipeline
   warning: '',        // config warning that holds for the whole session
@@ -792,7 +793,7 @@ function skipNote(skip) {
   // carry hidden text.
   const unseen = document.querySelectorAll('#viewer .hidden-text pre').length;
   if (unseen) goes += `\n\nIt carries ${unseen} piece${unseen === 1 ? '' : 's'} of hidden text, flagged on top.`;
-  goes += '\n\nNot everything in the markdown shows on screen: some hidden text is flagged, and the post agent reads the report as data.';
+  goes += '\n\nNot everything in the markdown shows on screen: some hidden text is flagged, the rest goes along unflagged, and the post agent reads the report as data.';
   if (!skip.length) return goes;
   return goes + `\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
 }
@@ -2843,7 +2844,8 @@ function renderSkillList() {
       acoes.append(b);
     };
     add('Use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
-    add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
+    // A built-in skill only reads: --post means nothing to it.
+    if (!state.builtinSkills.has(sk.name)) add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
     row.append(acoes);
 
     box.append(row);
@@ -2856,6 +2858,7 @@ async function loadSkills() {
     state.skills = data.skills || [];
     state.skillsDir = data.dir || '';
     state.postSkill = data.post_skill || '';
+    state.builtinSkills = new Set(data.builtin || []);
   } catch (err) {
     state.skills = [];
   }

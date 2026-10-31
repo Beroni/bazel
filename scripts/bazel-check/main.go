@@ -31,13 +31,14 @@ func main() {
 	if len(os.Args) < 4 {
 		fatal("usage: bazel-check <owner/repo> <pr> <skill> [model]")
 	}
-	repo, skill := os.Args[1], os.Args[3]
+	repo := os.Args[1]
+	skill, ok := readOnly(os.Args[3])
+	if !ok {
+		fatal("not a built-in skill that only reads: " + os.Args[3])
+	}
 	number, err := strconv.Atoi(os.Args[2])
 	if err != nil {
 		fatal("the PR is a number")
-	}
-	if skill == "bazel-post-report" || !skills.IsBuiltin(skill) {
-		fatal("not a built-in skill that only reads: " + skill)
 	}
 
 	ctx := context.Background()
@@ -117,6 +118,13 @@ func main() {
 	if failed {
 		os.Exit(1)
 	}
+}
+
+// readOnly normalizes a skill's name, once, as the Runner will, and says whether
+// it is one this tool may run: the task it builds must never be the publisher.
+func readOnly(name string) (string, bool) {
+	skill := skills.TaskSkill(skills.Canonical("/" + strings.TrimPrefix(strings.TrimSpace(name), "/")))
+	return skill, skills.IsBuiltin(skill) && !skills.IsPost("/"+skill)
 }
 
 func lastLines(s string, n int) string {

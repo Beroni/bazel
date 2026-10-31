@@ -48,8 +48,8 @@ All the commands are in `<plugin>/skills/bazel-history-pr/references/data-collec
 confuse. Seven reads (`gh pr view`, commits, reviews, inline comments, conversation comments,
 the timeline and the GraphQL `reviewThreads`), in parallel when you can.
 
-Keep each response as a JSON file under a scratch directory (`$TMPDIR` or `/tmp`), not inside
-the clone, and work from the files.
+Keep each response as a JSON file in the scratch folder `data-collection.md` creates with
+`mktemp -d`, not inside the clone and never a folder named after the PR, and work from the files.
 
 ## Step 3 — Build the time axis
 

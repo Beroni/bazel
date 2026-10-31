@@ -32,6 +32,9 @@ generated_at: 2026-03-11T12:00:00Z
 -->
 ```
 
+A `-->` in a value would close this block early: write it as `- >`, in the title above all, which
+is the PR author's text.
+
 It is the answer to "is this report still current?" — compare `head_sha` against
 `gh pr view <N> --json headRefOid`. Different means commits landed after this reading; rerun
 rather than trusting the timeline's tail.

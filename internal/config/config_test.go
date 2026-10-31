@@ -1503,3 +1503,28 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 		t.Error("agent.prompt is not inherited by the History")
 	}
 }
+
+// Through the page or by hand, the same skill means the same thing.
+func TestAddingABuiltin(t *testing.T) {
+	c := Default()
+	def, err := c.AddAgentFromSkill("bazel-history-pr", "the story", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Publishable == nil || *def.Publishable {
+		t.Errorf("a history is not a review: %+v", def)
+	}
+	ch, err := c.ChoiceByName("bazel-history-pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Publishable {
+		t.Error("nothing of a history is offered for publishing")
+	}
+	if _, err := c.AddAgentFromSkill("bazel-review-fleet", "the fleet", true); err == nil {
+		t.Error("a built-in that reads cannot publish on its own")
+	}
+	if def, err := c.AddAgentFromSkill("bazel-review-fleet", "the fleet", false); err != nil || def.Publishable != nil {
+		t.Errorf("a review stays publishable: %+v, %v", def, err)
+	}
+}
