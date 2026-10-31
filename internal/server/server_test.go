@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2698,5 +2700,41 @@ func TestGuardEInstanciaJuntos(t *testing.T) {
 	}
 	if !strings.HasPrefix(srv.jobs.nextIDLocked(), srv.instance[:4]+"-j") {
 		t.Error("job ids must carry the instance")
+	}
+}
+
+// A save that fails leaves memory as it was: the page must not show a repository
+// the file does not have, and the file stays whole.
+func TestSaveFalhoNaoMudaAMemoria(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(home, 0o700) })
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(`{"repo":"acme/web"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
+	}
+	if slices.Contains(cfg.Repos, "acme/web") {
+		t.Errorf("memory has it: %v", cfg.Repos)
+	}
+	after, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if !bytes.Equal(before, after) {
+		t.Errorf("the file changed")
 	}
 }
