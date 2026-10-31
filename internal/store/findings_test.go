@@ -390,7 +390,7 @@ func TestNegritoSemLinhaEmBranco(t *testing.T) {
 // One line of quotes costs quadratic time on every GET, so it is not parsed: the
 // whole review is one part, for the screen and for the doors alike.
 func TestSplitFindingsRecusaCitacaoFunda(t *testing.T) {
-	for _, marker := range []string{"> ", "- 1. ", "1. "} {
+	for _, marker := range []string{"> ", "- 1. ", "1. ", "-\t", "*\t", "1.\t"} {
 		body := "## Findings\n\n### One\n\nText.\n\n" + strings.Repeat(marker, 90<<10/len(marker)) + "\n"
 		start := time.Now()
 		parts := SplitFindings(body)

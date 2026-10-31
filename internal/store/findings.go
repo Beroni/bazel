@@ -30,12 +30,15 @@ const maxNesting = 1 << 10
 // TooNested says some line opens more blocks than is worth parsing.
 func TooNested(body string) bool {
 	depth := 0
+	opens := func(i int) bool {
+		return strings.IndexByte("-+*.)", body[i]) >= 0 && i+1 < len(body) && (body[i+1] == ' ' || body[i+1] == '\t')
+	}
 	for i := 0; i < len(body); i++ {
 		switch c := body[i]; {
 		case c == '\n':
 			depth = 0
 		case depth < 0, c == ' ', c == '\t', c >= '0' && c <= '9':
-		case c == '>', strings.IndexByte("-+*.)", c) >= 0 && strings.HasPrefix(body[i+1:], " "):
+		case c == '>', opens(i):
 			if depth++; depth > maxNesting {
 				return true
 			}
