@@ -594,6 +594,9 @@ until the server restarts, and then it is gone; the review itself is already
 saved to disk and stays in the **Saved** tab, where it can be published later
 with the same ticks. **keep it here** drops the wait, not the review.
 
+If the PR got commits after the review, the Report and the confirm say so before
+anything goes. What you untick stays unticked across a reload, in this browser.
+
 The screen shows what goes, as Bazel renders it. Raw HTML in the review is
 shown as escaped text (in a block of its own for HTML blocks) instead of being
 interpreted or hidden. One exception is the `<!-- finding … -->` comment right after a finding's `###`:
