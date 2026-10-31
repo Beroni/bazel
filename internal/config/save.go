@@ -19,6 +19,10 @@ import (
 // that includes a gate such as mcp_allow_publish. Comments inside a replaced
 // value go with it.
 //
+// A key this process has to replace and that was also edited by hand is refused:
+// `publishable: false` lives inside `agents`, and replacing the list would drop
+// it without a word.
+//
 // The file is replaced in one step: a full disk or a killed process leaves the
 // old one whole, and a reader never sees half of it.
 func (c *Config) Save() error {
@@ -39,8 +43,28 @@ func (c *Config) Save() error {
 	if err := writeAtomic(path, data); err != nil {
 		return err
 	}
+	c.wrote(data, base)
 	c.base = base
 	return nil
+}
+
+// wrote records what a save put in the file. Only the keys it changed: a hand
+// edit in another key is still one, and that save did not look at it.
+func (c *Config) wrote(data []byte, base map[string]string) {
+	_, now, err := topLevel(data)
+	if err != nil || c.disk == nil {
+		c.disk = now
+		return
+	}
+	for _, values := range []map[string]string{base, c.base} {
+		for key := range values {
+			if v, ok := now[key]; ok && c.base[key] != base[key] {
+				c.disk[key] = v
+			} else if !ok {
+				delete(c.disk, key)
+			}
+		}
+	}
 }
 
 // topLevel is a config as yaml: its mapping node and each key's encoded value.
@@ -96,9 +120,19 @@ func (c *Config) merged(path string) ([]byte, map[string]string, error) {
 	if len(bytes.TrimSpace(old)) == 0 {
 		return fresh, values, nil
 	}
-	disk, _, err := topLevel(old)
+	disk, now, err := topLevel(old)
 	if err != nil {
 		return nil, nil, fmt.Errorf("%s does not parse, and saving over it would lose it: %w", path, err)
+	}
+	for key := range c.base {
+		if _, still := values[key]; !still && c.editedByHand(key, now) {
+			return nil, nil, editedError(path, key)
+		}
+	}
+	for key := range values {
+		if c.base[key] != values[key] && c.editedByHand(key, now) {
+			return nil, nil, editedError(path, key)
+		}
 	}
 	root, ourRoot := disk.Content[0], ours.Content[0]
 	root.Style &^= yaml.FlowStyle // a JSON-style file takes block values
@@ -124,6 +158,15 @@ func (c *Config) merged(path string) ([]byte, map[string]string, error) {
 		return nil, nil, fmt.Errorf("saving would break %s: %w", path, err)
 	}
 	return data, values, nil
+}
+
+// editedByHand says the file's key is no longer what this process last saw.
+func (c *Config) editedByHand(key string, now map[string]string) bool {
+	return c.disk != nil && c.disk[key] != now[key]
+}
+
+func editedError(path, key string) error {
+	return fmt.Errorf("%q changed in %s since Bazel read it, and saving would undo that: restart Bazel to pick it up, then do this again", key, path)
 }
 
 func encodeYAML(doc *yaml.Node) ([]byte, error) {
@@ -203,8 +246,13 @@ func dropKey(root *yaml.Node, key string) {
 	}
 }
 
-// writeAtomic puts data at path through a temporary file next to it.
+// writeAtomic puts data at path through a temporary file next to it. A path that
+// is a link stays one: the rename goes to its target, or a config kept in a
+// dotfiles repository would stop being updated without a word.
 func writeAtomic(path string, data []byte) error {
+	if target, err := filepath.EvalSymlinks(path); err == nil {
+		path = target
+	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*")
 	if err != nil {
 		return err
@@ -225,17 +273,40 @@ func writeAtomic(path string, data []byte) error {
 }
 
 // Redacted is config.yaml safe to show or hand over: the values under every
-// `env:` go, and the names stay, so that it still says what an agent needs. It
-// works on the text, not the struct, because this is the file the page shows.
+// `env:` go, and the names stay, so that it still says what an agent needs. So do
+// all the comments, since `# GH_TOKEN: x` is a value nobody can tell from a note.
+// It works on the text, not the struct, because this is the file the page shows.
 func Redacted(data []byte) ([]byte, error) {
 	var doc yaml.Node
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	if len(doc.Content) == 0 || !redactEnv(doc.Content[0], map[*yaml.Node]bool{}) {
+	if len(doc.Content) == 0 {
+		return nil, nil
+	}
+	found := redactEnv(doc.Content[0], map[*yaml.Node]bool{})
+	found = dropComments(&doc, map[*yaml.Node]bool{}) || found
+	if !found {
 		return data, nil
 	}
 	return encodeYAML(&doc)
+}
+
+// dropComments clears the comments under n and says whether there were any.
+func dropComments(n *yaml.Node, seen map[*yaml.Node]bool) bool {
+	if seen[n] {
+		return false
+	}
+	seen[n] = true
+	found := n.HeadComment != "" || n.LineComment != "" || n.FootComment != ""
+	n.HeadComment, n.LineComment, n.FootComment = "", "", ""
+	for _, c := range n.Content {
+		found = dropComments(c, seen) || found
+	}
+	if n.Alias != nil {
+		found = dropComments(n.Alias, seen) || found
+	}
+	return found
 }
 
 // redactEnv blanks the value of every env it finds and says whether it found

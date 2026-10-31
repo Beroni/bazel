@@ -1680,18 +1680,18 @@ func TestSaveNaoPisaEmArquivoQuebrado(t *testing.T) {
 // What the page shows and hands over keeps env names and loses their values,
 // wherever an env sits; the file itself is the user's alone.
 func TestRedactedTiraOSegredos(t *testing.T) {
-	src := "# keep\nagent:\n  env:\n    TOKEN: s3cret\nagents:\n  - name: a\n    env:\n      KEY: hunter2\npost_agent:\n  env: {OTHER: abc123}\n"
+	src := "# GH_TOKEN: ghp_old\nagent:\n  env:\n    TOKEN: s3cret # was hunter3\nagents:\n  - name: a\n    env:\n      KEY: hunter2\npost_agent:\n  env: {OTHER: abc123}\n"
 	out, err := Redacted([]byte(src))
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := string(out)
-	for _, bad := range []string{"s3cret", "hunter2", "abc123"} {
+	for _, bad := range []string{"s3cret", "hunter2", "abc123", "ghp_old", "hunter3"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("%q leaked:\n%s", bad, got)
 		}
 	}
-	for _, want := range []string{"TOKEN", "KEY", "OTHER", "# keep"} {
+	for _, want := range []string{"TOKEN", "KEY", "OTHER"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q:\n%s", want, got)
 		}
@@ -1706,12 +1706,15 @@ func TestRedactedTiraOSegredos(t *testing.T) {
 	}
 }
 
-// A file with no env goes out byte for byte, and a JSON-style one gets readable
-// values on save.
+// A file with no env and no comment goes out byte for byte, and a JSON-style one
+// gets readable values on save.
 func TestRedactedSemEnvEArquivoJSON(t *testing.T) {
-	src := []byte("repos: [a/b]   # odd spacing\n")
+	src := []byte("repos:   [a/b]\n")
 	if out, err := Redacted(src); err != nil || !bytes.Equal(out, src) {
 		t.Errorf("%q %v", out, err)
+	}
+	if out, err := Redacted([]byte("# GH_TOKEN: x\n")); err != nil || len(out) != 0 {
+		t.Errorf("only comments: %q %v", out, err)
 	}
 	t.Setenv("BAZEL_HOME", t.TempDir())
 	path, _ := Path()
@@ -1784,5 +1787,99 @@ func TestRedactedSegueAlias(t *testing.T) {
 		if !strings.Contains(string(out), "TOKEN") {
 			t.Errorf("%s lost the name:\n%s", name, out)
 		}
+	}
+}
+
+// A gate edited by hand inside a key the page replaces is refused, not lost; and
+// after a restart the same click goes through with the gate in place.
+func TestSaveRecusaGateEditadoAMao(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	src := "repos: [a/b]\nmcp_allow_publish: false\nagents:\n  - name: gate\n    task: /x {{number}}\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(src, "    task: /x {{number}}\n", "    task: /x {{number}}\n    publishable: false\n", 1)
+	edited = strings.Replace(edited, "mcp_allow_publish: false", "mcp_allow_publish: true", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.Repos = append(c.Repos, "c/d")
+	if err := c.Save(); err != nil {
+		t.Fatalf("another key's edit must not stop it: %v", err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "new", Task: "/y {{number}}"})
+	err = c.Save()
+	if err == nil || !strings.Contains(err.Error(), `"agents"`) {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "publishable: false") || strings.Contains(string(data), "name: new") {
+		t.Errorf("file changed on a refused save:\n%s", data)
+	}
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "new", Task: "/y {{number}}"})
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "publishable: false") || !strings.Contains(string(data), "name: new") {
+		t.Errorf("after restart:\n%s", data)
+	}
+	c.Agents = c.Agents[:1]
+	if err := c.Save(); err != nil {
+		t.Errorf("our own save counts as an edit: %v", err)
+	}
+}
+
+// config.yaml kept in a dotfiles repository stays a link, and the target changes.
+func TestSaveMantemSymlink(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	target := filepath.Join(t.TempDir(), "bazel.yaml")
+	if err := os.WriteFile(target, []byte("repos: [a/b]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Repos = append(c.Repos, "c/d")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("no longer a link: %v %v", info, err)
+	}
+	if data, _ := os.ReadFile(target); !strings.Contains(string(data), "c/d") {
+		t.Errorf("target: %s", data)
+	}
+}
+
+func TestTightenFechaOQueFicouAberto(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte("repos: [a/b]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	Tighten()
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Errorf("config: %v", info.Mode())
+	}
+	if info, _ := os.Stat(home); info.Mode().Perm() != 0o700 {
+		t.Errorf("home: %v", info.Mode())
 	}
 }

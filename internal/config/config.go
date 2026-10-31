@@ -74,6 +74,9 @@ type Config struct {
 	// base is each top-level key as last read or written: what Save compares
 	// with to tell what this process changed.
 	base map[string]string
+	// disk is each top-level key as the file had it, to tell an edit made by hand
+	// from what this process wrote.
+	disk map[string]string
 }
 
 // AgentDef is a named agent that appears in the TUI selector.
@@ -482,6 +485,17 @@ func Path() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// Tighten closes what older versions left open: Bazel's folder holds reviews of
+// private repositories, and config.yaml may hold an agent's token.
+func Tighten() {
+	if dir, err := Dir(); err == nil {
+		_ = os.Chmod(dir, 0o700)
+	}
+	if path, err := Path(); err == nil {
+		_ = os.Chmod(path, 0o600)
+	}
+}
+
 // Load reads the configuration from disk, filling missing fields with the
 // default.
 func Load() (*Config, error) {
@@ -508,6 +522,9 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("invalid config (%s): %w", path, err)
 	}
 	cfg.base = cfg.snapshot()
+	if _, cfg.disk, err = topLevel(data); err != nil {
+		cfg.disk = nil
+	}
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
 	}

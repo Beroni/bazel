@@ -96,6 +96,7 @@ Repositories, agents and reviews are all managed from the page.
 // whoever reaches it can order a repository cloned and an agent run with a
 // shell: this is not a port to expose.
 func serve(ctx context.Context, args []string) error {
+	config.Tighten()
 	cfg, criado, err := config.LoadOrInit()
 	if err != nil {
 		return err
