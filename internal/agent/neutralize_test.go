@@ -374,3 +374,32 @@ func TestStepStopsWhenNeutralizeFails(t *testing.T) {
 		t.Error("the agent must not start")
 	}
 }
+
+// A step without checkout in a pipeline with a clone is not told the clone's
+// path: from there its git would run unguarded.
+func TestPassoSemCheckoutNaoSabeOClone(t *testing.T) {
+	state := hostileClone(t, "wrapper")
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}} at {{workdir}}"
+	cfg.Agent.TimeoutSeconds = 30
+	no := false
+	cfg.Agents = []config.AgentDef{
+		{Name: "reader", Task: "read", Command: "wrapper", Format: "plain"},
+		{Name: "notes", Task: "notes", Command: "wrapper", Format: "plain", Checkout: &no},
+	}
+	cfg.Pipelines = []config.Pipeline{{Name: "both", Steps: []string{"reader", "notes"}}}
+	choice, err := cfg.ChoiceByName("both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := testPR()
+	pr.BaseRefName = ""
+	if _, err := New(cfg).Review(context.Background(), pr, choice, nil); err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	data, _ := os.ReadFile(filepath.Join(state, "prompt")) // the last step's
+	if !strings.Contains(string(data), "(no local clone)") {
+		t.Errorf("prompt: %s", data)
+	}
+}
