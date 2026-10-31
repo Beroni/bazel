@@ -179,9 +179,12 @@ func record(prompt string) {
 	}
 	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
 	gitStatus, _ := exec.Command("git", "status", "--porcelain").Output()
+	branch, _ := exec.Command("git", "branch", "--show-current").Output()
 	gitExclude, _ := os.ReadFile(filepath.Join(cwd, ".git", "info", "exclude"))
 	line, _ := json.Marshal(map[string]any{
 		"scenario":             name,
+		"pid":                  os.Getpid(),
+		"branch":               strings.TrimSpace(string(branch)),
 		"argv":                 os.Args[1:],
 		"cwd":                  cwd,
 		"prompt":               prompt,

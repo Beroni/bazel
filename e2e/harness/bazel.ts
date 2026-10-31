@@ -19,6 +19,10 @@ export interface GhCall {
 /** One recorded run of the fake agent. */
 export interface AgentCall {
   scenario: string;
+  /** The agent's process: see agentAlive. */
+  pid: number;
+  /** The branch the clone was on when the agent started. */
+  branch: string;
   argv: string[];
   cwd: string;
   prompt: string;
@@ -56,6 +60,8 @@ export interface AgentCall {
 export interface GhSettings {
   user?: string;
   fail?: Record<string, string>;
+  /** fork → parent: see `Forks` in the fake gh. */
+  forks?: Record<string, string>;
 }
 
 export interface BazelOptions {
@@ -265,7 +271,7 @@ export class Bazel {
     fs.writeFileSync(path.join(this.fixturesDir, 'gh.json'), JSON.stringify({ user: 'e2e-user', ...settings }, null, 2));
   }
 
-  /** Patches one PR of prs.json ("owner/repo#n"), e.g. a new headRefOid. */
+  /** Patches one PR of prs.json ("owner/repo#n"). */
   updatePR(key: string, patch: Record<string, unknown>): void {
     const file = path.join(this.fixturesDir, 'prs.json');
     const prs = JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -298,6 +304,28 @@ export class Bazel {
 
   agentCalls(): AgentCall[] {
     return readJSONL<AgentCall>(path.join(this.agentState, 'calls.jsonl'));
+  }
+
+  /**
+   * A new commit on the PR's branch, on GitHub: gh lists the new head and a clone
+   * gets it, as soon as Bazel asks. What Bazel has listed stays as it is.
+   */
+  movePR(key: string): void {
+    const file = path.join(this.fixturesDir, 'prs.json');
+    const pr = JSON.parse(fs.readFileSync(file, 'utf8')).find((p: any) => `${p.repo}#${p.number}` === key);
+    if (!pr) throw new Error(`no fixture PR ${key}`);
+    this.updatePR(key, { moved: (pr.moved ?? 0) + 1 });
+    fs.rmSync(path.join(this.ghState, 'repos', `${pr.repo}.git`), { recursive: true, force: true });
+  }
+
+  /** Whether that agent process is still there: what "killed" means. */
+  agentAlive(pid: number): boolean {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** Lets a scenario blocked on `#!wait <name>` carry on. */
@@ -351,11 +379,11 @@ export class Bazel {
   }
 
   /**
-   * Polls a job until pred holds; returns the last view. The budget has room for
-   * a clone: the fake gh builds the origin with some 15 git processes, which
-   * took over 20s with the load average at 80.
+   * Polls a job until pred holds; returns the last view. The budget is what a
+   * plain job took with the load average above 70 (over 40s), and a passing test
+   * never waits for it.
    */
-  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 40_000): Promise<any> {
+  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 60_000): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any;
     while (Date.now() < deadline) {

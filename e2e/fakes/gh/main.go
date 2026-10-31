@@ -42,9 +42,13 @@ type fixturePR struct {
 	UpdatedAt    string `json:"updatedAt,omitempty"`
 	UpdatedAgo   string `json:"updatedAgo,omitempty"` // "2h": now minus this
 	HeadRefName  string `json:"headRefName"`
-	HeadRefOid   string `json:"headRefOid"`
-	BaseRefName  string `json:"baseRefName"`
-	Author       struct {
+	// HeadRefOid is empty in a fixture: gh then answers the tip of the branch the
+	// clone gets. Moved adds that many commits to the branch (bazel.movePR).
+	HeadRefOid  string `json:"headRefOid,omitempty"`
+	Moved       int    `json:"moved,omitempty"`
+	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
+	BaseRefName string `json:"baseRefName"`
+	Author      struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	ReviewDecision string            `json:"reviewDecision"`
@@ -66,9 +70,12 @@ type fixturePR struct {
 type settings struct {
 	User string `json:"user"`
 	// Fail maps a call key to the stderr it should die with. Keys:
-	// "search", "list:<owner/repo>", "view:<owner/repo>#<n>",
-	// "comment", "clone:<owner/repo>", "checkout", "api".
+	// "auth", "user", "search", "list:<owner/repo>", "view:<owner/repo>#<n>",
+	// "diff:<owner/repo>#<n>", "comment", "clone:<owner/repo>", "checkout", "api".
 	Fail map[string]string `json:"fail"`
+	// Forks maps a fork to its parent. In a clone of the fork, gh pr checkout N
+	// without --repo or GH_REPO resolves N in the parent, as gh does.
+	Forks map[string]string `json:"forks"`
 }
 
 var (
@@ -121,9 +128,15 @@ func dispatch(args []string) int {
 	case len(args) == 0:
 		return unsupported(args)
 	case is(args, "auth", "status"):
+		if failed("auth") {
+			return 1
+		}
 		fmt.Fprintf(os.Stderr, "github.com\n  ✓ Logged in to github.com account %s (fake)\n", cfg.User)
 		return 0
 	case is(args, "api", "user") && flag(args, "--jq") == ".login":
+		if failed("user") {
+			return 1
+		}
 		fmt.Println(cfg.User)
 		return 0
 	case is(args, "api"):
@@ -238,6 +251,9 @@ func loadPRs() []fixturePR {
 		if p.BaseRefName == "" {
 			p.BaseRefName = "main"
 		}
+		if p.State == "" {
+			p.State = "OPEN"
+		}
 	}
 	return prs
 }
@@ -253,6 +269,7 @@ func rows(args []string, prs []fixturePR) []map[string]any {
 	fields := strings.Split(flag(args, "--json"), ",")
 	out := make([]map[string]any, 0, len(prs))
 	for _, p := range prs {
+		p.HeadRefOid = head(p)
 		raw, _ := json.Marshal(p)
 		var all map[string]any
 		_ = json.Unmarshal(raw, &all)
@@ -359,7 +376,7 @@ func synthesized(p fixturePR, field string) (any, bool) {
 	case "commits":
 		if p.Commits == nil {
 			return []map[string]any{{
-				"oid": p.HeadRefOid, "messageHeadline": p.Title, "committedDate": p.UpdatedAt,
+				"oid": head(p), "messageHeadline": p.Title, "committedDate": p.UpdatedAt,
 				"authors": []map[string]string{{"login": p.Author.Login, "name": p.Author.Login}},
 			}}, true
 		}
@@ -374,41 +391,57 @@ func synthesized(p fixturePR, field string) (any, bool) {
 	return nil, false
 }
 
+// searchPRs reads the words after --. An argument with a space is one phrase to
+// gh, not two qualifiers, so "repo:a repo:b" matches no repository.
 func searchPRs(args []string) int {
 	if failed("search") || badFields(args, searchFields) {
 		return 1
 	}
 	repos := map[string]bool{}
-	for _, tok := range strings.Fields(args[len(args)-1]) {
-		if r, ok := strings.CutPrefix(tok, "repo:"); ok {
-			repos[strings.ToLower(r)] = true
+	if i := slices.Index(args, "--"); i >= 0 {
+		for _, word := range args[i+1:] {
+			if r, ok := strings.CutPrefix(word, "repo:"); ok && !strings.ContainsAny(word, " 	") {
+				repos[strings.ToLower(r)] = true
+			}
 		}
 	}
 	var hit []fixturePR
 	for _, p := range loadPRs() {
-		if repos[strings.ToLower(p.Repo)] {
+		if repos[strings.ToLower(p.Repo)] && inState(p, flag(args, "--state")) {
 			hit = append(hit, p)
 		}
 	}
+	sort.SliceStable(hit, func(i, j int) bool { return hit[i].UpdatedAt > hit[j].UpdatedAt })
 	return out(args, limit(args, hit))
 }
 
+// listPRs is gh pr list: open PRs unless --state says otherwise, newest first.
 func listPRs(args []string) int {
 	repo := flag(args, "--repo")
 	if failed("list:"+repo) || badFields(args, prFields) {
 		return 1
 	}
+	state := flag(args, "--state")
+	if state == "" {
+		state = "open"
+	}
+	author := flag(args, "--author")
 	var hit []fixturePR
 	for _, p := range loadPRs() {
-		if strings.EqualFold(p.Repo, repo) {
+		if strings.EqualFold(p.Repo, repo) && inState(p, state) && (author == "" || strings.EqualFold(p.Author.Login, author)) {
 			hit = append(hit, p)
 		}
 	}
+	sort.SliceStable(hit, func(i, j int) bool { return hit[i].Number > hit[j].Number })
 	return out(args, limit(args, hit))
 }
 
+// inState reads gh's --state: empty and "all" take everything.
+func inState(p fixturePR, state string) bool {
+	return state == "" || state == "all" || strings.EqualFold(p.State, state)
+}
+
 func limit(args []string, prs []fixturePR) []fixturePR {
-	sort.SliceStable(prs, func(i, j int) bool { return prs[i].UpdatedAt > prs[j].UpdatedAt })
 	if n, err := strconv.Atoi(flag(args, "--limit")); err == nil && n > 0 && len(prs) > n {
 		return prs[:n]
 	}
@@ -442,8 +475,15 @@ func viewPR(args []string) int {
 }
 
 func diffPR(args []string) int {
-	n, _ := strconv.Atoi(args[2])
-	p, ok := find(flag(args, "--repo"), n)
+	repo := flag(args, "--repo")
+	n, err := strconv.Atoi(args[2])
+	if err != nil || repo == "" || len(args) != 5 {
+		return unsupported(args)
+	}
+	if failed(fmt.Sprintf("diff:%s#%d", repo, n)) {
+		return 1
+	}
+	p, ok := find(repo, n)
 	if !ok {
 		fmt.Fprintln(os.Stderr, "fake gh: no such PR")
 		return 1
@@ -462,8 +502,12 @@ func diffPR(args []string) int {
 
 var originRe = regexp.MustCompile(`repos/([^/]+)/([^/]+)\.git/?$`)
 
-// origin builds (once, atomically) a bare repo for the fixture repository:
-// main with a README, plus one branch per PR adding its files.
+// A fixed date makes the commits of a fixture the same on every build.
+const stamp = "e2e <e2e@example.invalid> 1767225600 +0000"
+
+// origin builds (once, atomically) a bare repo for the fixture repository: main
+// with a README, plus one branch per PR adding its files. One git process does
+// it all, so that knowing a PR's head costs a listing next to nothing.
 func origin(repo string) (string, error) {
 	final := filepath.Join(state, "repos", repo+".git")
 	if _, err := os.Stat(final); err == nil {
@@ -477,51 +521,76 @@ func origin(repo string) (string, error) {
 		return "", err
 	}
 	defer os.RemoveAll(work)
-	src := filepath.Join(work, "src")
-	steps := [][]string{{"init", "-q", "-b", "main", src}}
-	if err := gitAll("", steps); err != nil {
+	if err := gitAll("", [][]string{{"init", "-q", "--bare", "-b", "main", work}}); err != nil {
 		return "", err
 	}
-	write(filepath.Join(src, "README.md"), "# "+repo+"\n")
-	if err := gitAll(src, [][]string{{"add", "-A"}, {"commit", "-q", "-m", "init"}}); err != nil {
-		return "", err
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = work
+	cmd.Stdin = strings.NewReader(importStream(repo))
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git fast-import: %v: %s", err, strings.TrimSpace(string(b)))
 	}
-	for _, p := range loadPRs() {
-		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
-			continue
-		}
-		if err := gitAll(src, [][]string{{"checkout", "-q", "-B", p.HeadRefName, "main"}}); err != nil {
-			return "", err
-		}
-		files := p.Files
-		if len(files) == 0 {
-			files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}
-		}
-		for _, path := range sortedKeys(files) {
-			write(filepath.Join(src, path), files[path]+"\n")
-		}
-		for _, path := range sortedKeys(p.Symlinks) {
-			link := filepath.Join(src, path)
-			_ = os.MkdirAll(filepath.Dir(link), 0o755)
-			if err := os.Symlink(p.Symlinks[path], link); err != nil {
-				return "", err
-			}
-		}
-		if err := gitAll(src, [][]string{{"add", "-A"}, {"commit", "-q", "-m", p.Title}}); err != nil {
-			return "", err
-		}
-	}
-	bare := filepath.Join(work, "bare.git")
-	if err := gitAll("", [][]string{{"clone", "-q", "--bare", src, bare}}); err != nil {
-		return "", err
-	}
-	if err := os.Rename(bare, final); err != nil {
+	if err := os.Rename(work, final); err != nil {
 		if _, statErr := os.Stat(final); statErr == nil {
-			return final, nil // another clone won the race
+			return final, nil // another call won the race
 		}
 		return "", err
 	}
 	return final, nil
+}
+
+func importStream(repo string) string {
+	var b strings.Builder
+	blob := func(mode, path, content string) {
+		fmt.Fprintf(&b, "M %s inline %s\ndata %d\n%s\n", mode, quotePath(path), len(content), content)
+	}
+	commit := func(branch, mark, message, from string, files func()) {
+		fmt.Fprintf(&b, "commit refs/heads/%s\n%sauthor %s\ncommitter %s\ndata %d\n%s\n%s", branch, mark, stamp, stamp, len(message), message, from)
+		files()
+		b.WriteString("\n")
+	}
+	commit("main", "mark :1\n", "init", "", func() { blob("100644", "README.md", "# "+repo+"\n") })
+	for _, p := range loadPRs() {
+		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
+			continue
+		}
+		commit(p.HeadRefName, "", p.Title, "from :1\n", func() {
+			files := p.Files
+			if len(files) == 0 {
+				files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}
+			}
+			for _, path := range sortedKeys(files) {
+				blob("100644", path, files[path]+"\n")
+			}
+			for _, path := range sortedKeys(p.Symlinks) {
+				blob("120000", path, p.Symlinks[path])
+			}
+		})
+		for i := 1; i <= p.Moved; i++ {
+			commit(p.HeadRefName, "", fmt.Sprintf("moved %d", i), "", func() { blob("100644", "moved.txt", strconv.Itoa(i)+"\n") })
+		}
+	}
+	return b.String()
+}
+
+func quotePath(path string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(path) + `"`
+}
+
+// head answers headRefOid: what the fixture says, else the tip of its branch.
+func head(p fixturePR) string {
+	if p.HeadRefOid != "" || p.HeadRefName == "" {
+		return p.HeadRefOid
+	}
+	bare, err := origin(p.Repo)
+	if err != nil {
+		die(2, "fake gh: building origin: "+err.Error())
+	}
+	b, err := os.ReadFile(filepath.Join(bare, "refs", "heads", p.HeadRefName))
+	if err != nil {
+		die(2, "fake gh: "+err.Error())
+	}
+	return strings.TrimSpace(string(b))
 }
 
 func cloneRepo(args []string) int {
@@ -556,11 +625,17 @@ func cloneRepo(args []string) int {
 	return 0
 }
 
+// checkoutPR resolves N where gh does: --repo, then GH_REPO, then the clone's
+// repository, or the parent when that is a fork.
 func checkoutPR(args []string) int {
+	n, err := strconv.Atoi(args[2])
+	repo := flag(args, "--repo")
+	if err != nil || (repo == "" && len(args) != 3) || (repo != "" && len(args) != 5) {
+		return unsupported(args)
+	}
 	if failed("checkout") {
 		return 1
 	}
-	n, _ := strconv.Atoi(args[2])
 	url, err := exec.Command("git", "config", "remote.origin.url").Output()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "fake gh: not inside a clone")
@@ -571,12 +646,32 @@ func checkoutPR(args []string) int {
 		fmt.Fprintln(os.Stderr, "fake gh: origin is not a fixture repo:", string(url))
 		return 1
 	}
-	p, ok := find(m[1]+"/"+m[2], n)
+	if repo == "" {
+		repo = os.Getenv("GH_REPO")
+	}
+	if repo == "" {
+		repo = m[1] + "/" + m[2]
+		if parent, ok := cfg.Forks[repo]; ok {
+			repo = parent
+		}
+	}
+	p, ok := find(repo, n)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "fake gh: no PR #%d in %s/%s\n", n, m[1], m[2])
+		fmt.Fprintf(os.Stderr, "fake gh: no PR #%d in %s\n", n, repo)
 		return 1
 	}
-	if err := gitAll("", [][]string{{"checkout", "-q", "-B", p.HeadRefName, "origin/" + p.HeadRefName}}); err != nil {
+	from := "origin/" + p.HeadRefName
+	var steps [][]string
+	if !strings.EqualFold(repo, m[1]+"/"+m[2]) {
+		src, err := origin(p.Repo)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake gh: building origin:", err)
+			return 1
+		}
+		steps = append(steps, []string{"fetch", "-q", "file://" + src, "refs/heads/" + p.HeadRefName})
+		from = "FETCH_HEAD"
+	}
+	if err := gitAll("", append(steps, []string{"checkout", "-q", "-B", p.HeadRefName, from})); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
@@ -587,21 +682,11 @@ func gitAll(dir string, steps [][]string) error {
 	for _, s := range steps {
 		cmd := exec.Command("git", s...)
 		cmd.Dir = dir
-		cmd.Env = append(os.Environ(),
-			"GIT_AUTHOR_NAME=e2e", "GIT_AUTHOR_EMAIL=e2e@example.invalid",
-			"GIT_COMMITTER_NAME=e2e", "GIT_COMMITTER_EMAIL=e2e@example.invalid")
 		if b, err := cmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("git %s: %v: %s", strings.Join(s, " "), err, strings.TrimSpace(string(b)))
 		}
 	}
 	return nil
-}
-
-func write(path, content string) {
-	_ = os.MkdirAll(filepath.Dir(path), 0o755)
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		die(2, "fake gh: "+err.Error())
-	}
 }
 
 func sortedKeys(m map[string]string) []string {

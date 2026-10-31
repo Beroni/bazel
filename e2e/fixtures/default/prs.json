@@ -9,7 +9,6 @@
     "changedFiles": 3,
     "updatedAgo": "2h",
     "headRefName": "feat/rate-limit",
-    "headRefOid": "aaaa101",
     "baseRefName": "main",
     "author": {
       "login": "alice"
@@ -84,7 +83,6 @@
     "changedFiles": 1,
     "updatedAgo": "5h",
     "headRefName": "fix/nil-config",
-    "headRefOid": "bbbb102",
     "baseRefName": "main",
     "author": {
       "login": "e2e-user"
@@ -102,7 +100,6 @@
     "changedFiles": 14,
     "updatedAgo": "30h",
     "headRefName": "wip/grpc",
-    "headRefOid": "cccc103",
     "baseRefName": "main",
     "author": {
       "login": "bob"
@@ -119,7 +116,6 @@
     "changedFiles": 4,
     "updatedAgo": "1h",
     "headRefName": "feat/dark-mode",
-    "headRefOid": "dddd007",
     "baseRefName": "main",
     "author": {
       "login": "carol"
@@ -136,7 +132,6 @@
     "changedFiles": 2,
     "updatedAgo": "50h",
     "headRefName": "chore/deps",
-    "headRefOid": "eeee008",
     "baseRefName": "main",
     "author": {
       "login": "e2e-user"
