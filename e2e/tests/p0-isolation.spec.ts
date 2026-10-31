@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import type { TestInfo } from '@playwright/test';
 import { test, expect } from '../harness/fixtures';
-import { BIN, OUT, safeEnv } from '../harness/paths';
+import { BIN, goOffline, OUT, safeEnv, SCENARIO_FILES } from '../harness/paths';
 import { takeLock } from '../harness/lock';
 import { scrub } from '../tools/stream.mjs';
 
@@ -45,11 +46,15 @@ test.describe('P0 · a capture is data', () => {
     const run = spawnSync('node', [path.join(__dirname, '..', 'tools', 'stream.mjs'), 'scrub', raw], { encoding: 'utf8' });
     expect(run.status).not.toBe(0);
     expect(run.stdout).toBe('');
+    expect(run.stderr).toContain('replay directive');
   });
 });
 
 test.describe('P0 · the fakes fail closed', () => {
-  const state = () => fs.mkdtempSync(path.join(OUT, 'x-state-'));
+  const state = () => {
+    fs.mkdirSync(path.join(OUT, 'runs'), { recursive: true });
+    return fs.mkdtempSync(path.join(OUT, 'runs', 'x-'));
+  };
   const gh = (args: string[], input = '', settings?: object) => {
     const dir = state();
     let fixtures = path.join(__dirname, '..', 'fixtures', 'default');
@@ -74,6 +79,8 @@ test.describe('P0 · the fakes fail closed', () => {
       ['api', '--method', 'DELETE', review, '--input', '-'],
       ['api', 'repos/acme/api-core/pulls/101/reviews'],
       ['api', 'user'],
+      ['api', 'user', '--jq', '.login', '--method', 'DELETE'],
+      ['api', 'user', '--jq', '.login', '--input', '-'],
       ['api', '-X', 'POST', review, '--input', '-'],
       ['pr', 'merge', '101'],
       ['pr', 'comment', '101', '--repo', 'acme/api-core', '--body', 'x'],
@@ -147,6 +154,71 @@ test.describe('P0 · the fakes fail closed', () => {
     expect(r.status).toBe(19);
     expect(r.stdout.endsWith('after\n')).toBe(true);
     expect(r.stdout.length).toBeGreaterThan(2 << 20);
+  });
+
+  const agent = (testInfo: TestInfo, scenario: string, args: string[] = [], input = 'prompt') => {
+    fs.writeFileSync(testInfo.outputPath('it.txt'), scenario);
+    const dir = state();
+    const r = spawnSync(path.join(BIN, 'fake-agent'), args, {
+      env: safeEnv({ HOME: dir, FAKE_AGENT_SCENARIOS: testInfo.outputDir, FAKE_AGENT_SCENARIO: 'it', FAKE_AGENT_STATE: dir }),
+      input, encoding: 'utf8',
+    });
+    fs.rmSync(dir, { recursive: true, force: true });
+    return r;
+  };
+
+  test('a scenario with CRLF fails like one with LF', ({}, testInfo) => {
+    const r = agent(testInfo, 'before\r\n#!exit 19\r\nnever\r\n');
+    expect(r.status).toBe(19);
+    expect(r.stdout).toBe('before\n');
+    expect(agent(testInfo, 'before\r\n#!exit 19').status).toBe(19);
+  });
+
+  test('a directive with a bad number stops the scenario instead of meaning 0', ({}, testInfo) => {
+    for (const line of ['#!exit nineteen', '#!sleep soon', '#!repeat many x']) {
+      const r = agent(testInfo, `${line}\n`);
+      expect(r.status, line).toBe(2);
+      expect(r.stderr, line).toContain('bad number');
+    }
+  });
+
+  test('the post agent leaves its outcome where the skill\'s script does', ({}, testInfo) => {
+    const plugin = testInfo.outputPath('plugin');
+    fs.mkdirSync(plugin);
+    const review = testInfo.outputPath('review.md');
+    fs.writeFileSync(review, 'E2E');
+    const dir = state();
+    const run = (fixtures: string) => spawnSync(path.join(BIN, 'fake-agent'), ['--plugin-dir', plugin], {
+      env: safeEnv({ HOME: dir, FAKE_AGENT_SCENARIOS: SCENARIO_FILES, FAKE_AGENT_SCENARIO: 'post-claude', FAKE_AGENT_STATE: dir, FAKE_GH_FIXTURES: fixtures, FAKE_GH_STATE: dir }),
+      input: `/bazel-post-report ${review}\nThe repository acme/api-core is cloned here, PR #101.`, encoding: 'utf8',
+    });
+    const fixtures = path.join(__dirname, '..', 'fixtures', 'default');
+    expect(run(fixtures).status).toBe(0);
+    expect(fs.readFileSync(path.join(plugin, 'publish-outcome'), 'utf8').split('\n')[0]).toBe('published');
+
+    fs.cpSync(fixtures, path.join(dir, 'fx'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'fx', 'gh.json'), JSON.stringify({ fail: { api: 'HTTP 502' } }));
+    expect(run(path.join(dir, 'fx')).status).toBe(5);
+    expect(fs.readFileSync(path.join(plugin, 'publish-outcome'), 'utf8').split('\n')[0]).toBe('failed');
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+test.describe('P0 · the build stays home', () => {
+  test('Go cannot reach a VCS for a missing module, whatever the shell says', ({}, testInfo) => {
+    const bin = testInfo.outputPath('bin');
+    const log = testInfo.outputPath('git.log');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "$@" >> "${log}"\nexit 1\n`, { mode: 0o755 });
+    const dir = testInfo.outputPath('module');
+    fs.mkdirSync(dir);
+    fs.writeFileSync(path.join(dir, 'go.mod'), 'module probe\n\ngo 1.25\n');
+    const r = spawnSync('go', ['mod', 'download', 'github.com/example/bazel-offline-probe@v1.0.0'], {
+      cwd: dir, encoding: 'utf8',
+      env: goOffline({ ...process.env, PATH: `${bin}:${process.env.PATH}`, GOENV: 'off', GONOPROXY: '*', GOPRIVATE: '*', GOMODCACHE: testInfo.outputPath('modcache'), GOFLAGS: '-modcacherw' }),
+    });
+    expect(r.status).not.toBe(0);
+    expect(fs.existsSync(log), 'go called git').toBe(false);
   });
 });
 

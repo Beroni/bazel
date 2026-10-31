@@ -206,6 +206,9 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
       expect(call.git_config).toMatchObject({
         'safe.bareRepository': 'explicit', 'core.fsmonitor': 'false', 'core.hooksPath': '/dev/null',
       });
+      // The pin that keeps git out of a repo the PR nests in the clone.
+      expect(call.git_dir).toBe(path.join(call.cwd, '.git'));
+      expect(call.git_work_tree).toBe(call.cwd);
     }
     expect(bazel.agentCalls().at(-1)!.git_config['e2e.user']).toBe('kept');
   });
