@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2929,5 +2931,109 @@ func TestUmaRevisaoQuatroPortas(t *testing.T) {
 	poeJob(m, busy)
 	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errPublishBusy) {
 		t.Errorf("comment while the card posts: %v", err)
+	}
+}
+
+// A save that fails leaves memory as it was: the page must not show a repository
+// the file does not have, and the file stays whole.
+func TestSaveFalhoNaoMudaAMemoria(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(home, 0o700) })
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(`{"repo":"acme/web"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
+	}
+	if slices.Contains(cfg.Repos, "acme/web") {
+		t.Errorf("memory has it: %v", cfg.Repos)
+	}
+	after, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if !bytes.Equal(before, after) {
+		t.Errorf("the file changed")
+	}
+}
+
+// A review that could not be saved is not marked as reviewed, and it can still
+// be written: it was paid for, and memory is the only copy.
+func TestReviewSemDiscoNaoFicaMarcado(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "reviews")
+	if err := os.WriteFile(dir, nil, 0o644); err != nil { // a file where the folder goes
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.SavedTo != "" || !strings.Contains(done.Err, "could not save") {
+		t.Fatalf("job: %+v", done)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if marks := store.LoadMarks(dir); len(marks) != 0 {
+		t.Errorf("marked with nothing on disk: %v", marks)
+	}
+	again, err := m.SaveAgain(view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SavedTo == "" || again.Err != "" {
+		t.Errorf("after saving again: %+v", again)
+	}
+	if _, ok := store.LoadMarks(dir)[testPR(482).Key()]; !ok {
+		t.Error("saved, so it counts as reviewed")
+	}
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("nothing left to save: %v", err)
+	}
+}
+
+// Neither the page nor the download carries an agent's env values.
+func TestConfigNaoEntregaEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Env = map[string]string{"TOKEN": "s3cret"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"/api/config", "/api/config/file"} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+route, nil))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "s3cret") || !strings.Contains(w.Body.String(), "TOKEN") {
+			t.Errorf("%s: %d %s", route, w.Code, w.Body)
+		}
 	}
 }

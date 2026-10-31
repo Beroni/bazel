@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -1587,5 +1588,136 @@ func TestNomesNaoConfundemOGate(t *testing.T) {
 	c.PostAgent = AgentDef{Name: "mine", Task: "/my-post {{review_file}}", Posts: true}
 	if _, err := c.AddAgentFromSkill("bazel-post-report", "", false); err == nil {
 		t.Error("the built-in post skill must not become a lens under a custom post_agent")
+	}
+}
+
+const handWritten = `# my repos
+
+// A save touches only what this process changed: comments, unknown keys and
+// what was edited by hand stay, the publish gate included.
+func TestSavePreservaOArquivo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An edit by hand while the server runs.
+	edited := strings.Replace(handWritten, "future_key: keep me", "future_key: edited later\nauthors: [maria]", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	for _, want := range []string{"# my repos", "future_key: edited later", "# a key this version does not know", "acme/web", "mcp_allow_publish: false", "maria"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "max_diff_bytes") {
+		t.Errorf("a default the file never had was written:\n%s", got)
+	}
+	back, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(back.Repos, "acme/web") {
+		t.Errorf("repos: %v", back.Repos)
+	}
+}
+
+// A config that fails to parse on disk is someone's work: Save does not replace
+// it. Nor does an empty one pass for a new install.
+func TestSaveNaoPisaEmArquivoQuebrado(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := []byte("repos: [unclosed\n")
+	if err := os.WriteFile(path, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err == nil {
+		t.Error("Save went over a broken file")
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, broken) {
+		t.Errorf("file changed: %s", data)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadOrInit(); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty file: %v", err)
+	}
+	if data, _ := os.ReadFile(path); len(data) != 0 {
+		t.Errorf("an empty file was overwritten: %s", data)
+	}
+}
+
+// What the page shows and hands over keeps env names and loses their values,
+// wherever an env sits; the file itself is the user's alone.
+func TestRedactedTiraOSegredos(t *testing.T) {
+	src := "# keep\nagent:\n  env:\n    TOKEN: s3cret\nagents:\n  - name: a\n    env:\n      KEY: hunter2\npost_agent:\n  env: {OTHER: abc123}\n"
+	out, err := Redacted([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, bad := range []string{"s3cret", "hunter2", "abc123"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q leaked:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{"TOKEN", "KEY", "OTHER", "# keep"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	if err := Default().Save(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path()
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("config mode: %v %v", info.Mode(), err)
+	}
+}
+
+// A file with no env goes out byte for byte, and a JSON-style one gets readable
+// values on save.
+func TestRedactedSemEnvEArquivoJSON(t *testing.T) {
+	src := []byte("repos: [a/b]   # odd spacing\n")
+	if out, err := Redacted(src); err != nil || !bytes.Equal(out, src) {
+		t.Errorf("%q %v", out, err)
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(`{"repos": ["a/b"], "agents": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "x", Task: "/x {{number}}"})
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "task: /x {{number}}") {
+		t.Errorf("flow value:\n%s", data)
 	}
 }

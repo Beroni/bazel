@@ -169,6 +169,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
+	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -749,6 +750,17 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 
 // handleDismiss is "keep it here": the card stops waiting for you to publish,
 // and nothing goes to the PR.
+// handleSaveAgain retries writing a finished review that failed to save.
+func (s *Server) handleSaveAgain(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.SaveAgain(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
+		return
+	}
+	s.invalidatePRs()
+	writeJSON(w, http.StatusOK, view)
+}
+
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {
@@ -847,9 +859,9 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var added bool
+	err = s.editConfig(func() error { added = s.cfg.AddRepo(repo); return nil })
 	s.cfgMu.Lock()
-	added := s.cfg.AddRepo(repo)
-	err = s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
@@ -862,12 +874,28 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"repos": repos, "added": added})
 }
 
+// editConfig changes the config and saves it, or leaves it as it was: memory and
+// disk must not tell two stories after a failed save.
+func (s *Server) editConfig(edit func() error) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	prev := s.cfg.Copy()
+	err := edit()
+	if err == nil {
+		err = s.cfg.Save()
+	}
+	if err != nil {
+		*s.cfg = prev
+	}
+	return err
+}
+
 func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("owner") + "/" + r.PathValue("name")
 
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemoveRepo(repo); return nil })
 	s.cfgMu.Lock()
-	removed := s.cfg.RemoveRepo(repo)
-	err := s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
@@ -919,12 +947,11 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cfgMu.Lock()
-	def, err := s.cfg.AddAgentFromSkill(found.Name, summarize(found.Description), req.Posts)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	var def config.AgentDef
+	err := s.editConfig(func() (err error) {
+		def, err = s.cfg.AddAgentFromSkill(found.Name, summarize(found.Description), req.Posts)
+		return err
+	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -933,10 +960,8 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	removed := s.cfg.RemoveAgent(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemoveAgent(r.PathValue("name")); return nil })
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -947,10 +972,8 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 // handleAgentDefault puts an agent at the front of the list — the first one is
 // what runs when nobody chooses.
 func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	ok := s.cfg.SetDefaultAgent(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var ok bool
+	err := s.editConfig(func() error { ok = s.cfg.SetDefaultAgent(r.PathValue("name")); return nil })
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -973,12 +996,7 @@ func (s *Server) handleAgentPublishable(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	s.cfgMu.Lock()
-	err := s.cfg.SetAgentPublishable(r.PathValue("name"), req.Publishable)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	err := s.editConfig(func() error { return s.cfg.SetAgentPublishable(r.PathValue("name"), req.Publishable) })
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -999,12 +1017,11 @@ func (s *Server) handlePipelineAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	s.cfgMu.Lock()
-	p, err := s.cfg.AddPipeline(req.Name, req.Description, req.Steps)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	var p config.Pipeline
+	err := s.editConfig(func() (err error) {
+		p, err = s.cfg.AddPipeline(req.Name, req.Description, req.Steps)
+		return err
+	})
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -1013,10 +1030,8 @@ func (s *Server) handlePipelineAdd(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePipelineRemove(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	removed := s.cfg.RemovePipeline(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemovePipeline(r.PathValue("name")); return nil })
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1032,6 +1047,11 @@ func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
+		return
+	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
@@ -1070,6 +1090,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
+		return
+	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
 		return
 	}
 	s.cfgMu.Lock()

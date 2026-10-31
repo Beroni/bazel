@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -184,5 +185,61 @@ func TestAgentFromLine(t *testing.T) {
 	}
 	if got := AgentOf("# sem agente\n\n---\n\n- Agent: tarde demais\n"); got != "" {
 		t.Errorf("depois do --- é corpo, não cabeçalho: %q", got)
+	}
+}
+
+// A corrupted index is kept aside, not written over with one mark.
+func TestMarcasCorrompidasFicamDeLado(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, marksFile)
+	if err := os.WriteFile(path, []byte(`{"a/b#1": {"agent"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkPosted(dir, "a/b#2"); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(path + ".corrupt"); err != nil || !strings.Contains(string(data), "a/b#1") {
+		t.Errorf("corrupt copy: %q %v", data, err)
+	}
+	if len(LoadMarks(dir)) != 1 {
+		t.Errorf("index: %v", LoadMarks(dir))
+	}
+}
+
+// A new review is not published because an older one was.
+func TestPublicadoNaoPassaParaAProxima(t *testing.T) {
+	dir := t.TempDir()
+	res := agent.Result{Agent: "lens"}
+	res.PR.Repo, res.PR.Number = "acme/api", 7
+	if err := MarkReviewed(dir, res, "a.md"); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkPosted(dir, res.PR.Key()); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkReviewed(dir, res, "b.md"); err != nil {
+		t.Fatal(err)
+	}
+	if LoadMarks(dir).Status(res.PR).Posted {
+		t.Error("the new review was never published")
+	}
+}
+
+// One PR is one entry, however its repository is spelled, in files old and new.
+func TestMarcaNaoDiferenciaCaixa(t *testing.T) {
+	dir := t.TempDir()
+	old := `{"Beroni/Bazel#1": {"agent": "old", "at": "2020-01-01T00:00:00Z"}}`
+	if err := os.WriteFile(filepath.Join(dir, marksFile), []byte(old), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	pr := gh.PR{Repo: "beroni/bazel", Number: 1}
+	if !LoadMarks(dir).Status(pr).Reviewed {
+		t.Error("an old mark with GitHub's spelling must count")
+	}
+	if err := MarkPosted(dir, "BERONI/bazel#1"); err != nil {
+		t.Fatal(err)
+	}
+	if got := LoadMarks(dir); len(got) != 1 || !got.Status(pr).Posted {
+		t.Errorf("index: %v", got)
 	}
 }

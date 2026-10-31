@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -50,7 +51,7 @@ type Status struct {
 
 // Status looks up a PR in the index.
 func (m Marks) Status(pr gh.PR) Status {
-	mark, ok := m[pr.Key()]
+	mark, ok := m[markKey(pr.Key())]
 	if !ok {
 		return Status{}
 	}
@@ -89,16 +90,34 @@ func LoadMarks(dir string) Marks {
 }
 
 func loadMarksLocked(dir string) Marks {
-	data, err := os.ReadFile(filepath.Join(dir, marksFile))
-	if err != nil {
-		return Marks{}
-	}
-	var m Marks
-	if err := json.Unmarshal(data, &m); err != nil || m == nil {
-		return Marks{}
-	}
+	m, _ := readMarks(dir)
 	return m
 }
+
+// readMarks reads the index; ok is false when the file is there and unreadable.
+func readMarks(dir string) (Marks, bool) {
+	data, err := os.ReadFile(filepath.Join(dir, marksFile))
+	if err != nil {
+		return Marks{}, true
+	}
+	var raw Marks
+	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
+		return Marks{}, false
+	}
+	m := make(Marks, len(raw))
+	for k, v := range raw {
+		key := markKey(k)
+		if old, dup := m[key]; !dup || v.At.After(old.At) {
+			m[key] = v
+		}
+	}
+	return m, true
+}
+
+// markKey is a PR's key in the index. GitHub ignores case in owner and name, and
+// the same PR comes with the config's spelling or GitHub's depending on the path
+// it took.
+func markKey(key string) string { return strings.ToLower(key) }
 
 // MarkReviewed records that a PR was reviewed, with the commit that was at the
 // tip at the time. file is the saved markdown, if any.
@@ -109,8 +128,9 @@ func MarkReviewed(dir string, res agent.Result, file string) error {
 			At:      time.Now(),
 			HeadOid: res.PR.HeadRefOid,
 			File:    file,
-			// An agent that publishes on its own has already left the review on the PR.
-			Posted: res.Posts || m.Posted,
+			// An agent that publishes on its own has already left the review on the
+			// PR. An older publication is of an older review: this one has not gone.
+			Posted: res.Posts,
 		}
 	})
 }
@@ -133,11 +153,20 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	marksMu.Lock()
 	defer marksMu.Unlock()
 
-	marks := loadMarksLocked(dir)
+	path := filepath.Join(dir, marksFile)
+	marks, ok := readMarks(dir)
+	// A file nobody can read may still be repaired by hand: it steps aside
+	// instead of being written over with this one mark.
+	if !ok {
+		if err := os.Rename(path, path+".corrupt"); err != nil {
+			return err
+		}
+	}
+	key = markKey(key)
 	marks[key] = fn(marks[key])
 	trim(marks)
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(marks, "", "  ")
@@ -145,12 +174,21 @@ func update(dir, key string, fn func(Mark) Mark) error {
 		return err
 	}
 	// Write to a temporary file and rename: a review interrupted in the middle
-	// of the write must not leave the index half-written.
-	tmp := filepath.Join(dir, marksFile+".tmp")
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	// of the write must not leave the index half-written. The name is its own:
+	// two servers can share the folder.
+	tmp, err := os.CreateTemp(dir, marksFile+".*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, filepath.Join(dir, marksFile))
+	defer os.Remove(tmp.Name())
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), path)
 }
 
 // trim drops the oldest records when the index goes over the cap.

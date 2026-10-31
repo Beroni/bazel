@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -65,6 +66,9 @@ type Config struct {
 	// Warnings are what Load had to drop while migrating an old config, one
 	// line each. They are never written back to the file.
 	Warnings []string `yaml:"-"`
+	// base is each top-level key as last read or written: what Save compares
+	// with to tell what this process changed.
+	base map[string]string
 }
 
 // AgentDef is a named agent that appears in the TUI selector.
@@ -485,10 +489,17 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// An empty file is not a new install: it is a config that something lost,
+	// and starting from defaults would make that final at the next save.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("%s is empty: restore it, or delete it to start over", path)
+	}
+
 	cfg := Default()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("invalid config (%s): %w", path, err)
 	}
+	cfg.base = cfg.snapshot()
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
 	}
@@ -547,25 +558,6 @@ func LoadOrInit() (*Config, bool, error) {
 		return nil, false, fmt.Errorf("criando %s: %w", path, err)
 	}
 	return cfg, true, nil
-}
-
-// Save writes the configuration, creating the directory if needed.
-func (c *Config) Save() error {
-	if err := c.validateFormats(); err != nil {
-		return err
-	}
-	path, err := Path()
-	if err != nil {
-		return err
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := yaml.Marshal(c)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
 }
 
 // ResolvedReviewsDir returns the absolute reviews directory. If reviews_dir is

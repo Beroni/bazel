@@ -1833,7 +1833,7 @@ function viewerSignature(job) {
   return [
     job.id, job.state, job.cloning ? 'c' : '',
     (job.steps || []).map((s) => s.state).join(''),
-    job.posted ? 'p' : '', job.post_error ? 'e' : '',
+    job.posted ? 'p' : '', job.post_error ? 'e' : '', job.saved_to ? 's' : '',
     // Waiting on you or not changes the note and the buttons, so "keep it
     // here" has to redraw the viewer even though state is still done.
     waiting(job) ? 'w' : '', job.publishable === false ? 'n' : '',
@@ -2405,6 +2405,22 @@ function renderReportView(v, job) {
     .filter(Boolean).join(' · ');
   if (custo) foot.title = gastoTitle(job);
   v.append(foot);
+  // A review that did not reach the disk lives only here until it does.
+  if (!job.saved_to && job.has_body && !job.history && !job.publishing) {
+    const again = tid(el('button', 'btn small', 'Save again'), 'save-again');
+    again.title = 'write this review to disk: until then it exists only in this server';
+    again.addEventListener('click', async () => {
+      again.disabled = true;
+      clearAlert();
+      try {
+        upsertJob(await api(`/api/jobs/${encodeURIComponent(job.id)}/save`, { method: 'POST' }));
+      } catch (err) {
+        alertError('Could not save the review: ' + err.message);
+        again.disabled = false;
+      }
+    });
+    v.append(again);
+  }
   // The footer bar goes last: pinned to the panel's bottom edge.
   if (actionBar) v.append(actionBar);
 }

@@ -483,6 +483,13 @@ post_agent:
 #   task: /history-pr {{number}}
 ```
 
+`config.yaml` is yours too: Bazel changes only the keys you changed in the page
+and leaves comments, unknown keys and edits by hand alone, including edits made
+while it runs. Those only take effect at the next start. An empty file stops the
+boot instead of passing for a new install. The file is readable by you alone, and
+the page and its export leave out the values under `env:`. Reviews and their
+folder are yours alone as well, since they quote the PR's code.
+
 ### The History tab
 
 The History tab runs `history_agent` on demand. Bazel offers nothing of its

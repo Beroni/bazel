@@ -228,7 +228,7 @@ func DropFindings(body string, skip []int) string {
 // saved list — the real review stays whole, only what goes out changes.
 func SavePublishCopy(dir, original, body string) (string, error) {
 	pubDir := filepath.Join(dir, "publish")
-	if err := os.MkdirAll(pubDir, 0o755); err != nil {
+	if err := os.MkdirAll(pubDir, 0o700); err != nil {
 		return "", err
 	}
 	header := ""
@@ -248,9 +248,6 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 	}
 	path := f.Name()
 	_, err = f.WriteString(header + strings.TrimSpace(body) + "\n")
-	if err == nil {
-		err = f.Chmod(0o644)
-	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
