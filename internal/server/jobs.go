@@ -640,7 +640,7 @@ func (m *Manager) SaveAgain(id string) (jobView, error) {
 	res, choice := job.Result, job.Choice
 	m.mu.Unlock()
 
-	path, err := store.Save(m.reviewsDir, res, m.runner.PricingTable)
+	path, err := store.Save(m.reviewsDir, agent.Split(res, choice), m.runner.PricingTable)
 	if err != nil {
 		return jobView{}, err
 	}
