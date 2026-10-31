@@ -27,11 +27,12 @@ const reviewedSha = "a1b2c3d4e5f67890abcdef1234567890abcdef12"
 // fakeGH answers from files in $FAKE_DIR and records every write.
 const fakeGH = `#!/bin/sh
 d=$FAKE_DIR
+if [ -f "$d/fail" ] && echo "$*" | grep -qE "$(cat "$d/fail")"; then echo 'HTTP 500: server error' >&2; exit 1; fi
 case "$1 $2" in
 "pr view")
   case "$*" in
-  *headRefOid*) printf '{"headRefOid":"%s"}\n' "$(cat "$d/head")" ;;
-  *) printf '{"author":{"login":"pr-author"},"url":"https://github.invalid/o/r/pull/7"}\n' ;;
+  *headRefOid*) cat "$d/head-json" 2>/dev/null || printf '{"headRefOid":"%s"}\n' "$(cat "$d/head")" ;;
+  *) cat "$d/pr" 2>/dev/null || printf '{"author":{"login":"pr-author"},"url":"https://github.invalid/o/r/pull/7"}\n' ;;
   esac ;;
 "pr diff") cat "$d/diff" ;;
 "api user") echo me ;;
@@ -253,10 +254,10 @@ func TestGatesAreDefaultDeny(t *testing.T) {
 			w := newWorld(t)
 			w.write("review.md", report)
 			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
-			if code != 3 || !strings.Contains(out, "REFUSED") || !strings.Contains(out, "paste as a comment") {
+			if code != 3 || !strings.Contains(out, "REFUSED") || !strings.Contains(out, "As comment") {
 				t.Errorf("want a refusal that points at the paste, got exit %d:\n%s", code, out)
 			}
-			if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "paste as a comment") {
+			if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "As comment") {
 				t.Errorf("Bazel should read the refusal from the plugin folder, got %q", msg)
 			}
 			if w.wrote() {
@@ -811,4 +812,115 @@ func TestOnePartCannotHideTheNext(t *testing.T) {
 	if body := w.payload(1).Body; strings.Contains(body, "<!-- quoted") {
 		t.Errorf("the fallback must be as safe:\n%s", body)
 	}
+}
+
+// Every read before the write can fail, with an error or with an answer that only
+// looks like one: none of them may turn into a PR with nothing on it.
+func TestAReadThatFailsStopsIt(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	apiError := `{"message":"Bad credentials"}` + "\n"
+	for name, set := range map[string]func(w *world){
+		"the PR":              func(w *world) { w.write("fail", "^pr view") },
+		"who is signed in":    func(w *world) { w.write("fail", "^api user") },
+		"the diff":            func(w *world) { w.write("fail", "^pr diff") },
+		"inline comments":     func(w *world) { w.write("fail", "pulls/7/comments") },
+		"the PR's comments":   func(w *world) { w.write("fail", "issues/7/comments") },
+		"the reviews":         func(w *world) { w.write("fail", "pulls/7/reviews --paginate") },
+		"the threads":         func(w *world) { w.write("fail", "^api graphql") },
+		"no author":           func(w *world) { w.write("pr", `{"author":null,"url":"u"}`+"\n") },
+		"an error for a list": func(w *world) { w.write("comments", apiError) },
+		"no list at all":      func(w *world) { w.write("issue", "") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			set(w)
+			w.write("review.md", report)
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if code != 1 || w.wrote() {
+				t.Errorf("exit %d, wrote %v\n%s", code, w.wrote(), out)
+			}
+			if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "Publishing failed") {
+				t.Errorf("outcome: %q", msg)
+			}
+		})
+	}
+	for name, set := range map[string]func(w *world){
+		"the head fails":        func(w *world) { w.write("fail", "headRefOid") },
+		"no head":               func(w *world) { w.write("head-json", "{}\n") },
+		"an empty head":         func(w *world) { w.write("head-json", `{"headRefOid":""}`+"\n") },
+		"a head that is no sha": func(w *world) { w.write("head-json", `{"headRefOid":"HEAD"}`+"\n") },
+		"GitHub is down":        func(w *world) { w.write("fail", "reviews --input") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			work := w.prepare(report)
+			set(w)
+			out, code := w.run("publish", work)
+			if code != 1 {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+			if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "Publishing failed") {
+				t.Errorf("outcome: %q", msg)
+			}
+		})
+	}
+}
+
+func TestPublishTakesOnlyItsOwnPlan(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	w := newWorld(t)
+	work := w.prepare(report)
+
+	stray := t.TempDir()
+	plan, err := os.ReadFile(filepath.Join(work, "plan.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stray, "plan.json"), plan, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, code := w.run("publish", stray); code != 3 || w.wrote() {
+		t.Errorf("a folder prepare did not make: exit %d\n%s", code, out)
+	}
+
+	w.run("publish", work)
+	w.run("publish", work)
+	if _, err := os.Stat(filepath.Join(w.dir, "payload1.json")); err == nil {
+		t.Error("the same plan posted twice")
+	}
+	if msg := skills.PublishFailure(w.plugin); msg != "" {
+		t.Errorf("a second run must not undo the first: %q", msg)
+	}
+}
+
+func TestReportFieldsAreChecked(t *testing.T) {
+	t.Run("the clone is another repository", func(t *testing.T) {
+		w := newWorld(t)
+		cmd := exec.Command("git", "remote", "set-url", "origin", "https://github.com/o/other.git")
+		cmd.Dir = w.clone
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%v: %s", err, out)
+		}
+		w.write("review.md", bazelFile(header("approve", 3)))
+		out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+		if code != 3 || !strings.Contains(out, "another repository than this clone") {
+			t.Errorf("exit %d\n%s", code, out)
+		}
+	})
+	t.Run("a sha only Bazel's header has is no proof", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(strings.Replace(header("request_changes", 3), reviewedSha, strings.Repeat("c", 40), 1)+
+			"\n## Findings\n\n"+finding("One", "a.go", 2, "Bad."))))
+		if p := w.payload(0); len(p.Comments) != 0 {
+			t.Errorf("nothing is anchored on an unproven commit: %+v", p.Comments)
+		}
+	})
+	t.Run("a ref is a reference, not text", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+
+			strings.Replace(finding("One", "a.go", 2, "Bad."), " -->", " ref=[x](http://evil) -->", 1))))
+		if p := w.payload(0); strings.Contains(p.Comments[0].Body, "evil") {
+			t.Errorf("%+v", p.Comments)
+		}
+	})
 }

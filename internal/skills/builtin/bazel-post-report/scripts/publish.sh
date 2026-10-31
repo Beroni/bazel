@@ -38,7 +38,7 @@ nothing() {
 }
 
 # A report in no format this skill can trust still has a way to the PR, as text.
-PASTE='To post it as it is, use "or paste as a comment".'
+PASTE='To post it as it is, use "As comment".'
 
 for tool in jq gh git; do
   command -v "$tool" >/dev/null || refuse "$tool is not installed, and publishing needs it. Install it and try again. $PASTE"
@@ -51,8 +51,9 @@ clone_repo() {
 
 lower() { printf %s "$1" | tr '[:upper:]' '[:lower:]'; }
 
-# gh's paginated lists come as one array per page: flatten, and take only arrays.
-flatten() { jq -s '[.[] | if type == "array" then .[] else empty end]'; }
+# gh's paginated lists come as one array per page. Anything else is an error that
+# came with exit 0, and it must not read as a PR with nothing on it.
+flatten() { jq -s 'if length > 0 and all(.[]; type == "array") then add else error("not a list") end' "$1"; }
 
 prepare() {
   local file=${1:-}
@@ -83,14 +84,17 @@ prepare() {
     refuse "the review is not for the PR this job publishes to"
 
   gh pr view "$number" --repo "$repo" --json author,url > "$work/pr.json" || fail "cannot read the PR"
+  # With no author, nothing tells the PR's author from a member.
+  jq -e '.author.login | type == "string" and length > 0' "$work/pr.json" >/dev/null 2>&1 || fail "cannot tell who wrote the PR"
   gh api user --jq .login > "$work/me.txt" || fail "cannot tell who is signed in"
+  [ -s "$work/me.txt" ] || fail "cannot tell who is signed in"
   jq -Rs 'split("\n")[0]' "$work/me.txt" > "$work/me.json"
   gh pr diff "$number" --repo "$repo" > "$work/diff.txt" || fail "cannot read the PR's diff"
   jq -Rs -f "$HERE/diff-lines.jq" "$work/diff.txt" > "$work/diff.json" || fail "cannot read the diff's lines"
 
-  gh api "repos/$repo/pulls/$number/comments" --paginate | flatten > "$work/comments.json" || fail "cannot read the inline comments"
-  gh api "repos/$repo/issues/$number/comments" --paginate | flatten > "$work/issue.json" || fail "cannot read the PR's comments"
-  gh api "repos/$repo/pulls/$number/reviews" --paginate | flatten > "$work/reviews.json" || fail "cannot read the PR's reviews"
+  gh api "repos/$repo/pulls/$number/comments" --paginate > "$work/pages" && flatten "$work/pages" > "$work/comments.json" || fail "cannot read the inline comments"
+  gh api "repos/$repo/issues/$number/comments" --paginate > "$work/pages" && flatten "$work/pages" > "$work/issue.json" || fail "cannot read the PR's comments"
+  gh api "repos/$repo/pulls/$number/reviews" --paginate > "$work/pages" && flatten "$work/pages" > "$work/reviews.json" || fail "cannot read the PR's reviews"
   gh api graphql --paginate -f owner="${repo%%/*}" -f repo="${repo##*/}" -F number="$number" -f query='
     query($owner:String!, $repo:String!, $number:Int!, $endCursor:String) {
       repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
@@ -118,8 +122,17 @@ post_review() { # payload-file output-file
 
 publish() {
   local work=${1:-}
+  case "$work" in
+    "$PLUGIN"/publish.*) ;;
+    *) refuse "the folder given is not one prepare made for this job" ;;
+  esac
   [ -f "$work/plan.json" ] || refuse "no plan in the folder given: run prepare first"
   shift
+  # The survey in a plan is from before its own review: run again, it would not see it.
+  if [ -f "$work/published" ]; then
+    nothing "this plan was already published."
+    return 0
+  fi
 
   local same='{}' pair
   for pair in "$@"; do
@@ -140,6 +153,10 @@ publish() {
 
   # The last read before writing: a push after the review moves the lines.
   head=$(gh pr view "$NUMBER" --repo "$REPO" --json headRefOid | jq -r .headRefOid) || fail "cannot read the PR's head"
+  case "$head" in
+    *[!0-9a-f]* | '') fail "cannot read the PR's head" ;;
+  esac
+  [ "${#head}" = 40 ] || fail "cannot read the PR's head"
   [ "$head" = "$reviewed" ] || moved=yes
 
   jq -L "$HERE" --argjson same "$same" --arg moved "$moved" --arg head "$head" -f "$HERE/decide.jq" "$work/plan.json" > "$work/decided.json" ||
@@ -152,7 +169,7 @@ publish() {
       nothing "$(jq -r .why "$work/decided.json")."
       return 0 ;;
     all-clear)
-      if jq -e --arg sha "$reviewed" 'any(.own_bodies[]; contains("all-clear @ " + $sha))' "$work/plan.json" >/dev/null; then
+      if jq -e --arg m "<!-- review-fleet: all-clear @ $reviewed -->" 'any(.own_bodies[]; split("\n") | any(. == $m))' "$work/plan.json" >/dev/null; then
         nothing "this account already posted an all-clear for this commit."
         return 0
       fi ;;
@@ -162,7 +179,7 @@ publish() {
   local print marker
   print=$(jq -c '[.body, .comments]' "$work/decided.json" | git hash-object --stdin) || fail "cannot fingerprint the review"
   marker="<!-- bazel-review: $reviewed $print -->"
-  if jq -e --arg m "$marker" 'any(.own_bodies[]; contains($m))' "$work/plan.json" >/dev/null; then
+  if jq -e --arg m "$marker" 'any(.own_bodies[]; split("\n") | any(. == $m))' "$work/plan.json" >/dev/null; then
     nothing "this account already posted this same review for this commit."
     return 0
   fi
@@ -186,6 +203,7 @@ publish() {
     fi
   fi
 
+  : > "$work/published"
   outcome published "Published."
   local failed_reactions=0 id
   for id in $(jq -r '.reactions[]' "$work/decided.json"); do
