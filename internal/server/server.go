@@ -437,7 +437,6 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 		Refresh: r.URL.Query().Get("refresh") != "",
 		Mine:    r.URL.Query().Get("scope") == "mine",
 		Author:  r.URL.Query().Get("author"),
-		HTML:    true,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -447,8 +446,7 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 }
 
 // prFilter is the cut of the PR list. The page and /mcp ask for the same
-// list; only the MCP filters by repository and review state, and only the
-// page needs the description as HTML.
+// list; only the MCP filters by repository and review state.
 type prFilter struct {
 	Refresh bool
 	Mine    bool
@@ -456,7 +454,6 @@ type prFilter struct {
 	Repo    string
 	// Status is "" (all), "unreviewed", "reviewed", "changed" or "posted".
 	Status string
-	HTML   bool
 }
 
 type prList struct {
@@ -493,11 +490,7 @@ func (s *Server) listPRs(ctx context.Context, f prFilter) (prList, error) {
 		if !statusMatches(st, f.Status) {
 			continue
 		}
-		v := newPRView(pr, mine, now).withStatus(st, now)
-		if f.HTML {
-			v.BodyHTML = renderMarkdown(pr.Body)
-		}
-		out = append(out, v)
+		out = append(out, newPRView(pr, mine, now).withStatus(st, now))
 	}
 
 	errs := make([]map[string]string, 0, len(repoErrs))
