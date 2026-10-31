@@ -349,6 +349,15 @@ function adoptInstance(id) {
   const anterior = state.instance;
   state.instance = id;
   if (anterior === null) return; // first time we hear from the server
+  // What the page held dies with the old server, and it says so: a panel that
+  // goes blank tells you nothing. A finished review is still on disk, and its
+  // ticks follow it there.
+  const lost = state.jobs.length;
+  const hadOpen = !!state.activeJob;
+  for (const j of state.jobs) {
+    const ticks = state.picks[pickKey('job', j.id)];
+    if (j.saved_to && ticks) state.picks[pickKey('saved', j.saved_to.split(/[\\/]/).pop())] = ticks;
+  }
   state.bodies = {};
   state.splits = {};
   state.logs = {};
@@ -365,7 +374,16 @@ function adoptInstance(id) {
   savePicks();
   state.jobs = [];
   state.activeJob = null;
-  if (state.tab === 'queue' && !state.activePR && !state.activeSaved) clearViewer();
+  if (state.tab === 'queue' && !state.activePR && !state.activeSaved) {
+    const v = clearViewer();
+    if (hadOpen) {
+      const note = el('div', 'placeholder');
+      note.append(el('p', null, 'The server restarted, and the job open here went with its queue.'),
+        el('p', 'dim', 'A finished review is still in the Saved tab, with what you unticked.'));
+      v.append(note);
+    }
+  }
+  if (lost) alertError(`The server restarted: its queue is gone (${lost} job${lost === 1 ? '' : 's'}). Finished reviews are in the Saved tab.`);
   renderJobs();
   resync();
 }
