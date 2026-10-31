@@ -2787,3 +2787,71 @@ func TestSavedNaoPublicaOQueFica(t *testing.T) {
 		t.Errorf("old file: %d", w.Code)
 	}
 }
+
+// One saved review reaches the PR once, whichever of the four doors it takes.
+func TestUmaRevisaoQuatroPortas(t *testing.T) {
+	dir := t.TempDir()
+	log := ghFalso(t, "cat >/dev/null")
+	cfg := cfgFor(t, "cat")
+	noClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &noClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	file := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("# acme/api-core#482 — t\n\n---\n\nBody.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// A publication from the Saved tab settles, and its report cannot be pasted.
+	path := file("a.md")
+	view, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Publishing || !done.Posted {
+		t.Errorf("a finished publication: publishing=%v posted=%v", done.Publishing, done.Posted)
+	}
+	if _, err := m.Post(ctx, view.ID, nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("/post after it: %v", err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("comment after it: %v", err)
+	}
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish again: %v", err)
+	}
+
+	// Comment twice, and then publish: the first one counts.
+	path = file("b.md")
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("second comment: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("%d gh calls", n)
+	}
+
+	// The card of a review and the Saved tab are the same review.
+	path = file("c.md")
+	card := &Job{ID: "j900", State: StateDone, SavedTo: path, Posted: true}
+	poeJob(m, card)
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish a posted card's file: %v", err)
+	}
+	path = file("d.md")
+	busy := &Job{ID: "j901", State: StateDone, SavedTo: path, posting: true}
+	poeJob(m, busy)
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errPublishBusy) {
+		t.Errorf("comment while the card posts: %v", err)
+	}
+}

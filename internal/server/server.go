@@ -1251,8 +1251,12 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	if s.refusePublish(w, sr) {
 		return
 	}
-	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Body, skip); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
+			code = http.StatusConflict
+		}
+		writeErr(w, code, err)
 		return
 	}
 	s.invalidatePRs()

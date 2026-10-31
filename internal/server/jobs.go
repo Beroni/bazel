@@ -246,6 +246,11 @@ type Manager struct {
 	jobs  map[string]*Job
 	order []string
 	seq   int
+	// sent and pasting are the saved reviews, by path, that went to the PR in
+	// this process, and those being pasted from the Saved tab: no job holds
+	// either, and the same file can be sent through four doors.
+	sent    map[string]bool
+	pasting map[string]bool
 	// idPrefix makes job ids unique across restarts (the first characters of
 	// the server instance): the seq starts over on every boot, and "j3" from a
 	// page or an MCP client of the old process must not name the new j3.
@@ -292,6 +297,8 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 		ctx:        ctx,
 		queue:      make(chan queued, 256),
 		jobs:       map[string]*Job{},
+		sent:       map[string]bool{},
+		pasting:    map[string]bool{},
 	}
 	for range concurrency {
 		go m.worker()
@@ -551,14 +558,20 @@ func (m *Manager) run(q queued) {
 	}
 
 	m.mu.Lock()
-	if job.inPlacePublish() {
+	if job.publish != nil {
 		// The post agent's report does not take the review's place: the card
 		// keeps showing what the user read, now marked as published and with
-		// the spend of both rounds added up.
+		// the spend of both rounds added up. A publication from the Saved tab
+		// has only its own round to show.
+		if job.inPlacePublish() {
+			job.Result.Usage = job.Result.Usage.Plus(res.Usage)
+		} else {
+			job.Result = res
+		}
+		m.sent[job.publish.Source] = true
 		job.Posted = true
 		job.PostErr = ""
 		job.AwaitsPublish = false
-		job.Result.Usage = job.Result.Usage.Plus(res.Usage)
 		job.publish = nil
 		job.Live = agent.Usage{}
 	} else {
@@ -883,6 +896,10 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, errAlreadyPosted
 	}
+	if err := m.claimedLocked(job.SavedTo, job); err != nil {
+		m.mu.Unlock()
+		return jobView{}, err
+	}
 	if job.SavedTo == "" {
 		m.mu.Unlock()
 		return jobView{}, errors.New("that review was not saved to disk — there is nothing to publish")
@@ -976,6 +993,11 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 			return v, nil
 		}
 	}
+	if err := m.claimedLocked(path, nil); err != nil {
+		m.mu.Unlock()
+		in.discard()
+		return jobView{}, err
+	}
 
 	choice := m.cfg.PostChoice()
 	job := &Job{
@@ -1003,16 +1025,60 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 
 // CommentSaved pastes onto the PR a review that is on disk, with no agent at
 // all. It is the cheap path from the file to GitHub.
-func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, body string, skip []int) error {
+func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string, skip []int) error {
 	body = store.DropFindings(body, skip)
 	if strings.TrimSpace(body) == "" {
 		return errors.New("that review has no body to publish")
 	}
+	m.mu.Lock()
+	if err := m.claimedLocked(path, nil); err != nil {
+		m.mu.Unlock()
+		return err
+	}
+	m.pasting[path] = true
+	m.mu.Unlock()
+
 	err := gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, pr.Key())
 	}
+
+	m.mu.Lock()
+	delete(m.pasting, path)
+	m.sent[path] = err == nil
+	m.mu.Unlock()
 	return err
+}
+
+// claimedLocked says whether the saved review at path already went to the PR or
+// is on its way, through any of the four doors: the job's publish and comment,
+// and the Saved tab's. self is the job asking, whose own state its door checks.
+// Call with m.mu held.
+func (m *Manager) claimedLocked(path string, self *Job) error {
+	if path == "" {
+		return nil
+	}
+	if m.sent[path] {
+		return errAlreadyPosted
+	}
+	if m.pasting[path] {
+		return errPublishBusy
+	}
+	for _, id := range m.order {
+		j := m.jobs[id]
+		if j == self {
+			continue
+		}
+		publishing := j.publish != nil && j.publish.Source == path
+		switch {
+		case !publishing && j.SavedTo != path:
+		case j.Posted:
+			return errAlreadyPosted
+		case j.posting, publishing && (j.State == StateQueued || j.State == StateRunning):
+			return errPublishBusy
+		}
+	}
+	return nil
 }
 
 // Post publishes the review as a comment on the PR, without the findings in
@@ -1035,6 +1101,10 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	if job.Posted {
 		m.mu.Unlock()
 		return jobView{}, errAlreadyPosted
+	}
+	if err := m.claimedLocked(job.SavedTo, job); err != nil {
+		m.mu.Unlock()
+		return jobView{}, err
 	}
 	if !job.Choice.Publishable {
 		m.mu.Unlock()
@@ -1065,6 +1135,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	if err != nil {
 		job.PostErr = err.Error()
 	} else {
+		m.sent[job.SavedTo] = true
 		job.Posted = true
 		job.PostErr = ""
 		job.AwaitsPublish = false
