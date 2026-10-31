@@ -2,6 +2,9 @@
   {
     "repo": "acme/api-core",
     "number": 101,
+    "inline_comments": [
+      { "id": 7, "path": "src/limiter.go", "line": 12, "user": { "login": "bob" }, "body": "Nice." }
+    ],
     "title": "Add rate limiter to the public API",
     "body": "Adds a **token bucket** in front of `/v1`.",
     "additions": 120,

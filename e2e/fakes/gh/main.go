@@ -48,7 +48,12 @@ type fixturePR struct {
 	Moved       int    `json:"moved,omitempty"`
 	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
 	BaseRefName string `json:"baseRefName"`
-	Author      struct {
+	// What bazel-post-report surveys. The script reads them as GitHub answers.
+	InlineComments []json.RawMessage `json:"inline_comments,omitempty"`
+	IssueComments  []json.RawMessage `json:"issue_comments,omitempty"`
+	Submitted      []json.RawMessage `json:"submitted_reviews,omitempty"`
+	Threads        []json.RawMessage `json:"review_threads,omitempty"`
+	Author         struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	ReviewDecision string            `json:"reviewDecision"`
@@ -302,11 +307,25 @@ func badFields(args, known []string) bool {
 }
 
 var reviewsRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`)
+var listRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/(pulls|issues)/(\d+)/(comments|reviews)$`)
+var reactionsRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/(pulls|issues)/comments/(\d+)/reactions$`)
 
-// apiCall answers the one write the fake models: a review on a known PR, with
-// its payload. Anything else was not thought through, so it fails.
+// apiCall answers what bazel-post-report's script asks and the one review write.
+// Anything else was not thought through, so it fails.
 func apiCall(args []string) int {
-	if len(args) != 6 || flag(args, "--method") != "POST" || flag(args, "--input") != "-" {
+	switch {
+	case len(args) == 3 && args[2] == "--paginate":
+		return apiList(args)
+	case len(args) > 2 && args[1] == "graphql":
+		return apiThreads(args)
+	case len(args) == 6 && reactionsRe.MatchString(args[3]):
+		return apiReaction(args)
+	}
+	method := flag(args, "--method")
+	if method == "" {
+		method = flag(args, "-X")
+	}
+	if len(args) != 6 || method != "POST" || flag(args, "--input") != "-" {
 		return unsupported(args)
 	}
 	m := reviewsRe.FindStringSubmatch(args[3])
@@ -332,6 +351,101 @@ func apiCall(args []string) int {
 	}
 	fmt.Printf("{\"id\":1,\"html_url\":\"https://github.invalid/%s/pull/%d#pullrequestreview-1\"}\n", m[1], n)
 	return 0
+}
+
+// apiList answers the three reads with --paginate, from the PR's fixture.
+func apiList(args []string) int {
+	m := listRe.FindStringSubmatch(args[1])
+	if m == nil {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	n, _ := strconv.Atoi(m[3])
+	pr, ok := find(m[1], n)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+		return 1
+	}
+	list := pr.IssueComments
+	switch m[2] + "/" + m[4] {
+	case "issues/comments":
+	case "pulls/comments":
+		list = pr.InlineComments
+	case "pulls/reviews":
+		list = pr.Submitted
+	default:
+		return unsupported(args)
+	}
+	out, _ := json.Marshal(append([]json.RawMessage{}, list...))
+	fmt.Println(string(out))
+	return 0
+}
+
+// apiThreads answers the review-threads query, one page, from the PR's fixture.
+func apiThreads(args []string) int {
+	owner, repo, number := "", "", 0
+	query := false
+	for i := 2; i < len(args); i++ {
+		k, v, ok := strings.Cut(args[i], "=")
+		switch {
+		case args[i] == "--paginate" || args[i] == "-f" || args[i] == "-F":
+		case ok && k == "owner":
+			owner = v
+		case ok && k == "repo":
+			repo = v
+		case ok && k == "number":
+			number, _ = strconv.Atoi(v)
+		case ok && k == "query":
+			query = strings.Contains(v, "reviewThreads")
+		default:
+			return unsupported(args)
+		}
+	}
+	if !query || owner == "" || repo == "" || number == 0 {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	pr, ok := find(owner+"/"+repo, number)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "gh: Could not resolve to a PullRequest")
+		return 1
+	}
+	nodes, _ := json.Marshal(append([]json.RawMessage{}, pr.Threads...))
+	fmt.Printf(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":%s}}}}}`+"\n", nodes)
+	return 0
+}
+
+// apiReaction answers a 👍 on a comment that exists on some PR of the repo.
+func apiReaction(args []string) int {
+	if flag(args, "-X") != "POST" || flag(args, "-f") != "content=+1" {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	m := reactionsRe.FindStringSubmatch(args[3])
+	id, _ := strconv.Atoi(m[3])
+	for _, pr := range loadPRs() {
+		list := pr.IssueComments
+		if m[2] == "pulls" {
+			list = pr.InlineComments
+		}
+		for _, c := range list {
+			var comment struct {
+				ID int `json:"id"`
+			}
+			if json.Unmarshal(c, &comment) == nil && pr.Repo == m[1] && comment.ID == id {
+				fmt.Println(`{"id":1,"content":"+1"}`)
+				return 0
+			}
+		}
+	}
+	fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+	return 1
 }
 
 // comment answers `gh pr comment N --repo R --body-file -` on a known PR.

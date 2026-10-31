@@ -81,7 +81,7 @@ test.describe('P0 · the fakes fail closed', () => {
       ['api', 'user'],
       ['api', 'user', '--jq', '.login', '--method', 'DELETE'],
       ['api', 'user', '--jq', '.login', '--input', '-'],
-      ['api', '-X', 'POST', review, '--input', '-'],
+      ['api', '-X', 'DELETE', review, '--input', '-'],
       ['pr', 'merge', '101'],
       ['search', 'prs', '--json', 'number', '--', 'repo:acme/api-core'],
       ['pr', 'comment', '101', '--repo', 'acme/api-core', '--body', 'x'],
@@ -90,6 +90,34 @@ test.describe('P0 · the fakes fail closed', () => {
       expect(r.status, args.join(' ')).toBe(1);
       expect(r.unsupported, args.join(' ')).toBe(true);
     }
+  });
+
+  test("gh answers the post script's survey and writes", () => {
+    const threads = ['api', 'graphql', '--paginate', '-f', 'owner=acme', '-f', 'repo=api-core', '-F', 'number=101', '-f', 'query=query { reviewThreads }'];
+    for (const args of [
+      ['api', '-X', 'POST', review, '--input', '-'],
+      ['api', 'repos/acme/api-core/pulls/101/comments', '--paginate'],
+      ['api', 'repos/acme/api-core/issues/101/comments', '--paginate'],
+      [...'api repos/acme/api-core/pulls/101/reviews --paginate'.split(' ')],
+      threads,
+      ['api', '-X', 'POST', 'repos/acme/api-core/pulls/comments/7/reactions', '-f', 'content=+1'],
+    ]) expect(gh(args, body).status, args.join(' ')).toBe(0);
+
+    for (const args of [
+      ['api', 'repos/acme/api-core/pulls/1/comments', '--paginate'],
+      ['api', '-X', 'POST', 'repos/acme/api-core/pulls/comments/8/reactions', '-f', 'content=+1'],
+      ['api', '-X', 'POST', 'repos/acme/api-core/issues/comments/7/reactions', '-f', 'content=+1'],
+      ['api', 'graphql', '--paginate', '-f', 'owner=acme', '-f', 'repo=api-core', '-F', 'number=1', '-f', 'query=query { reviewThreads }'],
+    ]) {
+      const r = gh(args);
+      expect(r.status, args.join(' ')).toBe(1);
+      expect(r.unsupported, args.join(' ')).toBeFalsy();
+    }
+    for (const args of [
+      ['api', 'graphql', '--paginate', '-f', 'query=query { viewer }'],
+      ['api', '-X', 'POST', 'repos/acme/api-core/pulls/comments/7/reactions', '-f', 'content=heart'],
+      ['api', 'repos/acme/api-core/pulls/101/files', '--paginate'],
+    ]) expect(gh(args).unsupported, args.join(' ')).toBe(true);
   });
 
   test('gh refuses what GitHub would', () => {
