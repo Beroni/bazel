@@ -3,10 +3,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
+import { takeLock } from './lock';
 import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
-// The suite touches no network: Go may only use what it already has.
-const GO_OFFLINE = { ...process.env, GOPROXY: 'off', GOSUMDB: 'off', GOTOOLCHAIN: 'local' };
+// The suite touches no network: Go may only use what it already has, a cached
+// toolchain included. GOPROXY=off covers the checksum database too, and Go
+// refuses a toolchain with GOSUMDB off, so that one stays as it is.
+const GO_OFFLINE = { ...process.env, GOPROXY: 'off', GOTOOLCHAIN: 'auto' };
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
@@ -16,6 +19,8 @@ export default async function globalSetup() {
   if (!fs.existsSync(chromium.executablePath())) {
     throw new Error(`the Chromium this Playwright needs is not installed (${chromium.executablePath()}): run \`make e2e-setup\` once`);
   }
+  fs.mkdirSync(OUT, { recursive: true });
+  const release = takeLock(path.join(OUT, 'lock'));
   fs.rmSync(BIN, { recursive: true, force: true });
   // A failed test keeps its root for debugging, until the next run.
   fs.rmSync(path.join(OUT, 'runs'), { recursive: true, force: true });
@@ -64,6 +69,7 @@ export default async function globalSetup() {
   // exactly as it went in.
   const before = fingerprint(path.join(os.homedir(), '.bazel'));
   return () => {
+    release();
     const after = fingerprint(path.join(os.homedir(), '.bazel'));
     if (after !== before) throw new Error(`isolation broken: ~/.bazel changed during the e2e run\nbefore: ${before}\nafter:  ${after}`);
   };

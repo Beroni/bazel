@@ -2,7 +2,8 @@ import path from 'node:path';
 
 export const E2E = path.resolve(__dirname, '..');
 export const REPO = path.resolve(E2E, '..');
-export const OUT = path.join(E2E, '.out');
+/** Everything a run writes. E2E_OUT (relative to the repo root) lets two runs coexist. */
+export const OUT = process.env.E2E_OUT ? path.resolve(REPO, process.env.E2E_OUT) : path.join(E2E, '.out');
 /**
  * The Bazel source tree under test. Defaults to this repo; point it at another
  * checkout (E2E_BAZEL_SRC=../bases/redesign, relative to the repo root) to run

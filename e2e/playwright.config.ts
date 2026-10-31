@@ -1,4 +1,6 @@
+import path from 'node:path';
 import { defineConfig, devices } from '@playwright/test';
+import { OUT } from './harness/paths';
 
 // Every test boots its own Bazel (own BAZEL_HOME, HOME, PATH and port), so the
 // suite runs fully parallel; 6 workers keep `make e2e` under ~30s on an
@@ -6,7 +8,7 @@ import { defineConfig, devices } from '@playwright/test';
 // opens 127.0.0.1.
 export default defineConfig({
   testDir: './tests',
-  outputDir: './.out/results',
+  outputDir: path.join(OUT, 'results'),
   globalSetup: './harness/global-setup.ts',
   fullyParallel: true,
   workers: process.env.E2E_WORKERS ? Number(process.env.E2E_WORKERS) : 6,
@@ -14,9 +16,9 @@ export default defineConfig({
   retries: 0,
   // Generous on purpose: the laptop is shared with other agents, and a
   // passing test never waits for these.
-  timeout: 60_000,
+  timeout: 120_000,
   expect: { timeout: 10_000 },
-  reporter: [['list'], ['html', { outputFolder: './.out/report', open: 'never' }]],
+  reporter: [['list'], ['html', { outputFolder: path.join(OUT, 'report'), open: 'never' }]],
   use: {
     ...devices['Desktop Chrome'],
     headless: true,
