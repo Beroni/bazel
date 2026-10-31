@@ -29,7 +29,7 @@ func (c *Config) Save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	data, base, err := c.merged(path)
@@ -162,10 +162,51 @@ func writeAtomic(path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return err
-	}
+	// CreateTemp's 0600 is what it should be: an agent's env may hold a token.
 	return os.Rename(tmp.Name(), path)
+}
+
+// Redacted is config.yaml safe to show or hand over: the values under every
+// `env:` go, and the names stay, so that it still says what an agent needs. It
+// works on the text, not the struct, because this is the file the page shows.
+func Redacted(data []byte) ([]byte, error) {
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil, err
+	}
+	if len(doc.Content) == 0 {
+		return data, nil
+	}
+	redactEnv(doc.Content[0])
+	var out bytes.Buffer
+	enc := yaml.NewEncoder(&out)
+	enc.SetIndent(2)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, err
+	}
+	if err := enc.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func redactEnv(n *yaml.Node) {
+	if n.Kind == yaml.MappingNode {
+		for i := 0; i+1 < len(n.Content); i += 2 {
+			if n.Content[i].Value == "env" && n.Content[i+1].Kind == yaml.MappingNode {
+				env := n.Content[i+1]
+				for j := 1; j < len(env.Content); j += 2 {
+					env.Content[j] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "<redacted>"}
+				}
+				continue
+			}
+			redactEnv(n.Content[i+1])
+		}
+		return
+	}
+	for _, c := range n.Content {
+		redactEnv(c)
+	}
 }
 
 // Copy is a config that shares no list with c: what an edit of the page can

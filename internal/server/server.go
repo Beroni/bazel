@@ -1041,6 +1041,11 @@ func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
 		return
 	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
+		return
+	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="config.yaml"`)
 	w.Header().Set("Cache-Control", "no-store")
@@ -1077,6 +1082,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
+		return
+	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
 		return
 	}
 	s.cfgMu.Lock()

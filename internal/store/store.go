@@ -21,7 +21,9 @@ import (
 // pricing may be nil, in which case the cost comes from the Usage's CostUSD
 // field.
 func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Mode 0600 and 0700 from here on: a review quotes a PR's code, and the PR
+	// may be private.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	base := fmt.Sprintf("%s-%d-%s",
@@ -77,7 +79,7 @@ func writeNew(dir, base string, data []byte) (string, error) {
 			name = fmt.Sprintf("%s-%d.md", base, i)
 		}
 		path := filepath.Join(dir, name)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}

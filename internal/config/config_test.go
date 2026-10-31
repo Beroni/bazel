@@ -1587,3 +1587,32 @@ func TestSaveNaoPisaEmArquivoQuebrado(t *testing.T) {
 		t.Errorf("an empty file was overwritten: %s", data)
 	}
 }
+
+// What the page shows and hands over keeps env names and loses their values,
+// wherever an env sits; the file itself is the user's alone.
+func TestRedactedTiraOSegredos(t *testing.T) {
+	src := "# keep\nagent:\n  env:\n    TOKEN: s3cret\nagents:\n  - name: a\n    env:\n      KEY: hunter2\npost_agent:\n  env: {OTHER: abc123}\n"
+	out, err := Redacted([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, bad := range []string{"s3cret", "hunter2", "abc123"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q leaked:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{"TOKEN", "KEY", "OTHER", "# keep"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	if err := Default().Save(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path()
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("config mode: %v %v", info.Mode(), err)
+	}
+}

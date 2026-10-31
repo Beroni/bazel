@@ -2782,3 +2782,27 @@ func TestReviewSemDiscoNaoFicaMarcado(t *testing.T) {
 		t.Errorf("nothing left to save: %v", err)
 	}
 }
+
+// Neither the page nor the download carries an agent's env values.
+func TestConfigNaoEntregaEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Env = map[string]string{"TOKEN": "s3cret"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"/api/config", "/api/config/file"} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+route, nil))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "s3cret") || !strings.Contains(w.Body.String(), "TOKEN") {
+			t.Errorf("%s: %d %s", route, w.Code, w.Body)
+		}
+	}
+}

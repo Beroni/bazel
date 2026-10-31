@@ -78,3 +78,29 @@ func TestSaveDoMesmoPRAoMesmoTempoGuardaOsDois(t *testing.T) {
 		}
 	}
 }
+
+// A review quotes the PR's code: it is its owner's alone, like the folder.
+func TestReviewSoDoDono(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "reviews")
+	res := agent.Result{Body: "Body."}
+	res.PR.Repo, res.PR.Number = "acme/api", 7
+	path, err := Save(dir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copyPath, err := SavePublishCopy(dir, path, "Body.")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkPosted(dir, "acme/api#7"); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range []string{path, copyPath, filepath.Join(dir, marksFile)} {
+		if info, err := os.Stat(f); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("%s: %v %v", f, info.Mode(), err)
+		}
+	}
+	if info, _ := os.Stat(dir); info.Mode().Perm() != 0o700 {
+		t.Errorf("folder: %v", info.Mode())
+	}
+}

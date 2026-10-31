@@ -166,7 +166,7 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	marks[key] = fn(marks[key])
 	trim(marks)
 
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(marks, "", "  ")
@@ -186,9 +186,6 @@ func update(dir, key string, fn func(Mark) Mark) error {
 		err = cerr
 	}
 	if err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
