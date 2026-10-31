@@ -221,7 +221,7 @@ function drawBanner() {
   b.classList.toggle('alert', !!state.alert);
   b.append(el('span', null, msg));
   if (state.alert) {
-    const x = el('button', 'banner-x', '✕');
+    const x = tid(el('button', 'banner-x', '✕'), 'banner-dismiss');
     x.title = 'dismiss';
     x.setAttribute('aria-label', 'dismiss this message');
     x.addEventListener('click', clearAlert);

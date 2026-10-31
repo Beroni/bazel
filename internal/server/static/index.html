@@ -10,6 +10,7 @@
 <body>
 
 <header class="bar">
+  <h1 class="sr-only">Bazel</h1>
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
   <nav class="nav" id="nav">
     <a href="#/" data-page="dashboard" data-testid="nav-dashboard" class="on">Dashboard</a>
@@ -56,8 +57,8 @@
         <label class="check tiny"><input type="checkbox" id="hide-drafts" data-testid="pr-hide-drafts"> hide drafts</label>
       </div>
         <div class="row filters">
-        <select id="owner-filter" data-testid="pr-owner-filter" title="show only the PRs of one owner"></select>
-        <select id="repo-filter" data-testid="pr-repo-filter" title="show only the PRs of one repository"></select>
+        <select id="owner-filter" data-testid="pr-owner-filter" aria-label="owner" title="show only the PRs of one owner"></select>
+        <select id="repo-filter" data-testid="pr-repo-filter" aria-label="repository" title="show only the PRs of one repository"></select>
       </div>
       </div>
       <div class="chips" id="review-filter" data-testid="pr-review-filter" role="group" aria-label="filter by what Bazel has already reviewed">
@@ -73,7 +74,7 @@
         <label class="check tiny"><input type="checkbox" id="select-all" data-testid="pr-select-all"> <span id="sel-count">0 selected</span></label>
       </div>
       <div class="row">
-        <select id="agent" data-testid="agent-select" title="which agent runs over the ticked PRs"></select>
+        <select id="agent" data-testid="agent-select" aria-label="agent" title="which agent runs over the ticked PRs"></select>
         <button class="btn primary" id="run" data-testid="run-review" disabled>▶ Review</button>
       </div>
     </div>
@@ -99,11 +100,12 @@
   </section>
 </main>
 
-<section id="page-config" class="page config" hidden>
+<section id="page-config" class="page config" role="main" hidden>
   <!-- Two columns, as the design lays it out: what Bazel watches and what this
        machine has installed on the left; the agents built from it, the
        pipeline builder and the export on the right. -->
   <div class="config-body">
+    <h2 class="sr-only">Configuration</h2>
     <div id="stray" data-testid="stray-warning" class="stray" hidden></div>
     <div class="config-cols">
       <div class="config-col">
