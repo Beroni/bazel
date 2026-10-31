@@ -451,6 +451,14 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
   .viewer { padding: 18px; }
 }
 
+/* A short window has no height to split: the job keeps a size of its own and the
+   column scrolls, the queue going by above it. */
+@media (max-height: 640px) {
+  .pane.main { overflow-y: auto; }
+  .pane.main .viewer { flex: none; overflow: visible; }
+  .job { min-height: 520px; }
+}
+
 /* The card's ✕: quiet until the mouse gets to it — removing from the queue is
    a way out, not the card's main action. */
 .card-x {

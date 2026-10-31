@@ -591,6 +591,9 @@ function openPR(key) {
 }
 
 async function openJob(id) {
+  // Stacked over the review, the list leaves it no room. This is for the moment,
+  // not a choice to remember: the ☰ brings it back.
+  if (matchMedia('(max-width: 900px)').matches && !state.prsHidden) togglePRs(true, false);
   state.activePR = null;
   state.activeJob = id;
   state.activeSaved = null;
@@ -1677,12 +1680,13 @@ function updateReviewButton() {
 // togglePRs collapses the left list down to the hamburger strip and brings it
 // back. It is what gives the whole screen to the review, and the choice is kept
 // in the browser — collapsing again on every opened tab would be repeated work.
-function togglePRs(hide) {
+function togglePRs(hide, keep = true) {
   state.prsHidden = hide;
   document.querySelector('main').classList.toggle('no-prs', hide);
   const b = $('#toggle-prs');
   b.title = hide ? 'show the PR list' : 'hide the list (gives the review the full window)';
   b.setAttribute('aria-expanded', hide ? 'false' : 'true');
+  if (!keep) return;
   try {
     localStorage.setItem('bazel.prsHidden', hide ? '1' : '');
   } catch (err) {
