@@ -168,6 +168,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
+	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -743,6 +744,17 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 
 // handleDismiss is "keep it here": the card stops waiting for you to publish,
 // and nothing goes to the PR.
+// handleSaveAgain retries writing a finished review that failed to save.
+func (s *Server) handleSaveAgain(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.SaveAgain(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
+		return
+	}
+	s.invalidatePRs()
+	writeJSON(w, http.StatusOK, view)
+}
+
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {

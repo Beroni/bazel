@@ -2738,3 +2738,47 @@ func TestSaveFalhoNaoMudaAMemoria(t *testing.T) {
 		t.Errorf("the file changed")
 	}
 }
+
+// A review that could not be saved is not marked as reviewed, and it can still
+// be written: it was paid for, and memory is the only copy.
+func TestReviewSemDiscoNaoFicaMarcado(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "reviews")
+	if err := os.WriteFile(dir, nil, 0o644); err != nil { // a file where the folder goes
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.SavedTo != "" || !strings.Contains(done.Err, "could not save") {
+		t.Fatalf("job: %+v", done)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if marks := store.LoadMarks(dir); len(marks) != 0 {
+		t.Errorf("marked with nothing on disk: %v", marks)
+	}
+	again, err := m.SaveAgain(view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SavedTo == "" || again.Err != "" {
+		t.Errorf("after saving again: %+v", again)
+	}
+	if _, ok := store.LoadMarks(dir)[testPR(482).Key()]; !ok {
+		t.Error("saved, so it counts as reviewed")
+	}
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("nothing left to save: %v", err)
+	}
+}

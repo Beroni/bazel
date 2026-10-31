@@ -533,7 +533,9 @@ func (m *Manager) run(q queued) {
 	// recorded here is what later flags a change to the PR after the review.
 	var markErr error
 	switch {
-	case fresh:
+	// A review that did not reach the disk is not reviewed: with the mark, the
+	// list would say so long after the only copy, in memory, is gone.
+	case fresh && saveErr == nil:
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	case job.publish != nil:
 		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
@@ -591,6 +593,45 @@ func (m *Manager) run(q queued) {
 	}
 	m.mu.Unlock()
 	m.publish(job)
+}
+
+// SaveAgain retries writing a review that could not be saved when it ended. It
+// is still in memory and it was paid for: a full disk must not lose it.
+func (m *Manager) SaveAgain(id string) (jobView, error) {
+	m.mu.Lock()
+	job, ok := m.jobs[id]
+	if !ok {
+		m.mu.Unlock()
+		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
+	}
+	if job.History || job.publish != nil || job.SavedTo != "" || job.Result.Body == "" ||
+		(job.State != StateDone && job.State != StateFailed) {
+		m.mu.Unlock()
+		return jobView{}, refuse(http.StatusConflict, errors.New("that review has nothing to save"))
+	}
+	res, choice := job.Result, job.Choice
+	m.mu.Unlock()
+
+	path, err := store.Save(m.reviewsDir, res, m.runner.PricingTable)
+	if err != nil {
+		return jobView{}, err
+	}
+	markErr := store.MarkReviewed(m.reviewsDir, res, path)
+
+	m.mu.Lock()
+	job.SavedTo = path
+	job.State = StateDone
+	job.Err = ""
+	if markErr != nil {
+		job.Err = "done, but I could not update the reviewed index: " + markErr.Error()
+	}
+	if res.StoppedAt >= 0 && choice.Publishable && !choice.Posts {
+		_, _, bodyErr := agent.PublishableBody(res, choice)
+		job.AwaitsPublish = bodyErr == nil
+	}
+	m.mu.Unlock()
+	m.publish(job)
+	return m.mustView(id), nil
 }
 
 // desembrulha takes the report out of a ```markdown block — the body and each
