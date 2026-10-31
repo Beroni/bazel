@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -105,10 +106,46 @@ func ensurePRBase(ctx context.Context, dir, base string) error {
 // cloneEnv keeps the machine's git config out of the clone and the checkout.
 // They run before Neutralize and write the PR's files to disk: a filter or LFS
 // set up globally would run over them, with a .gitattributes and an .lfsconfig
-// the PR chose, and hooksPath would run from here too. gh brings its own
-// credentials with -c, so nothing needs that config to reach GitHub.
+// the PR chose, and hooksPath would run from here too.
+//
+// The one thing that config was also doing is authentication, so that comes back
+// on its own. gh passes its credentials only to the git commands it starts, and
+// a blobless clone fetches blobs later, from the `git checkout` underneath it and
+// from our own fetch: with no helper those fail on a private repository, or sit
+// at a password prompt until the clone times out.
 func cloneEnv() []string {
-	return append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1")
+	env := make([]string, 0, len(os.Environ())+8)
+	base := 0
+	for _, kv := range os.Environ() {
+		name, value, _ := strings.Cut(kv, "=")
+		switch name {
+		case "PATH":
+			kv = "PATH=" + absolutePath(value)
+		case "GIT_CONFIG_COUNT":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				base = n
+			}
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	for i, helper := range []string{"", "!gh auth git-credential"} {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=credential.helper", base+i), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", base+i, helper))
+	}
+	return append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+2))
+}
+
+// absolutePath drops the entries of a PATH that are relative: `.` or `bin` would
+// resolve inside the clone, and git would run the PR's own `ssh`.
+func absolutePath(path string) string {
+	kept := []string{}
+	for _, dir := range filepath.SplitList(path) {
+		if filepath.IsAbs(dir) {
+			kept = append(kept, dir)
+		}
+	}
+	return strings.Join(kept, string(os.PathListSeparator))
 }
 
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
