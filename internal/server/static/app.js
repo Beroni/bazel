@@ -378,12 +378,12 @@ function adoptInstance(id) {
     const v = clearViewer();
     if (hadOpen) {
       const note = el('div', 'placeholder');
-      note.append(el('p', null, 'The server restarted, and the job open here went with its queue.'),
-        el('p', 'dim', 'A finished review is still in the Saved tab, with what you unticked.'));
+      note.append(el('p', null, 'The server restarted. What was pending is back in the queue, paused.'),
+        el('p', 'dim', 'Open a card and click Run to start it. A finished review is in the Saved tab, with what you unticked.'));
       v.append(note);
     }
   }
-  if (lost) alertError(`The server restarted: its queue is gone (${lost} job${lost === 1 ? '' : 's'}). Finished reviews are in the Saved tab.`);
+  if (lost) alertError('The server restarted. What was pending came back paused and runs when you click Run; finished reviews are in the Saved tab.');
   renderJobs();
   resync();
 }
