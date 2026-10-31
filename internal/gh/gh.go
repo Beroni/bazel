@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os/exec"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -99,90 +101,20 @@ type ListOptions struct {
 type RepoError struct {
 	Repo string
 	Err  error
+	// Truncated says the listing worked and stopped at the limit: what came back
+	// is good, only not all of it.
+	Truncated bool
 }
 
-// ListPRs fetches the open PRs of all repos in parallel.
-// Repositories that fail become RepoError instead of aborting the listing.
+// ListPRs fetches the open PRs of all repos in parallel, one `gh pr list` each:
+// `gh search prs` does not know half of these fields. Repositories that fail
+// become RepoError instead of aborting the listing, and so does one with more
+// open PRs than the limit, marked Truncated.
 func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []RepoError) {
 	if opts.Limit <= 0 {
 		opts.Limit = 100
 	}
-
 	authors := lowerSet(opts.Authors)
-
-	// With several repos, try a single search with `gh search prs`. If it
-	// fails, fall back to the per-repo fan-out (keeps compatibility). The
-	// search error is passed on so the caller knows something went wrong.
-	if len(repos) > 1 {
-		prs, err := searchRepoPRs(ctx, repos, opts)
-		if err == nil {
-			all := make([]PR, 0, len(prs))
-			for _, pr := range prs {
-				if pr.IsDraft && !opts.IncludeDrafts {
-					continue
-				}
-				if len(authors) > 0 && !authors[strings.ToLower(pr.Author.Login)] {
-					continue
-				}
-				all = append(all, pr)
-			}
-			sort.Slice(all, func(i, j int) bool {
-				return all[i].UpdatedAt.After(all[j].UpdatedAt)
-			})
-			return all, nil
-		}
-		// BUG-04: pass the search error on so repositories with errors do not
-		// vanish silently. The fan-out below is still tried, but the single
-		// search's error goes along with it.
-		searchErr := err
-		var (
-			mu   sync.Mutex
-			all  []PR
-			errs []RepoError
-			wg   sync.WaitGroup
-			sem  = make(chan struct{}, 6)
-		)
-
-		for _, repo := range repos {
-			wg.Add(1)
-			go func(repo string) {
-				defer wg.Done()
-				sem <- struct{}{}
-				defer func() { <-sem }()
-
-				prs, err := listRepoPRs(ctx, repo, opts.Limit)
-				mu.Lock()
-				defer mu.Unlock()
-				if err != nil {
-					errs = append(errs, RepoError{Repo: repo, Err: err})
-					return
-				}
-				for _, pr := range prs {
-					if pr.IsDraft && !opts.IncludeDrafts {
-						continue
-					}
-					if len(authors) > 0 && !authors[strings.ToLower(pr.Author.Login)] {
-						continue
-					}
-					all = append(all, pr)
-				}
-			}(repo)
-		}
-		wg.Wait()
-
-		// Add the single search's error as a global one (empty repo = general
-		// error).
-		if searchErr != nil {
-			errs = append(errs, RepoError{Repo: "", Err: fmt.Errorf("gh search prs fallback: %w", searchErr)})
-		}
-
-		sort.Slice(all, func(i, j int) bool {
-			return all[i].UpdatedAt.After(all[j].UpdatedAt)
-		})
-		sort.Slice(errs, func(i, j int) bool { return errs[i].Repo < errs[j].Repo })
-		return all, errs
-	}
-
 	var (
 		mu   sync.Mutex
 		all  []PR
@@ -190,7 +122,6 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 		wg   sync.WaitGroup
 		sem  = make(chan struct{}, 6)
 	)
-
 	for _, repo := range repos {
 		wg.Add(1)
 		go func(repo string) {
@@ -198,18 +129,19 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
-			prs, err := listRepoPRs(ctx, repo, opts.Limit)
+			prs, full, err := listRepoPRs(ctx, repo, opts.Limit, slices.Sorted(maps.Keys(authors)))
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {
 				errs = append(errs, RepoError{Repo: repo, Err: err})
 				return
 			}
+			if full {
+				errs = append(errs, RepoError{Repo: repo, Truncated: true,
+					Err: fmt.Errorf("more than %d open PRs: showing the newest %d", opts.Limit, opts.Limit)})
+			}
 			for _, pr := range prs {
 				if pr.IsDraft && !opts.IncludeDrafts {
-					continue
-				}
-				if len(authors) > 0 && !authors[strings.ToLower(pr.Author.Login)] {
 					continue
 				}
 				all = append(all, pr)
@@ -225,56 +157,40 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 	return all, errs
 }
 
-func searchRepoPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, error) {
-	args := []string{"search", "prs", "--state", "open", "--json", prFields}
-	if opts.Limit > 0 {
-		args = append(args, "--limit", strconv.Itoa(opts.Limit))
+// listRepoPRs lists a repository's open PRs, one call per author when there is
+// a filter: the limit has to apply to that author's PRs, or the filter would run
+// over the newest PRs of everyone and could find none. full says a call came
+// back at the limit, so there may be more.
+func listRepoPRs(ctx context.Context, repo string, limit int, authors []string) (list []PR, full bool, err error) {
+	if len(authors) == 0 {
+		authors = []string{""}
 	}
-	query := ""
-	for _, repo := range repos {
-		if query != "" {
-			query += " "
+	seen := map[int]bool{}
+	for _, author := range authors {
+		args := []string{"pr", "list", "--repo", repo, "--state", "open", "--limit", strconv.Itoa(limit), "--json", prFields}
+		if author != "" {
+			args = append(args, "--author", author)
 		}
-		query += "repo:" + repo
-	}
-	args = append(args, "--")
-	if query != "" {
-		args = append(args, query)
-	}
-	out, err := run(ctx, "gh", args...)
-	if err != nil {
-		return nil, err
-	}
-	var prs []PR
-	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return nil, fmt.Errorf("unexpected response from gh search prs: %w", err)
-	}
-	for i := range prs {
-		if prs[i].Repo == "" {
-			prs[i].Repo = deriveRepoFromURL(prs[i].URL)
+		out, err := run(ctx, "gh", args...)
+		if err != nil {
+			return nil, false, err
+		}
+		var prs []PR
+		if err := json.Unmarshal([]byte(out), &prs); err != nil {
+			return nil, false, fmt.Errorf("resposta inesperada do gh: %w", err)
+		}
+		full = full || len(prs) >= limit
+		for _, pr := range prs {
+			// The server side filters by login; this keeps a gh that does not.
+			if author != "" && !strings.EqualFold(pr.Author.Login, author) || seen[pr.Number] {
+				continue
+			}
+			seen[pr.Number] = true
+			pr.Repo = repo
+			list = append(list, pr)
 		}
 	}
-	return prs, nil
-}
-
-func listRepoPRs(ctx context.Context, repo string, limit int) ([]PR, error) {
-	out, err := run(ctx, "gh", "pr", "list",
-		"--repo", repo,
-		"--state", "open",
-		"--limit", strconv.Itoa(limit),
-		"--json", prFields,
-	)
-	if err != nil {
-		return nil, err
-	}
-	var prs []PR
-	if err := json.Unmarshal([]byte(out), &prs); err != nil {
-		return nil, fmt.Errorf("resposta inesperada do gh: %w", err)
-	}
-	for i := range prs {
-		prs[i].Repo = repo
-	}
-	return prs, nil
+	return list, full, nil
 }
 
 // Diff returns the PR's unified diff, truncated at maxBytes.
@@ -291,8 +207,11 @@ func Diff(ctx context.Context, repo string, number int, maxBytes int) (string, b
 
 // Comment posts a comment on the PR.
 func Comment(ctx context.Context, repo string, number int, body string) error {
+	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, "gh", "pr", "comment", strconv.Itoa(number),
 		"--repo", repo, "--body-file", "-")
+	cmd.WaitDelay = ghWaitDelay
 	cmd.Stdin = strings.NewReader(body)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
@@ -340,8 +259,18 @@ func Get(ctx context.Context, repo string, number int) (PR, error) {
 	return pr, nil
 }
 
+// ghTimeout limits one gh call. Nothing here is worth waiting for longer, and a
+// gh stuck on the network would otherwise hold a worker or the list forever.
+var ghTimeout = 2 * time.Minute
+
+// ghWaitDelay is how long a killed gh gets to let go of its pipes.
+const ghWaitDelay = 5 * time.Second
+
 func run(ctx context.Context, name string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
+	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.WaitDelay = ghWaitDelay
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
@@ -366,19 +295,6 @@ func lowerSet(items []string) map[string]bool {
 		}
 	}
 	return m
-}
-
-func deriveRepoFromURL(urlStr string) string {
-	if urlStr == "" {
-		return ""
-	}
-	urlStr = strings.TrimPrefix(urlStr, "https://github.com/")
-	urlStr = strings.TrimPrefix(urlStr, "http://github.com/")
-	parts := strings.Split(urlStr, "/")
-	if len(parts) >= 2 {
-		return parts[0] + "/" + parts[1]
-	}
-	return ""
 }
 
 // detailFields is what the Overview needs beyond the list: the timeline, the
