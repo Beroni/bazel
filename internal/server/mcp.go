@@ -484,7 +484,7 @@ func (s *Server) mcpJobStatus(ctx context.Context, raw json.RawMessage) (map[str
 		if !ok {
 			return nil, fmt.Errorf("job %q not found", a.ID)
 		}
-		live := view.State == StateQueued || view.State == StateRunning
+		live := view.State == StateQueued || view.State == StateRunning || view.State == StatePaused
 		if !live || !time.Now().Before(deadline) {
 			// The HTML is for the page; the markdown body already is the review.
 			view.HTML = ""

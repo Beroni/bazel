@@ -111,6 +111,8 @@ type jobView struct {
 	// PR — the review's own card while the post agent runs, or the card of a
 	// publication coming from disk.
 	Publishing bool `json:"publishing,omitempty"`
+	// Publishes is why a paused job may write to the PR when it runs.
+	Publishes string `json:"publishes,omitempty"`
 	// Savable is the review SaveAgain can still write.
 	Savable    bool       `json:"savable,omitempty"`
 	LogLines   int        `json:"log_lines"`
@@ -187,6 +189,9 @@ func (j *Job) view() jobView {
 	}
 	if j.publish != nil {
 		v.Publishing = true
+	}
+	if j.State == StatePaused {
+		v.Publishes = j.Choice.PublishesBy()
 	}
 	v.AwaitsPublish = j.AwaitsPublish
 	v.History = j.History

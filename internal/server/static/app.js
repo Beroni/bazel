@@ -2049,6 +2049,7 @@ function jobHead(job) {
     const b = tid(el('button', 'btn small primary', '▶ Run'), 'job-resume');
     b.title = 'it was pending when Bazel stopped: nothing runs until you say so';
     b.addEventListener('click', async () => {
+      if (job.publishes && !confirm(`The agent "${job.agent}" ${job.publishes}: it can write on ${job.pr.key}. Run it anyway?`)) return;
       b.disabled = true;
       clearAlert();
       try {

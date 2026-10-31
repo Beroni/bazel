@@ -17,7 +17,8 @@ import (
 // The queue outlives the process as a file: what was pending when Bazel stopped
 // comes back on the next start, paused. Nothing runs or spends quota on its own
 // after a restart: a job waits for a click, and a publication never comes back,
-// because it needs someone who has just read what goes out.
+// because it needs someone who has just read what goes out. An agent that may
+// publish comes back only if it never started, and its click asks first.
 //
 // The file is plain JSON and safe to delete.
 const queueFileName = "queue.json"
@@ -33,16 +34,17 @@ type queuedJob struct {
 	Mine    bool   `json:"mine,omitempty"`
 }
 
-// pendingLocked is what the file must hold. An agent that publishes on its own
-// and has started may already have posted, and running it again would post
-// twice. Call with m.mu held.
+// pendingLocked is what the file must hold. An agent that may publish and has
+// started may already have posted, and running it again would post twice. That
+// is PublishesBy, the rule of whoever refuses, and not Posts, which is only what
+// was declared. Call with m.mu held.
 func (m *Manager) pendingLocked() []queuedJob {
 	out := []queuedJob{}
 	for _, id := range m.order {
 		j := m.jobs[id]
 		switch {
 		case j.publish != nil:
-		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && !j.Choice.Posts:
+		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && j.Choice.PublishesBy() == "":
 			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine})
 		}
 	}
@@ -102,7 +104,7 @@ func (m *Manager) RestoreQueue(path string) {
 	}
 	if err := json.Unmarshal(data, &saved); err != nil {
 		fmt.Fprintf(os.Stderr, "bazel: %s is not readable, starting with an empty queue: %v\n", path, err)
-		_ = os.Rename(path, path+".corrupt")
+		_ = os.Rename(path, fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano()))
 		return
 	}
 	m.mu.Lock()

@@ -346,8 +346,9 @@ What was queued or running when Bazel stopped comes back **paused**: the card is
 there, and nothing runs or spends quota until you click **Run**, or ask for the
 same review again. Agents are not started on their own. A publication never comes
 back, because it needs someone who has just read what goes out, and neither does
-an agent that publishes on its own and had already started, which may have
-posted. The saved review is where a publication starts over.
+an agent that may publish and had already started, which may have posted. One that
+never started comes back, and **Run** asks first. The saved review is where a
+publication starts over.
 
 The queue lives in `<BAZEL_HOME>/queue.json`, plain JSON, safe to delete.
 

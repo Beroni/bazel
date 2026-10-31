@@ -38,6 +38,7 @@ func TestFilaVoltaPausada(t *testing.T) {
 	home := t.TempDir()
 	mark := filepath.Join(t.TempDir(), "ran")
 	cfg := cfgFor(t, "sh", "-c", "touch "+mark+"; cat >/dev/null; sleep 30")
+	cfg.Agent.Prompt = "review {{number}}: do not publish anything to GitHub"
 	ctx, stop := context.WithCancel(context.Background())
 	srv := queueServer(ctx, t, cfg, home)
 	ch := srv.jobs.hub.Subscribe()
@@ -96,14 +97,44 @@ func TestPublicacaoNuncaVolta(t *testing.T) {
 	m := NewManager(context.Background(), cfgFor(t, "echo"), t.TempDir(), 1, false, NewHub())
 	poeJob(m, &Job{ID: "a", State: StateRunning, PR: testPR(1), publish: &publishInput{Path: "x"}})
 	poeJob(m, &Job{ID: "b", State: StateQueued, PR: testPR(2), publish: &publishInput{Path: "y"}})
-	poeJob(m, &Job{ID: "c", State: StateRunning, PR: testPR(3), Choice: config.Choice{Name: "post", Posts: true}})
-	poeJob(m, &Job{ID: "d", State: StateQueued, PR: testPR(4), Choice: config.Choice{Name: "post", Posts: true}})
+	declared := config.Choice{Name: "post", Posts: true, Steps: []config.ResolvedAgent{{Name: "post", Posts: true}}}
+	poeJob(m, &Job{ID: "c", State: StateRunning, PR: testPR(3), Choice: declared})
+	poeJob(m, &Job{ID: "d", State: StateQueued, PR: testPR(4), Choice: declared})
 	poeJob(m, &Job{ID: "e", State: StateDone, PR: testPR(5)})
+	// `--post` in the task with no `posts: true`: nothing declared, and it publishes.
+	post := config.Choice{Name: "lens", Steps: []config.ResolvedAgent{{Name: "lens", Task: "/review {{number}} --post"}}}
+	poeJob(m, &Job{ID: "f", State: StateRunning, PR: testPR(6), Choice: post})
 	m.mu.Lock()
 	pending := m.pendingLocked()
 	m.mu.Unlock()
 	if len(pending) != 1 || pending[0].PR.Number != 4 {
 		t.Errorf("pending: %+v", pending)
+	}
+}
+
+// The agent that may publish comes back saying so, for the click to ask first;
+// one that does not comes back with nothing to ask.
+func TestPausadoDizQuePublica(t *testing.T) {
+	post := config.Choice{Name: "lens", Steps: []config.ResolvedAgent{{Name: "lens", Task: "/review {{number}} --post"}}}
+	if v := (&Job{ID: "a", State: StatePaused, PR: testPR(1), Choice: post}).view(); !strings.Contains(v.Publishes, "--post") {
+		t.Errorf("view: %+v", v)
+	}
+	if v := (&Job{ID: "b", State: StateQueued, PR: testPR(1), Choice: post}).view(); v.Publishes != "" {
+		t.Errorf("only a paused job asks: %+v", v)
+	}
+}
+
+// Cancel takes a paused job off the queue instead of calling it finished.
+func TestCancelaPausado(t *testing.T) {
+	m := NewManager(context.Background(), cfgFor(t, "echo"), t.TempDir(), 1, false, NewHub())
+	poeJob(m, &Job{ID: "a", State: StatePaused, PR: testPR(1)})
+	if err := m.Cancel("a"); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.jobs["a"].State != StateCanceled || len(m.pendingLocked()) != 0 {
+		t.Errorf("state %s", m.jobs["a"].State)
 	}
 }
 
@@ -150,8 +181,8 @@ func TestFilaArquivoRuim(t *testing.T) {
 	if len(srv.jobViews()) != 0 {
 		t.Errorf("jobs: %v", srv.jobViews())
 	}
-	if _, err := os.Stat(path + ".corrupt"); err != nil {
-		t.Errorf("the bad file must stay: %v", err)
+	if aside, _ := filepath.Glob(path + ".corrupt-*"); len(aside) != 1 {
+		t.Errorf("aside: %v", aside)
 	}
 
 	name := cfg.DefaultChoice().Name

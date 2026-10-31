@@ -936,6 +936,12 @@ func (m *Manager) Cancel(id string) error {
 		return refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
 	switch job.State {
+	case StatePaused:
+		job.State = StateCanceled
+		job.FinishedAt = time.Now()
+		m.mu.Unlock()
+		m.publish(job)
+		return nil
 	case StateQueued:
 		// Cancelling a publication waiting in the queue does not cancel the
 		// review already in the card: it goes back to being a finished review.
