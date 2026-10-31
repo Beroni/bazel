@@ -1542,3 +1542,30 @@ func TestPublishPromptHasNoAuthorText(t *testing.T) {
 		t.Error("a config saved with the older wording still publishes")
 	}
 }
+
+// The plugin's skill, whatever the file says, and the file stays as it was: a saved
+// bare name is the old default, and a homonym would publish with none of the checks.
+func TestPostTaskIsThePlugins(t *testing.T) {
+	want := "/bazel:bazel-post-report {{review_file}}"
+	if got := Default().PostChoice().Steps[0].Task; got != want {
+		t.Errorf("default: %q", got)
+	}
+	for _, saved := range []string{"/bazel-post-report {{review_file}}", "/BAZEL-POST-REPORT {{review_file}}", want} {
+		c := Default()
+		c.PostAgent.Task = saved
+		if got := c.PostChoice().Steps[0].Task; got != want {
+			t.Errorf("%q runs as %q", saved, got)
+		}
+		if c.PostAgent.Task != saved {
+			t.Errorf("the config itself changed to %q: it would be saved", c.PostAgent.Task)
+		}
+		if got := c.PostSkill(); !strings.EqualFold(got, "bazel-post-report") {
+			t.Errorf("PostSkill = %q", got)
+		}
+	}
+	c := Default()
+	c.PostAgent.Task = "/post-report {{review_file}}"
+	if got := c.PostChoice().Steps[0].Task; got != c.PostAgent.Task {
+		t.Errorf("a post agent of the user's own runs as %q", got)
+	}
+}

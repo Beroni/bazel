@@ -363,7 +363,7 @@ func defaultPostAgent() AgentDef {
 	return AgentDef{
 		Name:        "bazel-post-report",
 		Description: "publishes the review you have just read, with inline comments",
-		Task:        "/bazel-post-report {{review_file}}",
+		Task:        "/bazel:bazel-post-report {{review_file}}",
 		Prompt:      publishPrompt,
 		Posts:       true,
 	}
@@ -1137,7 +1137,8 @@ func (c *Config) mentionsPublishing(text string) bool {
 	if publishCommandRe.MatchString(flat) {
 		return true
 	}
-	return strings.Contains(flat, "/"+flatten(skills.TaskSkill(defaultPostAgent().Task)))
+	post := flatten(skills.Bare(skills.TaskSkill(defaultPostAgent().Task)))
+	return strings.Contains(flat, "/"+post) || strings.Contains(flat, ":"+post)
 }
 
 func validateFormat(format string) error {
@@ -1332,7 +1333,7 @@ func (c *Config) PostSkill() string {
 	if strings.TrimSpace(post.Name) == "" {
 		post = defaultPostAgent()
 	}
-	return skills.TaskSkill(post.Task)
+	return skills.Bare(skills.TaskSkill(post.Task))
 }
 
 // isPostAgent reports whether an agent in the list is the post agent in
@@ -1357,7 +1358,7 @@ func (c *Config) isPostAgent(a AgentDef) bool {
 	if strings.EqualFold(strings.TrimSpace(post.Name), name) {
 		return true
 	}
-	if skill := skills.TaskSkill(a.Task); skill != "" && strings.EqualFold(skill, skills.TaskSkill(defaultPostAgent().Task)) {
+	if skill := skills.Bare(skills.TaskSkill(a.Task)); skill != "" && strings.EqualFold(skill, skills.Bare(skills.TaskSkill(defaultPostAgent().Task))) {
 		return true
 	}
 	shape := taskShape(post.Task)
@@ -1547,6 +1548,9 @@ func (c *Config) PostChoice() Choice {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
+	// Here and not when the config loads: a config saved with the bare name works
+	// the same, and the file is never rewritten.
+	ra.Task = skills.PostTask(ra.Task)
 	// Unless told otherwise, publishing clones: an inline comment needs the
 	// diff to find the line. Whoever wrote `checkout: false` in post_agent
 	// knows what they are doing — an agent that only calls the GitHub API does

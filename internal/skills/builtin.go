@@ -63,7 +63,7 @@ func IsBuiltin(name string) bool {
 // ignoring case — one normalization for every caller, so IsBuiltin and Inline
 // can never disagree about whether a task calls a built-in.
 func builtinNamed(name string) (Skill, bool) {
-	name = strings.TrimPrefix(strings.TrimSpace(name), "/")
+	name = Bare(strings.TrimPrefix(strings.TrimSpace(name), "/"))
 	for _, s := range Builtin() {
 		if strings.EqualFold(s.Name, name) {
 			return s, true
@@ -80,11 +80,42 @@ func builtinNamed(name string) (Skill, bool) {
 func Canonical(task string) string {
 	name := TaskSkill(task)
 	s, ok := builtinNamed(name)
-	if !ok || name == s.Name {
+	if !ok {
+		return task
+	}
+	want := s.Name
+	if Bare(name) != name {
+		want = pluginPrefix + s.Name
+	}
+	if name == want {
 		return task
 	}
 	trimmed := strings.TrimSpace(task)
-	return "/" + s.Name + trimmed[1+len(name):]
+	return "/" + want + trimmed[1+len(name):]
+}
+
+// pluginPrefix is how Claude Code names a skill of Bazel's plugin. The bare name
+// goes to any skill of that name the user or the project has; this one does not.
+const pluginPrefix = "bazel:"
+
+// Bare is a skill's name without the plugin's prefix.
+func Bare(name string) string {
+	if len(name) > len(pluginPrefix) && strings.EqualFold(name[:len(pluginPrefix)], pluginPrefix) {
+		return name[len(pluginPrefix):]
+	}
+	return name
+}
+
+// PostTask points a task at the plugin's own publishing skill, whatever a saved
+// config calls it: a homonym would publish with none of the script's checks. Any
+// other task comes back as it was.
+func PostTask(task string) string {
+	if !IsPost(task) {
+		return task
+	}
+	name := TaskSkill(task)
+	trimmed := strings.TrimSpace(task)
+	return "/" + pluginPrefix + postSkill + trimmed[1+len(name):]
 }
 
 // Materialize writes the embedded skills into dir as a Claude Code plugin —
@@ -144,7 +175,7 @@ const postSkill = "bazel-post-report"
 
 // IsPost says whether a task runs the built-in publishing skill.
 func IsPost(task string) bool {
-	return strings.EqualFold(TaskSkill(task), postSkill)
+	return strings.EqualFold(Bare(TaskSkill(task)), postSkill)
 }
 
 // PublishTarget leaves in the plugin folder the PR a publishing step is for. The

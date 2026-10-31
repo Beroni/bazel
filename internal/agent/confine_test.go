@@ -388,7 +388,7 @@ func TestPublishIsConfined(t *testing.T) {
 		}
 	}
 	prompt, _ := os.ReadFile(filepath.Join(state, "prompt"))
-	if !strings.Contains(string(prompt), "/bazel-post-report /reviews/publish/copy.md") {
+	if !strings.Contains(string(prompt), "/bazel:bazel-post-report /reviews/publish/copy.md") {
 		t.Errorf("the post agent should get the trimmed copy:\n%s", prompt)
 	}
 	if _, err := os.Stat(filepath.Join(state, "hook-ran")); err == nil {

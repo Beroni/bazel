@@ -521,7 +521,7 @@ pipelines: []
 # Who takes an already-read review to the PR.
 post_agent:
   name: bazel-post-report
-  task: /bazel-post-report {{review_file}}
+  task: /bazel:bazel-post-report {{review_file}}
   posts: true
 
 # Who writes the History tab. Optional: the default runs /bazel-history-pr {{number}}

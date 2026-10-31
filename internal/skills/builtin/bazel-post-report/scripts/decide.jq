@@ -33,6 +33,10 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
 | ($all | map(select(.destination == "duplicate"))) as $dups
 | ($all | map(select(.destination == "settled"))) as $settled
 | (($all | length) == 0 and $p.human == "" and $p.extra == "" and $p.failed == []) as $clean
+# Everything in the report is already on the PR, in this account's own comments:
+# a review would say nothing, and a 👍 on your own comment means nothing.
+| (($all | length) > 0 and $p.human == "" and $p.extra == "" and $p.failed == []
+   and all($all[]; .destination == "duplicate" and .match.user == $p.me)) as $repeated
 # An all-clear says the whole diff was looked at and nothing came out of it. Each
 # of these takes that away, and none of them shows as a finding.
 | ([(if $moved then "the PR moved after the review" else empty end),
@@ -56,7 +60,9 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
   (if $moved then "\n\n> Reviewed at `\($sha[0:7])`; the PR has moved to `\($head[0:7])` since, so nothing here is line-anchored and this says nothing about the newer commits."
    elif ($p.sha_proven | not) then "\n\n> The reviewed commit could not be proven, so nothing here is line-anchored."
    else "" end) as $note
-| ( if $clean and $p.verdict == "approve" and ($p.trimmed | not) and $unproven == [] then
+| ( if $repeated then
+      {kind: "nothing", why: "every finding is already on the PR, in this account's own comments"}
+    elif $clean and $p.verdict == "approve" and ($p.trimmed | not) and $unproven == [] then
       {kind: "all-clear",
        body: "## Automated review — Bazel · no findings\n\n\(coverage)\n\nReviewed at `\($sha[0:7])`.\n\n<!-- review-fleet: all-clear @ \($sha) -->"}
     elif $clean and ($p.verdict != "approve" or $p.trimmed) then
@@ -81,7 +87,7 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
 | $what + {
     comments: ($inline | map(comment)),
     bodied: ($bodied | map({id, title, path, line})),
-    reactions: ($dups | map(.match.comment_id)),
+    reactions: ($dups | map(select(.match.user != $p.me) | .match.comment_id)),
     counts: {inline: ($inline | length), body: ($bodied | length), duplicates: ($dups | length), settled: ($settled | length)},
     settled: ($settled | map({path, line, level: level, by: .match.settled_by})),
     duplicates: ($dups | map({path, line, user: .match.user}))}

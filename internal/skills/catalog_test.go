@@ -290,3 +290,29 @@ func TestCanonical(t *testing.T) {
 		}
 	}
 }
+
+func TestPluginNames(t *testing.T) {
+	cases := map[string]string{
+		"/bazel:bazel-post-report /r.md": "/bazel:bazel-post-report /r.md",
+		"/BAZEL:BAZEL-POST-REPORT /r.md": "/bazel:bazel-post-report /r.md",
+		"/bazel-post-report /r.md":       "/bazel-post-report /r.md",
+	}
+	for in, want := range cases {
+		if got := Canonical(in); got != want {
+			t.Errorf("Canonical(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if !IsPost("/bazel:bazel-post-report /r.md") || !IsBuiltin("bazel:bazel-post-report") || IsPost("/other:bazel-post-report") {
+		t.Error("the plugin's name is the skill's name")
+	}
+	if got := PostTask("/bazel-post-report /r.md"); got != "/bazel:bazel-post-report /r.md" {
+		t.Errorf("PostTask = %q", got)
+	}
+	if got := PostTask("/post-report /r.md"); got != "/post-report /r.md" {
+		t.Errorf("PostTask must leave the user's own alone: %q", got)
+	}
+	got := Inline("/bazel:bazel-post-report /r.md", "/rt")
+	if !strings.Contains(got, "Arguments: /r.md") || !strings.Contains(got, "# Bazel Post Report") {
+		t.Errorf("inlined: %.200s", got)
+	}
+}

@@ -1210,3 +1210,85 @@ func TestInlineCommentHidesNothing(t *testing.T) {
 		}
 	})
 }
+
+// Published once, a report is on the PR. A second run of the same report finds its
+// own comments as candidates, and without care that is a second review made of
+// nothing but 👍 on them.
+func TestTheSameReportIsNotPublishedTwice(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	comment := func(id int, user, association string) string {
+		return fmt.Sprintf(`{"id":%d,"path":"a.go","line":2,"body":"x","user":{"login":%q},"author_association":%q,"html_url":"https://github.invalid/c"}`, id, user, association)
+	}
+	own := func(w *world) {
+		p := w.payload(0)
+		w.write("reviews", mustJSON(t, []map[string]any{{"user": map[string]string{"login": "me"}, "body": p.Body}})+"\n")
+		w.write("comments", "["+comment(11, "me", "OWNER")+"]\n")
+		os.Remove(filepath.Join(w.dir, "writes"))
+		os.Remove(filepath.Join(w.dir, "payload0.json"))
+	}
+	t.Run("the same head and findings", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(report))
+		own(w)
+		out, code := w.run("publish", w.prepare(report), "--same", "1=11")
+		if code != 0 || w.wrote() || !strings.Contains(out, "already on the PR") {
+			t.Errorf("exit %d, wrote %v\n%s", code, w.wrote(), out)
+		}
+		if _, err := os.Stat(filepath.Join(w.dir, "writes")); err == nil {
+			t.Error("no POST at all, 👍 included")
+		}
+	})
+	t.Run("the same report, with a question nobody has answered", func(t *testing.T) {
+		asked := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") +
+			"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n")
+		w := newWorld(t)
+		w.run("publish", w.prepare(asked))
+		own(w)
+		out, code := w.run("publish", w.prepare(asked), "--same", "1=11")
+		if code != 0 || w.wrote() || !strings.Contains(out, "same review") {
+			t.Errorf("the finding moved, the report did not: exit %d, wrote %v\n%s", code, w.wrote(), out)
+		}
+	})
+	t.Run("the same findings in another run of the agent", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(report))
+		own(w)
+		other := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One again", "a.go", 2, "Worded differently."))
+		out, code := w.run("publish", w.prepare(other), "--same", "1=11")
+		if code != 0 || w.wrote() || !strings.Contains(out, "already on the PR") {
+			t.Errorf("exit %d, wrote %v\n%s", code, w.wrote(), out)
+		}
+	})
+	t.Run("something new still goes, with no 👍 on your own", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("comments", "["+comment(11, "me", "OWNER")+"]\n")
+		more := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n" + finding("Two", "gone.go", 9, "New."))
+		w.run("publish", w.prepare(more), "--same", "1=11")
+		data, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
+		if strings.Contains(string(data), "reactions") {
+			t.Errorf("a 👍 on your own comment: %s", data)
+		}
+		if !strings.Contains(w.payload(0).Body, "#### Two") {
+			t.Error("the new finding is the point of this review")
+		}
+	})
+	t.Run("someone else's comment still gets the 👍", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("comments", "["+comment(11, "alice", "MEMBER")+"]\n")
+		w.run("publish", w.prepare(report), "--same", "1=11")
+		data, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
+		if !strings.Contains(string(data), "comments/11/reactions") {
+			t.Errorf("writes: %s", data)
+		}
+	})
+	t.Run("a different selection is another review", func(t *testing.T) {
+		two := header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n" + finding("Two", "gone.go", 9, "New.")
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(two)))
+		own(w)
+		w.run("publish", w.prepare(bazelFile(store.DropFindings(two, []int{0}))))
+		if !w.wrote() {
+			t.Error("what a person kept this time was not published before as such")
+		}
+	})
+}
