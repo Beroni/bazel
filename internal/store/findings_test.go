@@ -374,3 +374,15 @@ func TestNegritoAninhadoNaoAbreAchado(t *testing.T) {
 		t.Errorf("after the untick:\n%s", got)
 	}
 }
+
+// Bold findings with no blank line between them are two findings, though
+// markdown reads one paragraph: unticking one must not take the other along.
+func TestNegritoSemLinhaEmBranco(t *testing.T) {
+	body := "## Findings\n\n**1. major · First**\nIts text.\n**2. minor · Second**\nKept.\n"
+	if n := Findings(body); n != 2 {
+		t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+	}
+	if got := DropFindings(body, []int{0}); strings.Contains(got, "First") || !strings.Contains(got, "Kept.") {
+		t.Errorf("after the untick:\n%s", got)
+	}
+}

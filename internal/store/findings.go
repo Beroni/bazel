@@ -130,7 +130,7 @@ func SplitFindings(body string) []Part {
 var blockParser = parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...))
 
 // blockLines says, line by line, which are headings at the top of the document,
-// which start a paragraph there, and which belong to a code or HTML block. A line that merely looks like a
+// which are text at that level, and which belong to a code or HTML block. A line that merely looks like a
 // heading, such as `# install it` in indented code or in a list item, must not
 // close a finding: what came after it would survive an untick and go to the PR.
 func blockLines(body string, lines []string) (headings, literal, paragraphs map[int]bool) {
@@ -164,8 +164,16 @@ func blockLines(body string, lines []string) (headings, literal, paragraphs map[
 		}
 		switch b := n.(type) {
 		case *ast.Paragraph:
-			if topLevel(b, doc) && b.Lines().Len() > 0 {
-				paragraphs[lineOf(b.Lines().At(0).Start)] = true
+			// Every line of a paragraph at the top: `**2. …**` right under
+			// `**1. …**`, with no blank line, is markdown's same paragraph and
+			// still the next finding. In a list item, only its first line.
+			if !topLevel(b, doc) {
+				break
+			}
+			for i := 0; i < b.Lines().Len(); i++ {
+				if i == 0 || b.Parent() == doc {
+					paragraphs[lineOf(b.Lines().At(i).Start)] = true
+				}
 			}
 		case *ast.Heading:
 			if b.Parent() == doc && b.Lines().Len() > 0 {
