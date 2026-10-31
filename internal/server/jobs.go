@@ -523,7 +523,7 @@ func (m *Manager) run(q queued) {
 		saveErr error
 	)
 	if fresh {
-		path, saveErr = store.Save(m.reviewsDir, res, m.runner.PricingTable)
+		path, saveErr = store.Save(m.reviewsDir, agent.Split(res, job.Choice), m.runner.PricingTable)
 	}
 	if job.History {
 		path, saveErr = store.SaveHistory(m.reviewsDir, res.PR.Repo, res.PR.Number, res.PR.HeadRefOid, res.Body)
@@ -953,11 +953,12 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 // previous session, opened in the saved tab. It is the same path as
 // PublishWithAgent, but starting from the file: a review outlives the server,
 // and the chance to publish it has to outlive it too.
-func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []int) (jobView, error) {
+func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []int, trimmed bool) (jobView, error) {
 	if strings.TrimSpace(path) == "" {
 		return jobView{}, errors.New("no review file to publish")
 	}
-	in, err := m.publishInputFor(path, body, skip, false)
+	// trimmed: the file holds more than body, and the post agent reads a file.
+	in, err := m.publishInputFor(path, body, skip, trimmed)
 	if err != nil {
 		return jobView{}, err
 	}

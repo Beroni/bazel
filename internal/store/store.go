@@ -56,7 +56,13 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 		b.WriteString("- ⚠️ The diff was truncated before it reached the agent.\n")
 	}
 	b.WriteString("\n---\n\n")
-	b.WriteString(res.Body)
+	if res.Keeps {
+		b.WriteString(res.Publish)
+		b.WriteString("\n\n" + staysMarker + "\n\n")
+		b.WriteString(res.Stays)
+	} else {
+		b.WriteString(res.Body)
+	}
 	b.WriteString("\n")
 
 	return writeNew(dir, base, []byte(b.String()))
@@ -250,10 +256,31 @@ func PRFromTitle(title string) (string, int) {
 // ReviewBody is the report inside a saved review, without the header that
 // Save wrote — it is the text the agent produced, and it is what goes to the PR.
 func ReviewBody(file string) string {
-	if _, corpo, ok := strings.Cut(file, "\n---\n"); ok {
-		return strings.TrimSpace(Unwrap(corpo))
+	pub, _, _ := SplitBody(file)
+	return pub
+}
+
+// staysMarker divides a saved review whose steps do not all publish: above it
+// what may go to the PR, below it what stays in Bazel. An agent that writes the
+// marker itself only moves its own text to the side that does not go out.
+const staysMarker = "<!-- bazel:stays-in-bazel -->"
+
+// SplitFile is SplitBody for the screen: the file with its header, up to the
+// marker, and what stays.
+func SplitFile(file string) (head, stays string, split bool) {
+	head, stays, split = strings.Cut(file, staysMarker)
+	return head, strings.TrimSpace(stays), split
+}
+
+// SplitBody cuts a saved review into what may go to the PR and what stays. split
+// says the file was saved with the marker.
+func SplitBody(file string) (publish, stays string, split bool) {
+	body := file
+	if _, after, ok := strings.Cut(file, "\n---\n"); ok {
+		body = after
 	}
-	return strings.TrimSpace(Unwrap(file))
+	pub, rest, split := strings.Cut(body, staysMarker)
+	return strings.TrimSpace(Unwrap(pub)), strings.TrimSpace(rest), split
 }
 
 // header reads the title and the agent of a saved review without loading the

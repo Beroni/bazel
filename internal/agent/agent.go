@@ -84,8 +84,14 @@ type Result struct {
 	// going to publish again on top of it needs to know.
 	Posts bool
 	// Body is the report: the single step's output, or the steps concatenated.
-	Body  string
-	Steps []StepResult
+	Body string
+	// Publish and Stays hold Body split by what may go to the PR, when a step
+	// of the choice stays in Bazel; see Result.Split. Unsplit, both are empty
+	// and Keeps is false.
+	Publish string
+	Stays   string
+	Keeps   bool
+	Steps   []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -763,6 +769,22 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 		return "", true, err
 	}
 	return body, true, nil
+}
+
+// Split records in res what may go to the PR, for whoever keeps the review past
+// this process: the policy is the one this run had, and the config may say
+// something else tomorrow.
+func Split(res Result, choice config.Choice) Result {
+	body, split, err := PublishableBody(res, choice)
+	if !split {
+		return res
+	}
+	res.Keeps = true
+	if err == nil {
+		res.Publish = body
+	}
+	res.Stays = ContextBody(res, choice)
+	return res
 }
 
 // ContextBody is the flip side of PublishableBody: the body of the steps that
