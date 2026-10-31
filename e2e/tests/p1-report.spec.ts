@@ -97,7 +97,8 @@ test.describe('P1 · tokens and quota', () => {
   test('quota from rate_limit_event: hidden on a fresh server, then "claude session 86% · week 16%"', async ({ app, bazel }) => {
     const fresh = (await bazel.api('GET', '/api/state')).json.limits;
     expect(fresh?.session?.utilization ?? 0).toBe(0);
-    await expect(ui.quota(app)).toBeHidden();
+    // The popover opens on hover, so out of hover toBeHidden could not fail.
+    await expect(ui.quota(app)).toHaveAttribute('hidden', '');
 
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');

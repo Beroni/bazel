@@ -315,6 +315,9 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   // wrote. Commands that change a PR or a repository are denied by name, whatever
   // the PR talks the agent into. Only a step of the user's own that publishes
   // keeps what publishing takes; bazel-post-report calls gh from its script.
+  // That script only exists on feat/builtin-skills: on master the skill publishes
+  // with these same commands, so this list must not land before it, or inline
+  // publishing breaks with this suite green. Lift the knownBug with that merge.
   test('an agent cannot merge, push or publish by itself', async ({ bazel }) => {
     knownBug('SEC-07', 'no deny list on the agent\'s commands');
     const { id } = await reviewRuns(bazel, 'review-fleet');

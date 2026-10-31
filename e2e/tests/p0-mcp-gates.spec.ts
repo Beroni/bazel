@@ -52,7 +52,7 @@ test.describe('P0 · MCP refuses anything that could publish', () => {
     const id = q.out.jobs[0].id;
     expect(q.out.jobs[0].pr.key).toBe('acme/api-core#101'); // rewritten with the config's spelling
 
-    const st = await bazel.tool('job_status', { id, wait_seconds: 10 });
+    const st = await bazel.tool('job_status', { id, wait_seconds: 30 }); // room for the first clone
     expect(st.out.job.state).toBe('done');
     expect(st.out.job.body).toContain('E2E-FINDING-ONE');
     expect(st.out.job.html ?? '').toBe('');
