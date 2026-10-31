@@ -1528,3 +1528,17 @@ func TestAddingABuiltin(t *testing.T) {
 		t.Errorf("a review stays publishable: %+v, %v", def, err)
 	}
 }
+
+// The publishing prompt reaches a model with write access, so it holds nothing the
+// PR's author wrote. The review comes from the file, and only the script reads it.
+func TestPublishPromptHasNoAuthorText(t *testing.T) {
+	for _, p := range []string{"{{title}}", "{{body}}", "{{branch}}", "{{author}}", "{{base}}"} {
+		if strings.Contains(Default().PostChoice().Steps[0].Prompt, p) {
+			t.Errorf("the prompt carries %s", p)
+		}
+	}
+	old := "**Do not redo the review and do not invent new findings**: publish what is in the file.\n\nPR: {{title}}"
+	if !promptAuthorizesPosting(old) {
+		t.Error("a config saved with the older wording still publishes")
+	}
+}

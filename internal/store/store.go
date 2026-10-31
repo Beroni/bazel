@@ -69,6 +69,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
 	if res.Truncated {
+		// The first line is for the publisher, which has no say in the wording of
+		// the second.
+		b.WriteString("- Truncated: yes\n")
 		b.WriteString("- ⚠️ The diff was truncated before it reached the agent.\n")
 	}
 	b.WriteString("\n---\n\n")

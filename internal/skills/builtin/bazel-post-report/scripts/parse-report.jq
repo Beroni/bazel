@@ -47,9 +47,16 @@ def line($l; $next; $steps):
     elif .after == "verdict" and ($t | startswith("**Verdict:** ")) then
       ([$t | capture("^\\*\\*Verdict:\\*\\* +(?<v>[a-z_]+)( |$)")] | first | .v?) as $said
       | (if $said == .headers[-1].verdict then . else .deny += ["a report's summary line says another verdict than its header"] end)
+      | .headers[-1].exact = ($t == "**Verdict:** approve · no findings")
       | .after = "scope"
-    elif .after == "scope" and ($t | startswith("**Scope:** ")) then .after = "lenses"
-    elif .after == "lenses" and ($t | startswith("**Lenses:** ")) then .after = null | .headers[-1].complete = true
+    elif .after == "scope" and ($t | startswith("**Scope:** ")) then
+      .headers[-1] as $h
+      | .headers[-1].exact = ($h.exact and $t == "**Scope:** `\($h.scope_cmd)` — \($h.files) files · base `\($h.base)` · head `\($h.head_sha[0:7])`")
+      | .after = "lenses"
+    elif .after == "lenses" and ($t | startswith("**Lenses:** ")) then
+      .headers[-1] as $h
+      | .headers[-1].exact = ($h.exact and $t == "**Lenses:** \($h.lenses_ran)\(if $h.lenses_skipped == "none" then "" else " (skipped: \($h.lenses_skipped))" end)")
+      | .after = null | .headers[-1].complete = true
     else .after = null | line($l; $next; $steps) end;
   ($l | strip) as $t
   | if .mode == "header" then
@@ -140,8 +147,10 @@ def line($l; $next; $steps):
    # What an all-clear rests on. Each of these has to be shown, none is assumed.
    steps_proven: ($steps != null),
    complete: all(.headers[]; .complete == true),
+   # Word for word what the header says, or the summary carries prose of its own.
+   exact: all(.headers[]; .exact == true),
    trimmed: any($bazel[]; startswith("- Trimmed: ")),
-   truncated: any($bazel[]; contains("The diff was truncated")),
+   truncated: any($bazel[]; startswith("- Truncated: ")),
    scope_real: all(.headers[]; .scope_cmd != "-"),
    lenses_real: all(.headers[]; .lenses_ran != "-"),
    verdict: (if any($v[]; . == "request_changes") then "request_changes"

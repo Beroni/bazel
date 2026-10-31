@@ -238,7 +238,8 @@ func flatten(text string) string {
 // its own words. "Not authorized to publish" says the opposite.
 func promptAuthorizesPosting(prompt string) bool {
 	flat := flatten(prompt)
-	if flat == flatten(postPrompt) || flat == flatten(publishPrompt) {
+	// The sentence, not the whole template: a config can hold an older wording.
+	if flat == flatten(postPrompt) || strings.Contains(flat, flatten("Do not redo the review and do not invent new findings")) {
 		return true
 	}
 	return strings.Contains(strings.ReplaceAll(flat, "not authorized to publish", ""), "authorized to publish")
@@ -321,11 +322,13 @@ published on the PR.`
 // publishPrompt is the template for whoever publishes an already written
 // review. The instruction that matters is the last one: do not redo the review,
 // publish what is in the file — that is what you read on screen before sending.
+// It carries nothing the PR's author wrote: title, branch and author name reach a
+// model with write access here, and publishing does not need them.
 const publishPrompt = `{{task}}
 
 The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
-#{{number}} already checked out on branch ` + "`{{branch}}`" + ` over base ` + "`{{base}}`" + `.
-This is a throwaway clone: read freely, but do not edit files and do not commit.
+#{{number}} already checked out. This is a throwaway clone: read freely, but do
+not edit files and do not commit.
 
 The review is already done and has been read — it is in {{review_file}}. Publish
 it on PR #{{number}} of {{repo}}: a single review, with inline comments on the
@@ -333,9 +336,6 @@ right lines, and do not open another if you already have one on the PR.
 
 **Do not redo the review and do not invent new findings**: publish what is in
 the file. If a finding does not fit on a diff line, leave it in the review body.
-
-PR: {{title}} — @{{author}}
-{{url}}
 
 Write to stdout what was published, in Markdown.`
 

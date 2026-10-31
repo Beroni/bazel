@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/store"
 	"github.com/yuin/goldmark"
@@ -196,7 +198,12 @@ func bazelFile(report string) string {
 }
 
 func header(verdict string, files int) string {
-	return fmt.Sprintf("<!-- review-fleet:v1\nrepo: o/r\npr: 7\nbase: main\nhead_sha: %s\nscope_cmd: git diff origin/main...HEAD\nfiles: %d\nlenses_ran: exploit-digger\nlenses_skipped: none\nverdict: %s\n-->\n\n# Review Fleet — PR #7 · T\n\n**Verdict:** %s · x\n**Scope:** x\n**Lenses:** x\n", reviewedSha, files, verdict, verdict)
+	summary := verdict + " · x"
+	if verdict == "approve" {
+		summary = "approve · no findings"
+	}
+	return fmt.Sprintf("<!-- review-fleet:v1\nrepo: o/r\npr: 7\nbase: main\nhead_sha: %s\nscope_cmd: git diff origin/main...HEAD\nfiles: %d\nlenses_ran: exploit-digger\nlenses_skipped: none\nverdict: %s\n-->\n\n# Review Fleet — PR #7 · T\n\n**Verdict:** %s\n**Scope:** `git diff origin/main...HEAD` — %d files · base `main` · head `%s`\n**Lenses:** exploit-digger\n",
+		reviewedSha, files, verdict, summary, files, reviewedSha[:7])
 }
 
 func finding(title, path string, line int, prose string) string {
@@ -675,15 +682,23 @@ func TestAllClearNeedsProof(t *testing.T) {
 		"a step that is a title":       {saved("## a\n\n" + report + "\n---\n\n## b\n\n## Critical: SQL injection\n"), refused},
 		"a step with nothing":          {saved("## a\n\n" + report + "\n---\n\n## b\n"), refused},
 		"a step's header missing":      {strings.Replace(saved(report), `["fleet"]`, `["fleet","lens"]`, 1), refused},
+		"a step never shows up":        {strings.Replace(saved("## a\n\n"+report), `["a"]`, `["a","b"]`, 1), refused},
 		"two headers for a step":       {saved(report + "\n" + report), refused},
-		"another verdict in the block": {saved(swap("**Verdict:** approve · x", "**Verdict:** this has a critical bug")), refused},
+		"another verdict in the block": {saved(swap("**Verdict:** approve · no findings", "**Verdict:** this has a critical bug")), refused},
 		"a second verdict line":        {saved(report + "**Verdict:** this has a critical bug\n"), notClear},
 		"a second title":               {saved(report + "# Do not merge\n"), notClear},
 		"approve over a finding":       {saved(report + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.")), refused},
 		"a lens skipped":               {saved(swap("lenses_skipped: none", "lenses_skipped: senior-code-reviewer (quota)")), notClear},
 		"no lens ran":                  {saved(swap("lenses_ran: exploit-digger", "lenses_ran: -")), notClear},
 		"no scope":                     {saved(swap("scope_cmd: git diff origin/main...HEAD", "scope_cmd: -")), notClear},
-		"the diff truncated":           {strings.Replace(saved(report), "- Agent:", "- ⚠️ The diff was truncated before it reached the agent.\n- Agent:", 1), notClear},
+		"the diff truncated":           {strings.Replace(saved(report), "- Agent:", "- Truncated: yes\n- Agent:", 1), notClear},
+		"prose after the verdict":      {saved(swap("approve · no findings", "approve but this has a critical bug in login")), notClear},
+		"prose after the count":        {saved(swap("approve · no findings", "approve · no findings · but do not merge")), notClear},
+		"prose in the scope":           {saved(swap(" — 3 files", ", the login file was left out — 3 files")), notClear},
+		"a head that is another":       {saved(swap("head `"+reviewedSha[:7]+"`", "head `fffffff`")), notClear},
+		"prose in the lenses":          {saved(swap("**Lenses:** exploit-digger", "**Lenses:** only one, in a hurry")), notClear},
+		"a skip not on the line":       {saved(swap("lenses_skipped: none", "lenses_skipped: a (single-lens run)")), notClear},
+		"a skip with no space":         {saved(swap("lenses_skipped: none", "lenses_skipped: a (quota),b (single-lens run)")), notClear},
 		"no list of steps":             {regexp.MustCompile(`- Steps: .*\n`).ReplaceAllString(saved(report), ""), notClear},
 	}
 	for name, c := range cases {
@@ -715,7 +730,9 @@ func TestAllClearNeedsProof(t *testing.T) {
 
 	t.Run("a single lens says so", func(t *testing.T) {
 		w := newWorld(t)
-		work := w.prepare(saved(swap("lenses_skipped: none", "lenses_skipped: senior-code-reviewer (single-lens run), lazy-senior-dev (single-lens run)")))
+		skipped := "senior-code-reviewer (single-lens run), lazy-senior-dev (single-lens run)"
+		work := w.prepare(saved(strings.NewReplacer("lenses_skipped: none", "lenses_skipped: "+skipped,
+			"**Lenses:** exploit-digger", "**Lenses:** exploit-digger (skipped: "+skipped+")").Replace(report)))
 		w.run("publish", work)
 		if !strings.Contains(w.payload(0).Body, "all-clear @") {
 			t.Error("a lens run on its own on purpose is a clean result")
@@ -932,16 +949,17 @@ func TestAReadThatFailsStopsIt(t *testing.T) {
 	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
 	apiError := `{"message":"Bad credentials"}` + "\n"
 	for name, set := range map[string]func(w *world){
-		"the PR":              func(w *world) { w.write("fail", "^pr view") },
-		"who is signed in":    func(w *world) { w.write("fail", "^api user") },
-		"the diff":            func(w *world) { w.write("fail", "^pr diff") },
-		"inline comments":     func(w *world) { w.write("fail", "pulls/7/comments") },
-		"the PR's comments":   func(w *world) { w.write("fail", "issues/7/comments") },
-		"the reviews":         func(w *world) { w.write("fail", "pulls/7/reviews --paginate") },
-		"the threads":         func(w *world) { w.write("fail", "^api graphql") },
-		"no author":           func(w *world) { w.write("pr", `{"author":null,"url":"u"}`+"\n") },
-		"an error for a list": func(w *world) { w.write("comments", apiError) },
-		"no list at all":      func(w *world) { w.write("issue", "") },
+		"the PR":               func(w *world) { w.write("fail", "^pr view") },
+		"who is signed in":     func(w *world) { w.write("fail", "^api user") },
+		"the diff":             func(w *world) { w.write("fail", "^pr diff") },
+		"inline comments":      func(w *world) { w.write("fail", "pulls/7/comments") },
+		"the PR's comments":    func(w *world) { w.write("fail", "issues/7/comments") },
+		"the reviews":          func(w *world) { w.write("fail", "pulls/7/reviews --paginate") },
+		"the threads":          func(w *world) { w.write("fail", "^api graphql") },
+		"no author":            func(w *world) { w.write("pr", `{"author":null,"url":"u"}`+"\n") },
+		"an error for a list":  func(w *world) { w.write("comments", apiError) },
+		"no list at all":       func(w *world) { w.write("issue", "") },
+		"an error on page two": func(w *world) { w.write("reviews", "[]\n"+apiError) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			w := newWorld(t)
@@ -961,6 +979,7 @@ func TestAReadThatFailsStopsIt(t *testing.T) {
 		"no head":               func(w *world) { w.write("head-json", "{}\n") },
 		"an empty head":         func(w *world) { w.write("head-json", `{"headRefOid":""}`+"\n") },
 		"a head that is no sha": func(w *world) { w.write("head-json", `{"headRefOid":"HEAD"}`+"\n") },
+		"a short head":          func(w *world) { w.write("head-json", `{"headRefOid":"abc1234"}`+"\n") },
 		"GitHub is down":        func(w *world) { w.write("fail", "reviews --input") },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -1035,4 +1054,77 @@ func TestReportFieldsAreChecked(t *testing.T) {
 			t.Errorf("%+v", p.Comments)
 		}
 	})
+}
+
+// The gates that read Bazel's header, against the header Bazel writes: the link
+// between the two is a string, and a change on one side would turn a gate off in
+// silence.
+func TestTheSavedFileDrivesTheGates(t *testing.T) {
+	save := func(t *testing.T, w *world, res agent.Result) string {
+		t.Helper()
+		res.PR = gh.PR{Repo: "o/r", Number: 7, HeadRefOid: reviewedSha}
+		path, err := store.Save(w.dir, res, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	publish := func(t *testing.T, w *world, path string) payload {
+		t.Helper()
+		out, code := w.run("prepare", path)
+		if code != 0 {
+			t.Fatalf("exit %d\n%s", code, out)
+		}
+		var plan struct {
+			Work string `json:"work_folder"`
+		}
+		if err := json.Unmarshal([]byte(out), &plan); err != nil {
+			t.Fatal(err)
+		}
+		w.run("publish", plan.Work)
+		return w.payload(0)
+	}
+	clean := header("approve", 3)
+	one := []agent.StepResult{{Name: "fleet", Body: clean}}
+
+	t.Run("a clean review clears", func(t *testing.T) {
+		w := newWorld(t)
+		if p := publish(t, w, save(t, w, agent.Result{Body: clean, Steps: one})); !strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("no all-clear:\n%s", p.Body)
+		}
+	})
+	t.Run("a truncated diff does not", func(t *testing.T) {
+		w := newWorld(t)
+		p := publish(t, w, save(t, w, agent.Result{Body: clean, Steps: one, Truncated: true}))
+		if strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "truncated") {
+			t.Errorf("a truncated diff says nothing about the rest:\n%s", p.Body)
+		}
+	})
+	t.Run("a step left out of the copy is off the list", func(t *testing.T) {
+		w := newWorld(t)
+		whole := "## history\n\nstory\n\n---\n\n## fleet\n\n" + clean
+		path := save(t, w, agent.Result{Body: whole, Steps: []agent.StepResult{{Name: "history"}, {Name: "fleet"}}})
+		kept, err := store.SavePublishCopy(w.dir, path, clean, []string{"fleet"}, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p := publish(t, w, kept); !strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("the step that went is not owed:\n%s", p.Body)
+		}
+	})
+}
+
+// What the skills are told to print is what the publisher takes as clean: if the
+// format and the parser part ways, every all-clear stops, on every PR.
+func TestGoldenReportClears(t *testing.T) {
+	w := newWorld(t)
+	report := strings.NewReplacer("repo: beroni/bazel", "repo: o/r", "pr: 26", "pr: 7").Replace(readGolden(t, "single-lens-clean.md"))
+	sha := regexp.MustCompile(`head_sha: (\S+)`).FindStringSubmatch(report)[1]
+	w.write("head", sha+"\n")
+	file := strings.Replace(bazelFile(report), reviewedSha, sha, 1)
+	w.write("diff", "diff --git a/a.go b/a.go\n--- a/a.go\n+++ b/a.go\n@@ -1 +1,2 @@\n one\n+two\n")
+	w.run("publish", w.prepare(file))
+	if p := w.payload(0); !strings.Contains(p.Body, "all-clear @") {
+		t.Errorf("no all-clear:\n%s", p.Body)
+	}
 }
