@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -193,6 +194,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		ws.Keep = r.KeepWorkspace
 		defer ws.Cleanup()
 		workdir = ws.Dir
+		// What gets recorded is what was read. The PR may have moved since the
+		// list was read, and a sha it no longer describes would mark code nobody
+		// looked at as reviewed, and pass the post skill's check.
+		if ws.Head != "" && ws.Head != pr.HeadRefOid {
+			if pr.HeadRefOid != "" {
+				emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+					Text: fmt.Sprintf("⟳ the PR moved since it was listed: reviewing %.12s, not %.12s", ws.Head, pr.HeadRefOid)})
+			}
+			pr.HeadRefOid = ws.Head
+		}
 	}
 
 	// Now that the clone has a path: a flag that reads a file from it hands the
@@ -233,6 +244,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	neutralized := map[string]bool{}
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
+		// In a clone of a fork gh would answer for the parent: the agent's own
+		// `gh pr comment` must land on this PR, whatever the clone says.
+		if pr.Repo != "" {
+			env := maps.Clone(step.Env)
+			if env == nil {
+				env = map[string]string{}
+			}
+			env["GH_REPO"] = pr.Repo
+			step.Env = env
+		}
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
 		// and the caller shows you what goes to the PR before sending it.
 		if step.Reserved != "" {
