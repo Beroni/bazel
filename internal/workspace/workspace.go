@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -82,7 +83,7 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 
 // ensurePRBase makes origin/<base> and a local <base> branch available when
 // possible. A failed fetch is not fatal if the tracking ref is already there;
-// git branch --force is skipped when <base> is already HEAD.
+// the local branch is skipped when <base> is already HEAD.
 func ensurePRBase(ctx context.Context, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
 	if err := run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
@@ -97,7 +98,8 @@ func ensurePRBase(ctx context.Context, dir, base string) error {
 	if head == base {
 		return nil
 	}
-	if err := run(ctx, dir, "git", "branch", "--force", base, "origin/"+base); err != nil {
+	// update-ref and not `git branch`: a base called `-m` is a ref name here.
+	if err := run(ctx, dir, "git", "update-ref", "refs/heads/"+base, "refs/remotes/origin/"+base); err != nil {
 		return fmt.Errorf("criando branch local: %w", err)
 	}
 	return nil
@@ -180,7 +182,20 @@ func (w *Workspace) Remove() {
 	if w == nil || w.Dir == "" {
 		return
 	}
-	os.RemoveAll(w.Dir)
+	if os.RemoveAll(w.Dir) == nil {
+		return
+	}
+	// An agent can leave read-only folders behind, and a clone of a private
+	// repository must not stay in the temporary folder unnoticed.
+	_ = filepath.WalkDir(w.Dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	if err := os.RemoveAll(w.Dir); err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: could not remove the clone: %v\n", err)
+	}
 }
 
 func run(ctx context.Context, dir, name string, args ...string) error {

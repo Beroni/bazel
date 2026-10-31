@@ -46,7 +46,7 @@ printf 'git %s\n' "$*" >> "$BAZEL_TEST_LOG"
 	if !strings.Contains(got, want) {
 		t.Errorf("base fetch missing:\n%s\nwant %s", got, want)
 	}
-	if want := "git branch --force release/v1.2 origin/release/v1.2"; !strings.Contains(got, want) {
+	if want := "git update-ref refs/heads/release/v1.2 refs/remotes/origin/release/v1.2"; !strings.Contains(got, want) {
 		t.Errorf("local base branch missing:\n%s\nwant %s", got, want)
 	}
 }
@@ -102,7 +102,7 @@ esac
 		t.Fatal(err)
 	}
 	got := string(data)
-	if !strings.Contains(got, "git branch --force release/v1.2 origin/release/v1.2") {
+	if !strings.Contains(got, "git update-ref refs/heads/release/v1.2 refs/remotes/origin/release/v1.2") {
 		t.Errorf("should still create local base after a failed fetch:\n%s", got)
 	}
 }
@@ -133,7 +133,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "git branch --force") {
+	if strings.Contains(string(data), "git update-ref") {
 		t.Errorf("should not force-create base when it is HEAD:\n%s", data)
 	}
 }
@@ -263,5 +263,25 @@ func TestCloneEnvTiraPathRelativo(t *testing.T) {
 		if v, ok := strings.CutPrefix(kv, "PATH="); ok && v != strings.Join([]string{"/usr/bin", "/bin"}, string(os.PathListSeparator)) {
 			t.Errorf("PATH = %q", v)
 		}
+	}
+}
+
+// A read-only folder an agent left does not leave the clone on disk.
+func TestRemoveLevaPastaSoLeitura(t *testing.T) {
+	dir := t.TempDir()
+	locked := filepath.Join(dir, "clone", "locked")
+	if err := os.MkdirAll(locked, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(locked, "f"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	ws := &Workspace{Dir: filepath.Join(dir, "clone")}
+	ws.Remove()
+	if _, err := os.Stat(ws.Dir); !os.IsNotExist(err) {
+		t.Errorf("still there: %v", err)
 	}
 }
