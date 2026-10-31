@@ -40,13 +40,15 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
     (if $p.steps_proven | not then "the file does not say which steps ran" else empty end),
     (if $p.complete | not then "the report stops before its summary is complete" else empty end),
     (if $p.exact | not then "the report's summary says something its header does not" else empty end),
-    (if $p.truncated then "the diff was truncated before the agent read it" else empty end),
+    (if $p.truncated then "the diff was truncated before the agent read it"
+     elif $p.whole_diff | not then "the file does not say the diff was whole"
+     else empty end),
     (if $p.scope_real | not then "the report names no scope" else empty end),
     (if $p.lenses_real | not then "the report names no lens that ran" else empty end),
     (if any($p.skipped[] | split(",")[]; endswith("(single-lens run)") | not) then "a lens was skipped" else empty end)
    ]) as $unproven
 | def comment:
-    {path, line, side, body: ((told | gsub("<!--"; "&lt;!--")) + (if .ref then "\n\n\(.ref)" else "" end))}
+    {path, line, side, body: ((told | comment_text) + (if .ref then "\n\n\(.ref)" else "" end))}
     + (if .start_line then {start_line, start_side: (.start_side // .side)} else {} end);
   def coverage:
     "**Scope:** `\($p.scope | map(code) | join("`, `"))` — \(plural($p.files; "file"))\n**Lenses:** \($p.lenses | map(plain) | join(", "))"

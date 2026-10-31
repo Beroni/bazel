@@ -68,11 +68,13 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
+	// For the publisher, which has no say in the wording of the warning below. It
+	// is written either way: a file that does not say is a file that proves nothing.
 	if res.Truncated {
-		// The first line is for the publisher, which has no say in the wording of
-		// the second.
 		b.WriteString("- Truncated: yes\n")
 		b.WriteString("- ⚠️ The diff was truncated before it reached the agent.\n")
+	} else {
+		b.WriteString("- Truncated: no\n")
 	}
 	b.WriteString("\n---\n\n")
 	b.WriteString(res.Body)

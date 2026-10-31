@@ -14,3 +14,9 @@ def verbatim:
   (([scan("`+") | length] | max // 0) + 1 | if . < 3 then 3 else . end) as $n
   | ("`" * $n) as $fence
   | "\($fence)text\n\(.)\n\($fence)";
+
+# A comment of its own stays rendered, unless what is in it could hide the rest of
+# it. Raw HTML takes `<` and a letter, `/`, `!` or `?`: with none of those there is
+# none, wherever a parser would say the code starts, and with any, code included,
+# the whole text goes as it is. `a < b` keeps its bold; `Vec<u8>` keeps its `<`.
+def comment_text: if test("<[A-Za-z/!?]") then verbatim else . end;

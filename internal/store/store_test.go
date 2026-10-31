@@ -92,7 +92,7 @@ func TestSaveRecordsStepsAndWhatWasCut(t *testing.T) {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	for _, want := range []string{`- Steps: ["a, b","fleet"]`, `- Cut from before the report of fleet: "Printing it now."`} {
+	for _, want := range []string{"- Truncated: no\n", `- Steps: ["a, b","fleet"]`, `- Cut from before the report of fleet: "Printing it now."`} {
 		if !strings.Contains(string(data), want) {
 			t.Errorf("no %q in:\n%s", want, data)
 		}

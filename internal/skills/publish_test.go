@@ -194,7 +194,7 @@ func bazelFile(report string) string {
 		steps = []string{"fleet"}
 	}
 	list, _ := json.Marshal(steps)
-	return "# o/r#7 — Title\n- Author: @x\n- Head sha: " + reviewedSha + "\n- Agent: fleet\n- Steps: " + string(list) + "\n\n---\n\n" + report
+	return "# o/r#7 — Title\n- Author: @x\n- Head sha: " + reviewedSha + "\n- Agent: fleet\n- Steps: " + string(list) + "\n- Truncated: no\n\n---\n\n" + report
 }
 
 func header(verdict string, files int) string {
@@ -225,7 +225,7 @@ func TestHostileReportStaysData(t *testing.T) {
 		t.Fatalf("publish: exit %d\n%s", code, out)
 	}
 	p := w.payload(0)
-	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, strings.ReplaceAll(prose, "<!--", "&lt;!--")) {
+	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, prose) {
 		t.Errorf("the path and the prose should arrive verbatim: %+v", p.Comments)
 	}
 	if !strings.Contains(p.Body, "`rm -rf ~`") {
@@ -691,7 +691,9 @@ func TestAllClearNeedsProof(t *testing.T) {
 		"a lens skipped":               {saved(swap("lenses_skipped: none", "lenses_skipped: senior-code-reviewer (quota)")), notClear},
 		"no lens ran":                  {saved(swap("lenses_ran: exploit-digger", "lenses_ran: -")), notClear},
 		"no scope":                     {saved(swap("scope_cmd: git diff origin/main...HEAD", "scope_cmd: -")), notClear},
-		"the diff truncated":           {strings.Replace(saved(report), "- Agent:", "- Truncated: yes\n- Agent:", 1), notClear},
+		"the diff truncated":           {strings.Replace(saved(report), "- Truncated: no", "- Truncated: yes", 1), notClear},
+		"not saying if it was":         {strings.Replace(saved(report), "- Truncated: no\n", "", 1), notClear},
+		"both the no and the warning":  {strings.Replace(saved(report), "- Agent:", "- ⚠️ The diff was truncated before it reached the agent.\n- Agent:", 1), notClear},
 		"prose after the verdict":      {saved(swap("approve · no findings", "approve but this has a critical bug in login")), notClear},
 		"prose after the count":        {saved(swap("approve · no findings", "approve · no findings · but do not merge")), notClear},
 		"prose in the scope":           {saved(swap(" — 3 files", ", the login file was left out — 3 files")), notClear},
@@ -1127,4 +1129,84 @@ func TestGoldenReportClears(t *testing.T) {
 	if p := w.payload(0); !strings.Contains(p.Body, "all-clear @") {
 		t.Errorf("no all-clear:\n%s", p.Body)
 	}
+}
+
+// Files that store.Save wrote before it said whether the diff was whole, exactly
+// as it wrote them: neither earns an all-clear, and the one that warned says so.
+func TestLegacyFilesDoNotClear(t *testing.T) {
+	for name, want := range map[string]string{
+		"legacy-truncated.md": "the diff was truncated before the agent read it",
+		"legacy-whole.md":     "the file does not say the diff was whole",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.run("publish", w.prepare(readGolden(t, name)))
+			if p := w.payload(0); strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, want) {
+				t.Errorf("want %q and no all-clear:\n%s", want, p.Body)
+			}
+		})
+	}
+}
+
+// A comment on a line is a document of its own, but what a person approved has to
+// stay visible in it: on GitHub a tag is live, and a <details> folds the rest away.
+func TestInlineCommentHidesNothing(t *testing.T) {
+	hidden := []string{"details", "summary"}
+	for name, prose := range map[string]string{
+		"a details":        "<details><summary>Looks harmless</summary>\n\nAPPROVED_TEXT",
+		"a closing tag":    "</details>\n\nAPPROVED_TEXT",
+		"a comment":        "<!-- never closed\n\nAPPROVED_TEXT",
+		"a broken tag":     "<details\n\nAPPROVED_TEXT",
+		"a tag in a fence": "```go\nx := Vec<u8>{}\n```\n\n<details>\n\nAPPROVED_TEXT",
+		"an open fence":    "<details>\n\n```\nAPPROVED_TEXT",
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, prose))))
+			p := w.payload(0)
+			if len(p.Comments) != 1 {
+				t.Fatalf("%+v", p)
+			}
+			body := p.Comments[0].Body
+			doc := rendered(t, body)
+			seen := false
+			walk(doc, func(n *html.Node) {
+				if n.Type == html.CommentNode {
+					t.Errorf("a comment is live: %q", n.Data)
+				}
+				if n.Type == html.ElementNode && slices.Contains(hidden, n.Data) {
+					t.Errorf("<%s> is live:\n%s", n.Data, body)
+				}
+				if n.Type == html.TextNode && strings.Contains(n.Data, "APPROVED_TEXT") {
+					seen = true
+				}
+			})
+			if !seen || !strings.Contains(textOf(doc), "**Fix:**") {
+				t.Errorf("the text must stay, the fix with it:\n%s", body)
+			}
+		})
+	}
+
+	t.Run("a tag in code is not broken", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, "Use `Vec<u8>` here."))))
+		if text := textOf(rendered(t, w.payload(0).Comments[0].Body)); !strings.Contains(text, "Vec<u8>") || strings.Contains(text, "&lt;") {
+			t.Errorf("the code changed: %q", text)
+		}
+	})
+	t.Run("no tag, no change", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, "With `x := <-ch` and a < b this is **wrong**."))))
+		page := rendered(t, w.payload(0).Comments[0].Body)
+		strong := false
+		walk(page, func(n *html.Node) {
+			if n.Type == html.ElementNode && n.Data == "pre" {
+				t.Errorf("no reason for plain text here")
+			}
+			strong = strong || (n.Type == html.ElementNode && n.Data == "strong" && textOf(n) == "wrong")
+		})
+		if !strong {
+			t.Error("a comment with no tag stays rendered")
+		}
+	})
 }

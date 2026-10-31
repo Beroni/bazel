@@ -150,7 +150,10 @@ def line($l; $next; $steps):
    # Word for word what the header says, or the summary carries prose of its own.
    exact: all(.headers[]; .exact == true),
    trimmed: any($bazel[]; startswith("- Trimmed: ")),
-   truncated: any($bazel[]; startswith("- Truncated: ")),
+   # Files saved before the line carry only the sentence. Saying nothing proves
+   # nothing, so the all-clear wants the explicit no.
+   truncated: any($bazel[]; startswith("- Truncated: yes") or contains("The diff was truncated")),
+   whole_diff: any($bazel[]; . == "- Truncated: no"),
    scope_real: all(.headers[]; .scope_cmd != "-"),
    lenses_real: all(.headers[]; .lenses_ran != "-"),
    verdict: (if any($v[]; . == "request_changes") then "request_changes"
