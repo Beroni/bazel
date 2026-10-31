@@ -241,8 +241,11 @@ var policy = func() *bluemonday.Policy {
 	// GFM task list checkbox, which UGCPolicy would strip.
 	p.AllowAttrs("type", "checked", "disabled").Matching(bluemonday.Paragraph).OnElements("input")
 	// Without this the class="language-go" disappears and the code block loses
-	// its marker.
-	p.AllowAttrs("class").OnElements("code", "pre", "span", "div", "li")
+	// its marker. Only the shapes goldmark writes: a fence's info string comes
+	// from the agent, and a free class would hide its block with the page's own
+	// CSS (`text<TAB>sr-only`) while the text still goes to the PR.
+	p.AllowAttrs("class").Matching(regexp.MustCompile(`^language-[A-Za-z0-9_+.#-]+$`)).OnElements("code")
+	p.AllowAttrs("class").Matching(regexp.MustCompile(`^footnotes$`)).OnElements("div")
 	// A click on a link must not tell the other site this page's address.
 	p.RequireNoReferrerOnLinks(true)
 	return p
