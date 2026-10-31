@@ -403,7 +403,21 @@ func TestChoicePublishesBy(t *testing.T) {
 		quer bool
 	}{
 		{"lente comum", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review {{number}}", Prompt: defaultPrompt}}}, false},
-		{"flag parecida", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --poster"}}}, false},
+		{"flag parecida", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --poster", Prompt: defaultPrompt}}}, false},
+		{"flag desligada", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --post=false", Prompt: defaultPrompt}}}, false},
+		{"prompt sem proibição", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: "{{task}}"}}}, true},
+		{"prompt que pede comentário", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: "{{task}}\nPost your findings on the PR."}}}, true},
+		{"proibição e autorização", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt + "\nYou are authorized to publish."}}}, true},
+		{"prompt com gh pr comment", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt + "\nThen run gh pr comment."}}}, true},
+		{"task com gh", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "gh pr comment {{number}}", Prompt: defaultPrompt}}}, true},
+		{"task --POST", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r --POST", Prompt: defaultPrompt}}}, true},
+		{"task entre crases", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r `--post`", Prompt: defaultPrompt}}}, true},
+		{"--post=1", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r --post=1", Prompt: defaultPrompt}}}, true},
+		{"skill que publica", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/post-report {{number}}", Prompt: defaultPrompt}}}, true},
+		{"skill de plugin", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/bazel:bazel-post-report x", Prompt: defaultPrompt}}}, true},
+		{"args com gh", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt, Command: "sh", Args: []string{"-c", "gh api repos/a/b/issues/1/comments"}}}}, true},
+		{"args com --post", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt, Args: []string{"--post"}}}}, true},
+		{"o segundo passo", Choice{Steps: []ResolvedAgent{{Name: "a", Task: "/r", Prompt: defaultPrompt}, {Name: "b", Task: "/r", Prompt: "{{task}}"}}}, true},
 		{"posts", Choice{Steps: []ResolvedAgent{{Name: "p", Posts: true}}}, true},
 		{"--post", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review {{number}} --post"}}}, true},
 		{"--post=inline", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review --post=inline"}}}, true},
@@ -1552,5 +1566,26 @@ func TestLauncherAvisaNoBoot(t *testing.T) {
 	}
 	if err := c.validateFormats(); err != nil {
 		t.Errorf("the config must still load: %v", err)
+	}
+}
+
+// Names are what the gate goes by: an agent cannot take a pipeline's, a pipeline
+// name survives the trip through the saved file, and the post skill does not
+// come in as a lens.
+func TestNomesNaoConfundemOGate(t *testing.T) {
+	c := Default()
+	c.Agents = []AgentDef{{Name: "lens", Task: "/lens"}}
+	c.Pipelines = []Pipeline{{Name: "Review-Post", Steps: []string{"lens"}}}
+	if _, err := c.AddAgentFromSkill("review", "", true); err == nil {
+		t.Error("review-post must not take the pipeline's name")
+	}
+	for _, name := range []string{"notes — weekly", "a\nb", "a\r\n- Agent: lens"} {
+		if _, err := c.AddPipeline(name, "", []string{"lens"}); err == nil {
+			t.Errorf("pipeline %q must be refused", name)
+		}
+	}
+	c.PostAgent = AgentDef{Name: "mine", Task: "/my-post {{review_file}}", Posts: true}
+	if _, err := c.AddAgentFromSkill("bazel-post-report", "", false); err == nil {
+		t.Error("the built-in post skill must not become a lens under a custom post_agent")
 	}
 }

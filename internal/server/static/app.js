@@ -716,6 +716,12 @@ async function openSaved(name) {
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
+    if (data.context_html) {
+      v.append(el('p', 'section-label', 'stays in Bazel — not published'));
+      const ctx = tid(el('div', 'md context'), 'review-context');
+      ctx.innerHTML = data.context_html;
+      v.append(ctx);
+    }
     const key = pickKey('saved', name);
     const total = decorateFindings(md, key, !entry || entry.publishable !== false);
 

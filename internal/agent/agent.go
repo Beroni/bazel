@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -84,8 +85,14 @@ type Result struct {
 	// going to publish again on top of it needs to know.
 	Posts bool
 	// Body is the report: the single step's output, or the steps concatenated.
-	Body  string
-	Steps []StepResult
+	Body string
+	// Publish and Stays hold Body split by what may go to the PR, when a step
+	// of the choice stays in Bazel; see Result.Split. Unsplit, both are empty
+	// and Keeps is false.
+	Publish string
+	Stays   string
+	Keeps   bool
+	Steps   []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -187,6 +194,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		ws.Keep = r.KeepWorkspace
 		defer ws.Cleanup()
 		workdir = ws.Dir
+		// What gets recorded is what was read. The PR may have moved since the
+		// list was read, and a sha it no longer describes would mark code nobody
+		// looked at as reviewed, and pass the post skill's check.
+		if ws.Head != "" && ws.Head != pr.HeadRefOid {
+			if pr.HeadRefOid != "" {
+				emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+					Text: fmt.Sprintf("⟳ the PR moved since it was listed: reviewing %.12s, not %.12s", ws.Head, pr.HeadRefOid)})
+			}
+			pr.HeadRefOid = ws.Head
+		}
 	}
 
 	// Now that the clone has a path: a flag that reads a file from it hands the
@@ -227,6 +244,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	neutralized := map[string]bool{}
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
+		// In a clone of a fork gh would answer for the parent: the agent's own
+		// `gh pr comment` must land on this PR, whatever the clone says.
+		if pr.Repo != "" {
+			env := maps.Clone(step.Env)
+			if env == nil {
+				env = map[string]string{}
+			}
+			env["GH_REPO"] = pr.Repo
+			step.Env = env
+		}
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
 		// and the caller shows you what goes to the PR before sending it.
 		if step.Reserved != "" {
@@ -726,6 +753,22 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 		return "", true, err
 	}
 	return body, true, nil
+}
+
+// Split records in res what may go to the PR, for whoever keeps the review past
+// this process: the policy is the one this run had, and the config may say
+// something else tomorrow.
+func Split(res Result, choice config.Choice) Result {
+	body, split, err := PublishableBody(res, choice)
+	if !split {
+		return res
+	}
+	res.Keeps = true
+	if err == nil {
+		res.Publish = body
+	}
+	res.Stays = ContextBody(res, choice)
+	return res
 }
 
 // ContextBody is the flip side of PublishableBody: the body of the steps that

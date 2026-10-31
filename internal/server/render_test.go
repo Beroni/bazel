@@ -242,3 +242,19 @@ func TestMetaDoAchadoEstrito(t *testing.T) {
 		}
 	}
 }
+
+// A fence's info string is the agent's: it cannot pick classes of the page.
+func TestCercaNaoEscolheClasse(t *testing.T) {
+	for _, info := range []string{"text\tonly-collapsed", "text\tsr-only", "text\terror-box", "language-x\tsr-only"} {
+		got := renderReview("```" + info + "\nHIDDEN\n```\n")
+		if !strings.Contains(got, "HIDDEN") || strings.Contains(got, "sr-only") || strings.Contains(got, "only-collapsed") || strings.Contains(got, "error-box") {
+			t.Errorf("%q: %s", info, got)
+		}
+	}
+	if got := renderReview("```go\nx\n```\n"); !strings.Contains(got, `class="language-go"`) {
+		t.Errorf("a real language keeps its class: %s", got)
+	}
+	if got := renderReview("A note[^1].\n\n[^1]: Text.\n"); !strings.Contains(got, `class="footnotes"`) {
+		t.Errorf("footnotes keep their class: %s", got)
+	}
+}

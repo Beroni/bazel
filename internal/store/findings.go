@@ -3,7 +3,13 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/text"
 )
 
 // Part is a piece of the review: either a finding, or the text between findings.
@@ -28,12 +34,11 @@ type Part struct {
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
 	lines := strings.SplitAfter(body, "\n")
+	headings, literal := blockLines(body, lines)
 	var (
 		parts   []Part
 		cur     strings.Builder
 		finding bool
-		inFence bool
-		fence   string
 		section bool // inside a `##` of findings/cuts/human verification
 		human   bool // and it is the human verification one, which lists instead of `###`
 		h3Seen  bool // the current section numbers findings with `###`
@@ -57,21 +62,16 @@ func SplitFindings(body string) []Part {
 	}
 	for i, line := range lines {
 		trim := strings.TrimSpace(line)
-		if inFence {
-			if strings.HasPrefix(trim, fence) {
-				inFence = false
-			}
+		// Code, quoted HTML and a fence's own lines are never structure.
+		if literal[i] || strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
 			blank = false
 			cur.WriteString(line)
 			continue
 		}
-		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			inFence, fence = true, trim[:3]
-			blank = false
-			cur.WriteString(line)
-			continue
+		level, title := 0, ""
+		if headings[i] {
+			level, title = headingOf(trim)
 		}
-		level, title := headingOf(trim)
 		switch {
 		case level == 0:
 			wasBlank := blank
@@ -123,6 +123,66 @@ func SplitFindings(body string) []Part {
 	}
 	flush()
 	return parts
+}
+
+// blockParser reads a report as the renderer does, so that both agree on what is
+// a heading.
+var blockParser = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Footnote)).Parser()
+
+// blockLines says, line by line, which are headings at the top of the document
+// and which belong to a code or HTML block. A line that merely looks like a
+// heading, such as `# install it` in indented code or in a list item, must not
+// close a finding: what came after it would survive an untick and go to the PR.
+func blockLines(body string, lines []string) (headings, literal map[int]bool) {
+	starts := make([]int, len(lines))
+	at := 0
+	for i, l := range lines {
+		starts[i] = at
+		at += len(l)
+	}
+	lineOf := func(offset int) int {
+		i, found := slices.BinarySearch(starts, offset)
+		if !found {
+			i--
+		}
+		return i
+	}
+	headings, literal = map[int]bool{}, map[int]bool{}
+	src := []byte(body)
+	markLines := func(seg *text.Segments) {
+		for i := 0; i < seg.Len(); i++ {
+			s := seg.At(i)
+			for l := lineOf(s.Start); l >= 0 && l < len(lines) && starts[l] < max(s.Stop, s.Start+1); l++ {
+				literal[l] = true
+			}
+		}
+	}
+	doc := blockParser.Parse(text.NewReader(src))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch b := n.(type) {
+		case *ast.Heading:
+			if b.Parent() == doc && b.Lines().Len() > 0 {
+				headings[lineOf(b.Lines().At(0).Start)] = true
+			}
+		case *ast.CodeBlock:
+			markLines(b.Lines())
+		case *ast.FencedCodeBlock:
+			markLines(b.Lines())
+		case *ast.HTMLBlock:
+			// The comment review-fleet writes under a heading is read on its own.
+			if b.Lines().Len() > 1 {
+				markLines(b.Lines())
+				if b.HasClosure() {
+					literal[lineOf(b.ClosureLine.Start)] = true
+				}
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return headings, literal
 }
 
 // Findings counts the findings in a review.

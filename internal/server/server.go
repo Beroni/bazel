@@ -1123,11 +1123,16 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	head, stays, split := store.SplitFile(body)
+	view := map[string]any{
 		"name": r.PathValue("name"),
 		"body": body,
-		"html": renderReview(store.Unwrap(body)),
-	})
+		"html": renderReview(store.Unwrap(head)),
+	}
+	if split {
+		view["context_html"] = renderReview(stays)
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 // --- publishing a saved review ---
@@ -1143,6 +1148,8 @@ type savedReview struct {
 	Path  string
 	Body  string
 	Agent string
+	// Trimmed says the file holds more than Body: steps that stay in Bazel.
+	Trimmed bool
 }
 
 // savedPR rereads a saved review and returns the PR it came from, along with
@@ -1157,16 +1164,49 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	if repo == "" {
 		return savedReview{}, fmt.Errorf("could not tell which PR %q belongs to", name)
 	}
+	body, _, split := store.SplitBody(file)
+	agent := store.AgentOf(file)
+	if split && body == "" {
+		return savedReview{}, fmt.Errorf("no step of %q publishes to the PR", agent)
+	}
+	// A file from before the marker has no way to tell its steps apart.
+	if !split && s.stepsDiffer(agent) {
+		return savedReview{}, fmt.Errorf("this review of %q mixes steps that stay in Bazel and was saved before they could be told apart: it cannot be published from here", agent)
+	}
 	pr, err := gh.Get(ctx, repo, number)
 	if err != nil {
 		return savedReview{}, err
 	}
 	return savedReview{
-		PR:    pr,
-		Path:  filepath.Join(s.reviewsDir, name),
-		Body:  store.ReviewBody(file),
-		Agent: store.AgentOf(file),
+		PR:      pr,
+		Path:    filepath.Join(s.reviewsDir, name),
+		Body:    body,
+		Agent:   agent,
+		Trimmed: split,
 	}, nil
+}
+
+// stepsDiffer says whether the choice has steps that publish and steps that do
+// not.
+func (s *Server) stepsDiffer(name string) bool {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	ch, err := s.cfg.ChoiceByName(name)
+	if err != nil {
+		return false
+	}
+	var yes, no bool
+	for _, st := range ch.Steps {
+		if st.Reserved != "" {
+			continue
+		}
+		if ch.StepPublishes(st.Name) {
+			yes = true
+		} else {
+			no = true
+		}
+	}
+	return yes && no
 }
 
 // refusePublish blocks what is not a review. It holds for the saved one as it
@@ -1196,7 +1236,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pr := sr.PR
-	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip)
+	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -1219,8 +1259,12 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	if s.refusePublish(w, sr) {
 		return
 	}
-	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Body, skip); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
+			code = http.StatusConflict
+		}
+		writeErr(w, code, err)
 		return
 	}
 	s.invalidatePRs()

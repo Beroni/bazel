@@ -19,6 +19,9 @@ import (
 type Workspace struct {
 	// Dir is the root of the clone.
 	Dir string
+	// Head is the commit that was checked out: what the agents really read,
+	// which may be newer than the head the PR had when it was listed.
+	Head string
 	// Keep preserves the directory on Cleanup, for manual inspection.
 	Keep bool
 }
@@ -51,11 +54,19 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 		ws.Remove()
 		return nil, fmt.Errorf("clonando %s: %w", pr.Repo, err)
 	}
-	// `gh pr checkout` handles PRs coming from forks on its own.
-	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number)); err != nil {
+	// `gh pr checkout` handles PRs coming from forks on its own. The repository
+	// is named: in a clone of a fork gh would pick the parent, and check out
+	// the parent's PR with this number.
+	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number), "--repo", pr.Repo); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("checkout de %s: %w", pr.Key(), err)
 	}
+	head, err := gitOutput(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		ws.Remove()
+		return nil, fmt.Errorf("reading the head of %s: %w", pr.Key(), err)
+	}
+	ws.Head = head
 	// gh repo clone only brings the remote refs the initial clone configured —
 	// usually the default branch. A PR against a release branch needs the base
 	// fetched explicitly so the agent can compare origin/<base>...HEAD.

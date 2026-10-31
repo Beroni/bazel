@@ -318,3 +318,33 @@ func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 		t.Errorf("dúvida que começa com None devia contar, veio %d", n)
 	}
 }
+
+// What only looks like a heading stays in its finding: an untick takes the whole
+// finding, and the next one keeps its box.
+func TestDesmarcarLevaOAchadoInteiro(t *testing.T) {
+	for name, inner := range map[string]string{
+		"indented code":    "Run this:\n\n    # install it\n    make\n\nAfter HIDDEN.",
+		"list item":        "- step\n\n  # x\n\n  more\n\nAfter HIDDEN.",
+		"html comment":     "<!--\n# x\n-->\n\nAfter HIDDEN.",
+		"fence in a fence": "````text\n```py\n# x\n```\n````\n\nAfter HIDDEN.",
+		"tilde fence":      "~~~\n# x\n```\n~~~\n\nAfter HIDDEN.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := "## Findings\n\n### One\n\n" + inner + "\n\n### Two\n\nKept.\n"
+			if n := Findings(body); n != 2 {
+				t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+			}
+			got := DropFindings(body, []int{0})
+			if strings.Contains(got, "HIDDEN") || !strings.Contains(got, "### Two") {
+				t.Errorf("after the untick:\n%s", got)
+			}
+			var joined strings.Builder
+			for _, p := range SplitFindings(body) {
+				joined.WriteString(p.Text)
+			}
+			if joined.String() != body {
+				t.Errorf("the parts do not add up to the report")
+			}
+		})
+	}
+}

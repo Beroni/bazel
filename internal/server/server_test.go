@@ -1105,7 +1105,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil)
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -1115,7 +1115,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 
 	// Asking again while the first one runs doesn't open a second: publishing
 	// the same file twice is commenting twice on the PR.
-	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil)
+	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
 	if err != nil {
 		t.Fatalf("PublishSaved de novo: %v", err)
 	}
@@ -1129,7 +1129,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 	if done.SavedTo != "" {
 		t.Errorf("uma publicação não devia salvar outro review: %q", done.SavedTo)
 	}
-	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil); err == nil {
+	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil, false); err == nil {
 		t.Error("sem arquivo não há o que publicar")
 	}
 }
@@ -1814,11 +1814,11 @@ func TestPublishSavedDeduplicaPelaOrigem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
-	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
-	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved (2): %v", err)
 	}
@@ -2150,7 +2150,7 @@ func TestCopiaDePublicacaoSomeNoPublishSaved(t *testing.T) {
 	ch := hub.Subscribe()
 	defer hub.Unsubscribe(ch)
 	m := NewManager(ctx, cfg, dir, 1, false, hub)
-	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -2349,7 +2349,7 @@ func TestCopiaSomeQuandoAPublicacaoSaiDaFila(t *testing.T) {
 				if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 			} else {
 				pub, err = m.PublishWithAgent(reviewID, []int{1})
 			}
@@ -2774,5 +2774,160 @@ func TestRunEsperaOsJobs(t *testing.T) {
 	}
 	if v, ok := srv.jobs.View(view.ID, false); !ok || v.State == StateRunning || v.State == StateQueued {
 		t.Errorf("Run returned with the job still going: %+v", v)
+	}
+}
+
+// What a mixed pipeline marked as staying in Bazel stays there from the Saved
+// tab too, by either door: the policy is the one of the run, kept in the file.
+func TestSavedNaoPublicaOQueFica(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482,\"headRefOid\":\"abc\"}'; exit 0; fi\ncat >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := cfgFor(t, "cat")
+	no := false
+	cfg.Agents = []config.AgentDef{{Name: "notes", Task: "notes", Publishable: &no}, {Name: "lens", Task: "lens"}}
+	cfg.Pipelines = []config.Pipeline{{Name: "mix", Steps: []string{"notes", "lens"}}}
+	choice, err := cfg.ChoiceByName("mix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := agent.Result{Agent: "mix", PR: testPR(482), Steps: []agent.StepResult{
+		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "PUBLIC_REVIEW"},
+	}}
+	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\nPUBLIC_REVIEW"
+	path, err := store.Save(srv.reviewsDir, agent.Split(res, choice), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	do := func(method, route string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, "http://127.0.0.1:7777"+route, strings.NewReader(`{}`)))
+		return w
+	}
+
+	var view struct {
+		HTML    string `json:"html"`
+		Context string `json:"context_html"`
+	}
+	_ = json.Unmarshal(do("GET", "/api/reviews/"+name).Body.Bytes(), &view)
+	if strings.Contains(view.HTML, "INTERNAL_ONLY") || !strings.Contains(view.Context, "INTERNAL_ONLY") || !strings.Contains(view.HTML, "PUBLIC_REVIEW") {
+		t.Errorf("screen: %+v", view)
+	}
+
+	if w := do("POST", "/api/reviews/"+name+"/comment"); w.Code != http.StatusOK {
+		t.Fatalf("comment: %d %s", w.Code, w.Body)
+	}
+	sent, _ := os.ReadFile(log)
+	if strings.Contains(string(sent), "INTERNAL_ONLY") || !strings.Contains(string(sent), "PUBLIC_REVIEW") {
+		t.Errorf("the comment took: %s", sent)
+	}
+
+	// The post agent reads a file: it gets a copy without what stays.
+	sr, err := srv.savedPR(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := srv.jobs.publishInputFor(sr.Path, sr.Body, nil, sr.Trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.discard()
+	copied, _ := os.ReadFile(in.Path)
+	if in.Path == sr.Path || strings.Contains(string(copied), "INTERNAL_ONLY") {
+		t.Errorf("the post agent would read %s: %s", in.Path, copied)
+	}
+
+	// Saved before the marker, nothing can tell the steps apart: refused.
+	old := filepath.Join(srv.reviewsDir, "acme-api-core-482-20200101-000000.md")
+	if err := os.WriteFile(old, []byte("# acme/api-core#482 — t\n\n- Agent: mix\n\n---\n\n"+res.Body+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(old)+"/comment"); w.Code < 400 {
+		t.Errorf("old file: %d", w.Code)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(old)+"/publish"); w.Code < 400 {
+		t.Errorf("old file: %d", w.Code)
+	}
+}
+
+// One saved review reaches the PR once, whichever of the four doors it takes.
+func TestUmaRevisaoQuatroPortas(t *testing.T) {
+	dir := t.TempDir()
+	log := ghFalso(t, "cat >/dev/null")
+	cfg := cfgFor(t, "cat")
+	noClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &noClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	file := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("# acme/api-core#482 — t\n\n---\n\nBody.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// A publication from the Saved tab settles, and its report cannot be pasted.
+	path := file("a.md")
+	view, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Publishing || !done.Posted {
+		t.Errorf("a finished publication: publishing=%v posted=%v", done.Publishing, done.Posted)
+	}
+	if _, err := m.Post(ctx, view.ID, nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("/post after it: %v", err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("comment after it: %v", err)
+	}
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish again: %v", err)
+	}
+
+	// Comment twice, and then publish: the first one counts.
+	path = file("b.md")
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("second comment: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("%d gh calls", n)
+	}
+
+	// The card of a review and the Saved tab are the same review.
+	path = file("c.md")
+	card := &Job{ID: "j900", State: StateDone, SavedTo: path, Posted: true}
+	poeJob(m, card)
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish a posted card's file: %v", err)
+	}
+	path = file("d.md")
+	busy := &Job{ID: "j901", State: StateDone, SavedTo: path, posting: true}
+	poeJob(m, busy)
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errPublishBusy) {
+		t.Errorf("comment while the card posts: %v", err)
 	}
 }

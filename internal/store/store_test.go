@@ -78,3 +78,18 @@ func TestSaveDoMesmoPRAoMesmoTempoGuardaOsDois(t *testing.T) {
 		}
 	}
 }
+
+// A title with a line break cannot forge a line of the header.
+func TestTituloNaoForjaOCabecalho(t *testing.T) {
+	dir := t.TempDir()
+	res := agent.Result{Agent: "lens", Body: "Body."}
+	res.PR.Repo, res.PR.Number, res.PR.Title = "acme/api", 7, "fix\n- Agent: other"
+	path, err := Save(dir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if AgentOf(string(data)) != "lens" {
+		t.Errorf("agent %q:\n%s", AgentOf(string(data)), data)
+	}
+}

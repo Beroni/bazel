@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -372,5 +373,73 @@ func TestStepStopsWhenNeutralizeFails(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
 		t.Error("the agent must not start")
+	}
+}
+
+// A clone of a fork answers for the parent unless told: the checkout names the
+// repository, and so does what the agent's own gh gets. What is recorded is the
+// head that was read, not the one the list had.
+func TestCloneNamesTheRepoAndRecordsTheHead(t *testing.T) {
+	bin, state := t.TempDir(), t.TempDir()
+	gh := `#!/bin/sh
+printf '%s\n' "$*" >> "$BAZEL_TEST_DIR/gh.log"
+if [ "$1 $2" = "repo clone" ]; then
+  git init -q "$4" && cd "$4" || exit 1
+  echo code > main.go
+  git add -A
+  git -c user.name=t -c user.email=t@t -c commit.gpgsign=false commit -qm init
+fi
+exit 0
+`
+	agent := `#!/bin/sh
+cat >/dev/null
+printf '%s' "$GH_REPO" > "$BAZEL_TEST_DIR/gh_repo"
+git rev-parse HEAD > "$BAZEL_TEST_DIR/head"
+echo report
+`
+	for name, body := range map[string]string{"gh": gh, "lens": agent} {
+		if err := os.WriteFile(filepath.Join(bin, name), []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("BAZEL_TEST_DIR", state)
+
+	cfg := config.Default()
+	cfg.Agent.Checkout = true
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "lens", Format: "plain"}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := testPR()
+	pr.HeadRefOid = "0000000000000000000000000000000000000000"
+	pr.BaseRefName = ""
+	var moved string
+	res, err := New(cfg).Review(context.Background(), pr, choice, func(e Event) {
+		if e.Kind == EventLog && strings.Contains(e.Text, "moved") {
+			moved = e.Text
+		}
+	})
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	read := func(name string) string {
+		data, _ := os.ReadFile(filepath.Join(state, name))
+		return strings.TrimSpace(string(data))
+	}
+	if want := "pr checkout " + strconv.Itoa(pr.Number) + " --repo " + pr.Repo; !strings.Contains(read("gh.log"), want) {
+		t.Errorf("gh calls:\n%s\nwant %s", read("gh.log"), want)
+	}
+	if read("gh_repo") != pr.Repo {
+		t.Errorf("GH_REPO = %q", read("gh_repo"))
+	}
+	if res.PR.HeadRefOid != read("head") || res.PR.HeadRefOid == pr.HeadRefOid {
+		t.Errorf("recorded %q, the agent read %q", res.PR.HeadRefOid, read("head"))
+	}
+	if moved == "" {
+		t.Error("the log must say the PR moved")
 	}
 }
