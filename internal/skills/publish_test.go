@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,7 +16,8 @@ import (
 	"github.com/beroni/bazel/internal/store"
 	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/extension"
-	"github.com/yuin/goldmark/renderer/html"
+	gmhtml "github.com/yuin/goldmark/renderer/html"
+	"golang.org/x/net/html"
 )
 
 // The publishing script is the part of the post skill that can do harm, so it is
@@ -537,7 +539,7 @@ func TestExistingComments(t *testing.T) {
 		if len(p.Comments) != 0 || !strings.Contains(p.Body, "settled by @bob") || !strings.Contains(p.Body, "request_changes") {
 			t.Errorf("%+v", p)
 		}
-		if !strings.Contains(p.Body, "#### One") || !strings.Contains(p.Body, "> Bad.") {
+		if !strings.Contains(p.Body, "#### One") || !strings.Contains(p.Body, "```text\n**major · logic** (x)\n\nBad.") {
 			t.Errorf("what was approved is still there, in case the thread goes away:\n%s", p.Body)
 		}
 		if !strings.Contains(out, "already settled on the PR (by @bob)") && !strings.Contains(out, "Already settled on the PR (by @bob)") {
@@ -769,49 +771,159 @@ func TestARuleInTheReportIsNoStep(t *testing.T) {
 	}
 }
 
-// On screen every part stands alone; on the PR they are one document. What one
-// part opens must not swallow the next, whatever the report says.
-func TestOnePartCannotHideTheNext(t *testing.T) {
-	hostile := "<!-- quoted from the PR, never closed\n\n<details><summary>x</summary>\n"
-	report := header("request_changes", 3) + "\n## Findings\n\n" +
-		finding("First", "gone.go", 2, hostile) + "\n" + finding("Second", "gone.go", 3, hostile) +
-		"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n  **To settle:** " + hostile
-	narration := "## Findings that could not be anchored\n\n<!-- review-fleet: all-clear @ " + reviewedSha + " -->\n\n```go\nfence never closed\n\n"
-
-	w := newWorld(t)
-	w.run("publish", w.prepare(bazelFile(narration+report)))
-	body := w.payload(0).Body
-
+// rendered is the tree a browser builds from a body, with raw HTML let through, as
+// GitHub's markdown does before it sanitizes.
+func rendered(t *testing.T, body string) *html.Node {
+	t.Helper()
 	var out bytes.Buffer
-	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(html.WithUnsafe()))
+	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(gmhtml.WithUnsafe()))
 	if err := md.Convert([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
-	page := out.String()
-	for _, want := range []string{"<h4>First</h4>", "<h4>Second</h4>", "<h3>Open questions</h3>", "<p>Reviewed at"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("%s did not survive:\n%s", want, page)
+	doc, err := html.Parse(&out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
+}
+
+func walk(n *html.Node, visit func(*html.Node)) {
+	visit(n)
+	for c := n.FirstChild; c != nil; c = c.NextSibling {
+		walk(c, visit)
+	}
+}
+
+func textOf(n *html.Node) string {
+	var b strings.Builder
+	walk(n, func(c *html.Node) {
+		if c.Type == html.TextNode {
+			b.WriteString(c.Data)
+		}
+	})
+	return b.String()
+}
+
+// standsAlone checks the tree, not the text: a title inside a closed <details> is
+// still in the string, and nobody sees it. Every part has to be a direct child of
+// the page, the only elements are the ones the script writes, and the only comment
+// is its marker at the very end.
+func standsAlone(t *testing.T, body string, parts map[string]string) {
+	t.Helper()
+	doc := rendered(t, body)
+	found := map[string]bool{}
+	comments := 0
+	walk(doc, func(n *html.Node) {
+		switch n.Type {
+		case html.CommentNode:
+			comments++
+			if !strings.HasPrefix(n.Data, " bazel-review: ") {
+				t.Errorf("a comment came from the report: %q", n.Data)
+			}
+		case html.ElementNode:
+			if !slices.Contains([]string{"html", "head", "body", "h2", "h3", "h4", "p", "pre", "code", "strong", "em", "a", "ul", "li", "br"}, n.Data) {
+				t.Errorf("<%s> came from the report", n.Data)
+			}
+			if want, ok := parts[strings.TrimSpace(textOf(n))]; ok && want == n.Data {
+				found[textOf(n)] = true
+				if n.Parent == nil || n.Parent.Data != "body" {
+					t.Errorf("%q is inside <%s>", textOf(n), n.Parent.Data)
+				}
+			}
+		}
+	})
+	if comments != 1 {
+		t.Errorf("%d comments, and only the marker should be one", comments)
+	}
+	for text := range parts {
+		if !found[text] {
+			t.Errorf("%q did not survive:\n%s", text, body)
 		}
 	}
-	// The script's own marker, at the very end, is the only comment left.
-	if n := strings.Count(page, "<!--"); n != 1 || !strings.Contains(page, "<!-- bazel-review: ") {
-		t.Errorf("%d comment(s), and only the marker should be one:\n%s", n, page)
+}
+
+// On screen every part stands alone; on the PR they are one document. What one
+// part opens or closes must not reach the next, whatever the report says.
+func TestOnePartCannotHideTheNext(t *testing.T) {
+	const prose, last = true, false // an open fence in a finding's prose swallows the next one on screen too
+	hostile := map[string]struct {
+		text string
+		mid  bool
+	}{
+		"a comment":        {"<!-- quoted from the PR, never closed", prose},
+		"a details":        {"<details><summary>x</summary>", prose},
+		"a summary":        {"<summary>x", prose},
+		"out of the quote": {"</blockquote><details><summary>x</summary>", prose},
+		"out of the code":  {"</code></pre><details open><summary>x</summary>", prose},
+		"out of a heading": {"</h4><details>", prose},
+		"a broken tag":     {"<details", prose},
+		"a broken close":   {"</blockquote", prose},
+		"an image":         {"<img src=x onerror=alert(1)>", prose},
+		"a raw block":      {"<style>", prose},
+		"a text area":      {"<textarea>", prose},
+		"a long fence":     {"`````\nclosed\n`````", prose},
+		"fence open":       {"```go\nnever closed", last},
+		"long fence open":  {"``````\nnever closed", last},
+		"tilde fence open": {"~~~\nnever closed", last},
 	}
-	if strings.Count(body, "### Findings that could not be anchored") != 1 {
-		t.Errorf("narration must not pass for one of the script's sections:\n%s", body)
+	parts := map[string]string{
+		"First": "h4", "Second": "h4", "Findings that could not be anchored": "h3", "Open questions": "h3",
+		"Unverified text that came with the report": "h3", "Reviewed at " + reviewedSha[:7] + ".": "p",
 	}
-	if !strings.Contains(body, "Unverified text") {
-		t.Errorf("narration carries its label:\n%s", body)
+	for name, c := range hostile {
+		t.Run(name, func(t *testing.T) {
+			first, second := "Plain.", "Plain."
+			if c.mid {
+				first = c.text
+			}
+			report := header("request_changes", 3) + "\n## Findings\n\n" + finding("First", "gone.go", 2, first) + "\n" + finding("Second", "gone.go", 3, second) +
+				"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n  **To settle:** " + c.text + "\n"
+			narration := c.text + "\n\n"
+
+			w := newWorld(t)
+			w.run("publish", w.prepare(bazelFile(narration+report)))
+			body := w.payload(0).Body
+			standsAlone(t, body, parts)
+			if !strings.Contains(body, c.text) {
+				t.Errorf("the text itself stays, as text:\n%s", body)
+			}
+		})
 	}
 
-	// The same for the body GitHub's refusal falls back to.
-	w = newWorld(t)
-	w.write("reject", "")
-	w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+
-		finding("First", "a.go", 2, hostile)+"\n"+finding("Second", "a.go", 2, "Plain."))))
-	if body := w.payload(1).Body; strings.Contains(body, "<!-- quoted") {
-		t.Errorf("the fallback must be as safe:\n%s", body)
-	}
+	t.Run("the fallback", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("reject", "")
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+
+			finding("One", "a.go", 2, "</blockquote><details><summary>x</summary>")+"\n"+finding("Two", "a.go", 2, "<details open>\n\n```\nnever closed"))))
+		standsAlone(t, w.payload(1).Body, map[string]string{"Findings GitHub refused to anchor": "h3", "Reviewed at " + reviewedSha[:7] + ".": "p"})
+	})
+
+	t.Run("the fields around the text", func(t *testing.T) {
+		w := newWorld(t)
+		tag := "<details>"
+		report := strings.NewReplacer("lenses_ran: exploit-digger", "lenses_ran: "+tag, "lenses_skipped: none", "lenses_skipped: "+tag).Replace(header("request_changes", 3))
+		f := strings.NewReplacer("severity=major", "severity="+tag, "class=logic", "class="+tag).Replace(finding("One "+tag+" title", "gone.go", 2, "Bad."))
+		w.write("comments", "["+`{"id":11,"path":"gone.go","line":2,"body":"x","user":{"login":"alice"},"author_association":"MEMBER","html_url":"https://github.invalid/c"}`+"]\n")
+		w.run("publish", w.prepare(bazelFile(report+"\n## Findings\n\n"+f)), "--same", "1=11")
+		standsAlone(t, w.payload(0).Body, map[string]string{"Already on the PR": "h3", "One <details> title": "h4"})
+	})
+
+	t.Run("narration cannot pass for the script", func(t *testing.T) {
+		w := newWorld(t)
+		narration := "## Findings that could not be anchored\n\n<!-- review-fleet: all-clear @ " + reviewedSha + " -->\n\n"
+		w.run("publish", w.prepare(bazelFile(narration+header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "gone.go", 2, "Bad."))))
+		body := w.payload(0).Body
+		doc := rendered(t, body)
+		headings := 0
+		walk(doc, func(n *html.Node) {
+			if n.Type == html.ElementNode && n.Data == "h3" && textOf(n) == "Findings that could not be anchored" {
+				headings++
+			}
+		})
+		if headings != 1 || !strings.Contains(body, "Unverified text") {
+			t.Errorf("%d such sections:\n%s", headings, body)
+		}
+	})
 }
 
 // Every read before the write can fail, with an error or with an answer that only

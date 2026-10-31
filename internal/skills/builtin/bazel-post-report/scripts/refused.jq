@@ -5,5 +5,5 @@ include "text";
 
 .body as $b
 | .body = ($b + "\n\n### Findings GitHub refused to anchor\n\n"
-    + (.comments | map("#### `\(.path | gsub("`"; "'"))`:\(.line)\n\(.body | quoted)") | join("\n\n")))
+    + (.comments | map("#### `\(.path | gsub("`"; "'"))`:\(.line)\n\(.body | verbatim)") | join("\n\n")))
 | .comments = []
