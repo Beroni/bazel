@@ -158,6 +158,12 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 	return all, errs
 }
 
+// ListCalls is how many gh processes ListPRs runs: one per repository and, with
+// a filter, per author in each. What is charged has to be what runs.
+func ListCalls(repos []string, opts ListOptions) int {
+	return len(repos) * max(1, len(lowerSet(opts.Authors)))
+}
+
 // listRepoPRs lists a repository's open PRs, one call per author when there is
 // a filter: the limit has to apply to that author's PRs, or the filter would run
 // over the newest PRs of everyone and could find none. full says a call came

@@ -688,3 +688,23 @@ func TestListaAguentaFalha(t *testing.T) {
 		t.Fatal("loadPRs ignored its context")
 	}
 }
+
+// A forced refresh is charged what it runs: with authors configured that is one
+// gh per repository and author, and the budget holds however many ask.
+func TestRefreshCobraRepoVezesAutor(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Repos = []string{"acme/api-core"}
+	for i := range 10 {
+		srv.cfg.Authors = append(srv.cfg.Authors, fmt.Sprintf("author%d", i))
+	}
+	log := ghFalso(t, "echo '[]'")
+	srv.prsAt = time.Now()
+	for range 8 {
+		if _, _, _, err := srv.loadPRs(context.Background(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := contaNoLog(log, "start"); n > listReadsPerMin {
+		t.Errorf("%d gh processes, budget %d", n, listReadsPerMin)
+	}
+}

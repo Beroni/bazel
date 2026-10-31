@@ -615,7 +615,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	// there. A list that expired is read regardless: the page needs one.
 	if fresh {
 		s.detMu.Lock()
-		allowed := s.listReadLocked(timeNow(), len(repos))
+		allowed := s.listReadLocked(timeNow(), gh.ListCalls(repos, opts))
 		s.detMu.Unlock()
 		if !allowed {
 			return prs, errs, at, nil
