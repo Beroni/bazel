@@ -51,6 +51,9 @@ type Event struct {
 	Index int // step position, starting at 0
 	Total int
 	Name  string
+	// Ran is what the step runs on: the provider on EventStep, and the provider
+	// and model on EventStepDone, when the model is known.
+	Ran string
 	// Duration is only filled in on EventStepDone.
 	Duration time.Duration
 	Err      error
@@ -68,7 +71,9 @@ type Event struct {
 
 // StepResult is the output of one review step.
 type StepResult struct {
-	Name     string
+	Name string
+	// Ran is the provider and model this step ran on (see attribution).
+	Ran      string
 	Body     string
 	Duration time.Duration
 	// Usage is how much model this step spent.
@@ -260,7 +265,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			stopped = i
 			break
 		}
-		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
+		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name, Ran: provider(step)})
 
 		// Right before the agent starts, inside exec, with nothing in between:
 		// an earlier step can run commands in the clone, bring the files back
@@ -323,13 +328,13 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
-		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
 		fechado.add(used)
 		steps = append(steps, res)
-		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: res.Duration, Err: res.Err})
+		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Ran: res.Ran, Duration: res.Duration, Err: res.Err})
 
 		// Cancellation aborts the whole queue: the clone is gone, and pushing on
 		// with the next steps only burns time on a review nobody wants anymore.

@@ -707,7 +707,7 @@ async function openSaved(name) {
     const entry = state.saved.find((x) => x.name === name);
     const head = el('div', 'viewer-head');
     const grow = el('div', 'grow');
-    grow.append(el('div', 'kicker', [entry && entry.agent, data.name].filter(Boolean).join(' · ')),
+    grow.append(el('div', 'kicker', [entry && entry.agent, entry && entry.ran, data.name].filter(Boolean).join(' · ')),
       el('h2', null, (entry && entry.title) || data.name));
     const back = el('button', 'btn small ghost', '← all saved');
     back.addEventListener('click', () => { state.activeSaved = null; renderSaved(); });
@@ -1204,6 +1204,13 @@ function agentTitle(name) {
   ].filter(Boolean).join('\n') || a.name;
 }
 
+// ranOn says what a job ran on: the providers and models of its steps, each
+// once. The labels come from the server, so a CLI no one here has heard of
+// shows up as its command.
+function ranOn(job) {
+  return [...new Set((job.steps || []).map((s) => s.ran).filter(Boolean))].join(' + ');
+}
+
 // stepsBox is a job's list of steps: who finished, whose turn it is and who
 // hasn't even started.
 function stepsBox(job) {
@@ -1219,6 +1226,7 @@ function stepRow(st) {
   const row = tid(el('div', 'step ' + st.state), 'job-step', { step: st.name, state: st.state });
   row.append(el('span', 'dot'));
   row.append(el('span', 'step-name', st.name));
+  if (st.ran) row.append(tid(el('span', 'step-ran', st.ran), 'step-ran'));
   const secs = stepSeconds(st);
   if (secs) row.append(el('span', 'step-time', secs + 's'));
   if (st.error) row.title = st.error;
@@ -1722,6 +1730,8 @@ function renderJobs() {
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
     top.append(sp, x);
     card.append(top, el('div', 'title', job.pr.title));
+    const ran = ranOn(job);
+    if (ran) card.append(tid(el('div', 'card-ran', ran), 'job-ran'));
 
     // The design's card is the dot, repo #n, ✕, the title and the bar. State,
     // agent and spend go to the tooltip and to the detail; the state stays in
@@ -1817,7 +1827,7 @@ function renderSaved() {
     for (const s of state.saved) {
       const row = tid(el('div', 'saved'), 'saved-row', { name: s.name });
       row.append(el('div', 'saved-title', s.title || s.name),
-        el('div', 'name', [s.agent, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
+        el('div', 'name', [s.agent, s.ran, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
       operable(row, `open saved review ${s.title || s.name}`, () => openSaved(s.name));
       list.append(row);
@@ -2160,6 +2170,7 @@ function renderOverview(body, job) {
   }
   if (job.posts) fact('Publishing', el('span', 'tag posts', '⇧ publishes to the PR on its own'));
   else if (job.posted) fact('Publishing', el('span', 'tag reviewed', 'published on the PR'));
+  if (ranOn(job)) fact('Ran on', ranOn(job));
   const custo = gasto(job);
   if (custo) {
     const g = el('span', 'tokens', custo + (job.state === 'done' ? ' · ' + jobSeconds(job) + 's' : ''));
@@ -2402,7 +2413,7 @@ function renderReportView(v, job) {
   // What the review cost, at its end — which is where you arrive after reading.
   const custo = gasto(job);
   const foot = tid(el('p', 'dim tokens-foot'), 'review-footer');
-  foot.textContent = [custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to,
+  foot.textContent = [ranOn(job), custo && custo + ' · ' + jobSeconds(job) + 's', job.saved_to && 'saved to ' + job.saved_to,
     job.workdir && 'clone kept at ' + job.workdir, job.truncated && 'diff truncated']
     .filter(Boolean).join(' · ');
   if (custo) foot.title = gastoTitle(job);

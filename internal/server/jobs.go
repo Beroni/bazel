@@ -81,6 +81,7 @@ type logLine struct {
 // jobStep is a review step — an agent of the choice — as the page sees it.
 type jobStep struct {
 	Name      string
+	Ran       string
 	State     State
 	StartedAt time.Time
 	Duration  time.Duration
@@ -749,10 +750,12 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		job.Cloning = false
 		job.Steps[i].State = StateRunning
 		job.Steps[i].StartedAt = time.Now()
+		job.Steps[i].Ran = e.Ran
 	case e.Kind == agent.EventStepDone:
 		st := &job.Steps[i]
 		st.Duration = e.Duration
 		st.State = StateDone
+		st.Ran = e.Ran
 		if e.Err != nil {
 			st.State = StateFailed
 			st.Err = e.Err.Error()

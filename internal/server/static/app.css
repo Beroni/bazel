@@ -294,6 +294,7 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .card.failed .card-top .dot { color: var(--err); }
 .card-ref { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card .title { margin: 0; font-size: 12.5px; color: var(--dim); }
+.card-ran { margin-top: 2px; font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* Text only screen readers see: the state the card no longer prints. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 
@@ -485,6 +486,7 @@ main.no-prs .burger span { background: var(--accent); }
 .step { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--dim); }
 .step .dot { flex: none; }
 .step .step-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.step .step-ran { padding-left: 8px; font-size: 10px; opacity: .8; white-space: nowrap; }
 .step .step-time { margin-left: auto; padding-left: 8px; font-size: 10px; opacity: .8; }
 .step.running { color: var(--accent); }
 .step.running .dot { animation: pulse 1.1s ease-in-out infinite; }

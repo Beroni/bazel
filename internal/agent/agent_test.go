@@ -1100,3 +1100,25 @@ func TestPrimeiroResultadoVale(t *testing.T) {
 		t.Errorf("body = %q", res.Body)
 	}
 }
+
+// What a step ran on comes from its format and the model it reported; a CLI
+// that speaks neither is named by its command.
+func TestAttribution(t *testing.T) {
+	for _, c := range []struct {
+		step  config.ResolvedAgent
+		model string
+		want  string
+	}{
+		{config.ResolvedAgent{Command: "claude", Format: "claude-stream"}, "claude-opus-5", "claude · opus-5"},
+		{config.ResolvedAgent{Command: "claude", Format: "claude-stream"}, "claude-haiku-4-5-20251001", "claude · haiku-4-5"},
+		{config.ResolvedAgent{Command: "cc", Args: []string{"--output-format", "stream-json"}}, "", "claude"},
+		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, "codex", "codex"},
+		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, "gpt-5-codex", "codex · gpt-5-codex"},
+		{config.ResolvedAgent{Command: "grok", Format: "grok-stream"}, "grok-4", "grok · 4"},
+		{config.ResolvedAgent{Command: "/opt/bin/My-Agent.exe", Format: "plain"}, "", "my-agent"},
+	} {
+		if got := attribution(provider(c.step), c.model); got != c.want {
+			t.Errorf("%+v, %q: %q, want %q", c.step, c.model, got, c.want)
+		}
+	}
+}

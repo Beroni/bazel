@@ -2,6 +2,10 @@ package agent
 
 import (
 	"fmt"
+	"regexp"
+	"strings"
+
+	"github.com/beroni/bazel/internal/config"
 )
 
 // outputAdapter translates an agent's output into the Runner's internal contract.
@@ -24,6 +28,34 @@ func outputFormat(format string, args []string) string {
 		return "claude-stream"
 	}
 	return "plain"
+}
+
+// provider says who a step runs on. The output format is what proves it, and a
+// command that speaks none of the known ones is named by itself: a wrapper or a
+// CLI Bazel has never heard of still gets a name, with no list to keep here.
+func provider(step config.ResolvedAgent) string {
+	switch outputFormat(step.Format, step.Args) {
+	case "claude-stream":
+		return "claude"
+	case "codex-json":
+		return "codex"
+	case "grok-stream":
+		return "grok"
+	}
+	return programName(step.Command)
+}
+
+// dateSuffixRe is the release date a model name ends in.
+var dateSuffixRe = regexp.MustCompile(`-[0-9]{8}$`)
+
+// attribution is the label of what a step ran on: `claude · opus-4-5`, or just
+// the provider when the model is unknown or says nothing more.
+func attribution(who, model string) string {
+	model = dateSuffixRe.ReplaceAllString(strings.TrimPrefix(model, who+"-"), "")
+	if model == "" || model == who {
+		return who
+	}
+	return who + " · " + model
 }
 
 func newOutputAdapter(format string, args []string) (outputAdapter, error) {

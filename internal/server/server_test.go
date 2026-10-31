@@ -3066,3 +3066,26 @@ func TestRefsContamNoOrcamento(t *testing.T) {
 		t.Errorf("past the budget: %d, %d gh", w.Code, contaNoLog(log, "start"))
 	}
 }
+
+// The job's steps say what they ran on, from the start of the step, and a
+// command Bazel does not know is named by itself.
+func TestJobDizOQueRodou(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	view, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if len(done.Steps) != 1 || done.Steps[0].Ran != "sh" {
+		t.Errorf("steps: %+v", done.Steps)
+	}
+}
