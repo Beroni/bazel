@@ -265,7 +265,7 @@ func renderMarkdown(src string) string {
 // it may go to the PR.
 const (
 	maxDescriptionBytes = 16 << 10
-	maxReviewBytes      = 256 << 10
+	maxReviewBytes      = store.MaxRichBytes
 )
 
 // plainBlock is text shown as it is.

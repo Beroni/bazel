@@ -33,6 +33,9 @@ type Part struct {
 // where each finding starts and ends, so the page can number them and publish
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
+	if len(body) > MaxRichBytes {
+		return []Part{{Text: body}}
+	}
 	lines := strings.SplitAfter(body, "\n")
 	headings, literal := blockLines(body, lines)
 	var (
@@ -124,6 +127,11 @@ func SplitFindings(body string) []Part {
 	flush()
 	return parts
 }
+
+// MaxRichBytes is the largest report read as markdown. goldmark takes quadratic
+// time on some inputs, 3 s at this size, and real reports stay under 30 KB. Past
+// it a report is one block of text, with no findings to tick.
+const MaxRichBytes = 96 << 10
 
 // blockParser reads a report as the renderer does, so that both agree on what is
 // a heading.
