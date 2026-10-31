@@ -1616,3 +1616,29 @@ func TestRedactedTiraOSegredos(t *testing.T) {
 		t.Errorf("config mode: %v %v", info.Mode(), err)
 	}
 }
+
+// A file with no env goes out byte for byte, and a JSON-style one gets readable
+// values on save.
+func TestRedactedSemEnvEArquivoJSON(t *testing.T) {
+	src := []byte("repos: [a/b]   # odd spacing\n")
+	if out, err := Redacted(src); err != nil || !bytes.Equal(out, src) {
+		t.Errorf("%q %v", out, err)
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(`{"repos": ["a/b"], "agents": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "x", Task: "/x {{number}}"})
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "task: /x {{number}}") {
+		t.Errorf("flow value:\n%s", data)
+	}
+}

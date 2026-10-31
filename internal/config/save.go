@@ -101,6 +101,7 @@ func (c *Config) merged(path string) ([]byte, map[string]string, error) {
 		return nil, nil, fmt.Errorf("%s does not parse, and saving over it would lose it: %w", path, err)
 	}
 	root, ourRoot := disk.Content[0], ours.Content[0]
+	root.Style &^= yaml.FlowStyle // a JSON-style file takes block values
 	for i := 0; i+1 < len(ourRoot.Content); i += 2 {
 		key := ourRoot.Content[i].Value
 		if c.base[key] == values[key] {
@@ -174,10 +175,9 @@ func Redacted(data []byte) ([]byte, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	if len(doc.Content) == 0 {
+	if len(doc.Content) == 0 || !redactEnv(doc.Content[0]) {
 		return data, nil
 	}
-	redactEnv(doc.Content[0])
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
@@ -190,23 +190,28 @@ func Redacted(data []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-func redactEnv(n *yaml.Node) {
+// redactEnv blanks what it finds and says whether it found anything: with no
+// env the file goes out as it is.
+func redactEnv(n *yaml.Node) bool {
+	found := false
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
 			if n.Content[i].Value == "env" && n.Content[i+1].Kind == yaml.MappingNode {
 				env := n.Content[i+1]
 				for j := 1; j < len(env.Content); j += 2 {
 					env.Content[j] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "<redacted>"}
+					found = true
 				}
 				continue
 			}
-			redactEnv(n.Content[i+1])
+			found = redactEnv(n.Content[i+1]) || found
 		}
-		return
+		return found
 	}
 	for _, c := range n.Content {
-		redactEnv(c)
+		found = redactEnv(c) || found
 	}
+	return found
 }
 
 // Copy is a config that shares no list with c: what an edit of the page can
