@@ -41,6 +41,12 @@ export const test = base.extend<Fixtures>({
     try {
       await bz.start();
       await use(bz);
+      // The canary: every process Bazel started, the first gh call at boot
+      // included, saw this test's HOME and BAZEL_HOME. Nothing else says it
+      // positively: a server on the real ones would look just the same.
+      const seen = [...bz.ghCalls(), ...bz.agentCalls()];
+      expect(seen.length, 'no gh or agent call to check the isolation with').toBeGreaterThan(0);
+      expect(seen.filter((c) => c.home !== bz.home || c.bazel_home !== bz.bazelHome).map((c) => `${c.home} ${c.bazel_home}`), 'isolation broken: a process left the temp root').toEqual([]);
       // A gh call the fake does not know means Bazel grew a new GitHub
       // interaction that no test covers yet: fail loudly instead of passing.
       const unknown = bz.ghCalls().filter((c) => c.unsupported);

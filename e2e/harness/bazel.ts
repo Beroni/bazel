@@ -7,6 +7,9 @@ import { BIN, FIXTURES, OUT, SCENARIOS, safeEnv } from './paths';
 
 /** One recorded call to the fake gh. */
 export interface GhCall {
+  /** HOME and BAZEL_HOME gh got: the isolation canary. */
+  home: string;
+  bazel_home: string;
   argv: string[];
   stdin: string;
   cwd: string;
@@ -23,6 +26,12 @@ export interface AgentCall {
   pid: number;
   /** The branch the clone was on when the agent started. */
   branch: string;
+  /** HOME and BAZEL_HOME the agent got: the isolation canary. */
+  home: string;
+  bazel_home: string;
+  /** The git guard's pin: git never looks for another repository. */
+  git_dir: string;
+  git_work_tree: string;
   argv: string[];
   cwd: string;
   prompt: string;

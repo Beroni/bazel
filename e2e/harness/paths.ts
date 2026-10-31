@@ -26,6 +26,17 @@ export const SYNTH = path.join(OUT, 'scenarios');
 /** Search path of the fake agent: hand-written scenarios, then synthesized specs. */
 export const SCENARIOS = [SCENARIO_FILES, SYNTH].join(':');
 
+/**
+ * The environment of `go build`: only what Go already has, a cached toolchain
+ * included. GOPROXY=off covers the checksum database too, and Go refuses a
+ * toolchain with GOSUMDB off, so that one stays as it is. GONOPROXY and GOPRIVATE
+ * would send a module straight to its VCS, past the proxy: GOVCS shuts that door
+ * too, whatever the shell or `go env -w` say.
+ */
+export function goOffline(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...env, GOPROXY: 'off', GONOPROXY: 'none', GOPRIVATE: '', GOVCS: '*:off', GOTOOLCHAIN: 'auto' };
+}
+
 // The server's whole PATH: the harness bin first, then the system dirs. No
 // Homebrew, no ~/.local/bin — that is where the real gh and claude live.
 export const SAFE_PATH = [BIN, '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(':');

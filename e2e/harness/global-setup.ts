@@ -1,15 +1,9 @@
 import { execFile, execFileSync } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { chromium } from '@playwright/test';
 import { takeLock } from './lock';
-import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
-
-// The suite touches no network: Go may only use what it already has, a cached
-// toolchain included. GOPROXY=off covers the checksum database too, and Go
-// refuses a toolchain with GOSUMDB off, so that one stays as it is.
-const GO_OFFLINE = { ...process.env, GOPROXY: 'off', GOTOOLCHAIN: 'auto' };
+import { BAZEL_SRC, BIN, FAKE_CLAUDE, FAKE_WRAPPER, goOffline, OUT, REPO, SAFE_PATH, SPECS, SYNTH, safeEnv } from './paths';
 
 // Builds Bazel and the two fakes once per run, and lays out the only bin
 // directory the server will see on PATH: the fake gh, the fake agent and git.
@@ -29,7 +23,7 @@ export default async function globalSetup() {
   // The three builds run in parallel; Go's build cache makes a warm run cheap.
   const build = (out: string, pkg: string, cwd = REPO) =>
     new Promise<void>((resolve, reject) =>
-      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd, env: GO_OFFLINE }, (err, _stdout, stderr) =>
+      execFile('go', ['build', '-o', `${BIN}/${out}`, pkg], { cwd, env: goOffline(process.env) }, (err, _stdout, stderr) =>
         err ? reject(new Error(`go build ${pkg} in ${cwd} (offline; run \`go mod download\` once if a module is missing): ${stderr || err.message}`)) : resolve()));
   await Promise.all([build('bazel', '.', BAZEL_SRC), build('gh', './e2e/fakes/gh'), build('fake-agent', './e2e/fakes/agent')]);
   if (BAZEL_SRC !== REPO) console.log(`e2e: Bazel under test built from ${BAZEL_SRC}`);
@@ -65,25 +59,5 @@ export default async function globalSetup() {
   const version = execFileSync('gh', ['--version'], { env, encoding: 'utf8' });
   if (!version.includes('fake')) throw new Error('preflight: gh --version is not the fake: ' + version);
 
-  // Teardown guard: the developer's real ~/.bazel must come out of the run
-  // exactly as it went in.
-  const before = fingerprint(path.join(os.homedir(), '.bazel'));
-  return () => {
-    release();
-    const after = fingerprint(path.join(os.homedir(), '.bazel'));
-    if (after !== before) throw new Error(`isolation broken: ~/.bazel changed during the e2e run\nbefore: ${before}\nafter:  ${after}`);
-  };
-}
-
-/** Names, sizes and mtimes of ~/.bazel and ~/.bazel/reviews (top level). */
-function fingerprint(dir: string): string {
-  const parts: string[] = [];
-  for (const d of [dir, path.join(dir, 'reviews')]) {
-    if (!fs.existsSync(d)) continue;
-    for (const name of fs.readdirSync(d).sort()) {
-      const st = fs.statSync(path.join(d, name));
-      parts.push(`${name}:${st.size}:${st.mtimeMs}`);
-    }
-  }
-  return parts.join('|');
+  return release;
 }
