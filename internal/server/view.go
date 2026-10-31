@@ -120,6 +120,7 @@ type jobView struct {
 	Seconds    int        `json:"seconds"`
 	Err        string     `json:"error,omitempty"`
 	SavedTo    string     `json:"saved_to,omitempty"`
+	LogFile    string     `json:"log_file,omitempty"`
 	Workdir    string     `json:"workdir,omitempty"`
 	Truncated  bool       `json:"truncated,omitempty"`
 	// Tokens and Cost are the review's spend. While it runs they are the
@@ -160,6 +161,7 @@ func (j *Job) view() jobView {
 		Seconds:     int(j.duration().Seconds()),
 		Err:         j.Err,
 		SavedTo:     j.SavedTo,
+		LogFile:     j.LogFile,
 		Workdir:     j.Result.Workdir,
 		Truncated:   j.Result.Truncated,
 		Posted:      j.Posted,

@@ -500,6 +500,7 @@ main.no-prs .burger span { background: var(--accent); }
    the right, every line signed with its agent's name in its color. */
 .log-error { margin: 14px 16px 0; }
 .logview { flex: 1; min-height: 0; display: flex; }
+.log-file { margin: 0 0 8px; font-size: 12px; font-family: var(--mono); overflow-wrap: anywhere; }
 .log-agents {
   flex: none; width: 170px; padding: 8px; display: flex; flex-direction: column; gap: 2px;
   border-right: 1px solid var(--line); overflow-y: auto; background: color-mix(in srgb, var(--bg) 40%, var(--panel));

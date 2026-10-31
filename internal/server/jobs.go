@@ -139,6 +139,8 @@ type Job struct {
 	// not publish on its own, it waits for you to choose what goes to the PR
 	// and send it.
 	AwaitsPublish bool
+	// LogFile is the file with this job's whole log, when that is on.
+	LogFile string
 	// History marks the job that writes a PR's history for the History tab.
 	// Its output is kept per PR and head (store.SaveHistory), not saved as a
 	// review: the PR is not marked reviewed and nothing of it can be published.
@@ -251,6 +253,8 @@ type Manager struct {
 	// either, and the same file can be sent through four doors.
 	sent    map[string]bool
 	pasting map[string]bool
+	// logDir is where each job's whole log goes; empty is off.
+	logDir string
 	// idPrefix makes job ids unique across restarts (the first characters of
 	// the server instance): the seq starts over on every boot, and "j3" from a
 	// page or an MCP client of the old process must not name the new j3.
@@ -473,9 +477,19 @@ func (m *Manager) run(q queued) {
 	// The publication this run takes, captured under the lock.
 	in := job.publish
 	m.mu.Unlock()
+	log, logPath := openJobLog(m.logDir, job.ID, job.PR.Key())
+	defer log.close()
+	if logPath != "" {
+		m.mu.Lock()
+		job.LogFile = logPath
+		m.mu.Unlock()
+	}
 	m.publish(job)
 
-	onEvent := func(e agent.Event) { m.applyEvent(job, e) }
+	onEvent := func(e agent.Event) {
+		log.write(e)
+		m.applyEvent(job, e)
+	}
 	var (
 		res agent.Result
 		err error

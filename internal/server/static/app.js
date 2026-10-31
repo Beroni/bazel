@@ -2167,6 +2167,7 @@ function renderOverview(body, job) {
     fact('Spend', g);
   }
   if (job.saved_to) fact('Saved to', el('code', null, job.saved_to));
+  if (job.log_file) fact('Full log', el('code', null, job.log_file));
   if (job.workdir) fact('Clone kept at', el('code', null, job.workdir));
   if (job.truncated) fact('Diff', 'truncated');
   body.append(facts);
@@ -2179,6 +2180,7 @@ function renderOverview(body, job) {
 
 function renderLogView(body, job) {
   if (job.state === 'failed') body.append(el('div', 'error-box log-error', job.error || 'failed'));
+  if (job.log_file) body.append(tid(el('p', 'dim log-file', 'Full log: ' + job.log_file), 'log-file'));
   body.append(logPanel(job));
   pollLog(job.id);
 }
