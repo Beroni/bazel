@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/gh"
 )
 
 // The name has second resolution: two reviews of one PR that end in the same
@@ -75,6 +76,25 @@ func TestSaveDoMesmoPRAoMesmoTempoGuardaOsDois(t *testing.T) {
 	for _, e := range entries {
 		if e.Repo != "acme/api-core" || e.Number != 482 {
 			t.Errorf("the PR still comes from the heading: %+v", e)
+		}
+	}
+}
+
+// The header is the record of what a saved report is: which steps it owes, and
+// what Bazel took from it, since the log goes away with the job.
+func TestSaveRecordsStepsAndWhatWasCut(t *testing.T) {
+	path, err := Save(t.TempDir(), agent.Result{
+		PR:    gh.PR{Repo: "o/r", Number: 7},
+		Body:  "report",
+		Steps: []agent.StepResult{{Name: "a, b"}, {Name: "fleet", Cut: "Printing it now."}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	for _, want := range []string{`- Steps: ["a, b","fleet"]`, `- Cut from before the report of fleet: "Printing it now."`} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("no %q in:\n%s", want, data)
 		}
 	}
 }

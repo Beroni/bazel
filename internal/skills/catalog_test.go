@@ -161,7 +161,7 @@ func TestCatalogPluginNames(t *testing.T) {
 	if err := Materialize(dir); err != nil {
 		t.Fatal(err)
 	}
-	ref := regexp.MustCompile(`\bbazel:(bazel-[a-z-]*[a-z])`)
+	ref := regexp.MustCompile(`\bbazel:([a-z][a-z-]*[a-z])(-<)?`)
 	seen := 0
 	err := fs.WalkDir(builtinFS, builtinRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -169,6 +169,9 @@ func TestCatalogPluginNames(t *testing.T) {
 		}
 		data, _ := builtinFS.ReadFile(p)
 		for _, m := range ref.FindAllStringSubmatch(string(data), -1) {
+			if m[2] != "" {
+				continue // `bazel:bazel-<lens>` is the template, not a name
+			}
 			seen++
 			_, agent := os.Stat(filepath.Join(dir, "agents", m[1]+".md"))
 			_, skill := os.Stat(filepath.Join(dir, "skills", m[1], "SKILL.md"))

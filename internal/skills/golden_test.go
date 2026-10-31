@@ -33,13 +33,19 @@ var golden = []struct {
 	{"history.md", "line 1 must be exactly `<!-- review-fleet:v1`", 0},
 }
 
-// Each rule of the validator, broken on purpose: a rule that stops firing fails
-// here, and a report that should be fixed does not get through.
+// The rules about order, verdicts and how a report ends, broken on purpose: one
+// that stops firing fails here, and a report that should be fixed does not get
+// through.
 func TestValidatorRefuses(t *testing.T) {
 	validate := validator(t)
 	fleet := readGolden(t, "fleet.md")
 	cuts := readGolden(t, "cuts-order.md")
+	stops := "the report stops before its title and summary are complete"
 	cases := map[string]struct{ body, want string }{
+		"the header alone":      {fleet[:strings.Index(fleet, "# Review Fleet")], stops},
+		"cut after the title":   {fleet[:strings.Index(fleet, "**Verdict:**")], stops},
+		"cut after the verdict": {fleet[:strings.Index(fleet, "**Scope:**")], stops},
+		"cut after the scope":   {fleet[:strings.Index(fleet, "**Lenses:**")], stops},
 		"cuts out of order": {
 			strings.Replace(strings.Replace(strings.Replace(strings.Replace(cuts, "lines_saved=40", "lines_saved=X", 1), "lines_saved=25", "lines_saved=40", 1), "lines_saved=X", "lines_saved=25", 1), "−25 lines", "−40 lines", 1),
 			"from the biggest",

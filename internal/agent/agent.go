@@ -10,12 +10,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
@@ -68,8 +68,10 @@ type Event struct {
 
 // StepResult is the output of one review step.
 type StepResult struct {
-	Name     string
-	Body     string
+	Name string
+	Body string
+	// Cut is the narration dropPreamble took from before the report.
+	Cut      string
 	Duration time.Duration
 	// Usage is how much model this step spent.
 	Usage Usage
@@ -314,15 +316,14 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			return Result{}, err
 		}
 		// Only a skill that ships here promises to print nothing before its report.
-		text := strings.TrimSpace(body)
+		text, cut := strings.TrimSpace(body), ""
 		if skills.IsBuiltin(skills.TaskSkill(step.Task)) {
-			var cut string
 			if text, cut = dropPreamble(text); cut != "" {
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
 					Text: "· cut from before the report: " + strconv.Quote(cut)})
 			}
 		}
-		res := StepResult{Name: step.Name, Body: text, Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -371,19 +372,35 @@ const (
 	preambleWidth = 120
 )
 
-// notNarration matches what a sentence of narration has no reason to carry: a
-// severity, a bug, a place in the code. That text stays, for a person to see.
-var notNarration = regexp.MustCompile(`(?i)\b(critical|major|minor|nit|high|medium|bug|vuln\w*|inject\w*|bypass\w*|finding\w*)\b|\S+\.\w+:\d+`)
+// narration is every word a line may have to be taken for narration. It is a list
+// of what is allowed, not of what to fear, because this runs before anyone has read
+// the output: a sentence that says anything about the PR has some other word in it.
+var narration = strings.Fields(`
+	a abaixo agora all and aqui below certo check checks complete completed concluído
+	done e está feito final finished follows full good here here's histórico history
+	imprimindo imprimo is it my now o ok okay passed passes print printing pronta pronto ready
+	relatório report revisão review saved segue story the tudo validação validada
+	validado validated validation validei wrote written`)
+
+// isNarration says whether a line is made of nothing but narration.
+func isNarration(line string) bool {
+	words := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool {
+		return !unicode.IsLetter(r) && r != '\''
+	})
+	return len(words) > 0 && !slices.ContainsFunc(words, func(w string) bool {
+		return !slices.Contains(narration, w)
+	})
+}
 
 // dropPreamble cuts the sentence a built-in skill's agent sometimes writes before
 // its report ("Validated, printing it now."), and returns what it cut. The skills
-// are told not to, but a model narrates anyway, in the user's language, and the
-// sentence would go to the PR with the review.
+// are told not to, but a model narrates anyway, in the user's language, and a report
+// that does not open with its header is not read as one by the History tab.
 //
-// It runs before anyone has read the output, so it is narrow: a line or two, short,
-// with nothing that looks like a finding, right before the report. A preamble that
-// does not fit stays where it is, on screen, and bazel-post-report refuses to
-// publish it. A report wrapped in ```markdown keeps its fence: Unwrap takes it off.
+// It is narrow: a line or two, short, of narration alone, right before the report.
+// Anything else stays where it is, on screen, and bazel-post-report publishes it
+// under a label that says Bazel does not vouch for it. A report wrapped in
+// ```markdown keeps its fence: Unwrap takes it off.
 func dropPreamble(body string) (kept, cut string) {
 	lines := strings.Split(body, "\n")
 	var preamble []string
@@ -398,8 +415,7 @@ func dropPreamble(body string) (kept, cut string) {
 			}
 			return strings.Join(lines[i:], "\n"), strings.Join(preamble, " ")
 		}
-		if len(preamble) == preambleLines || len(t) > preambleWidth || notNarration.MatchString(t) ||
-			strings.HasPrefix(t, "#") || strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+		if len(preamble) == preambleLines || len(t) > preambleWidth || !isNarration(t) {
 			return body, ""
 		}
 		preamble = append(preamble, t)

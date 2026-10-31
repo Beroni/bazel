@@ -60,6 +60,11 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 		steps, _ := json.Marshal(names)
 		fmt.Fprintf(&b, "- Steps: %s\n", steps)
 	}
+	for _, s := range res.Steps {
+		if s.Cut != "" {
+			fmt.Fprintf(&b, "- Cut from before the report of %s: %q\n", s.Name, s.Cut)
+		}
+	}
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}

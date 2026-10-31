@@ -241,6 +241,7 @@ pending_level && $0 != "" {
 /<!-- (trust-boundaries|out-of-scope|checked-ok) -->/ { err(NR, "marker for a section that does not exist in the format") }
 
 END {
+  if (state != "body") err(0, "the report stops before its title and summary are complete")
   close_finding()
   for (s in seen) if (!has_item[s]) err(0, "section `" s "` is empty — an empty section leaves the file")
   if (HDR["verdict"] == "approve" && ("Needs human verification" in seen))
