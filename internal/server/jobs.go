@@ -21,7 +21,10 @@ import (
 type State string
 
 const (
-	StateQueued   State = "queued"
+	StateQueued State = "queued"
+	// StatePaused is a job that was pending when the server stopped: it waits
+	// for a click and spends nothing until then.
+	StatePaused   State = "paused"
 	StateRunning  State = "running"
 	StateDone     State = "done"
 	StateFailed   State = "failed"
@@ -280,6 +283,11 @@ type Manager struct {
 	pasting map[string]bool
 	// logDir is where each job's whole log goes; empty is off.
 	logDir string
+	// queueFile keeps what is pending across restarts; empty is off. queueSaved
+	// is what it holds now, and queueMu keeps writes in order.
+	queueFile  string
+	queueSaved []byte
+	queueMu    sync.Mutex
 	// idPrefix makes job ids unique across restarts (the first characters of
 	// the server instance): the seq starts over on every boot, and "j3" from a
 	// page or an MCP client of the old process must not name the new j3.
@@ -382,13 +390,32 @@ func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history boo
 	// Beroni/bazel: both are the same PR.
 	for _, id := range m.order {
 		j := m.jobs[id]
-		if strings.EqualFold(j.PR.Key(), pr.Key()) && j.Choice.Name == choice.Name && j.History == history &&
-			(j.State == StateQueued || j.State == StateRunning) {
+		if !strings.EqualFold(j.PR.Key(), pr.Key()) || j.Choice.Name != choice.Name || j.History != history {
+			continue
+		}
+		// Asking for what is paused is the click it was waiting for.
+		if j.State == StatePaused {
+			m.resumeLocked(j)
+			m.mu.Unlock()
+			m.publish(j)
+			return m.mustView(j.ID), nil
+		}
+		if j.State == StateQueued || j.State == StateRunning {
 			v := j.view()
 			m.mu.Unlock()
 			return v, nil
 		}
 	}
+	job := m.newJobLocked(pr, mine, choice, history)
+	m.trimLocked()
+	err := m.sendLocked(job)
+	m.mu.Unlock()
+	m.publish(job)
+	return m.mustView(job.ID), err
+}
+
+// newJobLocked adds a job to the queue's list, not yet sent. Call with m.mu held.
+func (m *Manager) newJobLocked(pr gh.PR, mine bool, choice config.Choice, history bool) *Job {
 	steps := make([]jobStep, 0, len(choice.Steps))
 	for _, st := range choice.Steps {
 		// The `publish` step does not get its own row: what shows on screen is
@@ -411,11 +438,7 @@ func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history boo
 	}
 	m.jobs[job.ID] = job
 	m.order = append(m.order, job.ID)
-	m.trimLocked()
-	err := m.sendLocked(job)
-	m.mu.Unlock()
-	m.publish(job)
-	return m.mustView(job.ID), err
+	return job
 }
 
 // sendLocked sends a freshly registered job to the queue without blocking.
@@ -443,7 +466,7 @@ func (m *Manager) trimLocked() {
 			j := m.jobs[id]
 			// A card waiting on you is the only place that review goes to the
 			// PR from with the choice made on screen: it stays like a live one.
-			if j.State == StateQueued || j.State == StateRunning || j.AwaitsPublish {
+			if j.State == StateQueued || j.State == StateRunning || j.State == StatePaused || j.AwaitsPublish {
 				continue
 			}
 			delete(m.jobs, id)
@@ -900,6 +923,7 @@ func (m *Manager) Remove(id string) error {
 	m.pubMu.Lock()
 	m.hub.Broadcast("job_gone", map[string]string{"id": id})
 	m.pubMu.Unlock()
+	m.saveQueue()
 	return nil
 }
 
@@ -1333,4 +1357,5 @@ func (m *Manager) publish(job *Job) {
 		m.beforeBroadcast()
 	}
 	m.hub.Broadcast("job", view)
+	m.saveQueue()
 }

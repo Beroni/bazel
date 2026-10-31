@@ -1895,6 +1895,7 @@ function jobSeconds(job) {
 function labelParts(job) {
   switch (job.state) {
     case 'queued': return ['queued', ''];
+    case 'paused': return ['paused', ''];
     case 'running': return ['running', jobSeconds(job) + 's'];
     case 'done': return waiting(job)
       ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
@@ -2025,7 +2026,7 @@ function renderViewer() {
 // Running, Ready… The clock goes to its tooltip.
 function pillText(job) {
   if (job.state === 'done') return waiting(job) ? 'Waiting on you' : 'Ready';
-  return { queued: 'Queued', running: 'Running', failed: 'Failed', canceled: 'Canceled' }[job.state] || job.state;
+  return { queued: 'Queued', running: 'Running', failed: 'Failed', canceled: 'Canceled', paused: 'Paused' }[job.state] || job.state;
 }
 
 // jobHead names the PR (repo#n · author), its title, the state and the one
@@ -2044,6 +2045,21 @@ function jobHead(job) {
   const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
   pill.title = label(job);
   head.append(grow, pill);
+  if (job.state === 'paused') {
+    const b = tid(el('button', 'btn small primary', '▶ Run'), 'job-resume');
+    b.title = 'it was pending when Bazel stopped: nothing runs until you say so';
+    b.addEventListener('click', async () => {
+      b.disabled = true;
+      clearAlert();
+      try {
+        upsertJob(await api(`/api/jobs/${encodeURIComponent(job.id)}/resume`, { method: 'POST' }));
+      } catch (err) {
+        alertError('Could not run it: ' + err.message);
+        b.disabled = false;
+      }
+    });
+    head.append(b);
+  }
   if (job.state === 'queued' || job.state === 'running') {
     const b = tid(el('button', 'btn small', 'Cancel'), 'job-cancel');
     b.addEventListener('click', () => cancelJob(job.id));
@@ -2197,7 +2213,7 @@ function renderPRPage(body, pr, job, redraw) {
     const reviews = state.jobs.filter((j) => j.pr.key === pr.key);
     for (const j of reviews) {
       const live = j.state === 'running' || j.state === 'queued';
-      const verb = j.history
+      const verb = j.state === 'paused' ? 'has a paused job with' : j.history
         ? (live ? 'is writing the history with' : j.state === 'done' ? 'wrote the history with' : j.state === 'failed' ? 'failed the history with' : 'canceled the history with')
         : (live ? 'is reviewing with' : j.state === 'done' ? 'reviewed with' : j.state === 'failed' ? 'failed a review with' : 'canceled a review with');
       const li = el('li', 'tbazel' + (j.id === (job && job.id) ? ' on' : ''));

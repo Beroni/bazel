@@ -56,6 +56,9 @@ type Options struct {
 	Version     string
 	// LogDir turns on the job logs on disk over the config's log_dir.
 	LogDir string
+	// QueueDir is where the queue is kept across restarts; empty keeps it in
+	// memory.
+	QueueDir string
 }
 
 // Server is the web interface.
@@ -123,6 +126,9 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
 	jobs.idPrefix = instance[:4] + "-"
 	jobs.logDir = jobLogDir(cfg, opts.LogDir)
+	if opts.QueueDir != "" {
+		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
+	}
 	return &Server{
 		instance:     instance,
 		details:      map[string]detailsEntry{},
@@ -195,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
 	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
+	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -829,6 +836,16 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 
 // handleDismiss is "keep it here": the card stops waiting for you to publish,
 // and nothing goes to the PR.
+// handleResume runs a job the last restart left paused.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.Resume(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
 // handleSaveAgain retries writing a finished review that failed to save.
 func (s *Server) handleSaveAgain(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.SaveAgain(r.PathValue("id"))

@@ -340,6 +340,17 @@ along in the stream of whichever agent is running (`rate_limit_event`). What
 you see is therefore the reading from the last agent that ran, and the tooltip
 says when that was. A fresh server shows nothing until the first review.
 
+## After a restart
+
+What was queued or running when Bazel stopped comes back **paused**: the card is
+there, and nothing runs or spends quota until you click **Run**, or ask for the
+same review again. Agents are not started on their own. A publication never comes
+back, because it needs someone who has just read what goes out, and neither does
+an agent that publishes on its own and had already started, which may have
+posted. The saved review is where a publication starts over.
+
+The queue lives in `<BAZEL_HOME>/queue.json`, plain JSON, safe to delete.
+
 ## Where reviews go
 
 Every review lands in three places, in this order:

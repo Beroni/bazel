@@ -123,11 +123,16 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("could not identify your GitHub user: %w", err)
 	}
 
+	home, err := config.Dir()
+	if err != nil {
+		return err
+	}
 	srv, err := server.New(ctx, cfg, me, server.Options{
 		Addr:        addr,
 		Concurrency: jobs,
 		Keep:        hasFlag(args, "--keep"),
 		LogDir:      flagValue(args, "--log-dir"),
+		QueueDir:    home,
 		Version:     version,
 	})
 	if err != nil {
