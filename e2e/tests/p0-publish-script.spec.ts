@@ -42,6 +42,7 @@ function world(hostilePath: string) {
 const report = (files: number, body: string) => `# acme/api-core#101 — T
 - Head sha: ${SHA}
 - Steps: ["fleet"]
+- Truncated: no
 
 ---
 
