@@ -660,8 +660,8 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
 		return
 	}
-	if len(req.Refs) > mcpMaxRefs {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("too many PRs: %d given, at most %d per call", len(req.Refs), mcpMaxRefs))
+	if len(req.Refs) > maxRefs {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("too many PRs: %d given, at most %d per call", len(req.Refs), maxRefs))
 		return
 	}
 	choice, err := s.resolveChoice(req.Agent)
@@ -727,6 +727,11 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 	}
 	return queued, errs
 }
+
+// maxRefs bounds one request from the page. "Select all" over a busy list is a
+// real request, and PRs on the list cost no gh call: only the rest count against
+// the budget.
+const maxRefs = 200
 
 // getPR is gh.Get under the budget of reads from GitHub.
 func (s *Server) getPR(ctx context.Context, repo string, number int) (gh.PR, error) {

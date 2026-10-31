@@ -6,9 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/yuin/goldmark"
 	"github.com/yuin/goldmark/ast"
-	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
 )
 
@@ -33,9 +32,6 @@ type Part struct {
 // where each finding starts and ends, so the page can number them and publish
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
-	if len(body) > MaxRichBytes {
-		return []Part{{Text: body}}
-	}
 	lines := strings.SplitAfter(body, "\n")
 	headings, literal := blockLines(body, lines)
 	var (
@@ -128,14 +124,10 @@ func SplitFindings(body string) []Part {
 	return parts
 }
 
-// MaxRichBytes is the largest report read as markdown. goldmark takes quadratic
-// time on some inputs, 3 s at this size, and real reports stay under 30 KB. Past
-// it a report is one block of text, with no findings to tick.
-const MaxRichBytes = 96 << 10
-
-// blockParser reads a report as the renderer does, so that both agree on what is
-// a heading.
-var blockParser = goldmark.New(goldmark.WithExtensions(extension.GFM, extension.Footnote)).Parser()
+// blockParser reads a report's blocks as the renderer does, so that both agree on
+// what is a heading. With no inline parsers: they are what takes quadratic time
+// on some text, and this runs over the whole report, however long.
+var blockParser = parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...))
 
 // blockLines says, line by line, which are headings at the top of the document
 // and which belong to a code or HTML block. A line that merely looks like a

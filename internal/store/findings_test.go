@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const relatorio = `# Review Fleet — PR #55
@@ -346,5 +347,17 @@ func TestDesmarcarLevaOAchadoInteiro(t *testing.T) {
 				t.Errorf("the parts do not add up to the report")
 			}
 		})
+	}
+}
+
+// Cutting a report takes no quadratic turn on text made to cause one.
+func TestCortarNaoCustaCPU(t *testing.T) {
+	bomb := strings.Repeat("[a](()", 100_000)
+	start := time.Now()
+	if n := Findings("## Findings\n\n### One\n\n" + bomb + "\n\n### Two\n\nx\n"); n != 2 {
+		t.Errorf("%d findings", n)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("took %v", took)
 	}
 }

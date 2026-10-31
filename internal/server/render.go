@@ -262,10 +262,11 @@ func renderMarkdown(src string) string {
 // goldmark takes quadratic time on some inputs: a PR description of 65 KB made of
 // `[a](()` costs 7 s, and anyone can open a PR on a public repository. Past
 // these sizes the text shows as it is. A review keeps all of it, because all of
-// it may go to the PR.
+// it may go to the PR. Its limit is per finding, and real reports stay under
+// 30 KB as a whole.
 const (
 	maxDescriptionBytes = 16 << 10
-	maxReviewBytes      = store.MaxRichBytes
+	maxReviewBytes      = 96 << 10
 )
 
 // plainBlock is text shown as it is.

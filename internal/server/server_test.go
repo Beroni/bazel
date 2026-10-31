@@ -3056,7 +3056,7 @@ func TestRefsContamNoOrcamento(t *testing.T) {
 		h.ServeHTTP(w, r)
 		return w
 	}
-	if w := post(mcpMaxRefs + 1); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
+	if w := post(maxRefs + 1); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
 		t.Errorf("too many refs: %d, %d gh", w.Code, contaNoLog(log, "start"))
 	}
 	old := ghReadsPerMin
