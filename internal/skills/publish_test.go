@@ -66,6 +66,9 @@ func newWorld(t *testing.T) *world {
 		t.Fatal(err)
 	}
 	w.plugin = plugin
+	if err := skills.PublishTarget(plugin, "o/r", 7); err != nil {
+		t.Fatal(err)
+	}
 	w.script = filepath.Join(plugin, "skills", "bazel-post-report", "scripts", "publish.sh")
 	bin := t.TempDir()
 	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(fakeGH), 0o755); err != nil {
@@ -575,5 +578,33 @@ func TestWorkFoldersAreUnique(t *testing.T) {
 	report := bazelFile(header("approve", 3))
 	if a, b := w.prepare(report), w.prepare(report); a == b {
 		t.Errorf("same folder twice: %s", a)
+	}
+}
+
+// A file that agrees with itself about another PR proves nothing: the PR is the
+// job's, and it comes from Bazel.
+func TestTheJobNamesThePR(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	for name, target := range map[string]string{"another PR": "o/r#8\n", "another repository": "o/x#7\n", "none": ""} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.write("review.md", report)
+			path := filepath.Join(w.plugin, "publish-target")
+			if err := os.Remove(path); err != nil {
+				t.Fatal(err)
+			}
+			if target != "" {
+				if err := os.WriteFile(path, []byte(target), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if code != 3 || !strings.Contains(out, "not for the PR this job publishes to") {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+			if w.wrote() {
+				t.Error("nothing may be written")
+			}
+		})
 	}
 }

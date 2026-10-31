@@ -160,8 +160,10 @@ func TestRunCutsPreambleOnlyForBuiltins(t *testing.T) {
 // is not published: the job has to say so, in the script's words.
 func TestRefusedPublishIsNoSuccess(t *testing.T) {
 	for name, outcome := range map[string]string{
-		"refused": "refused\nNot published: no header. To post it as it is, use paste.\n",
-		"nothing": "nothing\nNothing published: already there.\n",
+		"refused":        "refused\nNot published: no header. To post it as it is, use paste.\n",
+		"nothing":        "nothing\nNothing published: already there.\n",
+		"no message":     "failed\n",
+		"unknown status": "whatever\nAll fine.\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			hostileClone(t)
@@ -186,8 +188,50 @@ func TestRefusedPublishIsNoSuccess(t *testing.T) {
 				t.Fatal("the review did not reach the PR, so Publish must not succeed")
 			}
 			want := strings.Split(outcome, "\n")[1]
-			if err.Error() != want {
+			if want == "" || want == "All fine." {
+				want = "the publishing script never finished"
+			}
+			if !strings.Contains(err.Error(), want) {
 				t.Errorf("error = %q, want the script's message %q", err, want)
+			}
+		})
+	}
+}
+
+// A model that stops before the script, with an exit 0 and a confident last line,
+// published nothing, and only the script can say otherwise. A post agent of the
+// user's own has no script to answer for.
+func TestPublishNeedsTheScriptsWord(t *testing.T) {
+	for name, c := range map[string]struct {
+		task string
+		fail bool
+	}{
+		"the built-in":      {"/bazel-post-report {{review_file}}", true},
+		"in capitals":       {"/BAZEL-POST-REPORT {{review_file}}", true},
+		"one of the user's": {"/post-report {{review_file}}", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hostileClone(t)
+			bin := t.TempDir()
+			script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --plugin-dir ] && dir=$2; shift; done\ncat >/dev/null\n" +
+				"cat \"$dir/publish-target\" > \"$FAKE_TARGET\" 2>/dev/null\necho 'Prepared the plan. All published.'\n"
+			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(t.TempDir(), "target")
+			t.Setenv("FAKE_TARGET", target)
+			t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			cfg := config.Default()
+			cfg.PostAgent = config.AgentDef{Name: "poster", Task: c.task, Prompt: "{{task}}", Command: "claude", Format: "plain", Args: []string{"-p"}}
+			pr := testPR()
+			pr.BaseRefName = ""
+			_, err := New(cfg).Publish(context.Background(), pr, cfg.PostChoice(), "/r/x.md", "body", nil)
+			if (err != nil) != c.fail {
+				t.Fatalf("err = %v, want failure = %v", err, c.fail)
+			}
+			data, _ := os.ReadFile(target)
+			if c.fail && strings.TrimSpace(string(data)) != pr.Key() {
+				t.Errorf("publish-target = %q, want the job's PR %q", data, pr.Key())
 			}
 		})
 	}

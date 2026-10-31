@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -138,20 +139,37 @@ func Materialize(dir string) error {
 	return nil
 }
 
+// postSkill is the built-in skill that writes to the PR.
+const postSkill = "bazel-post-report"
+
+// IsPost says whether a task runs the built-in publishing skill.
+func IsPost(task string) bool {
+	return strings.EqualFold(TaskSkill(task), postSkill)
+}
+
+// PublishTarget leaves in the plugin folder the PR a publishing step is for. The
+// script checks the review against it: everything else it knows comes from the
+// review file, which cannot vouch for itself.
+func PublishTarget(plugin, repo string, number int) error {
+	return os.WriteFile(filepath.Join(plugin, "publish-target"), fmt.Appendf(nil, "%s#%d\n", repo, number), 0o644)
+}
+
 // PublishFailure reads what bazel-post-report's script left in the plugin folder
-// and returns its message when nothing reached the PR. An agent's exit code says
-// nothing about that: the script refusing is a successful run for the model.
-// No file means the script did not run in this step, and that is no failure.
+// and returns "" only if it says the review reached the PR. An agent's exit code
+// and its words say nothing about that: the script refusing is a successful run
+// for the model, and a model can stop before it ever calls the script. Anything
+// but a proof of publishing is a failure.
 func PublishFailure(plugin string) string {
 	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
-	if err != nil {
-		return ""
-	}
 	status, msg, _ := strings.Cut(string(data), "\n")
-	if status == "published" {
+	msg = strings.TrimSpace(msg)
+	switch {
+	case err == nil && status == "published":
 		return ""
+	case err == nil && msg != "" && slices.Contains([]string{"refused", "failed", "nothing"}, status):
+		return msg
 	}
-	return strings.TrimSpace(msg)
+	return "Not published: the publishing script never finished, so nothing is known to have reached the PR. Check the PR, then publish again."
 }
 
 // writeFile writes data to path, creating the folders on the way.

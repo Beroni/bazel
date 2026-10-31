@@ -278,6 +278,11 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		prompt := buildPrompt(step.Prompt, task, pr, diff, workdir, extra)
 		stepStart := time.Now()
+		if skills.IsPost(step.Task) {
+			if err := skills.PublishTarget(plugin, pr.Repo, pr.Number); err != nil {
+				return Result{}, fmt.Errorf("telling the publishing skill its PR: %w", err)
+			}
+		}
 		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
@@ -295,8 +300,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
 		// The publishing script says how it went, in a file: an agent's exit code
-		// and its own words say nothing about what reached the PR.
-		if err == nil && plugin != "" {
+		// and its own words say nothing about what reached the PR. A post agent of
+		// the user's own makes no such promise.
+		if err == nil && skills.IsPost(step.Task) {
 			if msg := skills.PublishFailure(plugin); msg != "" {
 				err = refusal(msg)
 			}

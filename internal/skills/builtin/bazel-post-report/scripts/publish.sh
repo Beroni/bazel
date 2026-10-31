@@ -49,6 +49,8 @@ clone_repo() {
   git remote get-url origin 2>/dev/null | jq -Rr 'sub("\\.git$"; "") | capture("(?<r>[^/:]+/[^/:]+)$").r // ""'
 }
 
+lower() { printf %s "$1" | tr '[:upper:]' '[:lower:]'; }
+
 # gh's paginated lists come as one array per page: flatten, and take only arrays.
 flatten() { jq -s '[.[] | if type == "array" then .[] else empty end]'; }
 
@@ -75,8 +77,10 @@ prepare() {
   case "$number" in ''|*[!0-9]*) refuse "the PR number is not a number" ;; esac
   local here
   here=$(clone_repo)
-  [ "$(printf %s "$here" | tr '[:upper:]' '[:lower:]')" = "$(printf %s "$repo" | tr '[:upper:]' '[:lower:]')" ] ||
-    refuse "the review is for another repository than this clone"
+  [ "$(lower "$here")" = "$(lower "$repo")" ] || refuse "the review is for another repository than this clone"
+  # The PR this job is for, from Bazel: the file cannot vouch for itself.
+  [ "$(lower "$(head -1 "$PLUGIN/publish-target" 2>/dev/null)")" = "$(lower "$repo#$number")" ] ||
+    refuse "the review is not for the PR this job publishes to"
 
   gh pr view "$number" --repo "$repo" --json author,url > "$work/pr.json" || fail "cannot read the PR"
   gh api user --jq .login > "$work/me.txt" || fail "cannot tell who is signed in"
