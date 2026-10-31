@@ -1218,11 +1218,13 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	head, stays, split := store.SplitFile(body)
+	// The same text the doors publish, numbered the same; the header goes apart,
+	// since it is neither findings nor anything that goes to the PR.
+	head, pub, stays, split := store.SavedParts(body)
 	view := map[string]any{
 		"name": r.PathValue("name"),
 		"body": body,
-		"html": renderReview(store.Unwrap(head)),
+		"html": renderReviewMarkdown(head) + renderReview(pub),
 	}
 	if split {
 		view["context_html"] = renderReview(stays)

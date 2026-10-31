@@ -3150,3 +3150,62 @@ func TestSkillsDizQuaisRevisam(t *testing.T) {
 		t.Errorf("notes: %s", w.Body)
 	}
 }
+
+// The screen and the doors number the same text: the finding unticked on screen
+// is the one that stays out, even with a report made to shift the count.
+func TestSalvoNumeraIgualNaTelaENaPorta(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482}'; exit 0; fi\ncat >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	srv := newTestServer(t)
+	report := "```markdown\n    ### decoy\n<!-- finding severity=nit -->\n\n## Findings\n\n### Real one\n\nUNTICKED\n\n### Other\n\nKept.\n```\n"
+	res := agent.Result{Agent: "lens", PR: testPR(482), Body: report}
+	path, err := store.Save(srv.reviewsDir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/reviews/"+name, nil))
+	var view struct {
+		HTML string `json:"html"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &view)
+	cut := strings.Index(view.HTML, `data-finding="0"`)
+	if cut < 0 {
+		t.Fatalf("no finding 0: %s", view.HTML)
+	}
+	first := view.HTML[cut:]
+	if end := strings.Index(first, "</section>"); end >= 0 {
+		first = first[:end]
+	}
+	if !strings.Contains(first, "UNTICKED") {
+		t.Fatalf("finding 0 on screen is another: %s", first)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/comment", strings.NewReader(`{"skip":[0]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("comment: %d %s", w.Code, w.Body)
+	}
+	sent, _ := os.ReadFile(log)
+	if strings.Contains(string(sent), "UNTICKED") || !strings.Contains(string(sent), "Kept.") {
+		t.Errorf("sent: %s", sent)
+	}
+}
+
+// A title cannot play the marker that divides a saved review.
+func TestTituloNaoFazOPapelDoMarcador(t *testing.T) {
+	file := "# acme/api#1 — <!-- bazel:stays-in-bazel -->\n\n- Agent: lens\n\n---\n\nBody.\n"
+	_, pub, stays, split := store.SavedParts(file)
+	if split || stays != "" || pub != "Body." {
+		t.Errorf("%q %q %v", pub, stays, split)
+	}
+}

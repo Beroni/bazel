@@ -298,11 +298,8 @@ const allStepsLine = "- Publishes: every step"
 // its steps may go to the PR: it was saved before files said so. Its steps can
 // no longer be told apart, whatever the config says now.
 func PipelineUnknown(file string) bool {
-	head, _, ok := strings.Cut(file, "\n---\n")
-	if !ok {
-		return false
-	}
-	if strings.Contains(file, staysMarker) || strings.Contains(head, allStepsLine) {
+	head, _, _, split := SavedParts(file)
+	if head == "" || split || strings.Contains(head, allStepsLine) {
 		return false
 	}
 	for _, line := range strings.Split(head, "\n") {
@@ -318,22 +315,34 @@ func PipelineUnknown(file string) bool {
 // marker itself only moves its own text to the side that does not go out.
 const staysMarker = "<!-- bazel:stays-in-bazel -->"
 
-// SplitFile is SplitBody for the screen: the file with its header, up to the
-// marker, and what stays.
-func SplitFile(file string) (head, stays string, split bool) {
-	head, stays, split = strings.Cut(file, staysMarker)
-	return head, strings.TrimSpace(stays), split
-}
-
-// SplitBody cuts a saved review into what may go to the PR and what stays. split
-// says the file was saved with the marker.
-func SplitBody(file string) (publish, stays string, split bool) {
+// SavedParts cuts a saved file into its header, what may go to the PR and what
+// stays in Bazel. It is the one reading of a saved review, for the screen and for
+// every door to the PR: a finding has one number only if they all cut the same
+// text. Only blank lines are trimmed, because the spaces of a first line decide
+// whether it is code or a heading. The marker counts only below the header, so a
+// PR's title cannot play it.
+func SavedParts(file string) (head, publish, stays string, split bool) {
 	body := file
-	if _, after, ok := strings.Cut(file, "\n---\n"); ok {
-		body = after
+	if before, after, ok := strings.Cut(file, "\n---\n"); ok {
+		head, body = before, after
 	}
 	pub, rest, split := strings.Cut(body, staysMarker)
-	return strings.TrimSpace(Unwrap(pub)), strings.TrimSpace(rest), split
+	return head, trimBlankLines(Unwrap(pub)), strings.TrimSpace(rest), split
+}
+
+// SplitBody is SavedParts without the header.
+func SplitBody(file string) (publish, stays string, split bool) {
+	_, publish, stays, split = SavedParts(file)
+	return publish, stays, split
+}
+
+// trimBlankLines drops the blank lines around text, and nothing else.
+func trimBlankLines(text string) string {
+	lines := strings.Split(strings.TrimRight(text, " \t\r\n"), "\n")
+	for len(lines) > 1 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // header reads the title and the agent of a saved review without loading the
