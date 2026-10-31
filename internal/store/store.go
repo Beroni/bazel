@@ -31,7 +31,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s#%d — %s\n\n", res.PR.Repo, res.PR.Number, res.PR.Title)
+	// One line each: the file's header is read back line by line, and a title
+	// must not be able to write a line of its own.
+	fmt.Fprintf(&b, "# %s#%d — %s\n\n", res.PR.Repo, res.PR.Number, strings.Join(strings.Fields(res.PR.Title), " "))
 	fmt.Fprintf(&b, "- Author: @%s\n", res.PR.Author.Login)
 	fmt.Fprintf(&b, "- Branch: `%s`\n", res.PR.HeadRefName)
 	fmt.Fprintf(&b, "- URL: %s\n", res.PR.URL)

@@ -1517,3 +1517,24 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 		t.Error("agent.prompt is not inherited by the History")
 	}
 }
+
+// Names are what the gate goes by: an agent cannot take a pipeline's, a pipeline
+// name survives the trip through the saved file, and the post skill does not
+// come in as a lens.
+func TestNomesNaoConfundemOGate(t *testing.T) {
+	c := Default()
+	c.Agents = []AgentDef{{Name: "lens", Task: "/lens"}}
+	c.Pipelines = []Pipeline{{Name: "Review-Post", Steps: []string{"lens"}}}
+	if _, err := c.AddAgentFromSkill("review", "", true); err == nil {
+		t.Error("review-post must not take the pipeline's name")
+	}
+	for _, name := range []string{"notes — weekly", "a\nb", "a\r\n- Agent: lens"} {
+		if _, err := c.AddPipeline(name, "", []string{"lens"}); err == nil {
+			t.Errorf("pipeline %q must be refused", name)
+		}
+	}
+	c.PostAgent = AgentDef{Name: "mine", Task: "/my-post {{review_file}}", Posts: true}
+	if _, err := c.AddAgentFromSkill("bazel-post-report", "", false); err == nil {
+		t.Error("the built-in post skill must not become a lens under a custom post_agent")
+	}
+}

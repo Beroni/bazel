@@ -703,6 +703,22 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 		def.Prompt = postPrompt
 		def.Posts = true
 	}
+	// The post agent under another post_agent's name: from the list it would
+	// run with no review to publish, and the MCP would take it as a lens.
+	if !posts && c.isPostAgent(def) {
+		return AgentDef{}, fmt.Errorf("%q is a publishing skill — in a pipeline it is the publish step, not an agent", skill)
+	}
+	// A name is what ChoiceByName goes by, so any choice counts: an agent called
+	// like a pipeline takes its place, and runs instead of it.
+	for _, ch := range c.Choices() {
+		if strings.EqualFold(ch.Name, def.Name) {
+			kind := "agent"
+			if ch.Pipeline {
+				kind = "pipeline"
+			}
+			return AgentDef{}, fmt.Errorf("the %s %q is already in the list", kind, ch.Name)
+		}
+	}
 	for _, a := range c.Agents {
 		if strings.EqualFold(strings.TrimSpace(a.Name), def.Name) {
 			return AgentDef{}, fmt.Errorf("the agent %q is already in the list", def.Name)
@@ -754,6 +770,11 @@ func (c *Config) AddPipeline(name, description string, steps []string) (Pipeline
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Pipeline{}, errors.New("a pipeline needs a name")
+	}
+	// The saved file carries the name on a header line, cut at " — ": read back,
+	// another name would answer for what this pipeline may publish.
+	if strings.ContainsAny(name, "\r\n") || strings.Contains(name, " — ") {
+		return Pipeline{}, fmt.Errorf("a pipeline name is one line, without \" — \": %q", name)
 	}
 	for _, ch := range c.Choices() {
 		if strings.EqualFold(ch.Name, name) {
