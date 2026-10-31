@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { openJob, ui } from '../harness/ui';
+import { openJob, recordPosts, settled, ui } from '../harness/ui';
 
 // The gates in front of GitHub. "GitHub" is the fake gh's log; a write is a
 // `gh pr comment` or any `gh api` other than `api user`.
@@ -39,6 +39,7 @@ test.describe('P0 · publish step waits for you', () => {
 
     await app.reload();
     const card = ui.jobCard(app, TITLE);
+    await expect(card).toBeVisible();
     await expect(ui.publishInline(card)).toHaveCount(0); // no one-click publish from the card
 
     const viewer = await openJob(app, TITLE);
@@ -226,11 +227,13 @@ test.describe('P0 · the page asks before writing', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     const viewer = await openJob(app, TITLE);
+    const posts = recordPosts(app);
     dialogs.accept = false;
     await ui.publishInline(viewer).click();
     await ui.pasteAsComment(viewer).click();
     await expect.poll(() => dialogs.messages.length).toBe(2);
-    await new Promise((r) => setTimeout(r, 300));
+    await settled(app);
+    expect(posts).toEqual([]);
     expect(writes(bazel)).toEqual([]);
     expect(bazel.agentCalls()).toHaveLength(1);
   });
@@ -239,9 +242,12 @@ test.describe('P0 · the page asks before writing', () => {
     await ui.filter(app).fill('rate limiter');
     await ui.selectAll(app).check();
     await ui.agentSelect(app).selectOption('fleet-post');
+    const posts = recordPosts(app);
     dialogs.accept = false;
     await ui.runButton(app).click();
     await expect.poll(() => dialogs.messages.length).toBe(1);
+    await settled(app);
+    expect(posts).toEqual([]);
     expect(dialogs.messages[0]).toContain('The agent "fleet-post" publishes the review straight to acme/api-core#101');
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
 
@@ -251,9 +257,12 @@ test.describe('P0 · the page asks before writing', () => {
     await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: 20_000 });
     expect(bazel.agentCalls()[0].prompt).toContain('/review-fleet 101 --post');
 
+    posts.length = 0;
     dialogs.accept = false;
     await ui.pasteAsComment(viewer).click();
     await expect.poll(() => dialogs.messages.length).toBe(3);
+    await settled(app);
+    expect(posts).toEqual([]);
     expect(dialogs.messages[2]).toContain('already published this review on acme/api-core#101. Publish it again, as a comment?');
     expect(writes(bazel)).toEqual([]);
   });

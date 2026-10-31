@@ -1,6 +1,6 @@
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { expandFindings, openJob, ui } from '../harness/ui';
+import { expandFindings, openJob, recordPosts, settled, ui } from '../harness/ui';
 import { Page } from '@playwright/test';
 
 const TITLE = 'Add rate limiter to the public API';
@@ -30,7 +30,10 @@ test.describe('P1 · redesign details', () => {
     await ui.prRow(app, TITLE).click();
     const error = app.getByTestId('pr-error');
     await expect(error).toContainText('E2E-DETAILS-DOWN');
-    await app.waitForTimeout(1_200); // a routine refresh must not wipe it
+    // A job ending redraws the page: that must not wipe it.
+    const id = await bazel.enqueue('acme/web-app#7', 'review-fleet');
+    await bazel.waitJob(id, (j) => j.state === 'done');
+    await expect(ui.jobCard(app, 'Dark mode toggle in settings')).toHaveAttribute('data-state', 'done');
     await expect(error).toBeVisible();
     await expect(error.getByTestId('retry')).toBeVisible();
   });
@@ -69,11 +72,14 @@ test.describe('P1 · redesign details', () => {
     const { viewer } = await reviewed(app, bazel, 'review-fleet');
     await app.getByRole('tab', { name: 'Report' }).click();
     await ui.findingPicks(viewer).nth(1).uncheck();
+    const posts = recordPosts(app);
     dialogs.accept = false;
     await ui.publishInline(viewer).click();
     await expect.poll(() => dialogs.messages.length).toBe(1);
     expect(dialogs.messages[0]).toContain('Goes to the PR: 1 of 2 findings (whole bodies)');
     expect(dialogs.messages[0]).toContain('1 unticked finding will be left out.');
+    await settled(app);
+    expect(posts).toEqual([]);
     expect(bazel.agentCalls()).toHaveLength(1);
   });
 

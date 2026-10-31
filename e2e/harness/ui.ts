@@ -80,6 +80,27 @@ export async function showMeters(page: Page): Promise<void> {
   await page.locator('#meter').hover();
 }
 
+/** Every POST the page sends from now on, by path. */
+export function recordPosts(page: Page): string[] {
+  const posts: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST') posts.push(new URL(r.url()).pathname);
+  });
+  return posts;
+}
+
+/**
+ * Returns when whatever the page has sent so far has shown up in recordPosts. A
+ * dismissed confirm runs on in the same task, so its fetch goes out before this
+ * one, and requests reach the recorder in order: no time to guess.
+ */
+export async function settled(page: Page): Promise<void> {
+  await Promise.all([
+    page.waitForRequest('**/api/state?settled'),
+    page.evaluate(() => fetch('/api/state?settled').then((r) => r.text())),
+  ]);
+}
+
 /** Ticks the PRs matching `text` through the filter + "select all". */
 export async function tickByFilter(page: Page, text: string): Promise<void> {
   await ui.filter(page).fill(text);
