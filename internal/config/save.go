@@ -114,22 +114,78 @@ func (c *Config) merged(path string) ([]byte, map[string]string, error) {
 			dropKey(root, key)
 		}
 	}
+	data, err := encodeYAML(disk)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The last word before the file is replaced: whatever came out has to be a
+	// config the next boot can load.
+	if err := yaml.Unmarshal(data, Default()); err != nil {
+		return nil, nil, fmt.Errorf("saving would break %s: %w", path, err)
+	}
+	return data, values, nil
+}
+
+func encodeYAML(doc *yaml.Node) ([]byte, error) {
 	var out bytes.Buffer
 	enc := yaml.NewEncoder(&out)
 	enc.SetIndent(2)
-	if err := enc.Encode(disk); err != nil {
-		return nil, nil, err
+	if err := enc.Encode(doc); err != nil {
+		return nil, err
 	}
 	if err := enc.Close(); err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	return out.Bytes(), values, nil
+	return out.Bytes(), nil
+}
+
+// keepAliases writes out, in place, the aliases that point inside a value about
+// to go: an unknown key that said `*watched` keeps what it meant, and the file
+// is not left with an alias to an anchor that no longer exists.
+func keepAliases(root, gone *yaml.Node) {
+	inside := map[*yaml.Node]bool{}
+	var mark func(*yaml.Node)
+	mark = func(n *yaml.Node) {
+		inside[n] = true
+		for _, c := range n.Content {
+			mark(c)
+		}
+	}
+	mark(gone)
+	seen := map[*yaml.Node]bool{}
+	var walk func(*yaml.Node)
+	walk = func(n *yaml.Node) {
+		if seen[n] || inside[n] {
+			return
+		}
+		seen[n] = true
+		if n.Kind == yaml.AliasNode && inside[n.Alias] {
+			*n = *clearAnchors(n.Alias)
+			return
+		}
+		for _, c := range n.Content {
+			walk(c)
+		}
+	}
+	walk(root)
+}
+
+// clearAnchors copies a value without its anchors: they stay with the original.
+func clearAnchors(n *yaml.Node) *yaml.Node {
+	out := *n
+	out.Anchor = ""
+	out.Content = make([]*yaml.Node, len(n.Content))
+	for i, c := range n.Content {
+		out.Content[i] = clearAnchors(c)
+	}
+	return &out
 }
 
 // setKey replaces a key's value, or adds the key, keeping the key's comments.
 func setKey(root, key, value *yaml.Node) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value == key.Value {
+			keepAliases(root, root.Content[i+1])
 			root.Content[i+1] = value
 			return
 		}
@@ -140,6 +196,7 @@ func setKey(root, key, value *yaml.Node) {
 func dropKey(root *yaml.Node, key string) {
 	for i := 0; i+1 < len(root.Content); i += 2 {
 		if root.Content[i].Value == key {
+			keepAliases(root, root.Content[i+1])
 			root.Content = slices.Delete(root.Content, i, i+2)
 			return
 		}
@@ -175,41 +232,59 @@ func Redacted(data []byte) ([]byte, error) {
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil, err
 	}
-	if len(doc.Content) == 0 || !redactEnv(doc.Content[0]) {
+	if len(doc.Content) == 0 || !redactEnv(doc.Content[0], map[*yaml.Node]bool{}) {
 		return data, nil
 	}
-	var out bytes.Buffer
-	enc := yaml.NewEncoder(&out)
-	enc.SetIndent(2)
-	if err := enc.Encode(&doc); err != nil {
-		return nil, err
-	}
-	if err := enc.Close(); err != nil {
-		return nil, err
-	}
-	return out.Bytes(), nil
+	return encodeYAML(&doc)
 }
 
-// redactEnv blanks what it finds and says whether it found anything: with no
-// env the file goes out as it is.
-func redactEnv(n *yaml.Node) bool {
+// redactEnv blanks the value of every env it finds and says whether it found
+// any: with no env the file goes out as it is. An env can get its values from an
+// alias or a merge, and they go where they are written.
+func redactEnv(n *yaml.Node, seen map[*yaml.Node]bool) bool {
+	if seen[n] {
+		return false
+	}
+	seen[n] = true
 	found := false
 	if n.Kind == yaml.MappingNode {
 		for i := 0; i+1 < len(n.Content); i += 2 {
-			if n.Content[i].Value == "env" && n.Content[i+1].Kind == yaml.MappingNode {
-				env := n.Content[i+1]
-				for j := 1; j < len(env.Content); j += 2 {
-					env.Content[j] = &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "<redacted>"}
-					found = true
-				}
+			if n.Content[i].Value == "env" {
+				found = blank(n.Content[i+1], map[*yaml.Node]bool{}) || found
 				continue
 			}
-			found = redactEnv(n.Content[i+1]) || found
+			found = redactEnv(n.Content[i+1], seen) || found
 		}
 		return found
 	}
 	for _, c := range n.Content {
-		found = redactEnv(c) || found
+		found = redactEnv(c, seen) || found
+	}
+	return found
+}
+
+// blank replaces every scalar under n, following aliases. Mapping keys stay, so
+// that the file still says what an agent needs.
+func blank(n *yaml.Node, seen map[*yaml.Node]bool) bool {
+	if seen[n] {
+		return false
+	}
+	seen[n] = true
+	found := false
+	switch n.Kind {
+	case yaml.ScalarNode:
+		n.Value, n.Tag, n.Style = "<redacted>", "!!str", yaml.DoubleQuotedStyle
+		return true
+	case yaml.AliasNode:
+		return blank(n.Alias, seen)
+	case yaml.MappingNode:
+		for i := 1; i < len(n.Content); i += 2 {
+			found = blank(n.Content[i], seen) || found
+		}
+	case yaml.SequenceNode:
+		for _, c := range n.Content {
+			found = blank(c, seen) || found
+		}
 	}
 	return found
 }

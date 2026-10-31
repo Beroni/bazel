@@ -1731,3 +1731,58 @@ func TestRedactedSemEnvEArquivoJSON(t *testing.T) {
 		t.Errorf("flow value:\n%s", data)
 	}
 }
+
+// A value about to be replaced may hold an anchor something else refers to: the
+// alias keeps what it meant, and the next boot loads.
+func TestSaveMantemAliases(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	src := "repos: &watched [acme/one]\nmirror: *watched\nagent:\n  command: claude\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/two")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load()
+	if err != nil {
+		data, _ := os.ReadFile(path)
+		t.Fatalf("the next boot fails: %v\n%s", err, data)
+	}
+	if !slices.Contains(back.Repos, "acme/two") {
+		t.Errorf("repos: %v", back.Repos)
+	}
+	var raw struct {
+		Mirror []string `yaml:"mirror"`
+	}
+	data, _ := os.ReadFile(path)
+	if err := yaml.Unmarshal(data, &raw); err != nil || !slices.Equal(raw.Mirror, []string{"acme/one"}) {
+		t.Errorf("mirror: %v %v\n%s", raw.Mirror, err, data)
+	}
+}
+
+// A secret reached through an alias or a merge is a secret all the same.
+func TestRedactedSegueAlias(t *testing.T) {
+	for name, src := range map[string]string{
+		"alias":    "secrets: &s {TOKEN: PRIVATE}\nagent: {env: *s}\n",
+		"merge":    "base: &b {TOKEN: PRIVATE}\nagent:\n  env:\n    <<: *b\n    OTHER: x\n",
+		"value":    "tok: &t PRIVATE\nagent:\n  env:\n    TOKEN: *t\n",
+		"anchored": "agent:\n  env: &e\n    TOKEN: PRIVATE\npost_agent:\n  env: *e\n",
+	} {
+		out, err := Redacted([]byte(src))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(out), "PRIVATE") {
+			t.Errorf("%s leaked:\n%s", name, out)
+		}
+		if !strings.Contains(string(out), "TOKEN") {
+			t.Errorf("%s lost the name:\n%s", name, out)
+		}
+	}
+}
