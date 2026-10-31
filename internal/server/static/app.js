@@ -231,6 +231,7 @@ function drawBanner() {
 
 async function boot() {
   wire();
+  loadPicks();
   try {
     togglePRs(!!localStorage.getItem('bazel.prsHidden'));
   } catch (err) {
@@ -351,6 +352,7 @@ function adoptInstance(id) {
   for (const key of Object.keys(state.picks)) {
     if (key.startsWith('job:')) delete state.picks[key];
   }
+  savePicks();
   state.jobs = [];
   state.activeJob = null;
   if (state.tab === 'queue' && !state.activePR && !state.activeSaved) clearViewer();
@@ -430,6 +432,7 @@ function dropJob(id) {
   delete state.bodies[id];
   delete state.splits[id];
   delete state.picks[pickKey('job', id)];
+  savePicks();
   delete state.logs[id];
   syncReviewingTags();
   delete state.views[id];
@@ -574,7 +577,7 @@ async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const skip = skipList(pickKey('job', id));
-  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}`)) return;
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}`)) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -635,7 +638,7 @@ async function postJob(id, btn) {
   const aviso = job.posts
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
-  if (!confirm(aviso + skipNote(skip))) return;
+  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key))) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -683,6 +686,8 @@ async function openSaved(name) {
     back.addEventListener('click', () => { state.activeSaved = null; renderSaved(); });
     head.append(grow, back);
     v.append(head);
+    const moved = entry && entry.repo ? reportChanged(`${entry.repo}#${entry.number}`) : null;
+    if (moved) v.append(moved);
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
@@ -725,7 +730,7 @@ async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}`)) return;
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}`)) return;
   btn.disabled = true;
   clearAlert();
   try {
@@ -748,7 +753,7 @@ async function commentSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip))) return;
+  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo))) return;
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
@@ -780,6 +785,51 @@ function skipped(key) {
 }
 
 const skipList = (key) => [...skipped(key)].sort((a, b) => a - b);
+
+// The unticked findings outlive a reload: forgetting one sends out a finding you
+// took out, with nothing to tell you. Only what has ticks taken off is kept, and
+// the jobs among it go when their server does.
+const PICKS_KEPT = 200;
+let picksDirty = false;
+function savePicks() {
+  // "all" and "none" change thousands of ticks in one go.
+  if (picksDirty) return;
+  picksDirty = true;
+  queueMicrotask(() => {
+    picksDirty = false;
+    const kept = Object.entries(state.picks).filter(([, set]) => set.size).slice(-PICKS_KEPT)
+      .map(([key, set]) => [key, [...set]]);
+    try {
+      localStorage.setItem('bazel.picks', JSON.stringify(kept));
+    } catch (err) {
+      // A full or blocked storage costs the memory of the ticks, nothing else.
+    }
+  });
+}
+
+function loadPicks() {
+  try {
+    for (const [key, list] of JSON.parse(localStorage.getItem('bazel.picks') || '[]')) {
+      state.picks[key] = new Set(list);
+    }
+  } catch (err) {
+    state.picks = {};
+  }
+}
+
+// changedNote is the warning where the decision is made: the PR moved after the
+// review, so what goes out judges code that is no longer there, and an inline
+// comment lands on lines that may have moved.
+function changedNote(key) {
+  const pr = state.prs.find((p) => p.key === key);
+  if (!pr || !pr.changed_since_review) return '';
+  return '\n\nThis PR changed after the review: the new commits were not read, and inline comments may land on lines that moved.';
+}
+
+// reportChanged is that warning on the Report, where you read before you send.
+function reportChanged(key) {
+  return changedNote(key) ? tid(el('div', 'stale-box', changedNote(key).trim()), 'report-changed') : null;
+}
 
 // skipNote is the reminder in the publish confirm: what was left unticked doesn't go.
 function skipNote(skip) {
@@ -882,6 +932,7 @@ function decorateFindings(md, key, publishable = true) {
     sec.classList.toggle('skipped', out.has(idx));
     box.addEventListener('change', () => {
       if (box.checked) out.delete(idx); else out.add(idx);
+      savePicks();
       sec.classList.toggle('skipped', !box.checked);
       refreshPickSummary();
     });
@@ -1801,7 +1852,7 @@ function viewerSignature(job) {
   return [
     job.id, job.state, job.cloning ? 'c' : '',
     (job.steps || []).map((s) => s.state).join(''),
-    job.posted ? 'p' : '', job.post_error ? 'e' : '',
+    job.posted ? 'p' : '', job.post_error ? 'e' : '', changedNote(job.pr.key) ? 'm' : '',
     // Waiting on you or not changes the note and the buttons, so "keep it
     // here" has to redraw the viewer even though state is still done.
     waiting(job) ? 'w' : '', job.publishable === false ? 'n' : '',
@@ -2294,6 +2345,8 @@ function renderReportView(v, job) {
     v.append(el('p', 'dim', 'loading review…'));
     return;
   }
+  const moved = job.publishable === false ? null : reportChanged(job.pr.key);
+  if (moved) v.append(moved);
   // It ended on a `publish`: the pipeline sent nothing, and this is where you
   // choose what goes. Saying so before the review is what makes you read it
   // as the one who decides, not as someone who only checks.
