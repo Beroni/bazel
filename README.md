@@ -6,7 +6,7 @@
 
 **Your team's open pull requests, in one place — reviewed by the AI agents you choose.**
 
-[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26.10%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![gh CLI](https://img.shields.io/badge/requires-gh%20CLI-181717?logo=github&logoColor=white)](https://cli.github.com)
 [![Agents](https://img.shields.io/badge/agents-your%20Claude%20Code%20skills-f97316)](https://claude.com/claude-code)
 [![Runs on](https://img.shields.io/badge/runs%20on-127.0.0.1%20only-8b9099)](#security-model)
@@ -60,7 +60,8 @@ the prompt — it is only downloaded if your template uses `{{diff}}`.
 
 ## Requirements
 
-- Go 1.26.10+ (to build)
+- Go 1.26.10+ (to build). An older Go downloads it by itself, unless
+  `GOTOOLCHAIN=local` is set
 - [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
 - An AI agent on your `PATH` that reads a prompt on stdin — by default
