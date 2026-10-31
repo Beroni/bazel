@@ -3089,3 +3089,40 @@ func TestJobDizOQueRodou(t *testing.T) {
 		t.Errorf("steps: %+v", done.Steps)
 	}
 }
+
+// The page gets which skills read as reviewing, to put them first.
+func TestSkillsDizQuaisRevisam(t *testing.T) {
+	srv := newTestServer(t)
+	dir := t.TempDir()
+	for name, desc := range map[string]string{"fleet": "Reviews a diff", "notes": "Writes release notes"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nname: " + name + "\ndescription: " + desc + "\n---\n"
+		if err := os.WriteFile(filepath.Join(dir, name, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv.cfg.SkillsDir = dir
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/skills", nil))
+	var got struct {
+		Skills []struct {
+			Name   string `json:"name"`
+			Review bool   `json:"review"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, s := range got.Skills {
+		seen[s.Name] = s.Review
+	}
+	if review, ok := seen["fleet"]; !ok || !review {
+		t.Errorf("fleet: %s", w.Body)
+	}
+	if review, ok := seen["notes"]; !ok || review {
+		t.Errorf("notes: %s", w.Body)
+	}
+}

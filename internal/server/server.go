@@ -1446,6 +1446,9 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	post := s.cfg.PostSkill()
 	s.cfgMu.Unlock()
+	for i := range list {
+		list[i].Review = skills.Reviews(list[i])
+	}
 	// post_skill goes along so the page does not offer it as an agent: it only
 	// publishes when it runs as the publish step.
 	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})

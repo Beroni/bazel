@@ -42,7 +42,7 @@ func provider(step config.ResolvedAgent) string {
 	case "grok-stream":
 		return "grok"
 	}
-	return programName(step.Command)
+	return config.ProgramName(step.Command)
 }
 
 // dateSuffixRe is the release date a model name ends in.

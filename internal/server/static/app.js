@@ -33,6 +33,8 @@ const state = {
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
+  skillFilter: '',   // the search over the installed skills
+  skillsMoreOpen: false, // the fold with the skills that are not for reviews
   views: {},         // job id -> tab open in its detail (see jobView)
   details: {},       // PR key -> its page (see lazy), read again after a refresh
   histories: {},     // PR key -> its history (see lazy)
@@ -2498,6 +2500,7 @@ function wire() {
     if (!fpop.hidden && !fpop.contains(e.target) && e.target !== fbtn) setPop(false);
   });
   fpop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setPop(false); fbtn.focus(); } });
+  $('#skill-search').addEventListener('input', (e) => { state.skillFilter = e.target.value; renderSkillList(); });
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
   $('#select-all').addEventListener('change', (e) => { selectVisible(e.target.checked); renderPRs(); });
   document.querySelectorAll('#scope button').forEach((b) => {
@@ -2850,6 +2853,9 @@ function linhaDeCriar() {
   return linha;
 }
 
+// SKILLS_SHORT is the longest list of skills shown whole, with no search.
+const SKILLS_SHORT = 8;
+
 // renderSkillList shows what is actually installed — the list that rules, and
 // where the agents come from. Each skill becomes an agent in one click: "use" is
 // the lens you read before publishing, "⇧ publishes" goes straight to the PR.
@@ -2857,6 +2863,8 @@ function renderSkillList() {
   const box = $('#skill-list');
   box.innerHTML = '';
   $('#skills-dir').textContent = state.skillsDir || '';
+  const long = state.skills.length > SKILLS_SHORT;
+  $('#skill-search').hidden = !long;
   if (!state.skills.length) {
     box.append(el('p', 'none', `nothing in ${state.skillsDir || '~/.claude/skills'} — install a skill there to build an agent out of it.`));
     return;
@@ -2869,52 +2877,72 @@ function renderSkillList() {
   const nomes = new Set(state.agents.filter((a) => !a.publisher).map((a) => a.name));
   const ordenadas = [...state.skills].sort((x, y) => (usadas.has(y.name) ? 1 : 0) - (usadas.has(x.name) ? 1 : 0));
 
-  for (const sk of ordenadas) {
-    const row = tid(el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : '')), 'skill-row', { skill: sk.name });
-    row.append(el('span', 'skill-name', '/' + sk.name));
-    if (sk.builtin) {
-      // This one isn't on disk: it came in the binary and is written into the
-      // clone before running. Saying so here is what explains why it shows up on
-      // a machine where nobody installed any skill.
-      const t = el('span', 'badge', 'built in');
-      t.title = 'ships inside the Bazel binary — nothing to install, and it works on any machine';
-      row.append(t);
-    }
-    const desc = el('span', 'skill-desc', sk.description || '');
-    desc.title = sk.description || '';
-    row.append(desc);
-
-    const acoes = el('span', 'skill-actions');
-    if (sk.name === state.postSkill) {
-      // The publishing one doesn't become an agent: alone it runs without the
-      // review and posts nothing. It comes in via the publish button and the publish step.
-      const t = el('span', 'badge', 'runs as publish');
-      t.title = 'publishes a review you have read — from the publish button or the publish step of a pipeline';
-      acoes.append(t);
-      row.append(acoes);
-      box.append(row);
-      continue;
-    }
-    const add = (rotulo, posts, dica) => {
-      const nome = posts ? sk.name + '-post' : sk.name;
-      const b = tid(el('button', 'btn small', rotulo), posts ? 'skill-publishes' : 'skill-use');
-      if (nomes.has(nome)) {
-        // Already an agent: the design says "In use" in the Use slot.
-        if (!posts) b.textContent = 'In use';
-        b.disabled = true;
-        b.title = `${nome} is already in the agent list`;
-      } else {
-        b.title = dica;
-        b.addEventListener('click', () => agentAction('/api/agents', 'POST', b, { skill: sk.name, posts }));
-      }
-      acoes.append(b);
-    };
-    add('Use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
-    add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
-    row.append(acoes);
-
-    box.append(row);
+  const row = (sk) => skillRow(sk, usadas, nomes);
+  // A search looks at everything, whatever the fold hides.
+  const q = state.skillFilter.trim().toLowerCase();
+  if (q) {
+    const found = ordenadas.filter((sk) => `${sk.name} ${sk.description || ''}`.toLowerCase().includes(q));
+    if (found.length) box.append(...found.map(row));
+    else box.append(el('p', 'none', 'no skill matches'));
+    return;
   }
+  // What a review can use comes first; a long list folds the rest. A short one
+  // has nothing to hide.
+  const first = ordenadas.filter((sk) => !long || sk.review || sk.builtin || usadas.has(sk.name));
+  const rest = ordenadas.filter((sk) => !first.includes(sk));
+  box.append(...first.map(row));
+  if (rest.length) {
+    const more = tid(el('details', 'skill-more'), 'skill-more');
+    more.open = state.skillsMoreOpen;
+    more.addEventListener('toggle', () => { state.skillsMoreOpen = more.open; });
+    more.append(el('summary', null, `Other skills (${rest.length})`), ...rest.map(row));
+    box.append(more);
+  }
+}
+
+// skillRow is one installed skill and what can be done with it.
+function skillRow(sk, usadas, nomes) {
+  const row = tid(el('div', 'skill-row' + (usadas.has(sk.name) ? ' on' : '')), 'skill-row', { skill: sk.name });
+  row.append(el('span', 'skill-name', '/' + sk.name));
+  if (sk.builtin) {
+    // This one isn't on disk: it came in the binary and is written into the
+    // clone before running. Saying so here is what explains why it shows up on
+    // a machine where nobody installed any skill.
+    const t = el('span', 'badge', 'built in');
+    t.title = 'ships inside the Bazel binary — nothing to install, and it works on any machine';
+    row.append(t);
+  }
+  const desc = el('span', 'skill-desc', sk.description || '');
+  desc.title = sk.description || '';
+  row.append(desc);
+
+  const acoes = el('span', 'skill-actions');
+  row.append(acoes);
+  if (sk.name === state.postSkill) {
+    // The publishing one doesn't become an agent: alone it runs without the
+    // review and posts nothing. It comes in via the publish button and the publish step.
+    const t = el('span', 'badge', 'runs as publish');
+    t.title = 'publishes a review you have read — from the publish button or the publish step of a pipeline';
+    acoes.append(t);
+    return row;
+  }
+  const add = (rotulo, posts, dica) => {
+    const nome = posts ? sk.name + '-post' : sk.name;
+    const b = tid(el('button', 'btn small', rotulo), posts ? 'skill-publishes' : 'skill-use');
+    if (nomes.has(nome)) {
+      // Already an agent: the design says "In use" in the Use slot.
+      if (!posts) b.textContent = 'In use';
+      b.disabled = true;
+      b.title = `${nome} is already in the agent list`;
+    } else {
+      b.title = dica;
+      b.addEventListener('click', () => agentAction('/api/agents', 'POST', b, { skill: sk.name, posts }));
+    }
+    acoes.append(b);
+  };
+  add('Use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
+  add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
+  return row;
 }
 
 async function loadSkills() {
