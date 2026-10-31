@@ -190,6 +190,12 @@ type logEntry struct {
 // streamParser reads the JSONL and keeps the agent's final text.
 type streamParser struct {
 	result string
+	// settled is set by the agent's own final event: nothing after it replaces
+	// the report. A process left behind can still hold the pipe, and a sub-agent's
+	// result is not the run's.
+	settled bool
+	// failure is what that event said went wrong.
+	failure error
 	// usage is the settled spend, from the final event. An agent that doesn't
 	// speak stream-json leaves this zeroed — there's nowhere to get it from.
 	usage Usage
@@ -253,6 +259,10 @@ func (p *streamParser) line(raw string) []logEntry {
 		return nil
 
 	case "result":
+		if p.settled || ev.ParentToolUseID != nil && *ev.ParentToolUseID != "" {
+			return nil
+		}
+		p.settled = true
 		p.result = ev.Result
 		took := time.Duration(ev.DurationMS) * time.Millisecond
 		// The spend counts even when the agent ends badly: the tokens were burned
@@ -269,6 +279,7 @@ func (p *streamParser) line(raw string) []logEntry {
 		}
 		p.byModel = append(p.byModel, byModel...)
 		if ev.IsError || ev.Subtype != "success" {
+			p.failure = fmt.Errorf("it ended with an error (%s)", ev.Subtype)
 			return one(fmt.Sprintf("✗ the agent ended with an error (%s)", ev.Subtype))
 		}
 		line := fmt.Sprintf("✓ done in %s", took.Round(time.Second))

@@ -447,7 +447,6 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 		Refresh: r.URL.Query().Get("refresh") != "",
 		Mine:    r.URL.Query().Get("scope") == "mine",
 		Author:  r.URL.Query().Get("author"),
-		HTML:    true,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -481,8 +480,7 @@ func keepFailed(found, old []gh.PR, errs []gh.RepoError) []gh.PR {
 }
 
 // prFilter is the cut of the PR list. The page and /mcp ask for the same
-// list; only the MCP filters by repository and review state, and only the
-// page needs the description as HTML.
+// list; only the MCP filters by repository and review state.
 type prFilter struct {
 	Refresh bool
 	Mine    bool
@@ -490,7 +488,6 @@ type prFilter struct {
 	Repo    string
 	// Status is "" (all), "unreviewed", "reviewed", "changed" or "posted".
 	Status string
-	HTML   bool
 }
 
 type prList struct {
@@ -527,11 +524,7 @@ func (s *Server) listPRs(ctx context.Context, f prFilter) (prList, error) {
 		if !statusMatches(st, f.Status) {
 			continue
 		}
-		v := newPRView(pr, mine, now).withStatus(st, now)
-		if f.HTML {
-			v.BodyHTML = renderMarkdown(pr.Body)
-		}
-		out = append(out, v)
+		out = append(out, newPRView(pr, mine, now).withStatus(st, now))
 	}
 
 	errs := make([]map[string]string, 0, len(repoErrs))
@@ -647,6 +640,10 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
 		return
 	}
+	if len(req.Refs) > mcpMaxRefs {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("too many PRs: %d given, at most %d per call", len(req.Refs), mcpMaxRefs))
+		return
+	}
 	choice, err := s.resolveChoice(req.Agent)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -695,7 +692,7 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		key := fmt.Sprintf("%s#%d", repo, number)
 		pr, ok := cached[key]
 		if !ok {
-			pr, err = gh.Get(ctx, repo, number)
+			pr, err = s.getPR(ctx, repo, number)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 				continue
@@ -709,6 +706,17 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// getPR is gh.Get under the budget of reads from GitHub.
+func (s *Server) getPR(ctx context.Context, repo string, number int) (gh.PR, error) {
+	s.detMu.Lock()
+	err := s.ghReadLocked(timeNow(), false)
+	s.detMu.Unlock()
+	if err != nil {
+		return gh.PR{}, err
+	}
+	return gh.Get(ctx, repo, number)
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -1235,7 +1243,7 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	if !split && s.stepsDiffer(agent) {
 		return savedReview{}, fmt.Errorf("this review of %q mixes steps that stay in Bazel and was saved before they could be told apart: it cannot be published from here", agent)
 	}
-	pr, err := gh.Get(ctx, repo, number)
+	pr, err := s.getPR(ctx, repo, number)
 	if err != nil {
 		return savedReview{}, err
 	}

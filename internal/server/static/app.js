@@ -2042,9 +2042,9 @@ function renderPRPage(body, pr, job, redraw) {
     main.append(el('div', 'stale-box', `This PR changed after the review from ${ago(listed.reviewed_at)}`
       + (listed.review_agent ? ` (${listed.review_agent})` : '') + ' — what is here is no longer what the agent read.'));
   }
-  const html = (d && d.body_html) || listed.body_html;
   const desc = el('div', 'md pdesc');
-  if (html) desc.innerHTML = html; else desc.append(el('p', 'dim', d || err ? '(no description)' : 'loading the PR…'));
+  if (d && d.body_html) desc.innerHTML = d.body_html;
+  else desc.append(el('p', 'dim', d ? '(no description)' : err ? '(the description could not be read)' : 'loading the PR…'));
   main.append(desc);
   if (err) {
     const p = tid(el('p', 'dim perr'), 'pr-error');

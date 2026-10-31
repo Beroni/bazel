@@ -1,9 +1,13 @@
 package server
 
 import (
+	"github.com/beroni/bazel/internal/gh"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A review's raw HTML goes to the PR verbatim, so the screen has to show it as
@@ -256,5 +260,36 @@ func TestCercaNaoEscolheClasse(t *testing.T) {
 	}
 	if got := renderReview("A note[^1].\n\n[^1]: Text.\n"); !strings.Contains(got, `class="footnotes"`) {
 		t.Errorf("footnotes keep their class: %s", got)
+	}
+}
+
+// goldmark is quadratic on this text. A description past the limit is cut and
+// shown as text, a review keeps every byte, and neither takes seconds.
+func TestTextoEnormeNaoCustaCPU(t *testing.T) {
+	bomb := strings.Repeat("[a](()", 65536/6)
+	start := time.Now()
+	got := renderMarkdown(bomb)
+	if !strings.Contains(got, "<pre>") || !strings.Contains(got, "too long") || strings.Contains(got, "<a ") {
+		t.Errorf("description: %.200s", got)
+	}
+	big := strings.Repeat(bomb, 5)
+	if out := renderReview(big); !strings.Contains(out, big[len(big)-60:]) {
+		t.Error("a review must keep all of its text")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("took %v", took)
+	}
+}
+
+// The list carries no rendered description: the page reads it per PR.
+func TestListaNaoRenderizaDescricao(t *testing.T) {
+	srv := newTestServer(t)
+	pr := testPR(482)
+	pr.Body = "# Title"
+	srv.prs, srv.prsAt = []gh.PR{pr}, time.Now()
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/prs", nil))
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "<h1") || strings.Contains(w.Body.String(), "body_html") {
+		t.Errorf("%d %s", w.Code, w.Body)
 	}
 }

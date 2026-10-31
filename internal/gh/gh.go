@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
+	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -223,6 +224,22 @@ func Comment(ctx context.Context, repo string, number int, body string) error {
 
 // ParseRef understands "owner/repo#12", "owner/repo 12" or the PR URL.
 func ParseRef(ref string) (repo string, number int, err error) {
+	repo, number, err = parseRef(ref)
+	if err != nil {
+		return "", 0, err
+	}
+	// The repository goes to `gh --repo`, which also takes a host: a reference
+	// must not be able to point gh at another server.
+	if !repoRe.MatchString(repo) || number <= 0 {
+		return "", 0, fmt.Errorf("invalid reference: %q (use owner/repo#123 or the PR URL)", ref)
+	}
+	return repo, number, nil
+}
+
+// repoRe is owner/name, in the characters GitHub allows.
+var repoRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
+
+func parseRef(ref string) (repo string, number int, err error) {
 	ref = strings.TrimSpace(ref)
 	if u := strings.TrimPrefix(ref, "https://github.com/"); u != ref {
 		parts := strings.Split(strings.Trim(u, "/"), "/")

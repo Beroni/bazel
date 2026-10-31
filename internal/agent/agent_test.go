@@ -1051,3 +1051,52 @@ func TestGrokDoneLineUsesTheTable(t *testing.T) {
 		t.Errorf("done line %q should carry the card's $%.2f", done, card.CostUSD)
 	}
 }
+
+// streamReview runs a fake CLI that prints events and exits 0.
+func streamReview(t *testing.T, format string, events ...string) (Result, error) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: format,
+		Args: []string{"-c", "cat >/dev/null\ncat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(cfg).Review(context.Background(), testPR(), choice, nil)
+}
+
+// A CLI that says in its stream it failed, and exits 0, did not finish a review.
+func TestErroTerminalComExitZero(t *testing.T) {
+	cases := map[string][]string{
+		"claude-stream": {`{"type":"assistant","message":{"content":[{"type":"text","text":"PARTIAL"}]}}`,
+			`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"PARTIAL"}`},
+		"codex-json": {`{"type":"item.completed","item":{"type":"agent_message","text":"PARTIAL"}}`,
+			`{"type":"turn.failed","error":{"message":"quota exhausted"}}`},
+	}
+	for format, events := range cases {
+		t.Run(format, func(t *testing.T) {
+			res, err := streamReview(t, format, events...)
+			if err == nil && (len(res.Steps) != 1 || res.Steps[0].Err == nil) {
+				t.Errorf("a failed run passed as a review: %+v", res)
+			}
+		})
+	}
+}
+
+// The run's own final event settles the report: a sub-agent's result or a late
+// one from something still holding the pipe does not replace it.
+func TestPrimeiroResultadoVale(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"success","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
+		`{"type":"result","subtype":"success","result":"critical RCE"}`,
+		`{"type":"result","subtype":"success","result":"no findings"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "critical RCE" {
+		t.Errorf("body = %q", res.Body)
+	}
+}

@@ -3037,3 +3037,32 @@ func TestConfigNaoEntregaEnv(t *testing.T) {
 		}
 	}
 }
+
+// References are bounded and counted: a request cannot run hundreds of gh, and
+// past the budget none runs.
+func TestRefsContamNoOrcamento(t *testing.T) {
+	srv := newTestServer(t)
+	log := ghFalso(t, "echo '{}'")
+	h := srv.Handler()
+	post := func(n int) *httptest.ResponseRecorder {
+		refs := make([]string, n)
+		for i := range refs {
+			refs[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+		}
+		body, _ := json.Marshal(map[string]any{"refs": refs})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := post(mcpMaxRefs + 1); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
+		t.Errorf("too many refs: %d, %d gh", w.Code, contaNoLog(log, "start"))
+	}
+	old := ghReadsPerMin
+	ghReadsPerMin = 0
+	t.Cleanup(func() { ghReadsPerMin = old })
+	if w := post(3); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
+		t.Errorf("past the budget: %d, %d gh", w.Code, contaNoLog(log, "start"))
+	}
+}

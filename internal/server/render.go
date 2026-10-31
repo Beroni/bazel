@@ -253,11 +253,31 @@ var policy = func() *bluemonday.Policy {
 
 // renderMarkdown returns HTML safe to drop into the page's innerHTML.
 func renderMarkdown(src string) string {
+	if len(src) > maxDescriptionBytes {
+		return plainBlock(src[:maxDescriptionBytes]) + "<p>(cut: this description is too long to render)</p>"
+	}
 	return convert(md, src)
+}
+
+// goldmark takes quadratic time on some inputs: a PR description of 65 KB made of
+// `[a](()` costs 7 s, and anyone can open a PR on a public repository. Past
+// these sizes the text shows as it is. A review keeps all of it, because all of
+// it may go to the PR.
+const (
+	maxDescriptionBytes = 16 << 10
+	maxReviewBytes      = 256 << 10
+)
+
+// plainBlock is text shown as it is.
+func plainBlock(src string) string {
+	return "<pre>" + html.EscapeString(src) + "</pre>"
 }
 
 // renderReviewMarkdown is renderMarkdown for a review: raw HTML shows as text.
 func renderReviewMarkdown(src string) string {
+	if len(src) > maxReviewBytes {
+		return plainBlock(src)
+	}
 	return convert(reviewMD, src)
 }
 
@@ -313,6 +333,9 @@ var footnoteDefRe = regexp.MustCompile(`(?m)^ {0,3}\[\^([^\]\n]+)\]:.*(?:\n[ \t]
 // so a definition used only by another part counts as hidden here: the screen
 // shows that link as plain brackets.
 func hiddenText(src string) []string {
+	if len(src) > maxReviewBytes {
+		return nil // shown whole as text: nothing is hidden
+	}
 	ctx := parser.NewContext()
 	doc := reviewMD.Parser().Parse(text.NewReader([]byte(src)), parser.WithContext(ctx))
 	used := map[string]bool{}

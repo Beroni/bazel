@@ -91,3 +91,19 @@ func TestTaskSkill(t *testing.T) {
 		}
 	}
 }
+
+// The frontmatter's name is the skill's, whatever the folder is called.
+func TestNomeDoFrontmatterVale(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "alias"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	md := "---\nname: canonical-name\ndescription: x\n---\n"
+	if err := os.WriteFile(filepath.Join(dir, "alias", "SKILL.md"), []byte(md), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := List(dir)
+	if len(got) != 1 || got[0].Name != "canonical-name" {
+		t.Errorf("%+v", got)
+	}
+}

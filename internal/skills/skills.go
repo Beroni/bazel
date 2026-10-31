@@ -112,12 +112,12 @@ func parseFrontmatter(r io.Reader) (name, description string) {
 			}
 			continue
 		}
-		name, value, ok := strings.Cut(line, ":")
+		field, value, ok := strings.Cut(line, ":")
 		if !ok {
 			key = ""
 			continue
 		}
-		key = strings.TrimSpace(name)
+		key = strings.TrimSpace(field)
 		value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), `"'`))
 		switch key {
 		case "name":

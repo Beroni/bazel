@@ -32,10 +32,6 @@ type prView struct {
 	Base         string    `json:"base"`
 	Decision     string    `json:"review_decision"`
 	Mine         bool      `json:"mine"`
-	// BodyHTML is the PR description already converted and sanitized. It is
-	// only filled in the listing — in job events it would be a pointless
-	// render on every state change.
-	BodyHTML string `json:"body_html,omitempty"`
 
 	// Reviewed and friends are the history: has this PR been through a review?
 	// Has it changed since then? Did the review go to GitHub?

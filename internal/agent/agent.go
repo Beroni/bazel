@@ -296,7 +296,10 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
-		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra)
+		// A step that does not run in the clone is not told where it is: the git
+		// guard goes by the step's folder, and from inside the clone its git would
+		// obey whatever the PR planted there.
+		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, dir, extra)
 		stepStart := time.Now()
 		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
@@ -1005,6 +1008,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			msg = err.Error()
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
+	}
+	// A CLI can say in its stream that it failed and still exit 0: what it wrote
+	// until then is not a finished review.
+	if ae := adapter.err(); ae != nil {
+		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 	}
 	// With a pricing table configured, recompute the cost from the tokens and
 	// the model — that is what lets the cost change without rebuilding the

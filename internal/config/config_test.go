@@ -1592,6 +1592,13 @@ func TestNomesNaoConfundemOGate(t *testing.T) {
 }
 
 const handWritten = `# my repos
+repos:
+  - acme/api   # the main one
+future_key: keep me # a key this version does not know
+mcp_allow_publish: false
+agent:
+  command: claude
+`
 
 // A save touches only what this process changed: comments, unknown keys and
 // what was edited by hand stay, the publish gate included.
