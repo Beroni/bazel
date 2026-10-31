@@ -143,7 +143,7 @@ func TestMCPProtocolErrors(t *testing.T) {
 // prohibition.
 func withLens(srv *Server) *Server {
 	srv.cfgMu.Lock()
-	srv.cfg.Agents = []config.AgentDef{{Name: "lente", Task: "revise", Prompt: "revise o PR {{number}} de {{repo}}\nDo not publish anything to GitHub."}}
+	srv.cfg.Agents = []config.AgentDef{{Name: "lente", Task: "/revise {{number}}", Prompt: "revise o PR {{number}} de {{repo}}\nDo not publish anything to GitHub."}}
 	srv.cfgMu.Unlock()
 	return srv
 }

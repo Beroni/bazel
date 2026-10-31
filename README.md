@@ -426,10 +426,11 @@ Every result carries `web_ui`, the page where a human reads the review.
 **MCP does not offer publishing.** The tool surface is curated so that you stay
 the gate to the PR: there is no publishing tool, and a step only runs if it is
 known not to publish. Its prompt has to keep the default's "do not publish
-anything to GitHub", and its task, command and args must not name a way to
-publish: `posts: true`, `--post`, `gh`, a post skill, a publish step in a
-pipeline. Anything else is refused. A command of your own is outside this:
-what an executable does cannot be read from its name. To
+anything to GitHub", its task has to be a skill call rather than prose, and its
+task, command and args must not name a way to publish: `posts: true`, `--post`,
+`gh`, a post skill, a publish step in a pipeline. Anything else is refused. A
+skill or a command of your own is outside this: what they do cannot be read from
+their names. To
 open that door on purpose, set `mcp_allow_publish: true` in the config — that
 also adds a `publish_review` tool.
 

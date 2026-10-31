@@ -183,11 +183,12 @@ type Choice struct {
 
 // PublishesBy says how this choice can write to the PR without going through
 // the screen, or "" when every step is known not to. It denies by default: a
-// step passes only when its prompt carries the default template's prohibition
-// and nothing it was given names a way to publish. Posts is only what was
-// declared, and a prompt can ask for a comment in any words. Whoever decides to
-// refuse (the /mcp) refuses on this. A command of your own is outside it: what
-// an executable does cannot be read from its name.
+// step passes only when its prompt carries the default template's prohibition,
+// its task is a skill call and not prose, and nothing it was given names a way
+// to publish. Posts is only what was declared, and text can ask for a comment in
+// any words, so text is not read: it is refused. Whoever decides to refuse (the
+// /mcp) refuses on this. What is left is outside it: a skill or an executable
+// does what it does, and neither can be read from its name.
 func (c Choice) PublishesBy() string {
 	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
 		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
@@ -205,6 +206,8 @@ func (c Choice) PublishesBy() string {
 			return fmt.Sprintf("has %q, whose task runs gh", st.Name)
 		case commandPublishes(st.Command + " " + strings.Join(st.Args, " ")):
 			return fmt.Sprintf("has %q, whose command or args publish", st.Name)
+		case st.Task != "" && !skillTaskRe.MatchString(strings.TrimSpace(st.Task)):
+			return fmt.Sprintf("has %q, whose task is free text and not a skill call", st.Name)
 		case promptAuthorizesPosting(st.Prompt) || mentionsPublishing(st.Prompt):
 			return fmt.Sprintf("has %q, whose prompt authorizes publishing", st.Name)
 		case !promptForbidsPosting(st.Prompt):
@@ -1117,6 +1120,9 @@ func (c *Config) HistoryCustom() bool {
 	return st.Task != defaultHistoryTask || st.Prompt != defaultPrompt || st.Command != own.Command ||
 		!slices.Equal(st.Args, own.Args) || len(st.Env) > 0
 }
+
+// skillTaskRe is a task that only calls a skill: its name, placeholders, flags.
+var skillTaskRe = regexp.MustCompile(`^/[A-Za-z0-9:_-]+(\s+(\{\{[a-z_]+\}\}|--?[A-Za-z][A-Za-z0-9-]*(=[^\s]+)?))*$`)
 
 // publishCommandRe matches, in flattened text, the gh commands that write to a
 // PR and a skill named for publishing, plugin prefix or not.
