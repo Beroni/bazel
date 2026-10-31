@@ -313,3 +313,38 @@ func TestLogoAbaixoDoLimite(t *testing.T) {
 		}
 	}
 }
+
+// The size of the source says nothing about the size of the page: a table gives
+// every row all the columns and a reference repeats its whole destination. Both
+// go out as plain text, and neither takes its time on the way.
+func TestMarkdownQueMultiplicaViraTexto(t *testing.T) {
+	wide := strings.Repeat("|a", 1500) + "|\n" + strings.Repeat("|-", 1500) + "|\n" + strings.Repeat("|\n", 5000)
+	refs := "[a]: http://x/" + strings.Repeat("b", 48<<10) + "\n\n" + strings.Repeat("[a]", 15000)
+	quotes := strings.Repeat("> ", 40<<10)
+	for name, src := range map[string]string{"table": wide, "refs": refs, "quotes": quotes} {
+		for door, render := range map[string]func(string) string{
+			"description": renderMarkdown, "review": renderReview,
+		} {
+			start := time.Now()
+			out := render(src)
+			if len(out) > 4*len(src) {
+				t.Errorf("%s/%s: %d bytes of %d", name, door, len(out), len(src))
+			}
+			if d := time.Since(start); d > 2*time.Second {
+				t.Errorf("%s/%s: %v", name, door, d)
+			}
+		}
+	}
+}
+
+// What is big and honest keeps rendering.
+func TestTabelaELinkDeVerdadeContinuam(t *testing.T) {
+	table := "| a | b | c | d |\n|---|---|---|---|\n" + strings.Repeat("| 1 | 2 | 3 | 4 |\n", 1000)
+	if out := renderReviewMarkdown(table); !strings.Contains(out, "<table>") {
+		t.Error("real table went plain")
+	}
+	links := "[a]: http://example.com/path\n\n" + strings.Repeat("[a] ", 500)
+	if out := renderReviewMarkdown(links); !strings.Contains(out, "<a ") {
+		t.Error("real references went plain")
+	}
+}

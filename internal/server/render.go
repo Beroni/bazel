@@ -271,6 +271,8 @@ const (
 	maxDescriptionBytes = 16 << 10
 	maxReviewBytes      = 96 << 10
 	maxLinkScan         = 6 << 20
+	maxTableCells       = 20 << 10
+	maxLinkBytes        = 1 << 20
 )
 
 // plainBlock is text shown as it is.
@@ -291,13 +293,56 @@ func renderReviewMarkdown(src string) string {
 // quadratically for: 16,000 of them in 96 KB take 10 s. So what counts is links
 // times bytes. A report of 100 links in 30 KB, more than any real one, is half of it.
 func tooCostly(src string) bool {
-	return len(src) > maxReviewBytes || strings.Count(src, "](")*len(src) > maxLinkScan
+	return len(src) > maxReviewBytes || strings.Count(src, "](")*len(src) > maxLinkScan ||
+		tableCells(src) > maxTableCells || store.TooNested(src)
+}
+
+// tableCells counts the cells the tables of src would have. A delimiter row fixes
+// the columns, and every row below it, up to the blank line, gets all of them
+// whatever it brought. This has to come before the parser, which is where the
+// memory goes: 16 KB of a wide table made 78 MB of HTML.
+func tableCells(src string) int {
+	cells, cols := 0, 0
+	for line := range strings.Lines(src) {
+		t := strings.TrimLeft(strings.TrimSpace(line), "> \t")
+		switch {
+		case t == "":
+			cols = 0
+		case strings.Contains(t, "|") && strings.Trim(t, "|-: \t") == "":
+			cols = max(cols, strings.Count(t, "|")+1)
+		}
+		cells += cols
+	}
+	return cells
+}
+
+// linkBytes is what the links of doc repeat. A reference is three bytes in the
+// source and its whole destination in the page: 96 KB made 400 MB.
+func linkBytes(doc ast.Node) int {
+	total := 0
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			switch l := n.(type) {
+			case *ast.Link:
+				total += len(l.Destination) + len(l.Title)
+			case *ast.Image:
+				total += len(l.Destination) + len(l.Title)
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return total
 }
 
 // convert runs one of the converters above and sanitizes the result.
 func convert(conv goldmark.Markdown, src string) string {
+	source := []byte(src)
+	doc := conv.Parser().Parse(text.NewReader(source))
+	if linkBytes(doc) > maxLinkBytes {
+		return plainBlock(src)
+	}
 	var buf bytes.Buffer
-	if err := conv.Convert([]byte(src), &buf); err != nil {
+	if err := conv.Renderer().Render(&buf, source, doc); err != nil {
 		return "<pre>" + html.EscapeString(src) + "</pre>"
 	}
 	return string(policy.SanitizeBytes(buf.Bytes()))

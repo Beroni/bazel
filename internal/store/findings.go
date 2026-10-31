@@ -22,6 +22,30 @@ import (
 // one too: a doubt you have already resolved doesn't need to go to the PR. It
 // is the unit the page lets you tick: a false positive drops out of what goes
 // to the PR without the rest of the review changing.
+// maxNesting is how many quotes and list items a single line may open. The
+// parser spends quadratic time on them: 96 KB of `>` took 3 s, on every GET of a
+// review.
+const maxNesting = 1 << 10
+
+// TooNested says some line opens more blocks than is worth parsing.
+func TooNested(body string) bool {
+	depth := 0
+	for i := 0; i < len(body); i++ {
+		switch c := body[i]; {
+		case c == '\n':
+			depth = 0
+		case depth < 0, c == ' ', c == '\t', c >= '0' && c <= '9':
+		case c == '>', strings.IndexByte("-+*.)", c) >= 0 && strings.HasPrefix(body[i+1:], " "):
+			if depth++; depth > maxNesting {
+				return true
+			}
+		case strings.IndexByte("-+*.)", c) < 0:
+			depth = -1
+		}
+	}
+	return false
+}
+
 type Part struct {
 	Text    string
 	Finding bool
@@ -32,6 +56,9 @@ type Part struct {
 // where each finding starts and ends, so the page can number them and publish
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
+	if TooNested(body) {
+		return []Part{{Text: body}}
+	}
 	lines := strings.SplitAfter(body, "\n")
 	headings, literal, paragraphs := blockLines(body, lines)
 	var (

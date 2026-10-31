@@ -386,3 +386,22 @@ func TestNegritoSemLinhaEmBranco(t *testing.T) {
 		t.Errorf("after the untick:\n%s", got)
 	}
 }
+
+// One line of quotes costs quadratic time on every GET, so it is not parsed: the
+// whole review is one part, for the screen and for the doors alike.
+func TestSplitFindingsRecusaCitacaoFunda(t *testing.T) {
+	for _, marker := range []string{"> ", "- 1. ", "1. "} {
+		body := "## Findings\n\n### One\n\nText.\n\n" + strings.Repeat(marker, 90<<10/len(marker)) + "\n"
+		start := time.Now()
+		parts := SplitFindings(body)
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("%q took %v", marker, d)
+		}
+		if len(parts) != 1 || parts[0].Text != body || parts[0].Finding {
+			t.Errorf("%q: %d parts", marker, len(parts))
+		}
+	}
+	if TooNested("> > a\n" + strings.Repeat("-", 5000) + "\n" + strings.Repeat("a. ", 5000)) {
+		t.Error("a ruler or a sentence is not nesting")
+	}
+}
