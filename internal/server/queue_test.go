@@ -13,13 +13,21 @@ import (
 	"github.com/beroni/bazel/internal/config"
 )
 
-// queueServer is a server keeping its queue in home.
+// queueServer is a server keeping its queue in home. It is down before the test
+// ends: a worker still saving the queue leaves a temporary file in home, and the
+// test's own cleanup then fails to remove the folder.
 func queueServer(ctx context.Context, t *testing.T, cfg *config.Config, home string) *Server {
 	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
 	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1, QueueDir: home})
 	if err != nil {
+		cancel()
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		cancel()
+		srv.jobs.Wait(shutdownWait)
+	})
 	return srv
 }
 
@@ -174,7 +182,7 @@ func TestFilaArquivoRuim(t *testing.T) {
 	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; sleep 30")
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null")
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	srv := queueServer(ctx, t, cfg, home)
