@@ -1,4 +1,4 @@
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { filterByReview, openFilters, ui } from '../harness/ui';
 
 test.describe('P1 · list filters', () => {
@@ -43,7 +43,7 @@ test.describe('P1 · list filters', () => {
     await filterByReview(app, 'none');
     await expect(ui.prCount(app)).toHaveText('4 of 5 PRs');
 
-    bazel.updatePR('acme/api-core#101', { headRefOid: 'ffff101-new-commit' });
+    bazel.movePR('acme/api-core#101');
     const { json } = await bazel.api('GET', '/api/prs?refresh=1');
     expect(json.prs.find((p: any) => p.key === 'acme/api-core#101').changed_since_review).toBe(true);
     await app.reload();
@@ -54,25 +54,41 @@ test.describe('P1 · list filters', () => {
   });
 
   test('the PR list is cached; refresh goes back to gh', async ({ bazel }) => {
-    const searches = () => bazel.ghCalls().filter((c) => c.argv[0] === 'search').length;
+    const lists = () => bazel.ghCalls().filter((c) => c.argv[0] === 'pr' && c.argv[1] === 'list').length;
     await bazel.api('GET', '/api/prs');
     await bazel.api('GET', '/api/prs');
-    const cached = searches();
+    const cached = lists();
     await bazel.api('GET', '/api/prs?refresh=1');
-    expect(searches()).toBe(cached + 1);
+    expect(lists()).toBe(cached + 2); // one per repo
   });
 });
 
-test.describe('P1 · gh search failing', () => {
-  test.use({ bazelOptions: { gh: { fail: { search: 'HTTP 502: search is down', 'list:acme/web-app': 'HTTP 404: Not Found' } } } });
+test.describe('P1 · a repository failing', () => {
+  test.use({ bazelOptions: { gh: { fail: { 'list:acme/web-app': 'HTTP 404: Not Found' } } } });
 
-  test('falls back to one gh pr list per repo and reports every error', async ({ bazel }) => {
+  test('the others still list, and the error says which', async ({ bazel }) => {
     const { json } = await bazel.api('GET', '/api/prs');
     expect(json.prs.map((p: any) => p.key).sort()).toEqual(['acme/api-core#101', 'acme/api-core#102', 'acme/api-core#103']);
-    expect(json.repo_errors).toEqual(expect.arrayContaining([
-      { repo: 'acme/web-app', error: 'HTTP 404: Not Found' },
-      { repo: '', error: 'gh search prs fallback: HTTP 502: search is down' },
-    ]));
+    expect(json.repo_errors).toEqual(expect.arrayContaining([{ repo: 'acme/web-app', error: 'HTTP 404: Not Found' }]));
+  });
+});
+
+test.describe('P1 · what gh lists', () => {
+  test('a closed PR is not listed', async ({ bazel }) => {
+    bazel.addPR({ repo: 'acme/api-core', number: 150, title: 'Closed long ago', state: 'CLOSED', headRefName: 'old', author: { login: 'zoe' } });
+    const { json } = await bazel.api('GET', '/api/prs?refresh=1');
+    expect(json.prs.map((p: any) => p.key)).toHaveLength(5);
+  });
+
+  // S16: gh stops at the limit in silence, so a repo with more open PRs looks
+  // like a repo with exactly that many. Expected: the list says it is cut short.
+  test('a repository past the limit says the list is cut short', async ({ bazel }) => {
+    knownBug('S16', 'a list cut at the limit looks complete');
+    for (let n = 200; n < 301; n++) {
+      bazel.addPR({ repo: 'acme/web-app', number: n, title: `Generated ${n}`, headRefName: `gen/${n}`, headRefOid: `gen${n}`, author: { login: 'zoe' } });
+    }
+    const { json } = await bazel.api('GET', '/api/prs?refresh=1');
+    expect(json.repo_errors).toEqual(expect.arrayContaining([expect.objectContaining({ repo: 'acme/web-app', error: expect.stringContaining('more than 100 open PRs') })]));
   });
 });
 

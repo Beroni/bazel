@@ -14,7 +14,7 @@ test.describe('P1 · PR page (Overview)', () => {
     await bazel.api('GET', '/api/prs'); // the list is what tells Bazel the head sha
     const { status, json } = await bazel.api('GET', DETAILS);
     expect(status).toBe(200);
-    expect(json.sha).toBe('aaaa101');
+    expect(json.sha).toMatch(/^[0-9a-f]{40}$/);
     expect(json.commits.map((c: any) => c.headline)).toEqual(['E2E-COMMIT-1 add the bucket', 'E2E-COMMIT-2 wire it into /v1']);
     expect(json.files.map((f: any) => f.path)).toEqual(['internal/limit/bucket.go']);
     expect(json.labels).toEqual(['e2e-label-perf']);
@@ -30,9 +30,10 @@ test.describe('P1 · PR page (Overview)', () => {
     await bazel.api('GET', DETAILS);
     expect(detailCalls(bazel)).toHaveLength(1); // cached while the head does not move
 
-    bazel.updatePR('acme/api-core#101', { headRefOid: 'bbbb-new-head' });
+    const { sha } = (await bazel.api('GET', DETAILS)).json;
+    bazel.movePR('acme/api-core#101');
     await bazel.api('GET', '/api/prs?refresh=1');
-    expect((await bazel.api('GET', DETAILS)).json.sha).toBe('bbbb-new-head');
+    expect((await bazel.api('GET', DETAILS)).json.sha).not.toBe(sha);
     expect(detailCalls(bazel)).toHaveLength(2);
   });
 
@@ -116,7 +117,7 @@ test.describe('P1 · History', () => {
     expect(writes).toEqual([]);
 
     // A new head makes the history stale until it is generated again.
-    bazel.updatePR('acme/api-core#101', { headRefOid: 'cccc-moved' });
+    bazel.movePR('acme/api-core#101');
     await bazel.api('GET', '/api/prs?refresh=1');
     expect((await bazel.api('GET', HISTORY)).json.stale).toBe(true);
   });
@@ -125,7 +126,7 @@ test.describe('P1 · History', () => {
     await bazel.api('GET', '/api/prs');
     const first = await bazel.api('POST', HISTORY);
     await bazel.waitJob(first.json.id, (j) => j.state === 'done');
-    bazel.updatePR('acme/api-core#101', { headRefOid: 'dddd-moved' });
+    bazel.movePR('acme/api-core#101');
     await bazel.api('GET', '/api/prs?refresh=1');
 
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');

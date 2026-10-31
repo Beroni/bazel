@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { expandFindings, tickByFilter, ui } from '../harness/ui';
 
 test.describe('P0 · review', () => {
@@ -26,6 +26,11 @@ test.describe('P0 · review', () => {
     expect(path.basename(calls[0].cwd)).toMatch(/^bazel-api-core-101-/);
     // …and the clone is gone afterwards (no --keep).
     expect(bazel.clones()).toEqual([]);
+
+    // The head on the list is the head of the clone: nothing to warn about.
+    const [job] = (await bazel.api('GET', '/api/jobs')).json.jobs;
+    const { lines } = (await bazel.api('GET', `/api/jobs/${job.id}/log?from=0`)).json;
+    expect(lines.map((l: any) => l.text).join('\n')).not.toContain('the PR moved');
 
     // The gh calls of a review: clone + checkout, nothing that writes.
     const verbs = bazel.ghCalls().map((c) => c.argv.slice(0, 2).join(' '));
@@ -88,5 +93,34 @@ test.describe('P0 · review', () => {
     const done = log.lines.map((l: any) => l.text).find((t: string) => t.startsWith('✓ done'));
     expect(job.cost_usd).toBeCloseTo(2.088, 3);
     expect(done).toContain('$' + job.cost_usd.toFixed(2));
+  });
+});
+
+// S6: the mark of a review was the head on the list, which the clone may be past.
+// Expected: the head reviewed is the clone's, and the log says it moved.
+test.describe('P0 · what was reviewed', () => {
+  test('a PR that moved after the listing is reviewed at its new head, and the log says so', async ({ bazel }) => {
+    knownBug('S6', 'the review records the listed head, not the clone\'s');
+    await bazel.api('GET', '/api/prs');
+    bazel.movePR('acme/api-core#101');
+    const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
+    await bazel.waitJob(id, (j) => j.state === 'done');
+    const { lines } = (await bazel.api('GET', `/api/jobs/${id}/log?from=0`)).json;
+    expect(lines.map((l: any) => l.text).join('\n')).toContain('the PR moved');
+  });
+
+  // S2: in a clone of a fork, a bare `gh pr checkout N` resolves N in the parent,
+  // so the review ran on someone else's PR with the same number.
+  test.describe('a fork', () => {
+    test.use({ bazelOptions: { config: { repos: ['acme/api-core', 'acme/fork'] }, gh: { forks: { 'acme/fork': 'acme/api-core' } } } });
+
+    test('is reviewed at its own PR, not at its parent\'s with that number', async ({ bazel }) => {
+      knownBug('S2', 'gh pr checkout resolves the number in the parent');
+      bazel.addPR({ repo: 'acme/fork', number: 101, title: 'Work on the fork', headRefName: 'fork/work', author: { login: 'zoe' } });
+      await bazel.api('GET', '/api/prs?refresh=1');
+      const id = await bazel.enqueue('acme/fork#101', 'review-fleet');
+      await bazel.waitJob(id, (j) => j.state === 'done');
+      expect(bazel.agentCalls()[0].branch).toBe('fork/work');
+    });
   });
 });

@@ -1,17 +1,21 @@
 import fs from 'node:fs';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 test.describe('P1 · saved reviews', () => {
   test('after a restart the saved tab lists the review and both publish paths still work', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
+    const other = await bazel.enqueue('acme/api-core#102', 'review-fleet');
+    await bazel.waitJob(other, (j) => j.state === 'done');
     await bazel.restart();
     await app.goto(bazel.url + '/');
     await ui.savedTab(app).click();
     await expect(app.getByText('Add rate limiter to the public API').first()).toBeVisible();
 
-    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    const { reviews } = (await bazel.api('GET', '/api/reviews')).json;
+    const saved = reviews.find((r: any) => r.name.includes('101'));
+    const second = reviews.find((r: any) => r.name.includes('102'));
     const one = await bazel.api('GET', `/api/reviews/${saved.name}`);
     expect(one.json.html).toContain('E2E-FINDING-ONE');
 
@@ -23,13 +27,27 @@ test.describe('P1 · saved reviews', () => {
     expect(comment.stdin).not.toContain('E2E-FINDING-ONE');
     expect(comment.stdin).not.toContain('- Head sha:'); // the header stays out, the review goes
 
-    const p = await bazel.api('POST', `/api/reviews/${saved.name}/publish`, { skip: [1] });
+    const p = await bazel.api('POST', `/api/reviews/${second.name}/publish`, { skip: [1] });
     expect(p.status).toBe(202);
-    await bazel.waitJob(p.json.id, (j) => j.state === 'done', 20_000);
-    const [review] = bazel.ghCalls().filter((x) => x.argv.includes('repos/acme/api-core/pulls/101/reviews'));
+    await bazel.waitJob(p.json.id, (j) => j.state === 'done');
+    const [review] = bazel.ghCalls().filter((x) => x.argv.includes('repos/acme/api-core/pulls/102/reviews'));
     expect(JSON.parse(review.stdin).body).not.toContain('E2E-FINDING-TWO');
-    // The saved file is untouched.
-    expect(fs.readFileSync(`${bazel.reviewsDir}/${saved.name}`, 'utf8')).toContain('E2E-FINDING-TWO');
+    // The saved files are untouched.
+    expect(fs.readFileSync(`${bazel.reviewsDir}/${second.name}`, 'utf8')).toContain('E2E-FINDING-TWO');
+    expect(fs.readFileSync(`${bazel.reviewsDir}/${saved.name}`, 'utf8')).toContain('E2E-FINDING-ONE');
+  });
+
+  // S7: a saved review could go to the PR once per door, or twice by the same
+  // one. Expected: the second answer is 409 and gh hears nothing.
+  test('a saved review goes to the PR once', async ({ bazel }) => {
+    knownBug('S7', 'a saved review can be published again');
+    const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
+    await bazel.waitJob(id, (j) => j.state === 'done');
+    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    expect((await bazel.api('POST', `/api/reviews/${saved.name}/comment`, {})).status).toBe(200);
+    expect((await bazel.api('POST', `/api/reviews/${saved.name}/comment`, {})).status).toBe(409);
+    expect((await bazel.api('POST', `/api/reviews/${saved.name}/publish`, {})).status).toBe(409);
+    expect(bazel.ghCalls().filter((x) => x.argv[1] === 'comment')).toHaveLength(1);
   });
 
   test('saved review names cannot escape the reviews directory', async ({ bazel }) => {
@@ -145,10 +163,32 @@ test.describe('P1 · config through the API', () => {
     expect((await bazel.api('DELETE', '/api/pipelines/gate')).json.removed).toBe(true);
   });
 
-  test('config download is the file on disk', async ({ bazel }) => {
-    const res = await fetch(`${bazel.url}/api/config/file`);
-    expect(res.headers.get('content-disposition')).toBe('attachment; filename="config.yaml"');
-    expect(await res.text()).toBe(bazel.configText());
+  // The default config carries env, which S24 redacts: this one has none.
+  test.describe('without an env', () => {
+    test.use({ bazelOptions: { config: {
+      agent: { command: 'fake-agent', args: [], format: 'plain', checkout: false },
+      agents: [{ name: 'plain', task: 'x' }],
+      post_agent: { name: 'bazel-post-report', task: '/bazel-post-report {{review_file}}', posts: true },
+    } } });
+    test('config download is the file on disk', async ({ bazel }) => {
+      const res = await fetch(`${bazel.url}/api/config/file`);
+      expect(res.headers.get('content-disposition')).toBe('attachment; filename="config.yaml"');
+      expect(await res.text()).toBe(bazel.configText());
+    });
+  });
+
+  // S24: a token in an agent's env left in the download and in /api/config.
+  // Expected: the key stays, the value does not.
+  test.describe('with an env', () => {
+    test.use({ bazelOptions: { config: { agents: [{ name: 'tokened', task: 'x', command: 'fake-agent', args: [], format: 'plain', env: { E2E_TOKEN: 'E2E-SECRET-VALUE' } }] } } });
+    test('the download and the API do not carry its values', async ({ bazel }) => {
+      knownBug('S24', 'env values leave in the config download');
+      expect(bazel.configText()).toContain('E2E-SECRET-VALUE');
+      const file = await (await fetch(`${bazel.url}/api/config/file`)).text();
+      expect(file).toContain('E2E_TOKEN');
+      expect(file).not.toContain('E2E-SECRET-VALUE');
+      expect(JSON.stringify((await bazel.api('GET', '/api/config')).json)).not.toContain('E2E-SECRET-VALUE');
+    });
   });
 });
 

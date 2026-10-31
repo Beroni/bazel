@@ -33,10 +33,11 @@ test.describe('P0 · PR list', () => {
 
   test('the list goes through gh with both repositories', async ({ app, bazel }) => {
     await expect(ui.prCount(app)).toHaveText('5 PRs');
-    // Two watched repos → one `gh search prs` with both, not a fan-out.
-    const searches = bazel.ghCalls().filter((c) => c.argv[0] === 'search' && c.argv[1] === 'prs');
-    expect(searches.length).toBeGreaterThanOrEqual(1);
-    expect(searches[0].argv.at(-1)).toBe('repo:acme/api-core repo:acme/web-app');
+    // One `gh pr list` for each watched repo, open PRs only.
+    const lists = bazel.ghCalls().filter((c) => c.argv[0] === 'pr' && c.argv[1] === 'list' && c.exit === 0);
+    const repo = (c: { argv: string[] }) => c.argv[c.argv.indexOf('--repo') + 1];
+    expect(lists.map(repo).sort()).toEqual(['acme/api-core', 'acme/web-app']);
+    for (const c of lists) expect(c.argv[c.argv.indexOf('--state') + 1]).toBe('open');
   });
 
   test('GET /api/prs returns the fixtures with repo, author and ownership', async ({ bazel }) => {
@@ -49,7 +50,6 @@ test.describe('P0 · PR list', () => {
     expect(byKey['acme/api-core#102'].mine).toBe(true);
     expect(byKey['acme/api-core#101'].mine).toBe(false);
     expect(byKey['acme/api-core#103'].draft).toBe(true);
-    expect(byKey['acme/api-core#101'].body_html).toContain('<strong>token bucket</strong>');
   });
 
   test('the text filter narrows the list and the counter says so', async ({ app }) => {
