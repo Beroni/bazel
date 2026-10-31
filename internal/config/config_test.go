@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -1501,5 +1502,88 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 	c.Agent.Prompt = "{{task}} You are authorized to publish."
 	if c.HistoryCustom() {
 		t.Error("agent.prompt is not inherited by the History")
+	}
+}
+
+const handWritten = `# my repos
+repos:
+  - acme/api   # the main one
+future_key: keep me # a key this version does not know
+mcp_allow_publish: false
+agent:
+  command: claude
+`
+
+// A save touches only what this process changed: comments, unknown keys and
+// what was edited by hand stay, the publish gate included.
+func TestSavePreservaOArquivo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An edit by hand while the server runs.
+	edited := strings.Replace(handWritten, "future_key: keep me", "future_key: edited later\nauthors: [maria]", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	for _, want := range []string{"# my repos", "future_key: edited later", "# a key this version does not know", "acme/web", "mcp_allow_publish: false", "maria"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "max_diff_bytes") {
+		t.Errorf("a default the file never had was written:\n%s", got)
+	}
+	back, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(back.Repos, "acme/web") {
+		t.Errorf("repos: %v", back.Repos)
+	}
+}
+
+// A config that fails to parse on disk is someone's work: Save does not replace
+// it. Nor does an empty one pass for a new install.
+func TestSaveNaoPisaEmArquivoQuebrado(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := []byte("repos: [unclosed\n")
+	if err := os.WriteFile(path, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err == nil {
+		t.Error("Save went over a broken file")
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, broken) {
+		t.Errorf("file changed: %s", data)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadOrInit(); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty file: %v", err)
+	}
+	if data, _ := os.ReadFile(path); len(data) != 0 {
+		t.Errorf("an empty file was overwritten: %s", data)
 	}
 }
