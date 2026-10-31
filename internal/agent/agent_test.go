@@ -1122,3 +1122,30 @@ func TestAttribution(t *testing.T) {
 		}
 	}
 }
+
+// What a value brings stays text: a review file's name is not a way into the diff.
+func TestBuildPromptNaoReexpandeValores(t *testing.T) {
+	got := buildPrompt("file {{review_file}}", "", testPR(), "SECRET-DIFF", "", map[string]string{"{{review_file}}": "{{diff}}"})
+	if strings.Contains(got, "SECRET-DIFF") {
+		t.Errorf("expanded: %s", got)
+	}
+	if got := buildPrompt("{{task}}", "publish {{review_file}} of {{number}}", testPR(), "", "", map[string]string{"{{review_file}}": "/x.md"}); !strings.Contains(got, "/x.md of") {
+		t.Errorf("task: %s", got)
+	}
+}
+
+// A result with no subtype is no failure; an error says so itself.
+func TestResultadoSemSubtypeNaoEFalha(t *testing.T) {
+	for line, failed := range map[string]bool{
+		`{"type":"result","result":"ok","duration_ms":1}`:                                    false,
+		`{"type":"result","subtype":"success","result":"ok","duration_ms":1}`:                false,
+		`{"type":"result","subtype":"error_max_turns","result":"ok","duration_ms":1}`:        true,
+		`{"type":"result","subtype":"success","is_error":true,"result":"x","duration_ms":1}`: true,
+	} {
+		var p streamParser
+		p.line(line)
+		if (p.failure != nil) != failed {
+			t.Errorf("%s: %v", line, p.failure)
+		}
+	}
+}

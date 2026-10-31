@@ -171,7 +171,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	for _, s := range choice.Steps {
 		err := config.CheckLauncher(s)
 		if err == nil {
-			err = checkClaudeConfigDir(s, "")
+			err = checkConfigDirs(s, "")
 		}
 		if err == nil {
 			err = checkSettingSources(s.Args)
@@ -289,7 +289,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			}
 			err = checkPathFlags(step.Args, workdir)
 			if err == nil {
-				err = checkClaudeConfigDir(step, workdir)
+				err = checkConfigDirs(step, workdir)
 			}
 			if err != nil {
 				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
@@ -578,22 +578,24 @@ func checkSettingSources(args []string) error {
 	return nil
 }
 
-// checkClaudeConfigDir refuses a CLAUDE_CONFIG_DIR, set on the step or inherited,
-// that is relative or inside the clone: it is where `--setting-sources user`
-// reads the user's settings, so there it would read the PR's, hooks included.
-func checkClaudeConfigDir(step config.ResolvedAgent, clone string) error {
-	dir, ok := step.Env["CLAUDE_CONFIG_DIR"]
-	if !ok {
-		dir = os.Getenv("CLAUDE_CONFIG_DIR")
-	}
-	if dir == "" {
-		return nil
-	}
-	if !filepath.IsAbs(dir) {
-		return fmt.Errorf("CLAUDE_CONFIG_DIR %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", dir)
-	}
-	if clone != "" && insideDir(dir, clone) {
-		return fmt.Errorf("CLAUDE_CONFIG_DIR %q is inside the PR's clone, where the PR controls the settings: point it outside", dir)
+// checkConfigDirs refuses a CLI's config folder, set on the step or inherited,
+// that is relative or inside the clone: it is where the CLI reads the user's
+// settings, so there it would read the PR's, hooks included.
+func checkConfigDirs(step config.ResolvedAgent, clone string) error {
+	for _, name := range []string{"CLAUDE_CONFIG_DIR", "GROK_HOME", "CODEX_HOME"} {
+		dir, ok := step.Env[name]
+		if !ok {
+			dir = os.Getenv(name)
+		}
+		if dir == "" {
+			continue
+		}
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("%s %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", name, dir)
+		}
+		if clone != "" && insideDir(dir, clone) {
+			return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the settings: point it outside", name, dir)
+		}
 	}
 	return nil
 }
@@ -1101,16 +1103,13 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 	}
 	tmpl = strings.ReplaceAll(tmpl, "{{task}}", task)
 
-	pairs := []string{}
+	// One pass over the template: what a value brings ("{{diff}}" in a PR's title)
+	// stays text. The extras count as well, since {{review_file}} may be in the task.
+	pairs := make([]string, 0, 2*len(extra)+20)
 	for k, v := range extra {
 		pairs = append(pairs, k, v)
 	}
-	// The extras go in first: {{review_file}} may be inside the task.
-	if len(pairs) > 0 {
-		tmpl = strings.NewReplacer(pairs...).Replace(tmpl)
-	}
-
-	rep := strings.NewReplacer(
+	rep := strings.NewReplacer(append(pairs,
 		"{{repo}}", pr.Repo,
 		"{{number}}", strconv.Itoa(pr.Number),
 		"{{title}}", pr.Title,
@@ -1121,6 +1120,6 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 		"{{workdir}}", workdir,
 		"{{body}}", body,
 		"{{diff}}", diff,
-	)
+	)...)
 	return strings.TrimSpace(rep.Replace(tmpl))
 }

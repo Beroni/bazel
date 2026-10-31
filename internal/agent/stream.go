@@ -278,7 +278,7 @@ func (p *streamParser) line(raw string) []logEntry {
 			p.unsplit = true
 		}
 		p.byModel = append(p.byModel, byModel...)
-		if ev.IsError || ev.Subtype != "success" {
+		if ev.IsError || (ev.Subtype != "" && ev.Subtype != "success") {
 			p.failure = fmt.Errorf("it ended with an error (%s)", ev.Subtype)
 			return one(fmt.Sprintf("✗ the agent ended with an error (%s)", ev.Subtype))
 		}

@@ -83,7 +83,7 @@ go install github.com/beroni/bazel@latest
 ```
 
 > The binary is called `bazel`, like Google's build tool. If you use both,
-> rename one of them at install time (`-o ~/.local/bin/bz`).
+> rename one of them after installing (`mv "$(go env GOPATH)/bin/bazel" ~/.local/bin/bz`).
 
 ## Quick start
 
@@ -104,6 +104,7 @@ On first run `~/.bazel/config.yaml` is created for you. Then, in the page:
 | `--jobs <n>` | concurrent reviews (default 2) |
 | `--open` | open the browser |
 | `--keep` | keep the throwaway PR clones |
+| `--log-dir <dir>` | write each job's whole log to a file in `dir` |
 | `--no-splash` | skip the opening animation |
 | `--version` | version |
 
@@ -513,17 +514,19 @@ post_agent:
 
 `config.yaml` is yours too: Bazel changes only the keys you changed in the page
 and leaves comments, unknown keys and edits by hand alone, including edits made
-while it runs. Those only take effect at the next start. An empty file stops the
-boot instead of passing for a new install. The file is readable by you alone, and
-the page and its export leave out the values under `env:`. Reviews and their
-folder are yours alone as well, since they quote the PR's code.
+while it runs. Those only take effect at the next start, and until then the page
+refuses to change a key you edited, since saving would undo it. An empty file
+stops the boot instead of passing for a new install. If `config.yaml` is a link,
+it stays one and its target is what changes. The file is readable by you alone,
+and the page and its export leave out the values under `env:` and all comments.
+Reviews and their folder are yours alone as well, since they quote the PR's code.
 
 ### The History tab
 
 The History tab runs `history_agent` on demand. Bazel offers nothing of its
 output for publishing, and it refuses a `history_agent` that declares or plainly
 asks for publishing: `posts: true` stops the load, and the rest (a post skill,
-`--post`, a `gh` command that writes, a prompt without the line
+`--post`, any `gh` command, a prompt without the line
 `do not publish anything to GitHub`) stops that history with the reason. That is
 a check, not a guarantee. The default agent is *instructed* not to publish, and
 it has Bash and your `gh` login. A step of your own, whether from `history_agent`
@@ -795,7 +798,8 @@ CLI is running:
 - **The clone ignores your git config.** The clone and the checkout run with
   `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` set, so a filter, LFS or
   `core.hooksPath` from your machine does not run over the PR's files, which is
-  before the sweep. `gh` brings its own credentials. A global `url.insteadOf` or
+  before the sweep. `gh` brings its own credentials, for the clone and for the
+  files a blobless clone fetches later. A global `url.insteadOf` or
   `http.proxy` does not apply to that clone; use `HTTPS_PROXY` for a proxy.
 - **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
   `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
