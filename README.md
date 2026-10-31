@@ -154,6 +154,11 @@ the tooltip names the agent.
 The index lives in `<BAZEL_HOME>/reviews/.index.json`, keyed by the head commit
 seen at review time.
 
+The list comes from one `gh pr list` per repository, up to 100 open PRs each. A
+repository with more says so in the banner, and one that fails keeps the PRs it
+had and says that too. With `authors:` set, the filter goes to `gh`, so the limit
+applies to their PRs.
+
 ## Agents are your skills
 
 **An agent is one of your skills running over a PR.** That is why the list ships

@@ -27,6 +27,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -77,12 +78,13 @@ type Server struct {
 	// when the requested port is 0.
 	bound atomic.Pointer[string]
 
-	// fetchMu serializes the gh queries; prMu guards the cache.
-	fetchMu sync.Mutex
-	prMu    sync.RWMutex
-	prs     []gh.PR
-	prErrs  []gh.RepoError
-	prsAt   time.Time
+	// fetchSlot serializes the gh queries, and unlike a mutex lets go of whoever
+	// stops waiting; prMu guards the cache.
+	fetchSlot chan struct{}
+	prMu      sync.RWMutex
+	prs       []gh.PR
+	prErrs    []gh.RepoError
+	prsAt     time.Time
 
 	// details caches each PR's page (the Overview) by head sha: one gh call
 	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
@@ -119,6 +121,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		instance:     instance,
 		details:      map[string]detailsEntry{},
 		reading:      map[string]*detailsRead{},
+		fetchSlot:    make(chan struct{}, 1),
 		retried:      map[string]time.Time{},
 		fetchDetails: gh.GetDetails,
 		cfg:          cfg,
@@ -446,6 +449,30 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+func (s *Server) listedNow() []gh.PR {
+	s.prMu.RLock()
+	defer s.prMu.RUnlock()
+	return s.prs
+}
+
+// keepFailed puts back the PRs of the repositories that failed this read: one
+// bad answer from GitHub must not empty the list, and the page says what failed
+// from repo_errors.
+func keepFailed(found, old []gh.PR, errs []gh.RepoError) []gh.PR {
+	for _, e := range errs {
+		if e.Truncated {
+			continue
+		}
+		for _, pr := range old {
+			if strings.EqualFold(pr.Repo, e.Repo) {
+				found = append(found, pr)
+			}
+		}
+	}
+	slices.SortStableFunc(found, func(a, b gh.PR) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	return found
+}
+
 // prFilter is the cut of the PR list. The page and /mcp ask for the same
 // list; only the MCP filters by repository and review state, and only the
 // page needs the description as HTML.
@@ -533,8 +560,17 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	}
 	asked := at
 
-	s.fetchMu.Lock()
-	defer s.fetchMu.Unlock()
+	select {
+	case s.fetchSlot <- struct{}{}:
+		defer func() { <-s.fetchSlot }()
+	case <-ctx.Done():
+		// Someone else is reading: whoever has a list keeps it, and whoever does
+		// not goes away instead of queueing behind a stuck gh.
+		if !at.IsZero() {
+			return prs, errs, at, nil
+		}
+		return nil, nil, time.Time{}, ctx.Err()
+	}
 
 	// Another request may have fetched while we waited for the lock.
 	s.prMu.RLock()
@@ -578,6 +614,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	if err := ctx.Err(); err != nil {
 		return nil, nil, time.Time{}, err
 	}
+	found = keepFailed(found, s.listedNow(), repoErrs)
 	now := time.Now()
 	s.prMu.Lock()
 	s.prs, s.prErrs, s.prsAt = found, repoErrs, now
