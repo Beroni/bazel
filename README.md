@@ -60,7 +60,7 @@ the prompt — it is only downloaded if your template uses `{{diff}}`.
 
 ## Requirements
 
-- Go 1.25+ (to build)
+- Go 1.26.10+ (to build)
 - [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
 - An AI agent on your `PATH` that reads a prompt on stdin — by default
