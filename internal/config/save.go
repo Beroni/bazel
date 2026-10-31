@@ -126,12 +126,12 @@ func (c *Config) merged(path string) ([]byte, map[string]string, error) {
 	}
 	for key := range c.base {
 		if _, still := values[key]; !still && c.editedByHand(key, now) {
-			return nil, nil, editedError(path, key)
+			return nil, nil, EditedError{Key: key, Path: path}
 		}
 	}
 	for key := range values {
 		if c.base[key] != values[key] && c.editedByHand(key, now) {
-			return nil, nil, editedError(path, key)
+			return nil, nil, EditedError{Key: key, Path: path}
 		}
 	}
 	root, ourRoot := disk.Content[0], ours.Content[0]
@@ -165,8 +165,11 @@ func (c *Config) editedByHand(key string, now map[string]string) bool {
 	return c.disk != nil && c.disk[key] != now[key]
 }
 
-func editedError(path, key string) error {
-	return fmt.Errorf("%q changed in %s since Bazel read it, and saving would undo that: restart Bazel to pick it up, then do this again", key, path)
+// EditedError refuses a Save over a key edited by hand.
+type EditedError struct{ Key, Path string }
+
+func (e EditedError) Error() string {
+	return fmt.Sprintf("%q changed in %s since Bazel read it, and saving would undo that: restart Bazel to pick it up, then do this again", e.Key, e.Path)
 }
 
 func encodeYAML(doc *yaml.Node) ([]byte, error) {

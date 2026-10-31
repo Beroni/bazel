@@ -944,7 +944,7 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if added {
@@ -966,6 +966,10 @@ func (s *Server) editConfig(edit func() error) error {
 	if err != nil {
 		*s.cfg = prev
 	}
+	var edited config.EditedError
+	if errors.As(err, &edited) {
+		return refuse(http.StatusConflict, err)
+	}
 	return err
 }
 
@@ -978,7 +982,7 @@ func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if removed {
@@ -1032,7 +1036,7 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusCreated, map[string]any{"added": def.Name})
@@ -1042,7 +1046,7 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 	var removed bool
 	err := s.editConfig(func() error { removed = s.cfg.RemoveAgent(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
@@ -1054,7 +1058,7 @@ func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
 	var ok bool
 	err := s.editConfig(func() error { ok = s.cfg.SetDefaultAgent(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if !ok {
@@ -1077,7 +1081,7 @@ func (s *Server) handleAgentPublishable(w http.ResponseWriter, r *http.Request) 
 	}
 	err := s.editConfig(func() error { return s.cfg.SetAgentPublishable(r.PathValue("name"), req.Publishable) })
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, nil)
@@ -1102,7 +1106,7 @@ func (s *Server) handlePipelineAdd(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusCreated, map[string]any{"added": p.Name})
@@ -1112,7 +1116,7 @@ func (s *Server) handlePipelineRemove(w http.ResponseWriter, r *http.Request) {
 	var removed bool
 	err := s.editConfig(func() error { removed = s.cfg.RemovePipeline(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})

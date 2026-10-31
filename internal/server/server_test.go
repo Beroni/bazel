@@ -3381,3 +3381,35 @@ func TestShutdownEsperaOClone(t *testing.T) {
 		t.Errorf("%v does not outlast %v", shutdownWait, workspace.WaitDelay)
 	}
 }
+
+// Refusing a key edited by hand is a conflict the user solves, not a server error.
+func TestSaveEmConflitoResponde409(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := config.Path()
+	if err := os.WriteFile(path, []byte("repos: [acme/api]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := []byte("repos: [acme/api, acme/hand]\n")
+	if err := os.WriteFile(path, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(`{"repo":"acme/web"}`))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "restart Bazel") {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, edited) {
+		t.Errorf("file: %s", data)
+	}
+}
