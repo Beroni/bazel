@@ -33,7 +33,7 @@ type Part struct {
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
 	lines := strings.SplitAfter(body, "\n")
-	headings, literal := blockLines(body, lines)
+	headings, literal, paragraphs := blockLines(body, lines)
 	var (
 		parts   []Part
 		cur     strings.Builder
@@ -76,7 +76,7 @@ func SplitFindings(body string) []Part {
 			wasBlank := blank
 			blank = trim == ""
 			// Numbered bold finding, in sections that do not use `###`.
-			if section && !h3Seen && boldNumbered(trim) {
+			if section && !h3Seen && paragraphs[i] && boldNumbered(trim) {
 				flush()
 				finding = true
 				bold = human
@@ -129,11 +129,11 @@ func SplitFindings(body string) []Part {
 // on some text, and this runs over the whole report, however long.
 var blockParser = parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...))
 
-// blockLines says, line by line, which are headings at the top of the document
-// and which belong to a code or HTML block. A line that merely looks like a
+// blockLines says, line by line, which are headings at the top of the document,
+// which start a paragraph there, and which belong to a code or HTML block. A line that merely looks like a
 // heading, such as `# install it` in indented code or in a list item, must not
 // close a finding: what came after it would survive an untick and go to the PR.
-func blockLines(body string, lines []string) (headings, literal map[int]bool) {
+func blockLines(body string, lines []string) (headings, literal, paragraphs map[int]bool) {
 	starts := make([]int, len(lines))
 	at := 0
 	for i, l := range lines {
@@ -147,7 +147,7 @@ func blockLines(body string, lines []string) (headings, literal map[int]bool) {
 		}
 		return i
 	}
-	headings, literal = map[int]bool{}, map[int]bool{}
+	headings, literal, paragraphs = map[int]bool{}, map[int]bool{}, map[int]bool{}
 	src := []byte(body)
 	markLines := func(seg *text.Segments) {
 		for i := 0; i < seg.Len(); i++ {
@@ -163,6 +163,10 @@ func blockLines(body string, lines []string) (headings, literal map[int]bool) {
 			return ast.WalkContinue, nil
 		}
 		switch b := n.(type) {
+		case *ast.Paragraph:
+			if topLevel(b, doc) && b.Lines().Len() > 0 {
+				paragraphs[lineOf(b.Lines().At(0).Start)] = true
+			}
 		case *ast.Heading:
 			if b.Parent() == doc && b.Lines().Len() > 0 {
 				headings[lineOf(b.Lines().At(0).Start)] = true
@@ -182,7 +186,20 @@ func blockLines(body string, lines []string) (headings, literal map[int]bool) {
 		}
 		return ast.WalkContinue, nil
 	})
-	return headings, literal
+	return headings, literal, paragraphs
+}
+
+// topLevel says n is a block of the document, or the text of a top-level list
+// item: where a finding can start. Deeper down it is part of the one around it.
+func topLevel(n, doc ast.Node) bool {
+	p := n.Parent()
+	if p == doc {
+		return true
+	}
+	if _, item := p.(*ast.ListItem); !item || p.FirstChild() != n {
+		return false
+	}
+	return p.Parent().Parent() == doc
 }
 
 // Findings counts the findings in a review.

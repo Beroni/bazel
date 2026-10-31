@@ -361,3 +361,16 @@ func TestCortarNaoCustaCPU(t *testing.T) {
 		t.Errorf("took %v", took)
 	}
 }
+
+// A numbered bold paragraph inside a list belongs to its item: it does not start
+// a finding, and what follows it does not survive an untick.
+func TestNegritoAninhadoNaoAbreAchado(t *testing.T) {
+	body := "## Findings\n\n**1. major · First**\n\n- a point\n\n    **2. sample item**\n\n    HIDDEN_REMAINDER\n\n**2. minor · Second**\n\nKept.\n"
+	if n := Findings(body); n != 2 {
+		t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+	}
+	got := DropFindings(body, []int{0})
+	if strings.Contains(got, "HIDDEN_REMAINDER") || !strings.Contains(got, "Second") {
+		t.Errorf("after the untick:\n%s", got)
+	}
+}
