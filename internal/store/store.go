@@ -3,6 +3,7 @@ package store
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -48,6 +49,16 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	}
 	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
+	}
+	// What the report owes: the publisher wants one report, or one failure, for
+	// each of these, or it cannot say the whole review is in the file.
+	if len(res.Steps) > 0 {
+		names := make([]string, len(res.Steps))
+		for i, s := range res.Steps {
+			names[i] = s.Name
+		}
+		steps, _ := json.Marshal(names)
+		fmt.Fprintf(&b, "- Steps: %s\n", steps)
 	}
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")

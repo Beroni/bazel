@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/beroni/bazel/internal/skills"
+	"github.com/beroni/bazel/internal/store"
 )
 
 // The publishing script is the part of the post skill that can do harm, so it is
@@ -173,8 +174,18 @@ func (w *world) wrote() bool {
 	return err == nil
 }
 
+// bazelFile wraps a report as store.Save does. The steps are the file's own
+// lower-case `## name` titles; with none, it is the one step of a single agent.
 func bazelFile(report string) string {
-	return "# o/r#7 — Title\n- Author: @x\n- Head sha: " + reviewedSha + "\n- Agent: fleet\n\n---\n\n" + report
+	steps := []string{}
+	for _, m := range regexp.MustCompile(`(?m)^## ([a-z]+)$`).FindAllStringSubmatch(report, -1) {
+		steps = append(steps, m[1])
+	}
+	if len(steps) == 0 {
+		steps = []string{"fleet"}
+	}
+	list, _ := json.Marshal(steps)
+	return "# o/r#7 — Title\n- Author: @x\n- Head sha: " + reviewedSha + "\n- Agent: fleet\n- Steps: " + string(list) + "\n\n---\n\n" + report
 }
 
 func header(verdict string, files int) string {
@@ -606,5 +617,122 @@ func TestTheJobNamesThePR(t *testing.T) {
 				t.Error("nothing may be written")
 			}
 		})
+	}
+}
+
+// An all-clear rests on proof, not on the absence of findings. Each of these reads
+// as clean to a parser that only looks for what is wrong.
+func TestAllClearNeedsProof(t *testing.T) {
+	report := header("approve", 3)
+	bare := report[:strings.Index(report, "# Review Fleet")]
+	swap := func(from, to string) string { return strings.Replace(report, from, to, 1) }
+	saved := func(body string) string { return bazelFile(body) }
+
+	const refused, notClear = "refused", "not clear"
+	cases := map[string]struct {
+		file string
+		want string
+	}{
+		"the header alone":             {saved(bare), notClear},
+		"cut after the H1":             {saved(report[:strings.Index(report, "**Verdict")]), notClear},
+		"cut after the verdict":        {saved(report[:strings.Index(report, "**Scope")]), notClear},
+		"cut after the scope":          {saved(report[:strings.Index(report, "**Lenses")]), notClear},
+		"a title and no report":        {saved("## Critical: SQL injection in login, do not merge\n"), refused},
+		"a step that is a title":       {saved("## a\n\n" + report + "\n---\n\n## b\n\n## Critical: SQL injection\n"), refused},
+		"a step with nothing":          {saved("## a\n\n" + report + "\n---\n\n## b\n"), refused},
+		"a step's header missing":      {strings.Replace(saved(report), `["fleet"]`, `["fleet","lens"]`, 1), refused},
+		"two headers for a step":       {saved(report + "\n" + report), refused},
+		"another verdict in the block": {saved(swap("**Verdict:** approve · x", "**Verdict:** this has a critical bug")), refused},
+		"a second verdict line":        {saved(report + "**Verdict:** this has a critical bug\n"), notClear},
+		"a second title":               {saved(report + "# Do not merge\n"), notClear},
+		"approve over a finding":       {saved(report + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.")), refused},
+		"a lens skipped":               {saved(swap("lenses_skipped: none", "lenses_skipped: senior-code-reviewer (quota)")), notClear},
+		"no lens ran":                  {saved(swap("lenses_ran: exploit-digger", "lenses_ran: -")), notClear},
+		"no scope":                     {saved(swap("scope_cmd: git diff origin/main...HEAD", "scope_cmd: -")), notClear},
+		"the diff truncated":           {strings.Replace(saved(report), "- Agent:", "- ⚠️ The diff was truncated before it reached the agent.\n- Agent:", 1), notClear},
+		"no list of steps":             {regexp.MustCompile(`- Steps: .*\n`).ReplaceAllString(saved(report), ""), notClear},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.write("review.md", c.file)
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if c.want == refused {
+				if code != 3 {
+					t.Fatalf("exit %d, want a refusal\n%s", code, out)
+				}
+				return
+			}
+			if code != 0 {
+				t.Fatalf("exit %d\n%s", code, out)
+			}
+			var plan struct {
+				Work string `json:"work_folder"`
+			}
+			if err := json.Unmarshal([]byte(out), &plan); err != nil {
+				t.Fatal(err)
+			}
+			w.run("publish", plan.Work)
+			if p := w.payload(0); strings.Contains(p.Body, "all-clear @") {
+				t.Errorf("no all-clear on this:\n%s", p.Body)
+			}
+		})
+	}
+
+	t.Run("a single lens says so", func(t *testing.T) {
+		w := newWorld(t)
+		work := w.prepare(saved(swap("lenses_skipped: none", "lenses_skipped: senior-code-reviewer (single-lens run), lazy-senior-dev (single-lens run)")))
+		w.run("publish", work)
+		if !strings.Contains(w.payload(0).Body, "all-clear @") {
+			t.Error("a lens run on its own on purpose is a clean result")
+		}
+	})
+	t.Run("a clean report still clears", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(saved(report)))
+		if !strings.Contains(w.payload(0).Body, "all-clear @") {
+			t.Error("a complete, clean report is an all-clear")
+		}
+	})
+}
+
+// Taking the last finding out, with the page's own code, is a person's call: it
+// leaves nothing to post, and never an all-clear.
+func TestUntickingIsNoAllClear(t *testing.T) {
+	w := newWorld(t)
+	body := "## a\n\n" + header("approve", 3) + "\n---\n\n## b\n\n" + header("comment", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.")
+	whole := filepath.Join(w.dir, "whole.md")
+	if err := os.WriteFile(whole, []byte(bazelFile(body)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	trimmed := store.DropFindings(body, []int{0})
+	path, err := store.SavePublishCopy(w.dir, whole, trimmed, nil, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, code := w.run("prepare", path)
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	var plan struct {
+		Work string `json:"work_folder"`
+	}
+	if err := json.Unmarshal([]byte(out), &plan); err != nil {
+		t.Fatal(err)
+	}
+	w.run("publish", plan.Work)
+	if w.wrote() {
+		t.Error("nothing is left to post, and the rest is not a clean review")
+	}
+}
+
+// A rule the report's own prose draws is not Bazel's separator: the findings after
+// it stay findings.
+func TestARuleInTheReportIsNoStep(t *testing.T) {
+	w := newWorld(t)
+	report := header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n---\n\n" + finding("Two", "a.go", 2, "Worse.")
+	w.run("publish", w.prepare(bazelFile(report)))
+	if p := w.payload(0); len(p.Comments) != 2 {
+		t.Errorf("the finding after the rule was lost: %+v", p)
 	}
 }

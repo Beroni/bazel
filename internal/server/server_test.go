@@ -1778,11 +1778,11 @@ func TestCopiaDePublicacaoEPorPublicacao(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewManager(context.Background(), cfgFor(t, "echo"), dir, 1, false, NewHub())
-	a, err := m.publishInputFor(orig, relatorioDaFrota, []int{0}, false)
+	a, err := m.publishInputFor(orig, relatorioDaFrota, []int{0}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := m.publishInputFor(orig, relatorioDaFrota, []int{1}, false)
+	b, err := m.publishInputFor(orig, relatorioDaFrota, []int{1}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

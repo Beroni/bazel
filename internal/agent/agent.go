@@ -889,6 +889,16 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 	return body, true, nil
 }
 
+// PublishableSteps names the steps PublishableBody keeps.
+func PublishableSteps(res Result, choice config.Choice) []string {
+	kept := stepsWhere(res, choice, true)
+	names := make([]string, len(kept))
+	for i, s := range kept {
+		names[i] = s.Name
+	}
+	return names
+}
+
 // ContextBody is the flip side of PublishableBody: the body of the steps that
 // stay in Bazel. It's what the screen shows separately, to make clear it
 // doesn't go to the PR.

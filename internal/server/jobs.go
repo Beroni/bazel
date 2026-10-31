@@ -195,16 +195,16 @@ func (in *publishInput) discard() {
 // the agent gets a copy of the file already trimmed in publish/, because the
 // post skill reads the file, not the prompt.
 //
-// trimmed says the body received is no longer what is in path — that is what
-// forces the copy even with no finding unticked.
-func (m *Manager) publishInputFor(path, body string, skip []int, trimmed bool) (*publishInput, error) {
-	if len(skip) == 0 && !trimmed {
+// steps, when not nil, are the steps left in a body that is no longer what is in
+// path — that is what forces the copy even with no finding unticked.
+func (m *Manager) publishInputFor(path, body string, skip []int, steps []string) (*publishInput, error) {
+	if len(skip) == 0 && steps == nil {
 		return &publishInput{Path: path, Body: body, Source: path}, nil
 	}
 	if len(skip) > 0 {
 		body = store.DropFindings(body, skip)
 	}
-	copyPath, err := store.SavePublishCopy(m.reviewsDir, path, body)
+	copyPath, err := store.SavePublishCopy(m.reviewsDir, path, body, steps, len(skip) > 0)
 	if err != nil {
 		return nil, fmt.Errorf("could not write the review without the unticked findings: %w", err)
 	}
@@ -904,7 +904,11 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, err
 	}
-	in, err := m.publishInputFor(job.SavedTo, body, skip, trimmed)
+	var steps []string
+	if trimmed {
+		steps = agent.PublishableSteps(job.Result, job.Choice)
+	}
+	in, err := m.publishInputFor(job.SavedTo, body, skip, steps)
 	if err != nil {
 		m.mu.Unlock()
 		return jobView{}, err
@@ -957,7 +961,7 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 	if strings.TrimSpace(path) == "" {
 		return jobView{}, errors.New("no review file to publish")
 	}
-	in, err := m.publishInputFor(path, body, skip, false)
+	in, err := m.publishInputFor(path, body, skip, nil)
 	if err != nil {
 		return jobView{}, err
 	}

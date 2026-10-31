@@ -164,7 +164,7 @@ func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := DropFindings(relatorio, []int{0})
-	path, err := SavePublishCopy(dir, orig, body)
+	path, err := SavePublishCopy(dir, orig, body, nil, true)
 	if err != nil {
 		t.Fatalf("SavePublishCopy: %v", err)
 	}
@@ -172,13 +172,13 @@ func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 		t.Errorf("caminho inesperado: %s", path)
 	}
 	// Each publication gets its own copy: the second does not overwrite the first.
-	outra, err := SavePublishCopy(dir, orig, relatorio)
+	outra, err := SavePublishCopy(dir, orig, relatorio, nil, false)
 	if err != nil || outra == path {
 		t.Errorf("a segunda cópia devia ter outro nome: %s (%v)", outra, err)
 	}
 	data, _ := os.ReadFile(path)
 	got := string(data)
-	if !strings.HasPrefix(got, "# acme/api#482 — feat\n\n- Author: @maria\n\n---\n\n") {
+	if !strings.HasPrefix(got, "# acme/api#482 — feat\n\n- Author: @maria\n- Trimmed: yes\n\n---\n\n") {
 		t.Errorf("cabeçalho perdido:\n%s", got)
 	}
 	if strings.Contains(got, "Gas diverges") || !strings.Contains(got, "No host-side test") {
@@ -316,5 +316,33 @@ func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 	// A real doubt that starts with the word is still one.
 	if n := Findings("## Needs human verification\n\n- None of the callers check the error\n"); n != 1 {
 		t.Errorf("dúvida que começa com None devia contar, veio %d", n)
+	}
+}
+
+// The publisher reads the copy's header: the steps that are left, and whether a
+// person took something out.
+func TestPublishCopyHeader(t *testing.T) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "r.md")
+	if err := os.WriteFile(orig, []byte("# o/r#7 — T\n- Steps: [\"history\",\"fleet\"]\n\n---\n\nbody\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	path, err := SavePublishCopy(dir, orig, "body", []string{"fleet"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if got := string(data); !strings.Contains(got, "- Steps: [\"fleet\"]\n") || strings.Contains(got, "Trimmed") {
+		t.Errorf("a step left out is not a finding unticked:\n%s", got)
+	}
+}
+
+// Dropping a step's last finding keeps the separator, or the next step would
+// lose the line that says it is a step.
+func TestSplitFindingsStopsAtTheStepSeparator(t *testing.T) {
+	report := "## a\n\n## Findings\n\n### One\n\nBad.\n\n---\n\n## b\n\n## Findings\n\n### Two\n\nWorse.\n"
+	got := DropFindings(report, []int{0})
+	if !strings.Contains(got, "\n---\n\n## b\n") || strings.Contains(got, "One") || !strings.Contains(got, "Two") {
+		t.Errorf("got:\n%s", got)
 	}
 }

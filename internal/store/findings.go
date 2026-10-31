@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,12 @@ func SplitFindings(body string) []Part {
 			blank = false
 			cur.WriteString(line)
 			continue
+		}
+		// The line Bazel puts between two steps of a pipeline belongs to neither:
+		// dropping a step's last finding must leave the next step behind it.
+		if trim == "---" && strings.HasPrefix(nextNonBlank(i), "## ") {
+			flush()
+			finding, bold, section, human, blank = false, false, false, false, false
 		}
 		level, title := headingOf(trim)
 		switch {
@@ -162,11 +169,33 @@ func DropFindings(body string, skip []int) string {
 	return b.String()
 }
 
+// copyHeader is a saved review's header for the copy that goes to the PR.
+func copyHeader(head string, steps []string, unticked bool) string {
+	lines := strings.Split(strings.TrimRight(head, "\n"), "\n")
+	if steps != nil {
+		list, _ := json.Marshal(steps)
+		for i, l := range lines {
+			if strings.HasPrefix(l, "- Steps: ") {
+				lines[i] = "- Steps: " + string(list)
+			}
+		}
+	}
+	if unticked {
+		lines = append(lines, "- Trimmed: yes")
+	}
+	return strings.Join(lines, "\n") + "\n"
+}
+
 // SavePublishCopy writes, next to the saved review, the version that goes to
 // the PR: the same header, but the body already without the unticked findings.
 // It lives in publish/ inside the reviews directory, so it stays out of the
 // saved list — the real review stays whole, only what goes out changes.
-func SavePublishCopy(dir, original, body string) (string, error) {
+//
+// steps replaces the file's list of steps when not all of them go to the PR, and
+// unticked says a person took findings out: the publisher has to know, because
+// what is left is not what the agent concluded from, and a clean copy is no clean
+// review.
+func SavePublishCopy(dir, original, body string, steps []string, unticked bool) (string, error) {
 	pubDir := filepath.Join(dir, "publish")
 	if err := os.MkdirAll(pubDir, 0o755); err != nil {
 		return "", err
@@ -174,7 +203,7 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 	header := ""
 	if data, err := os.ReadFile(original); err == nil {
 		if head, _, ok := strings.Cut(string(data), "\n---\n"); ok {
-			header = head + "\n---\n\n"
+			header = copyHeader(head, steps, unticked) + "\n---\n\n"
 		}
 	}
 	// One file per publish, never shared: two publishes of the same review with
