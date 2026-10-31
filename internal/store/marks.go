@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -98,7 +99,7 @@ func loadMarksLocked(dir string) Marks {
 func readMarks(dir string) (Marks, bool) {
 	data, err := os.ReadFile(filepath.Join(dir, marksFile))
 	if err != nil {
-		return Marks{}, true
+		return Marks{}, os.IsNotExist(err)
 	}
 	var raw Marks
 	if err := json.Unmarshal(data, &raw); err != nil || raw == nil {
@@ -152,13 +153,24 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	}
 	marksMu.Lock()
 	defer marksMu.Unlock()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	// The read, the change and the rename are one step, or two servers on this
+	// folder each write back the index without the other's mark.
+	unlock, err := lockFile(filepath.Join(dir, marksFile+".lock"))
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	path := filepath.Join(dir, marksFile)
 	marks, ok := readMarks(dir)
-	// A file nobody can read may still be repaired by hand: it steps aside
-	// instead of being written over with this one mark.
+	// A file that cannot be read may still be repaired by hand: it steps aside,
+	// under a name of its own, instead of being written over with this one mark.
 	if !ok {
-		if err := os.Rename(path, path+".corrupt"); err != nil {
+		aside := fmt.Sprintf("%s.corrupt-%d", path, time.Now().UnixNano())
+		if err := os.Rename(path, aside); err != nil {
 			return err
 		}
 	}
@@ -166,9 +178,6 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	marks[key] = fn(marks[key])
 	trim(marks)
 
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return err
-	}
 	data, err := json.MarshalIndent(marks, "", "  ")
 	if err != nil {
 		return err

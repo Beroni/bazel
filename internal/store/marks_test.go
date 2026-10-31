@@ -1,7 +1,9 @@
 package store
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -198,7 +200,11 @@ func TestMarcasCorrompidasFicamDeLado(t *testing.T) {
 	if err := MarkPosted(dir, "a/b#2"); err != nil {
 		t.Fatal(err)
 	}
-	if data, err := os.ReadFile(path + ".corrupt"); err != nil || !strings.Contains(string(data), "a/b#1") {
+	aside, _ := filepath.Glob(path + ".corrupt-*")
+	if len(aside) != 1 {
+		t.Fatalf("copies: %v", aside)
+	}
+	if data, err := os.ReadFile(aside[0]); err != nil || !strings.Contains(string(data), "a/b#1") {
 		t.Errorf("corrupt copy: %q %v", data, err)
 	}
 	if len(LoadMarks(dir)) != 1 {
@@ -241,5 +247,62 @@ func TestMarcaNaoDiferenciaCaixa(t *testing.T) {
 	}
 	if got := LoadMarks(dir); len(got) != 1 || !got.Status(pr).Posted {
 		t.Errorf("index: %v", got)
+	}
+}
+
+// An index that cannot be read is not an empty one: it is kept, and the marks in
+// it can be recovered.
+func TestMarcasIlegiveisFicamDeLado(t *testing.T) {
+	dir := t.TempDir()
+	if err := MarkPosted(dir, "a/b#1"); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, marksFile)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(path); err == nil {
+		t.Skip("running as a user that reads anything")
+	}
+	if err := MarkPosted(dir, "a/b#2"); err != nil {
+		t.Fatal(err)
+	}
+	aside, _ := filepath.Glob(path + ".corrupt-*")
+	if len(aside) != 1 {
+		t.Fatalf("copies: %v", aside)
+	}
+	os.Chmod(aside[0], 0o600)
+	if data, _ := os.ReadFile(aside[0]); !strings.Contains(string(data), "a/b#1") {
+		t.Errorf("copy: %s", data)
+	}
+}
+
+// Two servers on one folder keep every mark: the child processes each write
+// their own, at the same time.
+func TestMarcasEntreProcessos(t *testing.T) {
+	if dir := os.Getenv("BAZEL_MARKS_DIR"); dir != "" {
+		for i := range 60 {
+			if err := MarkPosted(dir, fmt.Sprintf("%s/x#%d", os.Getenv("BAZEL_MARKS_ID"), i)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return
+	}
+	dir := t.TempDir()
+	cmds := make([]*exec.Cmd, 2)
+	for i := range cmds {
+		cmds[i] = exec.Command(os.Args[0], "-test.run=^TestMarcasEntreProcessos$")
+		cmds[i].Env = append(os.Environ(), "BAZEL_MARKS_DIR="+dir, fmt.Sprintf("BAZEL_MARKS_ID=p%d", i))
+		if err := cmds[i].Start(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, c := range cmds {
+		if err := c.Wait(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(LoadMarks(dir)); n != 120 {
+		t.Errorf("%d marks, want 120", n)
 	}
 }
