@@ -13,17 +13,16 @@ test.describe('P0 · cancel', () => {
     await expect.poll(() => bazel.agentCalls().length).toBe(1);
     const id = (await bazel.api('GET', '/api/jobs')).json.jobs[0].id;
     await bazel.waitJob(id, (j) => j.state === 'running' && j.log_lines >= 2);
+    const { pid } = bazel.agentCalls()[0];
+    expect(bazel.agentAlive(pid)).toBe(true);
 
     await cancelJob(app, 'Dark mode toggle in settings');
     await bazel.waitJob(id, (j) => j.state === 'canceled');
     await expect(card).toHaveAttribute('data-state', 'canceled');
     await expect(ui.cancelControl(app)).toHaveCount(0);
 
-    // Releasing the scenario now must change nothing: the process is dead.
-    bazel.release('release-slow');
-    await new Promise((r) => setTimeout(r, 300));
-    const job = await bazel.job(id);
-    expect(job.state).toBe('canceled');
+    await expect.poll(() => bazel.agentAlive(pid)).toBe(false);
+    expect((await bazel.job(id)).state).toBe('canceled');
     expect(bazel.savedReviews()).toEqual([]);
     expect(bazel.clones()).toEqual([]);
   });

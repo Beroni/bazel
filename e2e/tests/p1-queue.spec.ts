@@ -55,12 +55,14 @@ test.describe('P1 · queue', () => {
   test('✕ on a running card cancels it and drops it from the server', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
     await bazel.waitJob(id, (j) => j.state === 'running');
+    await expect.poll(() => bazel.agentCalls().length).toBe(1);
+    const { pid } = bazel.agentCalls()[0];
+    expect(bazel.agentAlive(pid)).toBe(true);
     await app.reload();
     await ui.removeButton(ui.jobCard(app, 'Dark mode toggle in settings')).click(); // confirm accepted
     await expect.poll(async () => (await bazel.api('GET', `/api/jobs/${id}`)).status).toBe(404);
     expect((await bazel.api('GET', '/api/jobs')).json.jobs).toEqual([]);
-    bazel.release('release-slow');
-    await new Promise((r) => setTimeout(r, 300));
+    await expect.poll(() => bazel.agentAlive(pid)).toBe(false);
     expect(bazel.savedReviews()).toEqual([]);
   });
 
@@ -92,8 +94,10 @@ test.describe('P1 · queue', () => {
 
   test('timeout_seconds: the agent is killed and the job says why', async ({ bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'timeout-lens');
-    const job = await bazel.waitJob(id, (j) => j.state === 'failed', 10_000);
+    const job = await bazel.waitJob(id, (j) => j.state === 'failed');
     expect(job.error).toBe('`timeout-lens` blew past its 1s timeout');
+    // One second can run out before a loaded machine gets to the agent's first line.
+    for (const { pid } of bazel.agentCalls()) await expect.poll(() => bazel.agentAlive(pid)).toBe(false);
     expect(bazel.clones()).toEqual([]);
   });
 
