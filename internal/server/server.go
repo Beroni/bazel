@@ -39,6 +39,7 @@ import (
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/store"
+	"github.com/beroni/bazel/internal/workspace"
 )
 
 //go:embed static
@@ -88,6 +89,7 @@ type Server struct {
 	prs       []gh.PR
 	prErrs    []gh.RepoError
 	prsAt     time.Time
+	prGen     int
 
 	// details caches each PR's page (the Overview) by head sha: one gh call
 	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
@@ -271,9 +273,9 @@ func semCache(next http.Handler) http.Handler {
 }
 
 // shutdownWait is how long Run gives the jobs to clean up their clones. An agent
-// that was killed gets agent.Grace for its process and pipes, and the cleanup
-// comes after that.
-const shutdownWait = agent.Grace + 3*time.Second
+// that was killed gets agent.Grace for its process and pipes, a git in the middle
+// of a clone gets workspace.WaitDelay, and the cleanup comes after that.
+const shutdownWait = max(agent.Grace, workspace.WaitDelay) + 3*time.Second
 
 // Run starts the server and only returns when ctx dies.
 func (s *Server) Run(ctx context.Context) error {
@@ -603,6 +605,9 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 		return prs, errs, at, nil
 	}
 
+	s.prMu.RLock()
+	gen := s.prGen
+	s.prMu.RUnlock()
 	s.cfgMu.Lock()
 	repos := append([]string(nil), s.cfg.Repos...)
 	opts := gh.ListOptions{
@@ -638,6 +643,10 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	now := time.Now()
 	s.prMu.Lock()
 	s.prs, s.prErrs, s.prsAt = found, repoErrs, now
+	// The list changed while this read was out: it can be shown, not kept.
+	if s.prGen != gen {
+		s.prsAt = time.Time{}
+	}
 	s.prMu.Unlock()
 
 	s.hub.Broadcast("prs", map[string]any{"count": len(found), "fetched_at": now})
@@ -1491,6 +1500,7 @@ func (s *Server) installedSkills() (string, []skills.Skill) {
 func (s *Server) invalidatePRs() {
 	s.prMu.Lock()
 	s.prsAt = time.Time{}
+	s.prGen++
 	s.prMu.Unlock()
 }
 

@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,6 +22,7 @@ import (
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
+	"github.com/beroni/bazel/internal/workspace"
 )
 
 func testPR(number int) gh.PR {
@@ -3207,5 +3209,175 @@ func TestTituloNaoFazOPapelDoMarcador(t *testing.T) {
 	_, pub, stays, split := store.SavedParts(file)
 	if split || stays != "" || pub != "Body." {
 		t.Errorf("%q %q %v", pub, stays, split)
+	}
+}
+
+// The job of a publication holds the post agent's report. "Save again" on it
+// would file that as a review and move the PR's mark.
+func TestSaveAgainRecusaOQueFoiPublicado(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &semClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	path := filepath.Join(dir, "acme-api-core-482-20260830-120000.md")
+	if err := os.WriteFile(path, []byte("# acme/api-core#482 — feat\n\n---\n\n# Verdict\n\nAll good.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Savable {
+		t.Errorf("the page offers it: %+v", done)
+	}
+	before, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("SaveAgain: %v", err)
+	}
+	// A publication that failed left no Posted behind, and it still is not a review.
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = false
+	m.mu.Unlock()
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("SaveAgain of a failed publication: %v", err)
+	}
+	if after, _ := filepath.Glob(filepath.Join(dir, "*.md")); len(after) != len(before) {
+		t.Errorf("files: %v", after)
+	}
+}
+
+// Parallel clicks write one file, and a review already pasted as a comment is
+// not saved over the mark that says so.
+func TestSaveAgainUmaVezSo(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitFor(t, ch, view.ID, StateDone); !done.Savable {
+		t.Fatalf("job: %+v", done)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = true
+	m.mu.Unlock()
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("after posting: %v", err)
+	}
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = false
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	var saved atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.SaveAgain(view.ID); err == nil {
+				saved.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	files, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	if saved.Load() != 1 || len(files) != 1 {
+		t.Errorf("saved %d, files %v", saved.Load(), files)
+	}
+}
+
+// A card removed while the comment goes out does not come back with no id.
+func TestPostSemCardNaoDevolveViewVazia(t *testing.T) {
+	dir := t.TempDir()
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	script := "#!/bin/sh\ncat >/dev/null\n: > " + started + "\nsleep 0.3\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, view.ID, StateDone)
+	go func() {
+		for range 200 {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_ = m.Remove(view.ID)
+	}()
+	got, err := m.Post(ctx, view.ID, nil)
+	if refusalStatus(err, 0) != http.StatusGone || got.ID != "" {
+		t.Errorf("Post: %+v %v", got, err)
+	}
+}
+
+// A repository added while a listing is out shows up at the next read, not when
+// the cache of that older listing expires.
+func TestInvalidarVenceOFetchEmVoo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	script := "#!/bin/sh\n: > " + started + "\nsleep 0.3\necho '[]'\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	srv := newTestServer(t)
+	srv.cfg.Repos = []string{"acme/api"}
+	done := make(chan error)
+	go func() {
+		_, _, _, err := srv.loadPRs(context.Background(), true)
+		done <- err
+	}()
+	for range 400 {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	srv.invalidatePRs()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.RLock()
+	defer srv.prMu.RUnlock()
+	if !srv.prsAt.IsZero() {
+		t.Error("the older listing passes for fresh")
+	}
+}
+
+func TestShutdownEsperaOClone(t *testing.T) {
+	if shutdownWait <= workspace.WaitDelay {
+		t.Errorf("%v does not outlast %v", shutdownWait, workspace.WaitDelay)
 	}
 }

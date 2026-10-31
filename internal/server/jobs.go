@@ -149,6 +149,12 @@ type Job struct {
 	// posting is set under the lock while Post is inside gh.Comment, which
 	// runs without the lock: a second click in that window is refused.
 	posting bool
+	// saving is set while SaveAgain writes outside the lock: the same window,
+	// for a second click and for the doors to the PR.
+	saving bool
+	// fromSaved is the job of a publication from the Saved tab. Its result is
+	// the post agent's report, not a review, even after publish is cleared.
+	fromSaved bool
 	// gen counts how many times the job went into the queue, bumped under the
 	// lock on every send. A publication canceled while queued and sent again
 	// leaves two entries for the same job; only the one carrying the current
@@ -218,6 +224,24 @@ func (m *Manager) publishInputFor(path, body string, skip []int, trimmed bool) (
 // that started it: the post agent's steps come after the review's, and what it
 // writes does not replace the review on screen.
 func (j *Job) inPlacePublish() bool { return j.publish != nil && j.stepBase > 0 }
+
+// savable says this job holds a review that never reached the disk. One already
+// published is not: saving it now would mark the PR as reviewed anew and lose
+// that it went out.
+func (j *Job) savable() bool {
+	return !j.History && j.publish == nil && !j.fromSaved && !j.Posted && !j.posting && !j.saving &&
+		j.SavedTo == "" && j.Result.Body != "" && (j.State == StateDone || j.State == StateFailed)
+}
+
+// viewAfter is the job's view when a door comes back to it. Removed meanwhile it
+// has no card left, and an empty view would make one with no id.
+func (m *Manager) viewAfter(id, done string) (jobView, error) {
+	v, ok := m.View(id, false)
+	if !ok {
+		return jobView{}, refuse(http.StatusGone, fmt.Errorf("%s, but its card was removed", done))
+	}
+	return v, nil
+}
 
 // queued is one entry in the queue: the job and the gen it was sent with.
 type queued struct {
@@ -632,21 +656,25 @@ func (m *Manager) SaveAgain(id string) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
-	if job.History || job.publish != nil || job.SavedTo != "" || job.Result.Body == "" ||
-		(job.State != StateDone && job.State != StateFailed) {
+	if !job.savable() {
 		m.mu.Unlock()
 		return jobView{}, refuse(http.StatusConflict, errors.New("that review has nothing to save"))
 	}
 	res, choice := job.Result, job.Choice
+	job.saving = true
 	m.mu.Unlock()
 
 	path, err := store.Save(m.reviewsDir, agent.Split(res, choice), m.runner.PricingTable)
 	if err != nil {
+		m.mu.Lock()
+		job.saving = false
+		m.mu.Unlock()
 		return jobView{}, err
 	}
 	markErr := store.MarkReviewed(m.reviewsDir, res, path)
 
 	m.mu.Lock()
+	job.saving = false
 	job.SavedTo = path
 	job.State = StateDone
 	job.Err = ""
@@ -659,7 +687,7 @@ func (m *Manager) SaveAgain(id string) (jobView, error) {
 	}
 	m.mu.Unlock()
 	m.publish(job)
-	return m.mustView(id), nil
+	return m.viewAfter(id, "it was saved")
 }
 
 // desembrulha takes the report out of a ```markdown block — the body and each
@@ -946,7 +974,7 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, errors.New("that review has not finished")
 	}
-	if job.posting {
+	if job.posting || job.saving {
 		m.mu.Unlock()
 		return jobView{}, errPublishBusy
 	}
@@ -1066,6 +1094,7 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 		Steps:     []jobStep{{Name: choice.Steps[0].Name, State: StateQueued}},
 		publish:   in,
 		pubChoice: choice,
+		fromSaved: true,
 		State:     StateQueued,
 		QueuedAt:  time.Now(),
 	}
@@ -1152,7 +1181,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 		m.mu.Unlock()
 		return jobView{}, refuse(http.StatusConflict, errors.New("that review has not finished"))
 	}
-	if job.posting {
+	if job.posting || job.saving {
 		m.mu.Unlock()
 		return jobView{}, errPublishBusy
 	}
@@ -1200,7 +1229,10 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	}
 	m.mu.Unlock()
 	m.publish(job)
-	return m.mustView(id), err
+	if err != nil {
+		return m.mustView(id), err
+	}
+	return m.viewAfter(id, "it went to the PR")
 }
 
 // Dismiss is the "keep it here" answer to the publish step: the card stops
@@ -1212,7 +1244,7 @@ func (m *Manager) Dismiss(id string) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, refuse(http.StatusNotFound, fmt.Errorf("job %q does not exist", id))
 	}
-	if job.posting {
+	if job.posting || job.saving {
 		m.mu.Unlock()
 		return jobView{}, errPublishBusy
 	}

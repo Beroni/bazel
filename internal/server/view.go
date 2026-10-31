@@ -110,7 +110,9 @@ type jobView struct {
 	// Publishing marks the job that is carrying an already-read review to the
 	// PR — the review's own card while the post agent runs, or the card of a
 	// publication coming from disk.
-	Publishing bool       `json:"publishing,omitempty"`
+	Publishing bool `json:"publishing,omitempty"`
+	// Savable is the review SaveAgain can still write.
+	Savable    bool       `json:"savable,omitempty"`
 	LogLines   int        `json:"log_lines"`
 	Steps      []stepView `json:"steps,omitempty"`
 	Cloning    bool       `json:"cloning,omitempty"`
@@ -148,6 +150,7 @@ type jobView struct {
 // view serializes the job, without the body. Call with the Manager lock held.
 func (j *Job) view() jobView {
 	v := jobView{
+		Savable:     j.savable(),
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
 		Agent:       j.Choice.Name,

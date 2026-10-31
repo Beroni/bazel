@@ -34,8 +34,8 @@ type Workspace struct {
 // by hand.
 var cloneTimeout = 15 * time.Minute
 
-// waitDelay is how long Run waits for the pipes after killing the process.
-const waitDelay = 10 * time.Second
+// WaitDelay is how long Run waits for the pipes after killing the process.
+const WaitDelay = 10 * time.Second
 
 // Prepare clones the PR's repository into a temporary folder and checks out
 // the PR branch. The clone is blobless (--filter=blob:none) instead of
@@ -159,7 +159,7 @@ func gitOutput(ctx context.Context, dir string, args ...string) (string, error) 
 	cmd.Stderr = &stderr
 	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
 	// timeout does not release Run while the hung grandchild holds the pipe.
-	cmd.WaitDelay = waitDelay
+	cmd.WaitDelay = WaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return "", fmt.Errorf("%s", lastLines(msg, 3))
@@ -206,7 +206,7 @@ func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd.Stderr = &stderr
 	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
 	// timeout does not release Run while the hung grandchild holds the pipe.
-	cmd.WaitDelay = waitDelay
+	cmd.WaitDelay = WaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("%s", lastLines(msg, 3))

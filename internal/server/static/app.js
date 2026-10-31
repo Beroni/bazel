@@ -2474,7 +2474,7 @@ function renderReportView(v, job) {
   if (custo) foot.title = gastoTitle(job);
   v.append(foot);
   // A review that did not reach the disk lives only here until it does.
-  if (!job.saved_to && job.has_body && !job.history && !job.publishing) {
+  if (job.savable) {
     const again = tid(el('button', 'btn small', 'Save again'), 'save-again');
     again.title = 'write this review to disk: until then it exists only in this server';
     again.addEventListener('click', async () => {
