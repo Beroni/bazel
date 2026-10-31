@@ -133,7 +133,7 @@ func dispatch(args []string) int {
 		}
 		fmt.Fprintf(os.Stderr, "github.com\n  ✓ Logged in to github.com account %s (fake)\n", cfg.User)
 		return 0
-	case is(args, "api", "user") && flag(args, "--jq") == ".login":
+	case slices.Equal(args, []string{"api", "user", "--jq", ".login"}):
 		if failed("user") {
 			return 1
 		}
@@ -207,6 +207,8 @@ func record(args []string, code int) {
 		"argv":        args,
 		"stdin":       stdin,
 		"exit":        code,
+		"home":        os.Getenv("HOME"),
+		"bazel_home":  os.Getenv("BAZEL_HOME"),
 		"unsupported": unknown,
 		"cwd":         cwd,
 		"at":          time.Now().UTC().Format(time.RFC3339Nano),

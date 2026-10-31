@@ -76,7 +76,7 @@ func main() {
 		if raw == "" {
 			return
 		}
-		line := strings.TrimSuffix(raw, "\n")
+		line := strings.TrimSuffix(strings.TrimSuffix(raw, "\n"), "\r")
 		if !strings.HasPrefix(line, "#!") {
 			fmt.Println(line)
 			continue
@@ -85,20 +85,18 @@ func main() {
 		switch verb {
 		case "#":
 		case "sleep":
-			ms, _ := strconv.Atoi(arg)
-			time.Sleep(time.Duration(ms) * time.Millisecond)
+			time.Sleep(time.Duration(number(line, arg)) * time.Millisecond)
 		case "stderr":
 			fmt.Fprintln(os.Stderr, arg)
 		case "exit":
-			code, _ := strconv.Atoi(arg)
-			os.Exit(code)
+			os.Exit(number(line, arg))
 		case "wait":
 			waitFor(filepath.Join(stateDir, arg))
 		case "block":
 			time.Sleep(120 * time.Second)
 		case "repeat":
 			nStr, text, _ := strings.Cut(arg, " ")
-			n, _ := strconv.Atoi(nStr)
+			n := number(line, nStr)
 			w := bufio.NewWriter(os.Stdout)
 			for i := 1; i <= n; i++ {
 				fmt.Fprintln(w, strings.ReplaceAll(text, "{i}", strconv.Itoa(i)))
@@ -114,6 +112,16 @@ func main() {
 			fail(2, "fake-agent: unknown directive "+line)
 		}
 	}
+}
+
+// number reads a directive's count: a bad one must not turn into a 0, which for
+// #!exit would be a success.
+func number(line, arg string) int {
+	n, err := strconv.Atoi(arg)
+	if err != nil {
+		fail(2, "fake-agent: bad number in "+line)
+	}
+	return n
 }
 
 func scenarioPath() string {
@@ -185,6 +193,10 @@ func record(prompt string) {
 		"scenario":             name,
 		"pid":                  os.Getpid(),
 		"branch":               strings.TrimSpace(string(branch)),
+		"home":                 os.Getenv("HOME"),
+		"bazel_home":           os.Getenv("BAZEL_HOME"),
+		"git_dir":              os.Getenv("GIT_DIR"),
+		"git_work_tree":        os.Getenv("GIT_WORK_TREE"),
 		"argv":                 os.Args[1:],
 		"cwd":                  cwd,
 		"prompt":               prompt,
@@ -338,6 +350,8 @@ var (
 // publish is what the post skill does, minus the intelligence: it sends the
 // review file it was handed to the PR as one review, through gh. With the
 // fake gh on PATH that lands in the gh call log, which is what the tests read.
+// Like the skill's script, it leaves the outcome in the plugin folder: a Bazel
+// that reads it must not take a missing file for a publication.
 func publish(prompt string) {
 	file := reviewFileRe.FindStringSubmatch(prompt)
 	repo := repoRe.FindStringSubmatch(prompt)
@@ -355,7 +369,19 @@ func publish(prompt string) {
 	cmd.Stdin = strings.NewReader(string(payload))
 	cmd.Stderr = os.Stderr
 	if err := cmd.Run(); err != nil {
+		outcome("failed", "Publishing failed: "+err.Error())
 		fail(5, "fake-agent: gh api failed: "+err.Error())
+	}
+	outcome("published", "Published.")
+}
+
+func outcome(status, message string) {
+	plugin := argValue("--plugin-dir")
+	if plugin == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "publish-outcome"), []byte(status+"\n"+message+"\n"), 0o644); err != nil {
+		fail(4, "fake-agent: writing the outcome: "+err.Error())
 	}
 }
 
