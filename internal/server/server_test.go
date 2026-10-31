@@ -2864,6 +2864,30 @@ func TestSavedNaoPublicaOQueFica(t *testing.T) {
 	if w := do("POST", "/api/reviews/"+filepath.Base(old)+"/publish"); w.Code < 400 {
 		t.Errorf("old file: %d", w.Code)
 	}
+
+	// And with the pipeline gone from the config, which can no longer say.
+	gone := filepath.Join(srv.reviewsDir, "acme-api-core-482-20200101-000001.md")
+	legacy := "# acme/api-core#482 — t\n\n- Agent: retired — notes (3s) → lens (5s)\n\n---\n\n" + res.Body + "\n"
+	if err := os.WriteFile(gone, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(gone)+"/comment"); w.Code < 400 {
+		t.Errorf("retired pipeline: %d", w.Code)
+	}
+	if data, _ := os.ReadFile(log); strings.Count(string(data), "INTERNAL_ONLY") != 0 {
+		t.Errorf("it went out: %s", data)
+	}
+
+	// A pipeline saved now with every step publishable says so, and passes.
+	all := agent.Result{Agent: "both", PR: testPR(482), Body: "## a\n\nOne\n\n---\n\n## b\n\nTwo",
+		Steps: []agent.StepResult{{Name: "a", Body: "One"}, {Name: "b", Body: "Two"}}}
+	saved, err := store.Save(srv.reviewsDir, all, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(saved)+"/comment"); w.Code != http.StatusOK {
+		t.Errorf("a recorded pipeline: %d %s", w.Code, w.Body)
+	}
 }
 
 // One saved review reaches the PR once, whichever of the four doors it takes.

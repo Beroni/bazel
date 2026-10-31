@@ -56,6 +56,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
 	}
+	if len(res.Steps) > 1 && !res.Keeps {
+		b.WriteString(allStepsLine + "\n")
+	}
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
@@ -284,6 +287,30 @@ func PRFromTitle(title string) (string, int) {
 func ReviewBody(file string) string {
 	pub, _, _ := SplitBody(file)
 	return pub
+}
+
+// allStepsLine says, in the header of a pipeline's file, that every step may go
+// to the PR. With the marker below for the other case, a file records its own
+// policy: tomorrow's config cannot speak for a run it never saw.
+const allStepsLine = "- Publishes: every step"
+
+// PipelineUnknown says the file came from a pipeline and does not record which of
+// its steps may go to the PR: it was saved before files said so. Its steps can
+// no longer be told apart, whatever the config says now.
+func PipelineUnknown(file string) bool {
+	head, _, ok := strings.Cut(file, "\n---\n")
+	if !ok {
+		return false
+	}
+	if strings.Contains(file, staysMarker) || strings.Contains(head, allStepsLine) {
+		return false
+	}
+	for _, line := range strings.Split(head, "\n") {
+		if strings.HasPrefix(line, "- Agent: ") && strings.Contains(line, " → ") {
+			return true
+		}
+	}
+	return false
 }
 
 // staysMarker divides a saved review whose steps do not all publish: above it

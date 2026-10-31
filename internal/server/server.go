@@ -1264,9 +1264,10 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	if split && body == "" {
 		return savedReview{}, fmt.Errorf("no step of %q publishes to the PR", agent)
 	}
-	// A file from before the marker has no way to tell its steps apart.
-	if !split && s.stepsDiffer(agent) {
-		return savedReview{}, fmt.Errorf("this review of %q mixes steps that stay in Bazel and was saved before they could be told apart: it cannot be published from here", agent)
+	// A file from before the marker has no way to tell its steps apart, and the
+	// pipeline may no longer exist to ask.
+	if store.PipelineUnknown(file) || !split && s.stepsDiffer(agent) {
+		return savedReview{}, fmt.Errorf("this review of %q was saved before Bazel recorded which steps stay out of the PR: it cannot be published from here", agent)
 	}
 	pr, err := s.getPR(ctx, repo, number)
 	if err != nil {
