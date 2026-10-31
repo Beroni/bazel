@@ -58,3 +58,16 @@ func TestLowerSet(t *testing.T) {
 		t.Error("lowerSet(nil) devia ser nil para significar 'sem filtro'")
 	}
 }
+
+// A reference names a repository on GitHub and nothing else: gh --repo also
+// takes a host, and it would connect there.
+func TestParseRefRecusaOutroHost(t *testing.T) {
+	for _, ref := range []string{
+		"evil.invalid/a/b#1", "https://evil.invalid/a/b#1", "a/b/c#1", "../x#1", "a/..#1", "a/.git#1",
+		"-x/y#1", "a/b#0", "a/b#-1", "https://github.com/a/b%2fc/pull/1", "a b/c#1",
+	} {
+		if repo, n, err := ParseRef(ref); err == nil {
+			t.Errorf("%q gave %s #%d", ref, repo, n)
+		}
+	}
+}

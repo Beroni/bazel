@@ -596,6 +596,10 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
 		return
 	}
+	if len(req.Refs) > mcpMaxRefs {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("too many PRs: %d given, at most %d per call", len(req.Refs), mcpMaxRefs))
+		return
+	}
 	choice, err := s.resolveChoice(req.Agent)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -644,7 +648,7 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		key := fmt.Sprintf("%s#%d", repo, number)
 		pr, ok := cached[key]
 		if !ok {
-			pr, err = gh.Get(ctx, repo, number)
+			pr, err = s.getPR(ctx, repo, number)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 				continue
@@ -658,6 +662,17 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// getPR is gh.Get under the budget of reads from GitHub.
+func (s *Server) getPR(ctx context.Context, repo string, number int) (gh.PR, error) {
+	s.detMu.Lock()
+	err := s.ghReadLocked(timeNow(), false)
+	s.detMu.Unlock()
+	if err != nil {
+		return gh.PR{}, err
+	}
+	return gh.Get(ctx, repo, number)
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -1142,7 +1157,7 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	if repo == "" {
 		return savedReview{}, fmt.Errorf("could not tell which PR %q belongs to", name)
 	}
-	pr, err := gh.Get(ctx, repo, number)
+	pr, err := s.getPR(ctx, repo, number)
 	if err != nil {
 		return savedReview{}, err
 	}
