@@ -673,30 +673,37 @@ func confineClaude(args []string, plugin string, denied []string) []string {
 	return slices.Concat(flags, args)
 }
 
-// deniedCommands are the Bash commands no agent runs by itself: they change a PR
-// or a repository, and publishing goes through its script.
+// deniedCommands are the Bash commands no agent runs by itself. Reads stay: the
+// lenses read the PR's issue with `gh issue view`.
 var deniedCommands = []string{
-	"Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr edit:*)",
-	"Bash(gh pr ready:*)", "Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh pr lock:*)",
-	"Bash(gh issue:*)", "Bash(gh release:*)", "Bash(gh repo delete:*)", "Bash(gh repo edit:*)",
-	"Bash(gh workflow run:*)", "Bash(gh api -X:*)", "Bash(gh api --method:*)", "Bash(git push:*)",
+	"Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr edit:*)", "Bash(gh pr ready:*)",
+	"Bash(gh pr lock:*)", "Bash(gh pr create:*)", "Bash(gh pr -R*)", "Bash(gh pr --repo*)",
+	"Bash(gh issue create:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)", "Bash(gh issue reopen:*)",
+	"Bash(gh issue comment:*)", "Bash(gh issue delete:*)", "Bash(gh issue lock:*)", "Bash(gh issue transfer:*)",
+	"Bash(gh issue -R*)", "Bash(gh issue --repo*)",
+	"Bash(gh release create:*)", "Bash(gh release edit:*)", "Bash(gh release delete:*)", "Bash(gh release upload:*)",
+	"Bash(gh repo delete:*)", "Bash(gh repo edit:*)", "Bash(gh repo archive:*)", "Bash(gh repo rename:*)",
+	"Bash(gh workflow run:*)", "Bash(gh secret:*)", "Bash(gh variable:*)", "Bash(gh label:*)", "Bash(gh alias:*)",
+	"Bash(git push:*)", "Bash(git -c*push*)", "Bash(git -C * push*)",
 }
 
-// publishCommands are the ones a publishing skill of the user's own types itself.
+// publishCommands are the ones publishing takes. `gh api` writes in many spellings:
+// an explicit method anywhere, a field or an input with no method, a mutation.
 var publishCommands = []string{
-	"Bash(gh pr review:*)", "Bash(gh pr comment:*)", "Bash(gh api -X:*)", "Bash(gh api --method:*)",
+	"Bash(gh pr review:*)", "Bash(gh pr comment:*)",
+	"Bash(gh api -X*)", "Bash(gh api * -X*)", "Bash(gh api --method*)", "Bash(gh api * --method*)",
+	"Bash(gh api repos/* -f *)", "Bash(gh api repos/* -F *)", "Bash(gh api repos/* --field*)",
+	"Bash(gh api repos/* --raw-field*)", "Bash(gh api repos/* --input*)", "Bash(gh api graphql*mutation*)",
 }
 
-// deniedFor is what a step may not run. Only a step that publishes needs the
-// writes that publishing takes, and bazel-post-report does not: its script calls
-// gh from inside, where a pattern on the agent's commands does not reach.
+// deniedFor is what a step may not run. A step that publishes with a skill of the
+// user's own needs publishCommands, typed by the agent; bazel-post-report does
+// not, because its script calls gh from inside, where these patterns do not reach.
 func deniedFor(step config.ResolvedAgent) []string {
-	if !step.Posts || skills.IsBuiltin(skills.TaskSkill(step.Task)) {
+	if step.Publishes() && !skills.IsBuiltin(skills.TaskSkill(step.Task)) {
 		return deniedCommands
 	}
-	return slices.DeleteFunc(slices.Clone(deniedCommands), func(c string) bool {
-		return slices.Contains(publishCommands, c)
-	})
+	return slices.Concat(deniedCommands, publishCommands)
 }
 
 // checkSettingSources refuses a --setting-sources other than user, wherever it

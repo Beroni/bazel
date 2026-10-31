@@ -421,6 +421,7 @@ func TestDeniedFor(t *testing.T) {
 		{"the built-in, in capitals", config.ResolvedAgent{Task: "/BAZEL-POST-REPORT r.md", Posts: true}, true},
 		{"a post agent of the user's", config.ResolvedAgent{Task: "/post-report r.md", Posts: true}, false},
 		{"a review with --post", config.ResolvedAgent{Task: "/review-fleet 26 --post", Posts: true}, false},
+		{"--post with no posts: true", config.ResolvedAgent{Task: "/review-fleet 26 --post"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -435,6 +436,35 @@ func TestDeniedFor(t *testing.T) {
 				if !slices.Contains(got, cmd) {
 					t.Errorf("%s should stay denied", cmd)
 				}
+			}
+		})
+	}
+}
+
+// The list has to reach the command line of each step, not only be right in a table.
+func TestEachStepGetsItsList(t *testing.T) {
+	for name, c := range map[string]struct {
+		task   string
+		denied bool
+	}{
+		"the built-in":      {"/bazel-post-report {{review_file}}", true},
+		"one of the user's": {"/post-report {{review_file}}", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hostileClone(t, "claude")
+			cfg := config.Default()
+			cfg.PostAgent = config.AgentDef{Name: "poster", Task: c.task, Prompt: "{{task}}", Command: "claude", Format: "plain", Args: []string{"-p"}}
+			pr := testPR()
+			pr.BaseRefName = ""
+			res, err := New(cfg).Publish(context.Background(), pr, cfg.PostChoice(), "/r/x.md", "body", nil)
+			if err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if got := strings.Contains(res.Body, "gh api -X*"); got != c.denied {
+				t.Errorf("publishing commands denied = %v, want %v\n%s", got, c.denied, res.Body)
+			}
+			if !strings.Contains(res.Body, "git push:*") {
+				t.Error("nobody publishes with git push")
 			}
 		})
 	}

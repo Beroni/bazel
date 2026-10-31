@@ -199,6 +199,12 @@ func (c Choice) PublishesBy() string {
 	return ""
 }
 
+// Publishes says whether the step writes to the PR on its own, by any of the ways
+// PublishesBy recognizes in a step.
+func (st ResolvedAgent) Publishes() bool {
+	return st.Posts || taskPosts(st.Task) || promptAuthorizesPosting(st.Prompt)
+}
+
 // taskPosts says whether the task passes --post to the skill, the flag with
 // which the review skills publish what they found.
 func taskPosts(task string) bool {
@@ -725,10 +731,18 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	if post := c.PostSkill(); post != "" && strings.EqualFold(skill, post) {
 		return AgentDef{}, fmt.Errorf("%q is the publishing skill — in a pipeline it is the publish step, not an agent", skill)
 	}
+	if posts && skills.IsBuiltin(skill) {
+		return AgentDef{}, fmt.Errorf("%q only reads: a built-in skill has no way to publish on its own", skill)
+	}
 	def := AgentDef{
 		Name:        skill,
 		Description: strings.TrimSpace(description),
 		Task:        "/" + skill + " {{number}}",
+	}
+	// Added from the page or from the starter, a history is not a review.
+	if strings.EqualFold(skill, historySkill) {
+		off := false
+		def.Publishable = &off
 	}
 	if posts {
 		// The suffix is what lets the two live together in the list: the same
@@ -1492,7 +1506,10 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 
 // defaultHistoryTask is the skill the History tab runs unless history_agent
 // names another one.
-const defaultHistoryTask = "/bazel-history-pr {{number}}"
+const defaultHistoryTask = "/" + historySkill + " {{number}}"
+
+// historySkill is the built-in that writes a PR's story.
+const historySkill = "bazel-history-pr"
 
 // HistoryChoice is the agent that writes a PR's history, ready to run. It
 // reads the clone (git log, the diff), and what it writes never goes to the

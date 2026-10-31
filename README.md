@@ -383,9 +383,15 @@ job in the queue.
 has to carry the `review-fleet:v1` header, which the built-in skills always
 print and `/review-fleet` of your own may not. Anything else is refused, the
 card says why, and nothing reaches the PR; use the second way below for those.
-It needs `jq`, and says so if it is missing.
+It needs `jq`, and says so if it is missing. The card only says published when
+the skill's script says so: a model that stops early leaves an error on it. The
+all-clear goes up only for a report that proves it: every step reported, the
+report is complete, no lens was skipped, the diff was not truncated, nothing was
+unticked. A clean report that falls short of that says why it does not clear the
+PR. Text around the report goes to the PR quoted, with a label saying Bazel does
+not vouch for it.
 
-**2. Paste as a comment** ("or paste as a comment"). This is Bazel writing,
+**2. As comment**. This is Bazel writing,
 with no agent: the review markdown becomes a single comment, immediately. No
 inline anchors, but no agent spend either.
 
@@ -776,9 +782,13 @@ CLI is running:
   (`format: claude-stream`, or that output in its `args` with no format) gets
   `--setting-sources user --strict-mcp-config --plugin-dir <runtime>` ahead of
   your `args`, and the built-in skills arrive as a plugin from outside the
-  clone. It also gets a `--disallowedTools` list of GitHub writes (`gh pr merge`,
-  `gh api -X`, `git push`…): a brake on what a steered agent runs by itself, not
-  a wall. Any other command, like a wrapper called `cc`, has the first layer only.
+  clone. It also gets a `--disallowedTools` list of GitHub writes, in the usual
+  spellings (`gh pr merge`, `gh api` with a method, a field or a mutation, `git
+  push`…). That is a brake on what a steered agent runs by itself, not a wall: it
+  matches the command typed, so a script, a one-liner or `curl` with the token
+  walks past it, and only Claude Code gets the list. The agent runs with your `gh`
+  login. A publishing agent of your own keeps the publishing commands. Any other
+  command, like a wrapper called `cc`, has the first layer only.
 - **Nothing points back into the clone.** Every step is checked before the clone
   is even made, and again right before it starts, with symlinks resolved: an
   earlier step can turn a safe path into a link. One bad step refuses the whole
