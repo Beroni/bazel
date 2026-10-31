@@ -432,12 +432,22 @@ func TestDeniedFor(t *testing.T) {
 				}
 			}
 			// Nobody publishes with these, so nobody gets them.
-			for _, cmd := range []string{"Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh repo delete:*)"} {
+			for _, cmd := range []string{"Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh pr -* merge*)", "Bash(gh repo delete:*)"} {
 				if !slices.Contains(got, cmd) {
 					t.Errorf("%s should stay denied", cmd)
 				}
 			}
 		})
+	}
+}
+
+// What a step may read does not depend on where the flags go: only the verb says
+// it writes.
+func TestDenyLeavesReads(t *testing.T) {
+	for _, pattern := range deniedCommands {
+		if strings.HasSuffix(pattern, " -R*)") || strings.HasSuffix(pattern, " --repo*)") || pattern == "Bash(gh issue:*)" || pattern == "Bash(gh release:*)" {
+			t.Errorf("%s takes reads with it", pattern)
+		}
 	}
 }
 

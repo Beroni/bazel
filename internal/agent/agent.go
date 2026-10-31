@@ -673,28 +673,37 @@ func confineClaude(args []string, plugin string, denied []string) []string {
 	return slices.Concat(flags, args)
 }
 
+// ghWrites denies verbs of a gh command, with or without flags before the verb:
+// `gh pr merge` and `gh pr -R o/r merge`. A flag there says nothing by itself:
+// `gh issue -R o/r view` is a read.
+func ghWrites(command string, verbs ...string) []string {
+	var out []string
+	for _, v := range verbs {
+		out = append(out, "Bash(gh "+command+" "+v+":*)", "Bash(gh "+command+" -* "+v+"*)")
+	}
+	return out
+}
+
 // deniedCommands are the Bash commands no agent runs by itself. Reads stay: the
 // lenses read the PR's issue with `gh issue view`.
-var deniedCommands = []string{
-	"Bash(gh pr merge:*)", "Bash(gh pr close:*)", "Bash(gh pr reopen:*)", "Bash(gh pr edit:*)", "Bash(gh pr ready:*)",
-	"Bash(gh pr lock:*)", "Bash(gh pr create:*)", "Bash(gh pr -R*)", "Bash(gh pr --repo*)",
-	"Bash(gh issue create:*)", "Bash(gh issue edit:*)", "Bash(gh issue close:*)", "Bash(gh issue reopen:*)",
-	"Bash(gh issue comment:*)", "Bash(gh issue delete:*)", "Bash(gh issue lock:*)", "Bash(gh issue transfer:*)",
-	"Bash(gh issue -R*)", "Bash(gh issue --repo*)",
-	"Bash(gh release create:*)", "Bash(gh release edit:*)", "Bash(gh release delete:*)", "Bash(gh release upload:*)",
-	"Bash(gh repo delete:*)", "Bash(gh repo edit:*)", "Bash(gh repo archive:*)", "Bash(gh repo rename:*)",
-	"Bash(gh workflow run:*)", "Bash(gh secret:*)", "Bash(gh variable:*)", "Bash(gh label:*)", "Bash(gh alias:*)",
-	"Bash(git push:*)", "Bash(git -c*push*)", "Bash(git -C * push*)",
-}
+var deniedCommands = slices.Concat(
+	ghWrites("pr", "merge", "close", "reopen", "edit", "ready", "lock", "create"),
+	ghWrites("issue", "create", "edit", "close", "reopen", "comment", "delete", "lock", "transfer"),
+	ghWrites("release", "create", "edit", "delete", "upload"),
+	ghWrites("repo", "delete", "edit", "archive", "rename"),
+	[]string{
+		"Bash(gh workflow run:*)", "Bash(gh secret:*)", "Bash(gh variable:*)", "Bash(gh label:*)", "Bash(gh alias:*)",
+		"Bash(git push:*)", "Bash(git -c*push*)", "Bash(git -C * push*)",
+	},
+)
 
 // publishCommands are the ones publishing takes. `gh api` writes in many spellings:
 // an explicit method anywhere, a field or an input with no method, a mutation.
-var publishCommands = []string{
-	"Bash(gh pr review:*)", "Bash(gh pr comment:*)",
+var publishCommands = slices.Concat(ghWrites("pr", "review", "comment"), []string{
 	"Bash(gh api -X*)", "Bash(gh api * -X*)", "Bash(gh api --method*)", "Bash(gh api * --method*)",
 	"Bash(gh api repos/* -f *)", "Bash(gh api repos/* -F *)", "Bash(gh api repos/* --field*)",
 	"Bash(gh api repos/* --raw-field*)", "Bash(gh api repos/* --input*)", "Bash(gh api graphql*mutation*)",
-}
+})
 
 // deniedFor is what a step may not run. A step that publishes with a skill of the
 // user's own needs publishCommands, typed by the agent; bazel-post-report does
