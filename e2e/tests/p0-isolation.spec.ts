@@ -2,7 +2,8 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { test, expect } from '../harness/fixtures';
-import { BIN, SCENARIOS, SYNTH, safeEnv } from '../harness/paths';
+import { BIN, OUT, safeEnv } from '../harness/paths';
+import { takeLock } from '../harness/lock';
 import { scrub } from '../tools/stream.mjs';
 
 // The fences of the harness itself. A fence nobody tests is a sentence in a doc.
@@ -38,26 +39,30 @@ test.describe('P0 · a capture is data', () => {
     }
   });
 
-  test('the command line says so too, and writes nothing', () => {
-    const raw = path.join(SYNTH, 'x-capture.jsonl');
-    fs.mkdirSync(SYNTH, { recursive: true });
+  test('the command line says so too, and writes nothing', ({}, testInfo) => {
+    const raw = testInfo.outputPath('capture.jsonl');
     fs.writeFileSync(raw, '#!sh touch /tmp/e2e-pwned\n');
     const run = spawnSync('node', [path.join(__dirname, '..', 'tools', 'stream.mjs'), 'scrub', raw], { encoding: 'utf8' });
     expect(run.status).not.toBe(0);
     expect(run.stdout).toBe('');
-    fs.rmSync(raw);
   });
 });
 
 test.describe('P0 · the fakes fail closed', () => {
-  const state = () => fs.mkdtempSync(path.join(SYNTH, '..', 'x-state-'));
-  const gh = (args: string[], input = '') => {
+  const state = () => fs.mkdtempSync(path.join(OUT, 'x-state-'));
+  const gh = (args: string[], input = '', settings?: object) => {
     const dir = state();
-    const env = safeEnv({ HOME: dir, FAKE_GH_FIXTURES: path.join(__dirname, '..', 'fixtures', 'default'), FAKE_GH_STATE: dir });
+    let fixtures = path.join(__dirname, '..', 'fixtures', 'default');
+    if (settings) {
+      fs.cpSync(fixtures, path.join(dir, 'fixtures'), { recursive: true });
+      fixtures = path.join(dir, 'fixtures');
+      fs.writeFileSync(path.join(fixtures, 'gh.json'), JSON.stringify(settings));
+    }
+    const env = safeEnv({ HOME: dir, FAKE_GH_FIXTURES: fixtures, FAKE_GH_STATE: dir });
     const r = spawnSync(path.join(BIN, 'gh'), args, { env, input, encoding: 'utf8' });
     const calls = fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
     fs.rmSync(dir, { recursive: true, force: true });
-    return { status: r.status, stderr: r.stderr, unsupported: calls.at(-1).unsupported };
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr, unsupported: calls.at(-1).unsupported };
   };
   const review = 'repos/acme/api-core/pulls/101/reviews';
   const body = JSON.stringify({ event: 'COMMENT', body: 'x' });
@@ -96,17 +101,66 @@ test.describe('P0 · the fakes fail closed', () => {
     expect(gh(['pr', 'view', '101', '--repo', 'acme/api-core', '--json', 'nope']).status).toBe(1);
   });
 
-  test('the agent replays a line of any size, to the end of the scenario', () => {
-    fs.mkdirSync(SYNTH, { recursive: true });
-    fs.writeFileSync(path.join(SYNTH, 'x-long.txt'), `before\n${'x'.repeat(2 << 20)}\nafter\n#!exit 19\nnever\n`);
+  test('gh pr list lists what it says: state, author, newest first, and the limit', () => {
+    const list = (...flags: string[]) => JSON.parse(gh(['pr', 'list', '--repo', 'acme/api-core', '--json', 'number,state', ...flags]).stdout);
+    expect(list().map((p: any) => p.number)).toEqual([103, 102, 101]);
+    expect(list('--limit', '2').map((p: any) => p.number)).toEqual([103, 102]);
+    expect(list('--state', 'closed')).toEqual([]);
+    expect(list('--state', 'all')).toHaveLength(3);
+    expect(list()[0].state).toBe('OPEN');
+    expect(list('--author', 'ALICE').map((p: any) => p.number)).toEqual([101]);
+  });
+
+  test('a query with a space is one phrase, as gh quotes it', () => {
+    const search = (...words: string[]) => JSON.parse(gh(['search', 'prs', '--json', 'number', '--', ...words]).stdout).length;
+    expect(search('repo:acme/api-core', 'repo:acme/web-app')).toBe(5);
+    expect(search('repo:acme/api-core repo:acme/web-app')).toBe(0);
+  });
+
+  test('every read can fail on purpose, and pr diff takes only what Bazel sends', () => {
+    expect(gh(['auth', 'status'], '', { fail: { auth: 'not logged in' } }).status).toBe(1);
+    expect(gh(['api', 'user', '--jq', '.login'], '', { fail: { user: 'HTTP 401' } }).status).toBe(1);
+    expect(gh(['pr', 'diff', '101', '--repo', 'acme/api-core'], '', { fail: { 'diff:acme/api-core#101': 'HTTP 502' } }).status).toBe(1);
+    expect(gh(['pr', 'diff', '101', '--repo', 'acme/api-core', '--name-only']).unsupported).toBe(true);
+  });
+
+  test('the head gh lists is the commit the clone gets', ({}, testInfo) => {
+    const dir = state();
+    const env = safeEnv({ HOME: dir, GIT_CONFIG_NOSYSTEM: '1', FAKE_GH_FIXTURES: path.join(__dirname, '..', 'fixtures', 'default'), FAKE_GH_STATE: dir });
+    const run = (cmd: string, args: string[], cwd?: string) => spawnSync(cmd, args, { env, cwd, encoding: 'utf8' });
+    const [pr] = JSON.parse(run(path.join(BIN, 'gh'), ['pr', 'view', '101', '--repo', 'acme/api-core', '--json', 'headRefOid']).stdout.replace(/^/, '[').replace(/$/, ']'));
+    const clone = testInfo.outputPath('clone');
+    expect(run(path.join(BIN, 'gh'), ['repo', 'clone', 'acme/api-core', clone]).status).toBe(0);
+    expect(run(path.join(BIN, 'gh'), ['pr', 'checkout', '101'], clone).status).toBe(0);
+    expect(run('git', ['rev-parse', 'HEAD'], clone).stdout.trim()).toBe(pr.headRefOid);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  test('the agent replays a line of any size, to the end of the scenario', ({}, testInfo) => {
+    fs.writeFileSync(testInfo.outputPath('long.txt'), `before\n${'x'.repeat(2 << 20)}\nafter\n#!exit 19\nnever\n`);
     const dir = state();
     const r = spawnSync(path.join(BIN, 'fake-agent'), [], {
-      env: safeEnv({ HOME: dir, FAKE_AGENT_SCENARIOS: SCENARIOS, FAKE_AGENT_SCENARIO: 'x-long', FAKE_AGENT_STATE: dir }),
+      env: safeEnv({ HOME: dir, FAKE_AGENT_SCENARIOS: testInfo.outputDir, FAKE_AGENT_SCENARIO: 'long', FAKE_AGENT_STATE: dir }),
       input: 'prompt', encoding: 'utf8', maxBuffer: 1 << 23,
     });
     fs.rmSync(dir, { recursive: true, force: true });
     expect(r.status).toBe(19);
     expect(r.stdout.endsWith('after\n')).toBe(true);
     expect(r.stdout.length).toBeGreaterThan(2 << 20);
+  });
+});
+
+test.describe('P0 · one run per output directory', () => {
+  test('a second run is refused while the first is alive, and a dead one does not count', ({}, testInfo) => {
+    const lock = testInfo.outputPath('lock');
+    const release = takeLock(lock);
+    expect(fs.readFileSync(lock, 'utf8')).toBe(String(process.pid));
+    expect(() => takeLock(lock)).toThrow(`another e2e run (pid ${process.pid})`);
+    release();
+    expect(fs.existsSync(lock)).toBe(false);
+
+    const dead = spawnSync('/usr/bin/true', []).pid;
+    fs.writeFileSync(lock, String(dead));
+    takeLock(lock)();
   });
 });
