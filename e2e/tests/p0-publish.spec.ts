@@ -1,9 +1,11 @@
 import { test, expect } from '../harness/fixtures';
 import { expandFindings, openJob, ui } from '../harness/ui';
 
-// Publishing is the one place Bazel writes to GitHub. Here "GitHub" is the
-// fake gh's call log: every assertion is on the exact argv and payload that
-// would have gone out.
+// Publishing is the one place Bazel writes to GitHub. Here "GitHub" is the fake
+// gh's call log. The comment path is Bazel's own, so its argv and body are what
+// would have gone out. The inline path stops at what Bazel hands the post agent:
+// the fake agent, not the skill, makes the gh call, so its argv and event prove
+// nothing about Bazel. The skill's real calls are in publish.sh, on feat/builtin-skills.
 
 async function openFinishedReview(app: any, bazel: any) {
   const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
@@ -42,7 +44,7 @@ test.describe('P0 · publish', () => {
     expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment')).toHaveLength(1);
   });
 
-  test('"publish inline review" runs the post agent, which calls gh with the trimmed review', async ({ app, bazel, dialogs }) => {
+  test('"publish inline review" hands the post agent the trimmed review, in a confined run', async ({ app, bazel, dialogs }) => {
     const { id, viewer } = await openFinishedReview(app, bazel);
     await ui.findingPicks(viewer).nth(0).uncheck(); // F1 stays out this time
     await ui.publishInline(viewer).click();
@@ -58,15 +60,17 @@ test.describe('P0 · publish', () => {
     expect(post!.builtin_skill).toBe(true);
     const reviewFile = post!.prompt.match(/\/bazel-post-report\s+(\S+)/)![1];
     expect(reviewFile).toContain(`${bazel.reviewsDir}/publish/`);
+    expect(post!.plugin_name).not.toBe('');
+    expect(post!.strict_mcp_config).toBe(true);
+    expect(post!.setting_sources_user).toBe(true);
 
+    // The body is the file Bazel wrote: the fake agent sends it as it read it.
     const reviews = bazel.ghCalls().filter((c) => c.argv[0] === 'api' && c.argv.includes('repos/acme/api-core/pulls/101/reviews'));
     expect(reviews).toHaveLength(1);
-    expect(reviews[0].argv).toEqual(['api', '--method', 'POST', 'repos/acme/api-core/pulls/101/reviews', '--input', '-']);
-    const payload = JSON.parse(reviews[0].stdin);
-    expect(payload.event).toBe('COMMENT');
-    expect(payload.body).toContain('# acme/api-core#101 — Add rate limiter to the public API');
-    expect(payload.body).not.toContain('E2E-FINDING-ONE');
-    expect(payload.body).toContain('E2E-FINDING-TWO');
+    const { body } = JSON.parse(reviews[0].stdin);
+    expect(body).toContain('# acme/api-core#101 — Add rate limiter to the public API');
+    expect(body).not.toContain('E2E-FINDING-ONE');
+    expect(body).toContain('E2E-FINDING-TWO');
 
     // Bazel itself sent nothing: no gh pr comment on this path.
     expect(bazel.ghCalls().some((c) => c.argv[1] === 'comment')).toBe(false);
