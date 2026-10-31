@@ -1,8 +1,7 @@
 # Selectors and the data-testid contract
 
-All selectors live in `e2e/harness/ui.ts`. Each one tries `getByTestId(id)`
-first and falls back to role/visible text, so the suite keeps working before,
-during and after the UI adopts the ids. Never select by CSS class.
+All selectors live in `e2e/harness/ui.ts`, by `getByTestId(id)` with no fallback.
+Never select by CSS class.
 
 Rules for the UI side:
 
@@ -18,10 +17,10 @@ Status: **implemented on master since #30.**
 `harness/ui.ts` goes by testid with no fallback, and tests assert today's texts
 only: a change here is a change of contract. P0 = used by the P0 tests.
 
-Differences on the redesign, already handled by the helpers:
+What the helpers take care of:
 
-- No `job-publish`, `job-comment`, `job-choose`, `job-keep`: those actions live
-  in the review pane (`publish-inline`, `paste-comment`, `keep-here`).
+- Publishing lives in the review pane (`publish-inline`, `paste-comment`,
+  `keep-here`), not on the card.
 - `job-cancel` is in the job's detail header, not on the card (`cancelJob()`).
 - `job-card` has `role="group"`, an `aria-label` with PR, title and state,
   `tabindex=0`; Enter/Space open it.
@@ -66,8 +65,7 @@ Differences on the redesign, already handled by the helpers:
 - `history-custom`: notice in the History tab and the history job's header when
   the step is not Bazel's own (`history_custom` in `/api/state`).
 - `log-pane` marks each agent in the Live log column (`data-agent`, `all`).
-- Since #25 the tags read "✓ just now" and "⟳ changed" (master: "✓ reviewed
-  just now", "⟳ changed since review"); tests match both.
+- The tags read "✓ just now" and "⟳ changed".
 
 ### Header
 
@@ -79,8 +77,7 @@ Differences on the redesign, already handled by the helpers:
 | `quota` | claude session/week | `data-level="ok|warn|crit"` | |
 | `refresh` | refresh button | | |
 | `nav-dashboard`, `nav-config` | page switch | | |
-| `banner` | message bar; user-action errors are an alert (class `alert`) that stays until ✕ or the next action | | |
-| `banner-dismiss` | the ✕ of an alert (`aria-label="dismiss this message"`) — proposed; the role/name fallback works today | | |
+| `banner` | message bar; user-action errors are an alert that stays until the next action or its ✕ (`aria-label="dismiss this message"`, no testid) | | |
 | `conn-status` | SSE dot | `data-state="open|closed"` | |
 
 ### PR list
@@ -92,7 +89,7 @@ Differences on the redesign, already handled by the helpers:
 | `pr-hide-drafts` | checkbox | | |
 | `pr-repo-filter`, `pr-review-filter` | selects | | |
 | `pr-row` | one PR row | `data-pr-key="owner/repo#n"`, `data-selected` | ✓ |
-| `pr-row-check` | the row's checkbox (needs an accessible name, e.g. `aria-label="tick #101"`) | | |
+| `pr-row-check` | the row's checkbox, `aria-label="tick owner/repo#n"` | | |
 | `pr-review-tag` | ✓ reviewed / ⟳ changed | `data-state="reviewed|changed|published"` | |
 | `pr-select-all` | select all | | ✓ |
 | `agent-select` | agent selector | | ✓ |
@@ -110,8 +107,6 @@ Differences on the redesign, already handled by the helpers:
 | `job-step` | step row | `data-step`, `data-state` | |
 | `job-cancel` | cancel | | ✓ |
 | `job-remove` | ✕ | | |
-| `job-publish`, `job-comment` | card publish buttons | | |
-| `job-choose`, `job-keep` | publish-step wait: choose / keep it here | | |
 | `job-published` | ✓ published | | |
 
 ### Review pane

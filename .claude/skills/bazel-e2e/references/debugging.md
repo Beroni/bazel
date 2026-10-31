@@ -28,16 +28,17 @@ Run the fakes by hand:
 
 ```sh
 export FAKE_GH_FIXTURES=$PWD/fixtures/default FAKE_GH_STATE=/tmp/fgh GIT_ALLOW_PROTOCOL=file
-.out/bin/gh search prs --json number,title -- "repo:acme/api-core"
+.out/bin/gh pr list --repo acme/api-core --json number,title
 FAKE_AGENT_SCENARIOS=$PWD/fixtures/agent FAKE_AGENT_SCENARIO=claude-findings \
   FAKE_AGENT_STATE=/tmp/fag .out/bin/fake-agent < /dev/null
 ```
 
 ## Reporting a product bug
 
-1. Reproduce it in a test; mark it `test.fail(true, 'BUG-QA-NN: one line')`
-   with a comment: what happens, what README/PRD says should happen.
+1. Reproduce it in a test; mark it `knownBug('BUG-QA-NN', 'one line')` with a
+   comment: what happens, what README/PRD says should happen.
 2. Report to the Bazel Manager: steps, expected vs. actual, the test file and
    name, and the evidence (gh-call or agent-call excerpt, server.log line).
 3. When the fix lands, the test turns into "expected to fail, but passed":
-   delete the `test.fail` line in the same PR as the fix.
+   delete the `knownBug` line in the same PR as the fix. Until then, a base that
+   has it runs with `E2E_FIXED=BUG-QA-NN`.

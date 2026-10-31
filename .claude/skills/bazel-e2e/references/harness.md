@@ -5,7 +5,8 @@ e2e/
   playwright.config.ts     6 workers, fully parallel, traces kept on failure
   harness/
     paths.ts               BIN, FIXTURES, SAFE_PATH, safeEnv()
-    global-setup.ts        go build bazel + fakes; preflight; ~/.bazel guard
+    global-setup.ts        run lock; go build bazel + fakes; preflight; ~/.bazel guard
+    lock.ts                one run per output directory (E2E_OUT for another)
     bazel.ts               class Bazel (one isolated server), defaultConfig()
     fixtures.ts            Playwright fixtures: bazelOptions, bazel, app
     ui.ts                  every UI selector, by testid only
@@ -64,8 +65,10 @@ Nothing else from the developer's shell is inherited.
 | `job(id)` / `waitJob(id, pred, ms?)` | `GET /api/jobs/{id}` (with body/html), polled until `pred` |
 | `mcp(method, params?, id?)` | one JSON-RPC call to `/mcp` |
 | `ghCalls()` | `[{ argv, stdin, cwd, at }]` from the fake gh |
-| `agentCalls()` | `[{ scenario, argv, cwd, prompt, builtin_skill, at }]` |
+| `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, at }]` |
 | `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` and `FAKE_AGENT_GATE=<name>` |
+| `agentAlive(pid)` | whether an agent process (`agentCalls()[n].pid`) is still there |
+| `movePR(key)` | a new commit on the PR's branch: gh lists it, a clone gets it, Bazel notices on its next refresh |
 | `tool(name, args)` | MCP `tools/call` → `{ isError, text, out }` |
 | `events()` | opens `/api/events`: `{ list, next(pred), close() }` (first event is `hello`) |
 | `restart()` | new process, same BAZEL_HOME (config, reviews, index survive; queue does not) |
@@ -105,7 +108,8 @@ Repos `acme/api-core`, `acme/web-app`; `include_drafts: true`; base agent
 ## Determinism
 
 - Never sleep for "long enough". Hold an agent with `#!wait <name>` and call
-  `bazel.release(name)` when the test has seen what it needs.
+  `bazel.release(name)` when the test has seen what it needs. A negative gets a
+  barrier: `settled(page)` after a dismissed confirm, `agentAlive(pid)` for a kill.
 - Poll the API (`waitJob`) or use `expect.poll` / web-first assertions; do
   not read the DOM in a loop.
 - `updatedAgo` in prs.json keeps relative ages stable (`2h` stays `2h`).

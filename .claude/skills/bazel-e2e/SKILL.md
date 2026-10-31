@@ -34,11 +34,17 @@ specs stay the same, only the binary under test changes:
 git worktree add --detach ../bases/redesign <branch-or-commit>
 make e2e E2E_BAZEL_SRC=../bases/redesign   # relative to the repo root
 make e2e E2E_BAZEL_SRC=../bases/fix E2E_FIXED=BUG-QA-12
+make e2e E2E_BAZEL_SRC=../bases/fix E2E_OUT=/tmp/e2e-fix   # alongside another run
 ```
 
+One run at a time per output directory: `globalSetup` takes `<out>/lock`, and a
+second run stops there, so that it cannot delete the first one's servers or swap
+its binary. `E2E_OUT` gives a run its own directory.
+
 Use `knownBug`, never a skip, for a security guard, so losing it turns the
-suite red. `tests/p0-confine.spec.ts` (the PR's agent config never runs) has
-neither any more: since #29 it simply has to pass.
+suite red. In `tests/p0-confine.spec.ts` the only one left is SEC-07 (a deny
+list on the agent's commands), which must not land before `feat/builtin-skills`:
+see the comment on the test. The rest of that file simply has to pass.
 `E2E_FIXED` lists the known bugs that base has fixed: their `knownBug(...)`
 tests must then pass instead of fail. The selectors in `harness/ui.ts` follow
 the current UI only: a base from before #30 will not pass. A UI change shows up
@@ -115,14 +121,20 @@ vs. actual and the test name.
 5. Selectors and UI actions go through `e2e/harness/ui.ts` only: the
    `data-testid` of [references/selectors.md](references/selectors.md) first,
    with no fallback, so a testid that goes away fails loudly. Use the action helpers (`openJob`,
-   `cancelJob`, `filterByReview`, `selectByLabel`, `expandFindings`,
-   `openFilters`, `showMeters`) where the two UIs differ —
-   on the redesign, cancel/publish/keep live in the job's detail, not on the
+   `cancelJob`, `filterByReview`, `expandFindings`, `openFilters`,
+   `showMeters`): cancel, publish and keep live in the job's detail, not on the
    card. Never select by CSS class.
 6. Assert outcomes at three levels when they exist: what the page shows, what
    the API returns, and what reached the fakes (`bazel.ghCalls()`,
-   `bazel.agentCalls()`, files under `bazel.reviewsDir`).
-7. Run it 5× in parallel (`--repeat-each 5 --workers 8`) before committing.
+   `bazel.agentCalls()`, files under `bazel.reviewsDir`). Two traps:
+   - A negative needs a barrier, or it reads before the thing could happen: after
+     a dismissed confirm, `recordPosts(app)` then `settled(app)`; for "killed",
+     `bazel.agentAlive(pid)`, not a sleep. `toHaveCount(0)` inside a card needs
+     the card visible first.
+   - What the fake agent does by itself proves nothing about Bazel: assert what
+     Bazel wrote and passed it, not the argv the scenario fixes.
+7. Run it 5× in parallel (`--repeat-each 5 --workers 8`) before committing, and
+   break the code on purpose once: a test that stays green tests nothing.
 
 ## Test a new skill with the fake agent
 

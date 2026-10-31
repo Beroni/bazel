@@ -12,22 +12,22 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh auth status` | ok, logged in as `gh.json.user` |
 | `gh api user --jq .login` | `gh.json.user` (default `e2e-user`) |
 | `gh api --method POST repos/O/R/pulls/N/reviews --input -` | fake review URL; stdin recorded; unknown PR → 404, bad payload → 422 |
-| `gh search prs … -- "repo:a repo:b"` | PRs of those repos, `--json` fields only, `--limit`; a field gh's search does not have → `Unknown JSON field` |
-| `gh pr list --repo R …` | PRs of R |
+| `gh search prs … -- repo:a repo:b` | PRs of those repos, `--json` fields only, `--state`, `--limit`; a field gh's search does not have → `Unknown JSON field`; one argument with a space is a phrase, not two qualifiers. Goes when master stops calling it |
+| `gh pr list --repo R …` | PRs of R, newest number first; `--state` (open by default), `--author`, `--limit` |
 | `gh pr view N --repo R --json …` | one object; unknown PR → GraphQL-style error |
 | `gh pr diff N --repo R` | `diff` from the fixture, or one generated from `files` |
 | `gh pr comment N --repo R --body-file -` | prints a fake comment URL; stdin recorded; unknown PR or empty body fails |
 | `gh repo clone R DIR -- ARGS` | `git clone ARGS file://<state>/repos/R.git DIR` |
-| `gh pr checkout N` (in a clone) | `git checkout -B <headRefName> origin/<headRefName>` |
+| `gh pr checkout N [--repo R]` (in a clone) | the PR's branch; a PR of another repo comes by fetch |
 | anything else, any other `gh api` included | exit 1, `fake gh: unsupported: gh …` |
 
 `gh search prs`, `gh pr list` and `gh pr view` check `--json` against the field
 lists of `gh <cmd> --help` (gh 2.87.3), in `searchFields` and `prFields`.
 
-The origin repo is built once per server (atomic rename): `main` with a
-README, plus one branch per PR (`headRefName`) adding the PR's `files` (or
-`pr-<n>.txt`). Git SHAs are real but do not match `headRefOid`; Bazel only
-reads `headRefOid` from gh metadata.
+The origin repo is built once per server (atomic rename, one `git fast-import`
+with fixed dates, so the same fixture gives the same SHAs): `main` with a README,
+plus one branch per PR (`headRefName`) adding the PR's `files` (or `pr-<n>.txt`).
+The `headRefOid` gh lists is the tip of that branch.
 
 ### prs.json
 
@@ -60,19 +60,26 @@ asked with `--json files` it comes back as gh's list (`path`, `additions`,
 `updatedAgo` (Go duration); `baseRefName` defaults to `main`.
 `changedFiles: 0` makes Bazel refuse the review ("no changed files").
 
-To simulate "changed since review": point the test at its own copy of the
-fixture dir (`FAKE_GH_FIXTURES` is read on every gh call), review the PR,
-change its `headRefOid` in the copy, then `GET /api/prs?refresh=1`. A
-`fixturesDir` option on `Bazel` for temp copies is planned for phase 2.
+`state` defaults to `OPEN`. Leave `headRefOid` out: gh answers the tip of the
+branch, the commit a clone gets. A value stands for a head that no clone will
+reach, for PRs that never get reviewed.
+
+To simulate "changed since review": review the PR, `bazel.movePR(key)` (a new
+commit on its branch), then `GET /api/prs?refresh=1`. Each test has its own copy
+of the fixtures, read on every gh call; `updatePR` and `addPR` change them.
 
 ### gh.json
 
 ```json
 { "user": "e2e-user",
-  "fail": { "search": "HTTP 502", "list:acme/web-app": "HTTP 404", "comment": "HTTP 403",
-            "clone:acme/api-core": "repository not found", "checkout": "…",
-            "view:acme/api-core#101": "…", "api": "…" } }
+  "fail": { "auth": "…", "user": "…", "search": "HTTP 502", "list:acme/web-app": "HTTP 404",
+            "comment": "HTTP 403", "clone:acme/api-core": "repository not found", "checkout": "…",
+            "view:acme/api-core#101": "…", "diff:acme/api-core#101": "…", "api": "…" },
+  "forks": { "acme/fork": "acme/api-core" } }
 ```
+
+`forks` maps a fork to its parent: in a clone of the fork, `gh pr checkout N`
+without `--repo` or `GH_REPO` resolves N in the parent, as gh does.
 
 Each `fail` key makes that call print the message to stderr and exit 1 —
 for repo errors in the list, publish failures, clone failures.
