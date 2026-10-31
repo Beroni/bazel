@@ -2,11 +2,17 @@
 # or nothing. The body is built here, the prose goes verbatim, and the event is a
 # constant, so no text in the report can reach the shell or the payload's shape.
 
+include "text";
+
 def code: gsub("`"; "'") | gsub("[\\r\\n]"; " ");
 def where: if .path then "`\(.path | code)`\(if .line then ":\(.line)" else "" end)" else "no file" end;
 def level: "\(.severity | code) · \(.class | code)";
+def told: if .prose == "" then .title else .prose end;
 def plural($n; $w): "\($n) \($w)\(if $n == 1 then "" else "s" end)";
 def section($t; $items): if $items == [] then [] else ["### \($t)", ($items | join("\n\n"))] end;
+# A finding that is not a comment of its own is still all there, in case what
+# stands for it on the PR goes away.
+def entry($line): "#### \(.title | code | safe)\n\($line)\n\n\(told | quoted)\(if .ref then "\n\n\(.ref | code)" else "" end)";
 
 . as $p
 | ($moved == "yes") as $moved
@@ -38,7 +44,7 @@ def section($t; $items): if $items == [] then [] else ["### \($t)", ($items | jo
     (if any($p.skipped[] | split(", ")[]; endswith("(single-lens run)") | not) then "a lens was skipped" else empty end)
    ]) as $unproven
 | def comment:
-    {path, line, side, body: ((if .prose == "" then .title else .prose end) + (if .ref then "\n\n\(.ref)" else "" end))}
+    {path, line, side, body: ((told | safe) + (if .ref then "\n\n\(.ref)" else "" end))}
     + (if .start_line then {start_line, start_side: (.start_side // .side)} else {} end);
   def coverage:
     "**Scope:** `\($p.scope | map(code) | join("`, `"))` — \(plural($p.files; "file"))\n**Lenses:** \($p.lenses | map(code) | join(", "))"
@@ -59,12 +65,12 @@ def section($t; $items): if $items == [] then [] else ["### \($t)", ($items | jo
           "**Verdict in the report:** \($p.verdict) · \(plural($all | length; "finding")) in this review",
           coverage]
          + section("Findings that could not be anchored";
-             $bodied | map("#### \(.title | code)\n\((if .prose == "" then .title else .prose end))\(if .ref then "\n\n\(.ref)" else "" end)\n\n_Location in the report: \(where)_"))
-         + section("Already on the PR"; $dups | map("- \(where) (\(level)) — [comment](\(.match.url)) by @\(.match.user | code)"))
-         + section("Already settled on the PR"; $settled | map("- \(where) (\(level)) — already settled on the PR (by @\(.match.settled_by | code)), [thread](\(.match.url))"))
-         + section("Open questions"; if $p.human == "" then [] else [$p.human] end)
+             $bodied | map(entry("_Location in the report: \(where)_")))
+         + section("Already on the PR"; $dups | map(entry("\(where) (\(level)) — [comment](\(.match.url)) by @\(.match.user | code)")))
+         + section("Already settled on the PR"; $settled | map(entry("\(where) (\(level)) — settled by @\(.match.settled_by | code), [thread](\(.match.url))")))
+         + section("Open questions"; if $p.human == "" then [] else [$p.human | quoted] end)
          + section("Steps that failed"; $p.failed | map("- \(. | code)"))
-         + section("Other text in the report"; if $p.extra == "" then [] else [$p.extra] end)
+         + section("Unverified text that came with the report"; if $p.extra == "" then [] else ["_Outside the report's format: Bazel does not vouch for it._", ($p.extra | quoted)] end)
          + (if $sha == "" then [] else ["Reviewed at `\($sha[0:7] | code)`."] end))
         | join("\n\n"))}
     end) as $what

@@ -5,15 +5,16 @@
 ($pr[0].author.login // "") as $author
 | ($me[0]) as $me
 | ($report[0]) as $r
-| ($comments[0] | map(select(.in_reply_to_id != null)) | group_by(.in_reply_to_id)
+# A comment or a reply counts against a finding only if it comes from someone who
+# can speak for the repository, or from an earlier run of this same account: never
+# from the PR's author or a passer-by, who could use it to make a finding disappear.
+| def speaks:
+    .user.login == $me or
+    ((.author_association // "NONE" | IN("OWNER", "MEMBER", "COLLABORATOR")) and .user.login != $author);
+  ($comments[0] | map(select(.in_reply_to_id != null and speaks)) | group_by(.in_reply_to_id)
     | map({key: (.[0].in_reply_to_id | tostring), value: .}) | from_entries) as $replies
 | ($threads[0] | map({key: (.root | tostring), value: .}) | from_entries) as $thread
-| ($comments[0] | map(select(.in_reply_to_id == null))
-    # A comment absorbs a finding only if it comes from someone who can speak for
-    # the repository, or from an earlier run of this same account: never from the
-    # PR's author or a passer-by, who could use it to make a finding disappear.
-    | map(select(.user.login == $me or
-        ((.author_association // "NONE" | IN("OWNER", "MEMBER", "COLLABORATOR")) and .user.login != $author)))) as $roots
+| ($comments[0] | map(select(.in_reply_to_id == null and speaks))) as $roots
 | def commentable($f):
     $f.path != null and $f.line != null and $r.sha_proven
     and ($diff[0][$f.path][$f.side][$f.line | tostring] // false)
@@ -22,11 +23,15 @@
     if $f.path == null or $f.line == null then [] else
       [$roots[] | select(.path == $f.path and ((.line // .original_line // -100) - $f.line | fabs) <= 5)
        | (.id | tostring) as $id
-       | ($thread[$id].isResolved // false) as $resolved
+       # Who resolved it comes as a login with no standing, so it counts unless it
+       # is the author's own: resolving takes write access otherwise.
+       | ($thread[$id] // {}) as $t
+       | (($t.isResolved // false) and ($t.resolvedBy // "") != ""
+          and ($t.resolvedBy != $author or $t.resolvedBy == $me)) as $resolved
        | ($replies[$id] // []) as $rs
        | {comment_id: .id, user: .user.login, url: .html_url, excerpt: (.body // "")[0:400],
           settled: ($resolved or ($rs != [])),
-          settled_by: (if $resolved then ($thread[$id].resolvedBy // "unknown")
+          settled_by: (if $resolved then $t.resolvedBy
                        elif $rs != [] then $rs[-1].user.login else null end)}]
     end;
   $r + {

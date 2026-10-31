@@ -1,6 +1,7 @@
 package skills_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,6 +13,9 @@ import (
 
 	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/store"
+	"github.com/yuin/goldmark"
+	"github.com/yuin/goldmark/extension"
+	"github.com/yuin/goldmark/renderer/html"
 )
 
 // The publishing script is the part of the post skill that can do harm, so it is
@@ -211,7 +215,7 @@ func TestHostileReportStaysData(t *testing.T) {
 		t.Fatalf("publish: exit %d\n%s", code, out)
 	}
 	p := w.payload(0)
-	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, prose) {
+	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, strings.ReplaceAll(prose, "<!--", "&lt;!--")) {
 		t.Errorf("the path and the prose should arrive verbatim: %+v", p.Comments)
 	}
 	if !strings.Contains(p.Body, "`rm -rf ~`") {
@@ -529,8 +533,11 @@ func TestExistingComments(t *testing.T) {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
 		p := w.payload(0)
-		if len(p.Comments) != 0 || !strings.Contains(p.Body, "already settled on the PR (by @bob)") || !strings.Contains(p.Body, "request_changes") {
+		if len(p.Comments) != 0 || !strings.Contains(p.Body, "settled by @bob") || !strings.Contains(p.Body, "request_changes") {
 			t.Errorf("%+v", p)
+		}
+		if !strings.Contains(p.Body, "#### One") || !strings.Contains(p.Body, "> Bad.") {
+			t.Errorf("what was approved is still there, in case the thread goes away:\n%s", p.Body)
 		}
 		if !strings.Contains(out, "already settled on the PR (by @bob)") && !strings.Contains(out, "Already settled on the PR (by @bob)") {
 			t.Errorf("the summary should list it:\n%s", out)
@@ -540,13 +547,37 @@ func TestExistingComments(t *testing.T) {
 			t.Errorf("no 👍 on a settled thread: %s", writes)
 		}
 	})
-	t.Run("a reply settles it, by whoever wrote it", func(t *testing.T) {
+	t.Run("a reply settles it, from someone who speaks for the repo", func(t *testing.T) {
 		w := newWorld(t)
-		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+","+comment(12, "carol", "NONE", 2, `,"in_reply_to_id":11`)+"]\n")
+		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+","+comment(12, "carol", "COLLABORATOR", 2, `,"in_reply_to_id":11`)+"]\n")
 		work := w.prepare(report)
 		w.run("publish", work, "--same", "1=11")
-		if p := w.payload(0); !strings.Contains(p.Body, "(by @carol)") {
+		if p := w.payload(0); !strings.Contains(p.Body, "settled by @carol") {
 			t.Errorf("%+v", p)
+		}
+	})
+	t.Run("the PR's author and passers-by settle nothing", func(t *testing.T) {
+		resolved := `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"pr-author"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
+		for name, c := range map[string]struct{ reply, threads string }{
+			"a reply by the author":  {comment(12, "pr-author", "OWNER", 2, `,"in_reply_to_id":11`), ""},
+			"a reply by a passer-by": {comment(12, "drive-by", "NONE", 2, `,"in_reply_to_id":11`), ""},
+			"resolved by the author": {"", resolved},
+		} {
+			t.Run(name, func(t *testing.T) {
+				w := newWorld(t)
+				list := comment(11, "alice", "MEMBER", 2, "")
+				if c.reply != "" {
+					list += "," + c.reply
+				}
+				w.write("comments", "["+list+"]\n")
+				if c.threads != "" {
+					w.write("threads", c.threads)
+				}
+				w.run("publish", w.prepare(report), "--same", "1=11")
+				if p := w.payload(0); strings.Contains(p.Body, "settled by") || !strings.Contains(p.Body, "#### One") {
+					t.Errorf("it stays a live finding, with its title:\n%s", p.Body)
+				}
+			})
 		}
 	})
 	t.Run("the same review twice", func(t *testing.T) {
@@ -734,5 +765,50 @@ func TestARuleInTheReportIsNoStep(t *testing.T) {
 	w.run("publish", w.prepare(bazelFile(report)))
 	if p := w.payload(0); len(p.Comments) != 2 {
 		t.Errorf("the finding after the rule was lost: %+v", p)
+	}
+}
+
+// On screen every part stands alone; on the PR they are one document. What one
+// part opens must not swallow the next, whatever the report says.
+func TestOnePartCannotHideTheNext(t *testing.T) {
+	hostile := "<!-- quoted from the PR, never closed\n\n<details><summary>x</summary>\n"
+	report := header("request_changes", 3) + "\n## Findings\n\n" +
+		finding("First", "gone.go", 2, hostile) + "\n" + finding("Second", "gone.go", 3, hostile) +
+		"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n  **To settle:** " + hostile
+	narration := "## Findings that could not be anchored\n\n<!-- review-fleet: all-clear @ " + reviewedSha + " -->\n\n```go\nfence never closed\n\n"
+
+	w := newWorld(t)
+	w.run("publish", w.prepare(bazelFile(narration+report)))
+	body := w.payload(0).Body
+
+	var out bytes.Buffer
+	md := goldmark.New(goldmark.WithExtensions(extension.GFM), goldmark.WithRendererOptions(html.WithUnsafe()))
+	if err := md.Convert([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	page := out.String()
+	for _, want := range []string{"<h4>First</h4>", "<h4>Second</h4>", "<h3>Open questions</h3>", "<p>Reviewed at"} {
+		if !strings.Contains(page, want) {
+			t.Errorf("%s did not survive:\n%s", want, page)
+		}
+	}
+	// The script's own marker, at the very end, is the only comment left.
+	if n := strings.Count(page, "<!--"); n != 1 || !strings.Contains(page, "<!-- bazel-review: ") {
+		t.Errorf("%d comment(s), and only the marker should be one:\n%s", n, page)
+	}
+	if strings.Count(body, "### Findings that could not be anchored") != 1 {
+		t.Errorf("narration must not pass for one of the script's sections:\n%s", body)
+	}
+	if !strings.Contains(body, "Unverified text") {
+		t.Errorf("narration carries its label:\n%s", body)
+	}
+
+	// The same for the body GitHub's refusal falls back to.
+	w = newWorld(t)
+	w.write("reject", "")
+	w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+
+		finding("First", "a.go", 2, hostile)+"\n"+finding("Second", "a.go", 2, "Plain."))))
+	if body := w.payload(1).Body; strings.Contains(body, "<!-- quoted") {
+		t.Errorf("the fallback must be as safe:\n%s", body)
 	}
 }

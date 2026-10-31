@@ -142,7 +142,7 @@ publish() {
   head=$(gh pr view "$NUMBER" --repo "$REPO" --json headRefOid | jq -r .headRefOid) || fail "cannot read the PR's head"
   [ "$head" = "$reviewed" ] || moved=yes
 
-  jq --argjson same "$same" --arg moved "$moved" --arg head "$head" -f "$HERE/decide.jq" "$work/plan.json" > "$work/decided.json" ||
+  jq -L "$HERE" --argjson same "$same" --arg moved "$moved" --arg head "$head" -f "$HERE/decide.jq" "$work/plan.json" > "$work/decided.json" ||
     fail "cannot decide what to publish"
 
   local kind
@@ -178,7 +178,7 @@ publish() {
     # the PR, in the body, and the summary says so.
     if grep -q 'HTTP 422' "$work/response.txt" && [ "$(jq '.comments | length' "$work/payload.json")" -gt 0 ]; then
       rejected=$(jq '.comments | length' "$work/payload.json")
-      jq -f "$HERE/refused.jq" "$work/payload.json" > "$work/fallback.json"
+      jq -L "$HERE" -f "$HERE/refused.jq" "$work/payload.json" > "$work/fallback.json"
       post_review "$work/fallback.json" "$work/response.txt" ||
         fail "GitHub refused the review, with and without its inline comments: $(head -c 300 "$work/response.txt")"
     else
