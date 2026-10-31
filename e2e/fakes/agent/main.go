@@ -342,7 +342,7 @@ func argValue(flag string) string {
 }
 
 var (
-	reviewFileRe = regexp.MustCompile(`/bazel-post-report\s+(\S+)`)
+	reviewFileRe = regexp.MustCompile(`/bazel:bazel-post-report\s+(\S+)`)
 	repoRe       = regexp.MustCompile(`The repository ([\w.-]+/[\w.-]+) is cloned`)
 	numberRe     = regexp.MustCompile(`PR\s+#(\d+)`)
 )

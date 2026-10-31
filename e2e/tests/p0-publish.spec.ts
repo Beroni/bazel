@@ -58,7 +58,7 @@ test.describe('P0 · publish', () => {
     const post = bazel.agentCalls().find((c) => c.scenario === 'post-claude');
     expect(post).toBeTruthy();
     expect(post!.builtin_skill).toBe(true);
-    const reviewFile = post!.prompt.match(/\/bazel-post-report\s+(\S+)/)![1];
+    const reviewFile = post!.prompt.match(/\/bazel:bazel-post-report\s+(\S+)/)![1];
     expect(reviewFile).toContain(`${bazel.reviewsDir}/publish/`);
     expect(post!.plugin_name).not.toBe('');
     expect(post!.strict_mcp_config).toBe(true);

@@ -211,7 +211,7 @@ test.describe('P0 · cancel a publication', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [0] });
     await expect.poll(() => bazel.agentCalls().length).toBe(2);
-    const reviewFile = bazel.agentCalls()[1].prompt.match(/\/bazel-post-report\s+(\S+)/)![1];
+    const reviewFile = bazel.agentCalls()[1].prompt.match(/\/bazel:bazel-post-report\s+(\S+)/)![1];
     expect(fs.existsSync(reviewFile)).toBe(true); // exists while the post agent runs
     bazel.release('release-post');
     await bazel.waitJob(id, (j) => j.posted);

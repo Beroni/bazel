@@ -209,7 +209,7 @@ test.describe('P0 · the fakes fail closed', () => {
     const dir = state();
     const run = (fixtures: string) => spawnSync(path.join(BIN, 'fake-agent'), ['--plugin-dir', plugin], {
       env: safeEnv({ HOME: dir, FAKE_AGENT_SCENARIOS: SCENARIO_FILES, FAKE_AGENT_SCENARIO: 'post-claude', FAKE_AGENT_STATE: dir, FAKE_GH_FIXTURES: fixtures, FAKE_GH_STATE: dir }),
-      input: `/bazel-post-report ${review}\nThe repository acme/api-core is cloned here, PR #101.`, encoding: 'utf8',
+      input: `/bazel:bazel-post-report ${review}\nThe repository acme/api-core is cloned here, PR #101.`, encoding: 'utf8',
     });
     const fixtures = path.join(__dirname, '..', 'fixtures', 'default');
     expect(run(fixtures).status).toBe(0);
