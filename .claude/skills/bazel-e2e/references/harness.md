@@ -5,7 +5,7 @@ e2e/
   playwright.config.ts     6 workers, fully parallel, traces kept on failure
   harness/
     paths.ts               BIN, FIXTURES, SAFE_PATH, safeEnv()
-    global-setup.ts        run lock; go build bazel + fakes; preflight; ~/.bazel guard
+    global-setup.ts        run lock; go build bazel + fakes; preflight
     lock.ts                one run per output directory (E2E_OUT for another)
     bazel.ts               class Bazel (one isolated server), defaultConfig()
     fixtures.ts            Playwright fixtures: bazelOptions, bazel, app

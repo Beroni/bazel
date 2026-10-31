@@ -9,7 +9,7 @@
 | Passes alone, fails under `--repeat-each 5 --workers 8` | flake: a race in the test (missing wait) or in Bazel (report it) |
 | `bazel exited … before serving` | config the server rejected — read `server.log` (yaml, `format`) |
 | `preflight: gh resolves to …` | your bin dir or PATH changed — never "fix" by widening PATH |
-| `isolation broken: ~/.bazel changed` | something ran without `BAZEL_HOME` — stop and find it |
+| `isolation broken: a process left the temp root` | a gh or agent call saw another `HOME` or `BAZEL_HOME` — stop and find it |
 | `gh calls the fake does not implement` at teardown, or `fake gh: unsupported` in a job error | Bazel started a new gh call: teach the fake (and a test) |
 | `fake-agent: no scenario named …` | `FAKE_AGENT_SCENARIO` typo, or a new agent without `env` |
 

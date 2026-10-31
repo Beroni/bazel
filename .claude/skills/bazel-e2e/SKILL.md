@@ -68,7 +68,8 @@ delete the `knownBug` line, or list the id in `E2E_FIXED` for that base).
 - The server env is built from scratch by `safeEnv()` (`e2e/harness/paths.ts`):
   `PATH` is `e2e/.out/bin` + system dirs only. The real `gh` and `claude` live
   in Homebrew and must stay unreachable; `globalSetup` refuses to start if
-  they resolve, and its teardown fails the run if `~/.bazel` changed.
+  they resolve. The `bazel` fixture ends with a positive canary: every gh and
+  agent call must have seen this test's `HOME` and `BAZEL_HOME`.
 - Never add `/opt/homebrew/bin`, `~/.local/bin` or the developer's `PATH` to
   the server env. Need a new tool? Symlink it into `BIN` in `global-setup.ts`.
 - Never point a test at a real repo, a real skill or a real model.
