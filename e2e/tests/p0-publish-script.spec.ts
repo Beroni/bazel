@@ -21,6 +21,7 @@ function world(hostilePath: string) {
   fs.mkdirSync(clone);
   fs.mkdirSync(plugin, { recursive: true });
   fs.cpSync(path.join(BAZEL_SRC, 'internal/skills/builtin/bazel-post-report/scripts'), plugin, { recursive: true });
+  fs.writeFileSync(path.join(root, 'plugin', 'publish-target'), 'acme/api-core#101\n');
   fs.writeFileSync(path.join(fixtures, 'gh.json'), '{"user":"e2e-user"}');
   fs.writeFileSync(path.join(fixtures, 'prs.json'), JSON.stringify([{
     repo: 'acme/api-core', number: 101, title: 'T', headRefOid: SHA, headRefName: 'x', baseRefName: 'main',
@@ -40,6 +41,7 @@ function world(hostilePath: string) {
 
 const report = (files: number, body: string) => `# acme/api-core#101 — T
 - Head sha: ${SHA}
+- Steps: ["fleet"]
 
 ---
 

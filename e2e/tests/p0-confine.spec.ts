@@ -337,10 +337,10 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
       expect(denied(call)).toEqual(expect.arrayContaining(['Bash(gh pr merge:*)', 'Bash(gh pr close:*)', 'Bash(git push:*)', 'Bash(gh repo delete:*)']));
     }
     for (const call of [review, post]) {
-      expect(denied(call)).toEqual(expect.arrayContaining(['Bash(gh pr comment:*)', 'Bash(gh pr review:*)', 'Bash(gh api -X:*)', 'Bash(gh api --method:*)']));
+      expect(denied(call)).toEqual(expect.arrayContaining(['Bash(gh pr comment:*)', 'Bash(gh pr review:*)', 'Bash(gh api -X*)', 'Bash(gh api --method*)']));
     }
     expect(denied(poster)).not.toContain('Bash(gh pr comment:*)');
-    expect(denied(poster)).not.toContain('Bash(gh api --method:*)');
+    expect(denied(poster)).not.toContain('Bash(gh api --method*)');
   });
 
   test('flags already in the args are not repeated', async ({ bazel }) => {
