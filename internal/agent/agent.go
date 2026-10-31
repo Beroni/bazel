@@ -1000,6 +1000,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
 	}
+	// A CLI can say in its stream that it failed and still exit 0: what it wrote
+	// until then is not a finished review.
+	if ae := adapter.err(); ae != nil {
+		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
+	}
 	// With a pricing table configured, recompute the cost from the tokens and
 	// the model — that is what lets the cost change without rebuilding the
 	// binary.
