@@ -256,6 +256,9 @@ func renderMarkdown(src string) string {
 	if len(src) > maxDescriptionBytes {
 		return plainBlock(src[:maxDescriptionBytes]) + "<p>(cut: this description is too long to render)</p>"
 	}
+	if tooCostly(src) {
+		return plainBlock(src)
+	}
 	return convert(md, src)
 }
 
@@ -267,6 +270,7 @@ func renderMarkdown(src string) string {
 const (
 	maxDescriptionBytes = 16 << 10
 	maxReviewBytes      = 96 << 10
+	maxLinkScan         = 6 << 20
 )
 
 // plainBlock is text shown as it is.
@@ -276,10 +280,18 @@ func plainBlock(src string) string {
 
 // renderReviewMarkdown is renderMarkdown for a review: raw HTML shows as text.
 func renderReviewMarkdown(src string) string {
-	if len(src) > maxReviewBytes {
+	if tooCostly(src) {
 		return plainBlock(src)
 	}
 	return convert(reviewMD, src)
+}
+
+// tooCostly says the text is past what is worth parsing. Each `](` that does not
+// close a link makes goldmark scan the rest of the text, the one pattern it pays
+// quadratically for: 16,000 of them in 96 KB take 10 s. So what counts is links
+// times bytes. A report of 100 links in 30 KB, more than any real one, is half of it.
+func tooCostly(src string) bool {
+	return len(src) > maxReviewBytes || strings.Count(src, "](")*len(src) > maxLinkScan
 }
 
 // convert runs one of the converters above and sanitizes the result.
@@ -334,7 +346,7 @@ var footnoteDefRe = regexp.MustCompile(`(?m)^ {0,3}\[\^([^\]\n]+)\]:.*(?:\n[ \t]
 // so a definition used only by another part counts as hidden here: the screen
 // shows that link as plain brackets.
 func hiddenText(src string) []string {
-	if len(src) > maxReviewBytes {
+	if tooCostly(src) {
 		return nil // shown whole as text: nothing is hidden
 	}
 	ctx := parser.NewContext()

@@ -293,3 +293,23 @@ func TestListaNaoRenderizaDescricao(t *testing.T) {
 		t.Errorf("%d %s", w.Code, w.Body)
 	}
 }
+
+// Right below the limits, with the worst text there is for them, a render still
+// takes a moment and not seconds.
+func TestLogoAbaixoDoLimite(t *testing.T) {
+	bomb := "[a](()"
+	full := strings.Repeat(bomb, 96000/len(bomb))
+	most := maxLinkScan / 96000
+	links := strings.Repeat(bomb, most) + strings.Repeat("x", 96000-most*len(bomb))
+	dense := strings.Repeat(bomb, 800)
+	for name, src := range map[string]string{"96000 bytes of it": full, "the most links allowed": links, "short and dense": dense} {
+		start := time.Now()
+		got := renderReview(src)
+		if took := time.Since(start); took > 3*time.Second { // a loaded machine; unbounded it takes minutes
+			t.Errorf("%s: %v", name, took)
+		}
+		if !strings.Contains(got, "[a]") {
+			t.Errorf("%s: the text is gone", name)
+		}
+	}
+}
