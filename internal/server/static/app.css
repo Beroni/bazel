@@ -590,6 +590,11 @@ main.no-prs .burger span { background: var(--accent); }
 }
 .section-label:first-child { margin-top: 0; }
 .md.context { opacity: .7; }
+/* A long path or hash wraps, or scrolls in its own block: the report and its
+   action bar stay where they are. */
+.md { overflow-wrap: anywhere; min-width: 0; }
+.md pre { max-width: 100%; overflow-x: auto; }
+.md table { display: block; max-width: 100%; overflow-x: auto; }
 /* Text only the markdown has: it goes to the PR, so it shows here. */
 .hidden-text { border: 1px solid var(--warn); border-radius: var(--radius-md); padding: 8px 12px; margin-bottom: 14px; font-size: 13px; }
 .hidden-text p { margin: 0 0 6px; color: var(--warn); }

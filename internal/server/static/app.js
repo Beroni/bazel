@@ -277,7 +277,7 @@ async function boot() {
 
 async function loadPRs(force) {
   const list = $('#pr-list');
-  if (!state.prs.length) list.innerHTML = '<p class="empty">consultando o GitHub…</p>';
+  if (!state.prs.length) list.innerHTML = '<p class="empty">asking GitHub…</p>';
   $('#refresh').disabled = true;
   try {
     const data = await api('/api/prs' + (force ? '?refresh=1' : ''));
@@ -294,7 +294,7 @@ async function loadPRs(force) {
     // With no repository error the banner goes back to the config warning, if
     // there is one: clearing here wiped exactly what startup had to say.
     banner(state.repoErrors.length
-      ? state.repoErrors.map((e) => `⚠ ${e.repo}: ${e.error}`).join('\n')
+      ? state.repoErrors.map((e) => `⚠ ${e.repo ? e.repo + ': ' : ''}${e.error}`).join('\n')
       : state.warning);
     // The repository filter counts come from here, so it is built before the
     // list.
@@ -515,6 +515,14 @@ async function removeJob(id, btn) {
 
 // --- actions ---
 
+// keepFocus puts the focus on target when the control that had it went away:
+// otherwise it falls to the body, and the next Tab starts from the top.
+function keepFocus(target) {
+  if (document.activeElement && document.activeElement !== document.body) return;
+  const node = document.querySelector(target);
+  if (node) node.focus({ preventScroll: true });
+}
+
 function startReview() {
   clearAlert();
   return reviewRefs(markedPRs());
@@ -543,6 +551,7 @@ async function reviewRefs(refs) {
     state.selected.clear();
     renderPRs();
     renderTabs();
+    keepFocus('#rail .card.on');
     renderJobs();
     renderViewer();
   } catch (err) {
@@ -579,7 +588,9 @@ function openPR(key) {
   if (pr.draft) kicker.append(el('span', 'tag draft', 'draft'));
   if (pr.review_decision === 'APPROVED') kicker.append(el('span', 'tag approved', 'approved'));
   if (pr.review_decision === 'CHANGES_REQUESTED') kicker.append(el('span', 'tag changes', 'changes requested'));
-  grow.append(kicker, el('h2', null, pr.title));
+  const heading = el('h2', null, pr.title);
+  heading.dir = 'auto';
+  grow.append(kicker, heading);
   head.append(grow);
   v.append(head);
 
@@ -697,6 +708,7 @@ async function postJob(id, btn) {
   clearAlert();
   try {
     upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
+    keepFocus('#viewer .vtab.on');
   } catch (err) {
     // 409 and 404 are Bazel turning the request down (busy, already posted,
     // not finished, not publishable, gone): the card on screen is stale. Only
@@ -1076,6 +1088,13 @@ function refreshPickSummary(s = document.querySelector('#viewer .pick-summary'))
     : out ? `${out} left out of what goes to the PR` : 'every finding goes to the PR';
   s.children[1].disabled = !out;
   s.children[2].disabled = !kept;
+  // With every finding out, only a verdict over an empty list would go.
+  for (const id of ['paste-comment', 'publish-inline', 'saved-publish', 'saved-comment']) {
+    const b = document.querySelector(`#viewer [data-testid=${id}]`);
+    if (!b) continue;
+    b.disabled = total > 0 && !kept;
+    if (b.disabled) b.title = 'every finding is unticked: there is nothing to publish';
+  }
 }
 
 // --- render ---
@@ -1556,7 +1575,9 @@ function renderPRs() {
   });
   queueMicrotask(() => { list.scrollTop = top; });
   if (!prs.length) {
-    list.append(el('p', 'empty', state.prs.length ? 'nothing matches the filter' : 'no open PRs'));
+    // With every read failed nobody knows whether there are PRs.
+    const blind = !state.prs.length && state.repoErrors.some((e) => !e.truncated);
+    list.append(el('p', 'empty', state.prs.length ? 'nothing matches the filter' : blind ? 'could not read the PRs' : 'no open PRs'));
     renderStats();
     updateReviewButton();
     return;
@@ -1589,6 +1610,7 @@ function renderPRs() {
     // The title is the keyboard way in: the row's click opens the PR, and the
     // checkbox next to it stays its own control.
     const title = operable(el('span', 'title', pr.title), `open ${pr.key}: ${pr.title}`, () => openPR(pr.key));
+    title.dir = 'auto';
     row.title = [
       pr.title,
       `${pr.key} · @${pr.author} · +${pr.additions} −${pr.deletions} · ${pr.changed_files} files · ${pr.age}`,
@@ -1765,6 +1787,13 @@ function renderSpend() {
   box.title = `spend of ${n} review${n === 1 ? '' : 's'} in this session`;
 }
 
+// cardRepo names the repository on a card. Two owners with a repo of the same
+// name need the owner: that card is what you publish from.
+function cardRepo(job) {
+  const same = state.jobs.some((j) => j.pr.slug === job.pr.slug && j.pr.repo.toLowerCase() !== job.pr.repo.toLowerCase());
+  return same ? job.pr.repo : job.pr.slug;
+}
+
 function renderJobs() {
   const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
   $('#queue-count').textContent = String(state.jobs.length);
@@ -1797,14 +1826,16 @@ function renderJobs() {
     });
 
     const top = el('div', 'card-top');
-    top.append(el('span', 'dot'), el('span', 'card-ref', `${job.pr.slug} #${job.pr.number}`));
+    top.append(el('span', 'dot'), el('span', 'card-ref', `${cardRepo(job)} #${job.pr.number}`));
     const sp = el('div', 'spacer');
     const x = tid(el('button', 'card-x', '✕'), 'job-remove');
     x.title = 'drop from the queue';
     x.setAttribute('aria-label', 'drop from the queue');
     x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
     top.append(sp, x);
-    card.append(top, el('div', 'title', job.pr.title));
+    const title = el('div', 'title', job.pr.title);
+    title.dir = 'auto';
+    card.append(top, title);
     const ran = ranOn(job);
     if (ran) card.append(tid(el('div', 'card-ran', ran), 'job-ran'));
 
@@ -2006,7 +2037,9 @@ function jobHead(job) {
   const link = prLink(job.pr);
   link.textContent = `${job.pr.repo} #${job.pr.number}`;
   kicker.append(link, document.createTextNode(' · ' + job.pr.author));
-  grow.append(kicker, el('h2', null, job.pr.title));
+  const heading = el('h2', null, job.pr.title);
+  heading.dir = 'auto';
+  grow.append(kicker, heading);
   if (job.history && state.historyCustom) grow.append(historyCustomNote());
   const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
   pill.title = label(job);
@@ -2033,6 +2066,7 @@ function jobTabs(job, view) {
       b.disabled = true;
       b.title = 'the report shows up when the review is done';
     }
+    b.tabIndex = key === view ? 0 : -1;
     b.addEventListener('click', () => {
       state.views[job.id] = key;
       if (key === 'log') pollLog(job.id);
@@ -2040,6 +2074,16 @@ function jobTabs(job, view) {
     });
     bar.append(b);
   }
+  // One Tab stop, and the arrows move inside, as a tablist does. A disabled tab
+  // is skipped.
+  bar.addEventListener('keydown', (e) => {
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    if (!step) return;
+    e.preventDefault();
+    const all = [...bar.querySelectorAll('[role=tab]:not(:disabled)')];
+    const next = all[(all.indexOf(document.activeElement) + step + all.length) % all.length];
+    next.focus();
+  });
   return bar;
 }
 
@@ -2479,10 +2523,12 @@ function renderReportView(v, job) {
       cm.addEventListener('click', () => postJob(job.id, cm));
       bar.append(cm);
     }
-    const pub = tid(el('button', 'btn primary', '↗ Publish'), 'publish-inline');
-    pub.title = 'runs the post skill and publishes to the PR with inline comments';
-    pub.addEventListener('click', () => publishJob(job.id, pub));
-    bar.append(pub);
+    if (!job.posted) {
+      const pub = tid(el('button', 'btn primary', '↗ Publish'), 'publish-inline');
+      pub.title = 'runs the post skill and publishes to the PR with inline comments';
+      pub.addEventListener('click', () => publishJob(job.id, pub));
+      bar.append(pub);
+    }
     actionBar = bar;
   }
   if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));
@@ -2574,7 +2620,12 @@ function wire() {
   document.addEventListener('click', (e) => {
     if (!fpop.hidden && !fpop.contains(e.target) && e.target !== fbtn) setPop(false);
   });
-  fpop.addEventListener('keydown', (e) => { if (e.key === 'Escape') { setPop(false); fbtn.focus(); } });
+  // On the button too: that is where the focus stays after opening it.
+  for (const n of [fpop, fbtn]) {
+    n.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !fpop.hidden) { e.stopPropagation(); setPop(false); fbtn.focus(); }
+    });
+  }
   $('#skill-search').addEventListener('input', (e) => { state.skillFilter = e.target.value; renderSkillList(); });
   $('#hide-drafts').addEventListener('change', (e) => { state.hideDrafts = e.target.checked; renderPRs(); });
   $('#select-all').addEventListener('change', (e) => { selectVisible(e.target.checked); renderPRs(); });
@@ -2809,6 +2860,28 @@ function no(nome, i) {
   const nota = nome === 'publish' ? 'you choose what goes'
     : a && a.publishable === false ? 'stays here' : '';
   if (nota) card.append(el('div', 'pipe-node-note', nota));
+
+  // The card takes a drop too, before or after it by the half: that is where the
+  // eye goes, and the gaps are 4px wide. The arrows do the same without a mouse.
+  card.addEventListener('dragover', (e) => {
+    if (!arrasto) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = arrasto.add ? 'copy' : 'move';
+  });
+  card.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const box = card.getBoundingClientRect();
+    solte(e.clientX < box.left + box.width / 2 ? i : i + 1);
+  });
+  card.tabIndex = 0;
+  card.addEventListener('keydown', (e) => {
+    const to = i + ({ ArrowLeft: -1, ArrowRight: 1 }[e.key] || 0);
+    if (to === i || to < 0 || to >= state.pipeSteps.length) return;
+    e.preventDefault();
+    state.pipeSteps.splice(to, 0, state.pipeSteps.splice(i, 1)[0]);
+    renderPipelineBuilder();
+    document.querySelectorAll('[data-testid=pipeline-step]')[to].focus();
+  });
 
   card.addEventListener('dragstart', (e) => {
     arrasto = { from: i };
