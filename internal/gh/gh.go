@@ -8,13 +8,14 @@ import (
 	"fmt"
 	"maps"
 	"os/exec"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/beroni/bazel/internal/config"
 )
 
 // PR is a flattened pull request for use in the TUI.
@@ -236,14 +237,11 @@ func ParseRef(ref string) (repo string, number int, err error) {
 	}
 	// The repository goes to `gh --repo`, which also takes a host: a reference
 	// must not be able to point gh at another server.
-	if !repoRe.MatchString(repo) || number <= 0 {
+	if normal, err := config.NormalizeRepo(repo); err != nil || normal != repo || number <= 0 {
 		return "", 0, fmt.Errorf("invalid reference: %q (use owner/repo#123 or the PR URL)", ref)
 	}
 	return repo, number, nil
 }
-
-// repoRe is owner/name, in the characters GitHub allows.
-var repoRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]*/[A-Za-z0-9_][A-Za-z0-9_.-]*$`)
 
 func parseRef(ref string) (repo string, number int, err error) {
 	ref = strings.TrimSpace(ref)

@@ -17,6 +17,7 @@ func TestParseRef(t *testing.T) {
 		bad    bool
 	}{
 		{in: "cli/cli#14131", repo: "cli/cli", number: 14131},
+		{in: "acme/.github#12", repo: "acme/.github", number: 12},
 		{in: "  cli/cli #14131 ", repo: "cli/cli", number: 14131},
 		{in: "https://github.com/charmbracelet/bubbletea/pull/1755", repo: "charmbracelet/bubbletea", number: 1755},
 		{in: "https://github.com/charmbracelet/bubbletea/pull/1755/files", repo: "charmbracelet/bubbletea", number: 1755},
