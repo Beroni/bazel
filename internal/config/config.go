@@ -173,14 +173,13 @@ type Choice struct {
 }
 
 // PublishesBy says how this choice can write to the PR without going through
-// the screen, or "" when no path is in sight. It goes beyond Posts, which is
-// only what was declared: a `publish` step, a task with --post, a prompt that
-// authorizes publishing and the `agent` block, whose prompt Bazel did not
-// write. Whoever decides to refuse (the /mcp) refuses when in doubt.
+// the screen, or "" when every step is known not to. It denies by default: a
+// step passes only when its prompt carries the default template's prohibition
+// and nothing it was given names a way to publish. Posts is only what was
+// declared, and a prompt can ask for a comment in any words. Whoever decides to
+// refuse (the /mcp) refuses on this. A command of your own is outside it: what
+// an executable does cannot be read from its name.
 func (c Choice) PublishesBy() string {
-	// The `agent` block alone runs a prompt Bazel did not write, and it never
-	// declares posts. It only passes if it keeps the default template's
-	// prohibition.
 	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
 		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
 	}
@@ -190,24 +189,20 @@ func (c Choice) PublishesBy() string {
 			return fmt.Sprintf("has %q, which publishes to the PR on its own", st.Name)
 		case st.Reserved == StepPublish:
 			return "has a publish step"
-		case taskPosts(st.Task):
-			return fmt.Sprintf("has %q, whose task passes --post", st.Name)
-		case promptAuthorizesPosting(st.Prompt):
+		case st.Reserved != "":
+		case mentionsPublishing(st.Task):
+			return fmt.Sprintf("has %q, whose task passes --post or calls a post skill", st.Name)
+		case commandPublishes(st.Task):
+			return fmt.Sprintf("has %q, whose task runs gh", st.Name)
+		case commandPublishes(st.Command + " " + strings.Join(st.Args, " ")):
+			return fmt.Sprintf("has %q, whose command or args publish", st.Name)
+		case promptAuthorizesPosting(st.Prompt) || mentionsPublishing(st.Prompt):
 			return fmt.Sprintf("has %q, whose prompt authorizes publishing", st.Name)
+		case !promptForbidsPosting(st.Prompt):
+			return fmt.Sprintf("has %q, whose prompt does not say %q", st.Name, noPublishLine)
 		}
 	}
 	return ""
-}
-
-// taskPosts says whether the task passes --post to the skill, the flag with
-// which the review skills publish what they found.
-func taskPosts(task string) bool {
-	for _, f := range strings.Fields(task) {
-		if f == "--post" || strings.HasPrefix(f, "--post=") {
-			return true
-		}
-	}
-	return false
 }
 
 // noPublishLine is the prohibition on writing to GitHub that the default
@@ -1048,15 +1043,15 @@ func (c *Config) ValidateHistoryAgent() error {
 		return refuse("has posts: true")
 	case c.isPostAgent(named):
 		return refuse("is the post agent")
-	case c.mentionsPublishing(def.Task):
+	case commandPublishes(def.Task):
 		return refuse(fmt.Sprintf("has a task that publishes: %q", def.Task))
-	case c.mentionsPublishing(def.Command + " " + strings.Join(def.Args, " ")):
+	case commandPublishes(def.Command + " " + strings.Join(def.Args, " ")):
 		return refuse("has a command or args that publish")
 	case strings.TrimSpace(def.Prompt) == "":
 		return nil
 	case promptAuthorizesPosting(def.Prompt):
 		return refuse("has a prompt that authorizes publishing")
-	case c.mentionsPublishing(def.Prompt):
+	case mentionsPublishing(def.Prompt):
 		return refuse("has a prompt that tells it to publish")
 	case !promptForbidsPosting(def.Prompt):
 		return refuse(fmt.Sprintf("has a prompt that does not say %q", noPublishLine))
@@ -1081,18 +1076,32 @@ func (c *Config) HistoryCustom() bool {
 		!slices.Equal(st.Args, own.Args) || len(st.Env) > 0
 }
 
-// publishCommandRe matches, in flattened text, the flag and the gh commands
-// that write to a PR. --post=false is the flag turned off.
-var publishCommandRe = regexp.MustCompile(`(^|\s)--post(=(true|yes|on|1))?(\s|$)|\bgh (pr (comment|review|merge|edit|close)|issue comment)\b`)
+// publishCommandRe matches, in flattened text, the gh commands that write to a
+// PR and a skill named for publishing, plugin prefix or not.
+var publishCommandRe = regexp.MustCompile(`\bgh (pr (comment|review|merge|edit|close)|issue comment)\b|(^|\s)/[a-z0-9:-]*post-?(report|review|comment)\b`)
 
-// mentionsPublishing says whether the text calls the built-in post skill, which
-// only publishes, passes --post or runs a gh command that writes to the PR.
-func (c *Config) mentionsPublishing(text string) bool {
+// ghRe is gh itself: in a task, a command or args there is no reading reason to
+// tell apart from a writing one.
+var ghRe = regexp.MustCompile(`\bgh\b`)
+
+// mentionsPublishing says whether the text calls a skill that publishes, passes
+// --post or runs a gh command that writes to the PR. --post=false is the flag
+// turned off.
+func mentionsPublishing(text string) bool {
 	flat := flatten(text)
 	if publishCommandRe.MatchString(flat) {
 		return true
 	}
-	return strings.Contains(flat, "/"+flatten(skills.TaskSkill(defaultPostAgent().Task)))
+	return slices.ContainsFunc(strings.Fields(flat), func(f string) bool {
+		value, flag := strings.CutPrefix(f, "--post=")
+		return f == "--post" || flag && !slices.Contains([]string{"false", "no", "off", "0"}, value)
+	})
+}
+
+// commandPublishes is mentionsPublishing for what gets executed, where any gh
+// counts.
+func commandPublishes(text string) bool {
+	return mentionsPublishing(text) || ghRe.MatchString(flatten(text))
 }
 
 func validateFormat(format string) error {
