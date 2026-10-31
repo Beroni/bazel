@@ -2745,3 +2745,34 @@ func TestEventsAssinaAntesDeAbrir(t *testing.T) {
 		t.Errorf("headers arrived with %d subscribers", srv.hub.Clients())
 	}
 }
+
+// Shutting down waits for the jobs: the agent dies with the context, and the
+// job gets to clean its clone before the process goes.
+func TestRunEsperaOsJobs(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "trap 'sleep 0.5; exit 1' TERM; sleep 30 & wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	view, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, view.ID, StateRunning)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(shutdownWait + 7*time.Second):
+		t.Fatal("Run did not return")
+	}
+	if v, ok := srv.jobs.View(view.ID, false); !ok || v.State == StateRunning || v.State == StateQueued {
+		t.Errorf("Run returned with the job still going: %+v", v)
+	}
+}

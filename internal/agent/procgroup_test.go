@@ -161,3 +161,33 @@ func TestBackgroundLoopDoesNotReachTheNextStep(t *testing.T) {
 		t.Error("the first step's background loop reached the second one")
 	}
 }
+
+// A daemon in a session of its own escapes the group kill and keeps the output
+// pipe open: Run closes its end after the grace, instead of waiting for it.
+func TestDaemonHoldingOutputDoesNotHang(t *testing.T) {
+	if _, err := exec.LookPath("perl"); err != nil {
+		t.Skip("needs perl for setsid")
+	}
+	pidFile := filepath.Join(t.TempDir(), "pid")
+	cfg, choice := shellStep(t, `perl -MPOSIX -e 'setsid(); open(F, ">", "`+pidFile+`"); print F $$; close F; sleep 30' &
+sleep 0.3
+echo report
+`)
+	start := time.Now()
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	took := time.Since(start)
+	if data, readErr := os.ReadFile(pidFile); readErr == nil {
+		if pid, _ := strconv.Atoi(strings.TrimSpace(string(data))); pid > 0 {
+			syscall.Kill(pid, syscall.SIGKILL)
+		}
+	}
+	if err != nil {
+		t.Fatalf("Review: %v", err)
+	}
+	if took > 20*time.Second {
+		t.Errorf("the review waited %s for the daemon", took)
+	}
+	if res.Body != "report" {
+		t.Errorf("body = %q", res.Body)
+	}
+}

@@ -515,6 +515,7 @@ func Load() (*Config, error) {
 	// skill, which works with nothing installed.
 	cfg.PostAgent = migratePostAgent(cfg.PostAgent)
 	cfg.migratePipelines()
+	cfg.warnLaunchers()
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(warnOut, "bazel: "+w)
 	}
@@ -1109,6 +1110,104 @@ func validateFormat(format string) error {
 // is the agent that fills that hole.
 func promptNeedsTask(p string) bool {
 	return strings.TrimSpace(p) == strings.TrimSpace(defaultPrompt)
+}
+
+// ProgramName is a command's base name as a program: lower case, because the
+// macOS and Windows filesystems ignore case, and with no Windows extension.
+func ProgramName(command string) string {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// IsLauncher says whether command picks what it runs at run time. With the
+// clone as working directory, that choice is the PR's: npx runs the
+// node_modules the PR versions, an .npmrc points the registry at its server, a
+// .yarnrc runs a file of its own, a .tool-versions picks the binary and a
+// Makefile is the script, all before any flag of Bazel's counts.
+func IsLauncher(command string) bool {
+	switch ProgramName(command) {
+	case "npx", "npm", "pnpx", "pnpm", "yarn", "yarnpkg", "corepack", "bun", "bunx", "deno",
+		"uv", "uvx", "pipx", "poetry", "pipenv", "pdm", "hatch", "rye",
+		"mise", "rtx", "asdf", "volta", "nvm", "fnm", "nodenv", "pyenv", "rbenv", "nix", "nix-shell", "direnv",
+		"bundle", "bundler", "cargo", "make", "gmake", "just", "task", "rake", "env":
+		return true
+	}
+	return false
+}
+
+// isWrapper says whether command only runs another program with something
+// around it, as `timeout 600 npx …` does: what counts is that other program.
+func isWrapper(command string) bool {
+	switch ProgramName(command) {
+	case "timeout", "gtimeout", "nice", "nohup", "stdbuf", "ionice", "taskset", "chrt", "time", "caffeinate",
+		"sudo", "doas", "xargs", "busybox", "unbuffer", "script", "command", "exec":
+		return true
+	}
+	return false
+}
+
+// CheckLauncher refuses a step that would decide inside the clone what to run:
+// a launcher, or a relative path, which resolves in the clone too, either as
+// the command or behind a wrapper.
+func CheckLauncher(step ResolvedAgent) error {
+	if !step.Checkout {
+		return nil
+	}
+	if err := checkProgram(step.Command); err != nil {
+		return err
+	}
+	if !isWrapper(step.Command) {
+		return nil
+	}
+	// A launcher's name anywhere counts: wrappers take options of all shapes. A
+	// relative path counts only as the program, the first thing that is not an
+	// option or a number; after it come that program's own arguments.
+	program := true
+	for _, arg := range step.Args {
+		if IsLauncher(arg) {
+			return checkProgram(arg)
+		}
+		if program && !strings.HasPrefix(arg, "-") && !wrapperValueRe.MatchString(arg) {
+			program = false
+			if err := checkProgram(arg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// wrapperValueRe is a number or a duration, what a wrapper takes before the
+// program (`timeout 10m`, `nice -n 5`).
+var wrapperValueRe = regexp.MustCompile(`^[0-9.]+[a-z]*$`)
+
+func checkProgram(command string) error {
+	if IsLauncher(command) {
+		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", command)
+	}
+	if strings.ContainsAny(command, `/\`) && !filepath.IsAbs(command) {
+		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", command)
+	}
+	return nil
+}
+
+// warnLaunchers notes, at boot, the steps that will be refused when they run:
+// better to hear it now than twenty minutes into a pipeline. It is a warning,
+// not a failed load: the other agents still work.
+func (c *Config) warnLaunchers() {
+	for _, ch := range append(c.Choices(), c.PostChoice(), c.HistoryChoice()) {
+		for _, st := range ch.Steps {
+			if st.Reserved != "" {
+				continue
+			}
+			if err := CheckLauncher(st); err != nil {
+				c.Warnings = append(c.Warnings, fmt.Sprintf("agent %q will be refused: %v", st.Name, err))
+			}
+		}
+	}
 }
 
 // Choices is what the selector shows before the review: first the named agents,

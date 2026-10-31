@@ -157,7 +157,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// Before the clone and before any step: one bad step refuses the whole job,
 	// instead of failing midway through a review that can still be published.
 	for _, s := range choice.Steps {
-		err := checkLauncher(s)
+		err := config.CheckLauncher(s)
 		if err == nil {
 			err = checkClaudeConfigDir(s, "")
 		}
@@ -368,9 +368,9 @@ func gitGuardEnv(env []string, clone string) []string {
 	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
 }
 
-// agentGrace is how long an agent's process and pipes get to finish once it has
+// Grace is how long an agent's process and pipes get to finish once it has
 // exited or been killed.
-const agentGrace = 5 * time.Second
+const Grace = 5 * time.Second
 
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
@@ -386,7 +386,7 @@ func neutralizedNote(n int) string {
 		return ""
 	}
 	return fmt.Sprintf("\n\nBazel removed %d path(s) from the working tree before you ran (.claude, .codex, .grok and "+
-		".mcp.json, at any depth), because agent CLIs execute them. They are still in git and still part of the review: "+
+		".mcp.json, at any depth, and the same for other CLIs), because agent CLIs execute them. They are still in git and still part of the review: "+
 		"the diff shows them, and `git show HEAD:<path>` reads them.", n)
 }
 
@@ -421,27 +421,17 @@ const maxLoggedPaths = 20
 // `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
 // protects those runs.
 func runsClaude(step config.ResolvedAgent) bool {
-	if isShell(step.Command) || isLauncher(step.Command) {
+	if isShell(step.Command) || config.IsLauncher(step.Command) {
 		return false
 	}
 	return isClaudeCommand(step.Command) || outputFormat(step.Format, step.Args) == "claude-stream"
-}
-
-// programName is a command's base name as a program: lower case, because the
-// macOS and Windows filesystems ignore case, and with no Windows extension.
-func programName(command string) string {
-	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
-	for _, ext := range []string{".exe", ".cmd", ".bat"} {
-		name = strings.TrimSuffix(name, ext)
-	}
-	return name
 }
 
 // isClaudeCommand says whether command is Claude Code, by name or through PATH
 // and symlinks: an npm install ends in its package, the native one in
 // ~/.local/share/claude/versions/<version>, where the file is the version.
 func isClaudeCommand(command string) bool {
-	if programName(command) == "claude" {
+	if config.ProgramName(command) == "claude" {
 		return true
 	}
 	path, err := exec.LookPath(command)
@@ -453,44 +443,17 @@ func isClaudeCommand(command string) bool {
 		return false
 	}
 	slashed := filepath.ToSlash(real)
-	return programName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
+	return config.ProgramName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
 		strings.Contains(slashed, "/claude/versions/")
 }
 
 // isShell says whether command is a shell.
 func isShell(command string) bool {
-	switch programName(command) {
+	switch config.ProgramName(command) {
 	case "sh", "bash", "zsh", "dash", "ksh", "fish":
 		return true
 	}
 	return false
-}
-
-// isLauncher says whether command picks what it runs at run time. With the
-// clone as working directory, that choice is the PR's: npx runs the
-// node_modules the PR versions, an .npmrc points the registry at its server,
-// and a .yarnrc runs a file of its own — all before any flag of Bazel's counts.
-func isLauncher(command string) bool {
-	switch programName(command) {
-	case "npx", "npm", "pnpx", "pnpm", "yarn", "bun", "bunx", "uv", "uvx", "pipx", "env":
-		return true
-	}
-	return false
-}
-
-// checkLauncher refuses a command that would decide inside the clone what to
-// run: a launcher, or a relative path, which resolves in the clone too.
-func checkLauncher(step config.ResolvedAgent) error {
-	if !step.Checkout {
-		return nil
-	}
-	if isLauncher(step.Command) {
-		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", step.Command)
-	}
-	if strings.ContainsAny(step.Command, `/\`) && !filepath.IsAbs(step.Command) {
-		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", step.Command)
-	}
-	return nil
 }
 
 // runsClaudeAnywhere says whether any step of the choice runs Claude Code.
@@ -913,7 +876,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	defer stderr.Close()
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
-	cmd.WaitDelay = agentGrace // a child holding stdin must not hold Wait
+	cmd.WaitDelay = Grace // a child holding stdin must not hold Wait
 	ownProcessGroup(cmd)
 
 	// The last thing before the process: the smaller the gap between checking
@@ -977,7 +940,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
 	killProcessGroup(cmd)
-	stray := time.AfterFunc(agentGrace, func() {
+	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()
 		stderr.Close()
 	})

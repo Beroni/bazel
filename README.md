@@ -722,9 +722,10 @@ that, in layers, and the first is the one that does not depend on knowing which
 CLI is running:
 
 - **It is not there.** Right before each step starts, of any CLI, Bazel removes
-  every `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
-  clone's working tree, at any depth (Claude Code also finds a nested
-  `.claude/skills`) and in any spelling the disk folds into those names (on
+  every `.claude/`, `.codex/`, `.grok/`, `.gemini/`, `.cursor/` and `.agents/`
+  folder and every `.mcp.json` from the clone's working tree, at any depth
+  (Claude Code also finds a nested `.claude/skills`) and in any spelling the disk
+  folds into those names (on
   macOS, `.CLAUDE` is `.claude`), without following symlinks. The job's log says
   what went.
   They stay in git, so a review still sees them in the diff and with
@@ -743,11 +744,20 @@ CLI is running:
   `--mcp-config`, `--plugin-dir`, `--add-dir`, the other flags that read
   configuration, and `CLAUDE_CONFIG_DIR`, with anything but an absolute path
   outside the clone.
-- **No launchers in the clone.** With checkout on, `npx`, `bunx`, `npm`, `pnpm`,
-  `yarn`, `uvx`, `pipx`, `env` and relative paths are refused as a `command`,
-  before the clone: they decide what to run from the working directory, and the
-  PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
-  `command` at an installed binary, and set variables with `env:`.
+- **No launchers in the clone.** With checkout on, package and version managers
+  (`npx`, `bunx`, `npm`, `pnpm`, `yarn`, `corepack`, `deno`, `uvx`, `pipx`, `mise`,
+  `asdf`, `volta`, `nix`, `make` and the like), `env` and relative paths are
+  refused as a `command`, before the clone, also behind a wrapper such as
+  `timeout 600 npx …`: they decide what to run from the working directory, and
+  the PR's `node_modules`, `.npmrc` or `.tool-versions` would decide for them.
+  Bazel says so at boot, on the terminal, and the job is refused when it runs.
+  The list is of known names, so it cannot be complete. Point `command` at an
+  installed binary, and set variables with `env:`.
+- **The clone ignores your git config.** The clone and the checkout run with
+  `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` set, so a filter, LFS or
+  `core.hooksPath` from your machine does not run over the PR's files, which is
+  before the sweep. `gh` brings its own credentials. A global `url.insteadOf` or
+  `http.proxy` does not apply to that clone; use `HTTPS_PROXY` for a proxy.
 - **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
   `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
   `core.fsmonitor=false` and `core.hooksPath=/dev/null` through `GIT_CONFIG_*`,

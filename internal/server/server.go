@@ -33,6 +33,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/skills"
@@ -245,6 +246,11 @@ func semCache(next http.Handler) http.Handler {
 	})
 }
 
+// shutdownWait is how long Run gives the jobs to clean up their clones. An agent
+// that was killed gets agent.Grace for its process and pipes, and the cleanup
+// comes after that.
+const shutdownWait = agent.Grace + 3*time.Second
+
 // Run starts the server and only returns when ctx dies.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
@@ -278,7 +284,7 @@ func (s *Server) Run(ctx context.Context) error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	shutErr := srv.Shutdown(shutCtx)
-	s.jobs.Wait(5 * time.Second)
+	s.jobs.Wait(shutdownWait)
 	return shutErr
 }
 
