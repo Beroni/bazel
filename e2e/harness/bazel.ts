@@ -287,6 +287,7 @@ export class Bazel {
     const prs = JSON.parse(fs.readFileSync(file, 'utf8'));
     prs.push({ baseRefName: 'main', isDraft: false, additions: 1, deletions: 0, changedFiles: 1, updatedAgo: '3h', reviewDecision: '', body: '', ...pr });
     fs.writeFileSync(file, JSON.stringify(prs, null, 2));
+    this.dropOrigin(pr.repo as string);
   }
 
   /** Reads config.yaml back (Bazel writes YAML; the harness writes JSON). */
@@ -315,7 +316,12 @@ export class Bazel {
     const pr = JSON.parse(fs.readFileSync(file, 'utf8')).find((p: any) => `${p.repo}#${p.number}` === key);
     if (!pr) throw new Error(`no fixture PR ${key}`);
     this.updatePR(key, { moved: (pr.moved ?? 0) + 1 });
-    fs.rmSync(path.join(this.ghState, 'repos', `${pr.repo}.git`), { recursive: true, force: true });
+    this.dropOrigin(pr.repo);
+  }
+
+  /** The fake gh builds the repo from the fixtures once: this has it build anew. */
+  private dropOrigin(repo: string): void {
+    fs.rmSync(path.join(this.ghState, 'repos', `${repo}.git`), { recursive: true, force: true });
   }
 
   /** Whether that agent process is still there: what "killed" means. */
