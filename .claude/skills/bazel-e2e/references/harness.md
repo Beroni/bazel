@@ -33,7 +33,7 @@ e2e/
 3. Picks a free port, spawns `e2e/.out/bin/bazel --addr 127.0.0.1:<port>
    --no-splash` with `safeEnv()` plus `HOME`, `BAZEL_HOME`, `TMPDIR`,
    `FAKE_GH_*`, `FAKE_AGENT_*`. stdout/stderr → `server.log`.
-4. Polls `GET /api/state` until 200 (15s budget).
+4. Polls `GET /api/state` until 200 (45s budget).
 
 The fixture stops it with SIGTERM (SIGKILL after 7s), deletes the root on
 success and keeps it (plus attachments) on failure.

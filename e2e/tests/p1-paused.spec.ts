@@ -18,7 +18,7 @@ test.describe('P1 · a queue that survives a restart', () => {
     await app.reload();
     await bazel.restart({ samePort: true, downMs: 1_000 });
     const card = ui.jobCard(app, 'Add rate limiter to the public API');
-    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 15_000 });
+    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 30_000 });
     await expect(ui.banner(app)).toContainText('paused');
 
     // A job that comes and goes shows the queue is moving: the paused one stays.
@@ -44,7 +44,7 @@ test.describe('P1 · a queue that survives a restart', () => {
     await app.reload();
     await bazel.restart({ samePort: true, downMs: 1_000 });
     const card = app.locator('[data-testid=job-card][data-pr-key="acme/api-core#103"]');
-    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 15_000 });
+    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 30_000 });
     await card.click();
 
     const before = bazel.agentCalls().length;

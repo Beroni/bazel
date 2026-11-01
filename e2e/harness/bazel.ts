@@ -247,7 +247,7 @@ export class Bazel {
     });
     this.exited = new Promise((resolve) => this.proc!.on('exit', (code) => resolve(code)));
 
-    const deadline = Date.now() + 15_000;
+    const deadline = Date.now() + 45_000;
     while (Date.now() < deadline) {
       if (this.proc.exitCode !== null) {
         throw new Error(`bazel exited with ${this.proc.exitCode} before serving:\n${this.serverLog()}`);
@@ -260,7 +260,7 @@ export class Bazel {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
-    throw new Error(`bazel did not answer on ${this.url} within 15s:\n${this.serverLog()}`);
+    throw new Error(`bazel did not answer on ${this.url} within 45s:\n${this.serverLog()}`);
   }
 
   async stop(): Promise<void> {

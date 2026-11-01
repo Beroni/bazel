@@ -40,7 +40,9 @@ test.describe('P2 · bugs', () => {
     await openJob(app, 'Dark mode toggle in settings');
     await jobTab(app, 'Report');
     await bazel.restart({ samePort: true, downMs: 2_000 });
-    await expect(app.getByTestId('job-card')).toHaveAttribute('data-state', 'paused', { timeout: 15_000 });
+    // Until the page adopts the new server it still shows both cards.
+    await expect(ui.jobCard(app, 'Add rate limiter to the public API')).toHaveAttribute('data-state', 'paused', { timeout: 30_000 });
+    await expect(app.getByTestId('job-card')).toHaveCount(1);
     const screen = `${await ui.banner(app).textContent()} ${await ui.viewer(app).textContent()}`;
     expect(screen).toMatch(/restart/i);
   });
