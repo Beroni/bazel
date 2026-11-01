@@ -77,6 +77,7 @@ FLAGS
   --jobs <n>           concurrent reviews (default 2)
   --open               open the browser
   --keep               keep the throwaway PR clones
+  --log-dir <dir>      write each job's whole log to a file in dir
   --no-splash          skip the opening animation
   --version            version
 
@@ -95,6 +96,7 @@ Repositories, agents and reviews are all managed from the page.
 // whoever reaches it can order a repository cloned and an agent run with a
 // shell: this is not a port to expose.
 func serve(ctx context.Context, args []string) error {
+	config.Tighten()
 	cfg, criado, err := config.LoadOrInit()
 	if err != nil {
 		return err
@@ -121,10 +123,16 @@ func serve(ctx context.Context, args []string) error {
 		return fmt.Errorf("could not identify your GitHub user: %w", err)
 	}
 
+	home, err := config.Dir()
+	if err != nil {
+		return err
+	}
 	srv, err := server.New(ctx, cfg, me, server.Options{
 		Addr:        addr,
 		Concurrency: jobs,
 		Keep:        hasFlag(args, "--keep"),
+		LogDir:      flagValue(args, "--log-dir"),
+		QueueDir:    home,
 		Version:     version,
 	})
 	if err != nil {

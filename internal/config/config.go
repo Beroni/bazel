@@ -3,6 +3,7 @@
 package config
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -30,6 +31,11 @@ type Config struct {
 	ReviewsDir string `yaml:"reviews_dir"`
 	// MaxDiffBytes truncates huge diffs before sending them to the agent.
 	MaxDiffBytes int `yaml:"max_diff_bytes"`
+	// LogDir, when set, gets each job's whole log, one file per job. The page
+	// keeps only a window. Off by default.
+	LogDir string `yaml:"log_dir,omitempty"`
+	// LogKeep is how many of those files stay; older ones go at boot.
+	LogKeep int `yaml:"log_keep,omitempty"`
 	// SkillsDir is where the agent's skills live. Empty = ~/.claude/skills.
 	SkillsDir string `yaml:"skills_dir"`
 
@@ -65,6 +71,12 @@ type Config struct {
 	// Warnings are what Load had to drop while migrating an old config, one
 	// line each. They are never written back to the file.
 	Warnings []string `yaml:"-"`
+	// base is each top-level key as last read or written: what Save compares
+	// with to tell what this process changed.
+	base map[string]string
+	// disk is each top-level key as the file had it, to tell an edit made by hand
+	// from what this process wrote.
+	disk map[string]string
 }
 
 // AgentDef is a named agent that appears in the TUI selector.
@@ -173,14 +185,14 @@ type Choice struct {
 }
 
 // PublishesBy says how this choice can write to the PR without going through
-// the screen, or "" when no path is in sight. It goes beyond Posts, which is
-// only what was declared: a `publish` step, a task with --post, a prompt that
-// authorizes publishing and the `agent` block, whose prompt Bazel did not
-// write. Whoever decides to refuse (the /mcp) refuses when in doubt.
+// the screen, or "" when every step is known not to. It denies by default: a
+// step passes only when its prompt carries the default template's prohibition,
+// its task is a skill call and not prose, and nothing it was given names a way
+// to publish. Posts is only what was declared, and text can ask for a comment in
+// any words, so text is not read: it is refused. Whoever decides to refuse (the
+// /mcp) refuses on this. What is left is outside it: a skill or an executable
+// does what it does, and neither can be read from its name.
 func (c Choice) PublishesBy() string {
-	// The `agent` block alone runs a prompt Bazel did not write, and it never
-	// declares posts. It only passes if it keeps the default template's
-	// prohibition.
 	if c.Bare && len(c.Steps) > 0 && !promptForbidsPosting(c.Steps[0].Prompt) {
 		return fmt.Sprintf("is the bare `agent` block, and its prompt does not say %q", noPublishLine)
 	}
@@ -190,30 +202,28 @@ func (c Choice) PublishesBy() string {
 			return fmt.Sprintf("has %q, which publishes to the PR on its own", st.Name)
 		case st.Reserved == StepPublish:
 			return "has a publish step"
-		case taskPosts(st.Task):
-			return fmt.Sprintf("has %q, whose task passes --post", st.Name)
-		case promptAuthorizesPosting(st.Prompt):
+		case st.Reserved != "":
+		case mentionsPublishing(st.Task):
+			return fmt.Sprintf("has %q, whose task passes --post or calls a post skill", st.Name)
+		case commandPublishes(st.Task):
+			return fmt.Sprintf("has %q, whose task runs gh", st.Name)
+		case commandPublishes(st.Command + " " + strings.Join(st.Args, " ")):
+			return fmt.Sprintf("has %q, whose command or args publish", st.Name)
+		case st.Task != "" && !skillTaskRe.MatchString(strings.TrimSpace(st.Task)):
+			return fmt.Sprintf("has %q, whose task is free text and not a skill call", st.Name)
+		case promptAuthorizesPosting(st.Prompt) || mentionsPublishing(st.Prompt):
 			return fmt.Sprintf("has %q, whose prompt authorizes publishing", st.Name)
+		case !promptForbidsPosting(st.Prompt):
+			return fmt.Sprintf("has %q, whose prompt does not say %q", st.Name, noPublishLine)
 		}
 	}
 	return ""
 }
 
 // Publishes says whether the step writes to the PR on its own, by any of the ways
-// PublishesBy recognizes in a step.
+// PublishesBy recognizes in a step that names it.
 func (st ResolvedAgent) Publishes() bool {
-	return st.Posts || taskPosts(st.Task) || promptAuthorizesPosting(st.Prompt)
-}
-
-// taskPosts says whether the task passes --post to the skill, the flag with
-// which the review skills publish what they found.
-func taskPosts(task string) bool {
-	for _, f := range strings.Fields(task) {
-		if f == "--post" || strings.HasPrefix(f, "--post=") {
-			return true
-		}
-	}
-	return false
+	return st.Posts || mentionsPublishing(st.Task) || promptAuthorizesPosting(st.Prompt)
 }
 
 // noPublishLine is the prohibition on writing to GitHub that the default
@@ -511,6 +521,17 @@ func Path() (string, error) {
 	return filepath.Join(dir, "config.yaml"), nil
 }
 
+// Tighten closes what older versions left open: Bazel's folder holds reviews of
+// private repositories, and config.yaml may hold an agent's token.
+func Tighten() {
+	if dir, err := Dir(); err == nil {
+		_ = os.Chmod(dir, 0o700)
+	}
+	if path, err := Path(); err == nil {
+		_ = os.Chmod(path, 0o600)
+	}
+}
+
 // Load reads the configuration from disk, filling missing fields with the
 // default.
 func Load() (*Config, error) {
@@ -526,9 +547,19 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
+	// An empty file is not a new install: it is a config that something lost,
+	// and starting from defaults would make that final at the next save.
+	if len(bytes.TrimSpace(data)) == 0 {
+		return nil, fmt.Errorf("%s is empty: restore it, or delete it to start over", path)
+	}
+
 	cfg := Default()
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("invalid config (%s): %w", path, err)
+	}
+	cfg.base = cfg.snapshot()
+	if _, cfg.disk, err = topLevel(data); err != nil {
+		cfg.disk = nil
 	}
 	if cfg.Agent.Command == "" {
 		cfg.Agent.Command = Default().Agent.Command
@@ -551,6 +582,7 @@ func Load() (*Config, error) {
 	// skill, which works with nothing installed.
 	cfg.PostAgent = migratePostAgent(cfg.PostAgent)
 	cfg.migratePipelines()
+	cfg.warnLaunchers()
 	for _, w := range cfg.Warnings {
 		fmt.Fprintln(warnOut, "bazel: "+w)
 	}
@@ -590,23 +622,27 @@ func LoadOrInit() (*Config, bool, error) {
 	return cfg, true, nil
 }
 
-// Save writes the configuration, creating the directory if needed.
-func (c *Config) Save() error {
-	if err := c.validateFormats(); err != nil {
-		return err
+// defaultLogKeep is how many job logs stay on disk unless log_keep says otherwise.
+const defaultLogKeep = 200
+
+// ResolvedLogDir returns the folder for job logs, flag over config; empty is off.
+func (c *Config) ResolvedLogDir(flag string) (string, error) {
+	dir := strings.TrimSpace(flag)
+	if dir == "" {
+		dir = strings.TrimSpace(c.LogDir)
 	}
-	path, err := Path()
-	if err != nil {
-		return err
+	if dir == "" {
+		return "", nil
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	return expandHome(dir)
+}
+
+// ResolvedLogKeep is how many job logs to keep.
+func (c *Config) ResolvedLogKeep() int {
+	if c.LogKeep > 0 {
+		return c.LogKeep
 	}
-	data, err := yaml.Marshal(c)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	return defaultLogKeep
 }
 
 // ResolvedReviewsDir returns the absolute reviews directory. If reviews_dir is
@@ -753,6 +789,22 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 		def.Prompt = postPrompt
 		def.Posts = true
 	}
+	// The post agent under another post_agent's name: from the list it would
+	// run with no review to publish, and the MCP would take it as a lens.
+	if !posts && c.isPostAgent(def) {
+		return AgentDef{}, fmt.Errorf("%q is a publishing skill — in a pipeline it is the publish step, not an agent", skill)
+	}
+	// A name is what ChoiceByName goes by, so any choice counts: an agent called
+	// like a pipeline takes its place, and runs instead of it.
+	for _, ch := range c.Choices() {
+		if strings.EqualFold(ch.Name, def.Name) {
+			kind := "agent"
+			if ch.Pipeline {
+				kind = "pipeline"
+			}
+			return AgentDef{}, fmt.Errorf("the %s %q is already in the list", kind, ch.Name)
+		}
+	}
 	for _, a := range c.Agents {
 		if strings.EqualFold(strings.TrimSpace(a.Name), def.Name) {
 			return AgentDef{}, fmt.Errorf("the agent %q is already in the list", def.Name)
@@ -804,6 +856,11 @@ func (c *Config) AddPipeline(name, description string, steps []string) (Pipeline
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return Pipeline{}, errors.New("a pipeline needs a name")
+	}
+	// The saved file carries the name on a header line, cut at " — ": read back,
+	// another name would answer for what this pipeline may publish.
+	if strings.ContainsAny(name, "\r\n") || strings.Contains(name, " — ") {
+		return Pipeline{}, fmt.Errorf("a pipeline name is one line, without \" — \": %q", name)
 	}
 	for _, ch := range c.Choices() {
 		if strings.EqualFold(ch.Name, name) {
@@ -1093,15 +1150,15 @@ func (c *Config) ValidateHistoryAgent() error {
 		return refuse("has posts: true")
 	case c.isPostAgent(named):
 		return refuse("is the post agent")
-	case c.mentionsPublishing(def.Task):
+	case commandPublishes(def.Task):
 		return refuse(fmt.Sprintf("has a task that publishes: %q", def.Task))
-	case c.mentionsPublishing(def.Command + " " + strings.Join(def.Args, " ")):
+	case commandPublishes(def.Command + " " + strings.Join(def.Args, " ")):
 		return refuse("has a command or args that publish")
 	case strings.TrimSpace(def.Prompt) == "":
 		return nil
 	case promptAuthorizesPosting(def.Prompt):
 		return refuse("has a prompt that authorizes publishing")
-	case c.mentionsPublishing(def.Prompt):
+	case mentionsPublishing(def.Prompt):
 		return refuse("has a prompt that tells it to publish")
 	case !promptForbidsPosting(def.Prompt):
 		return refuse(fmt.Sprintf("has a prompt that does not say %q", noPublishLine))
@@ -1126,19 +1183,35 @@ func (c *Config) HistoryCustom() bool {
 		!slices.Equal(st.Args, own.Args) || len(st.Env) > 0
 }
 
-// publishCommandRe matches, in flattened text, the flag and the gh commands
-// that write to a PR. --post=false is the flag turned off.
-var publishCommandRe = regexp.MustCompile(`(^|\s)--post(=(true|yes|on|1))?(\s|$)|\bgh (pr (comment|review|merge|edit|close)|issue comment)\b`)
+// skillTaskRe is a task that only calls a skill: its name, placeholders, flags.
+var skillTaskRe = regexp.MustCompile(`^/[A-Za-z0-9:_-]+(\s+(\{\{[a-z_]+\}\}|--?[A-Za-z][A-Za-z0-9-]*(=[^\s]+)?))*$`)
 
-// mentionsPublishing says whether the text calls the built-in post skill, which
-// only publishes, passes --post or runs a gh command that writes to the PR.
-func (c *Config) mentionsPublishing(text string) bool {
+// publishCommandRe matches, in flattened text, the gh commands that write to a
+// PR and a skill named for publishing, plugin prefix or not.
+var publishCommandRe = regexp.MustCompile(`\bgh (pr (comment|review|merge|edit|close)|issue comment)\b|(^|\s)/[a-z0-9:-]*post-?(report|review|comment)\b`)
+
+// ghRe is gh itself: in a task, a command or args there is no reading reason to
+// tell apart from a writing one.
+var ghRe = regexp.MustCompile(`\bgh\b`)
+
+// mentionsPublishing says whether the text calls a skill that publishes, passes
+// --post or runs a gh command that writes to the PR. --post=false is the flag
+// turned off.
+func mentionsPublishing(text string) bool {
 	flat := flatten(text)
 	if publishCommandRe.MatchString(flat) {
 		return true
 	}
-	post := flatten(skills.Bare(skills.TaskSkill(defaultPostAgent().Task)))
-	return strings.Contains(flat, "/"+post) || strings.Contains(flat, ":"+post)
+	return slices.ContainsFunc(strings.Fields(flat), func(f string) bool {
+		value, flag := strings.CutPrefix(f, "--post=")
+		return f == "--post" || flag && !slices.Contains([]string{"false", "no", "off", "0"}, value)
+	})
+}
+
+// commandPublishes is mentionsPublishing for what gets executed, where any gh
+// counts.
+func commandPublishes(text string) bool {
+	return mentionsPublishing(text) || ghRe.MatchString(flatten(text))
 }
 
 func validateFormat(format string) error {
@@ -1155,6 +1228,104 @@ func validateFormat(format string) error {
 // is the agent that fills that hole.
 func promptNeedsTask(p string) bool {
 	return strings.TrimSpace(p) == strings.TrimSpace(defaultPrompt)
+}
+
+// ProgramName is a command's base name as a program: lower case, because the
+// macOS and Windows filesystems ignore case, and with no Windows extension.
+func ProgramName(command string) string {
+	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
+	for _, ext := range []string{".exe", ".cmd", ".bat"} {
+		name = strings.TrimSuffix(name, ext)
+	}
+	return name
+}
+
+// IsLauncher says whether command picks what it runs at run time. With the
+// clone as working directory, that choice is the PR's: npx runs the
+// node_modules the PR versions, an .npmrc points the registry at its server, a
+// .yarnrc runs a file of its own, a .tool-versions picks the binary and a
+// Makefile is the script, all before any flag of Bazel's counts.
+func IsLauncher(command string) bool {
+	switch ProgramName(command) {
+	case "npx", "npm", "pnpx", "pnpm", "yarn", "yarnpkg", "corepack", "bun", "bunx", "deno",
+		"uv", "uvx", "pipx", "poetry", "pipenv", "pdm", "hatch", "rye",
+		"mise", "rtx", "asdf", "volta", "nvm", "fnm", "nodenv", "pyenv", "rbenv", "nix", "nix-shell", "direnv",
+		"bundle", "bundler", "cargo", "make", "gmake", "just", "task", "rake", "env":
+		return true
+	}
+	return false
+}
+
+// isWrapper says whether command only runs another program with something
+// around it, as `timeout 600 npx …` does: what counts is that other program.
+func isWrapper(command string) bool {
+	switch ProgramName(command) {
+	case "timeout", "gtimeout", "nice", "nohup", "stdbuf", "ionice", "taskset", "chrt", "time", "caffeinate",
+		"sudo", "doas", "xargs", "busybox", "unbuffer", "script", "command", "exec":
+		return true
+	}
+	return false
+}
+
+// CheckLauncher refuses a step that would decide inside the clone what to run:
+// a launcher, or a relative path, which resolves in the clone too, either as
+// the command or behind a wrapper.
+func CheckLauncher(step ResolvedAgent) error {
+	if !step.Checkout {
+		return nil
+	}
+	if err := checkProgram(step.Command); err != nil {
+		return err
+	}
+	if !isWrapper(step.Command) {
+		return nil
+	}
+	// A launcher's name anywhere counts: wrappers take options of all shapes. A
+	// relative path counts only as the program, the first thing that is not an
+	// option or a number; after it come that program's own arguments.
+	program := true
+	for _, arg := range step.Args {
+		if IsLauncher(arg) {
+			return checkProgram(arg)
+		}
+		if program && !strings.HasPrefix(arg, "-") && !wrapperValueRe.MatchString(arg) {
+			program = false
+			if err := checkProgram(arg); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// wrapperValueRe is a number or a duration, what a wrapper takes before the
+// program (`timeout 10m`, `nice -n 5`).
+var wrapperValueRe = regexp.MustCompile(`^[0-9.]+[a-z]*$`)
+
+func checkProgram(command string) error {
+	if IsLauncher(command) {
+		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", command)
+	}
+	if strings.ContainsAny(command, `/\`) && !filepath.IsAbs(command) {
+		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", command)
+	}
+	return nil
+}
+
+// warnLaunchers notes, at boot, the steps that will be refused when they run:
+// better to hear it now than twenty minutes into a pipeline. It is a warning,
+// not a failed load: the other agents still work.
+func (c *Config) warnLaunchers() {
+	for _, ch := range append(c.Choices(), c.PostChoice(), c.HistoryChoice()) {
+		for _, st := range ch.Steps {
+			if st.Reserved != "" {
+				continue
+			}
+			if err := CheckLauncher(st); err != nil {
+				c.Warnings = append(c.Warnings, fmt.Sprintf("agent %q will be refused: %v", st.Name, err))
+			}
+		}
+	}
 }
 
 // Choices is what the selector shows before the review: first the named agents,

@@ -759,7 +759,7 @@ func TestUntickingIsNoAllClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	trimmed := store.DropFindings(body, []int{0})
-	path, err := store.SavePublishCopy(w.dir, whole, trimmed, nil, true)
+	path, err := store.SavePublishCopy(w.dir, whole, trimmed, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1104,9 +1104,15 @@ func TestTheSavedFileDrivesTheGates(t *testing.T) {
 	})
 	t.Run("a step left out of the copy is off the list", func(t *testing.T) {
 		w := newWorld(t)
-		whole := "## history\n\nstory\n\n---\n\n## fleet\n\n" + clean
-		path := save(t, w, agent.Result{Body: whole, Steps: []agent.StepResult{{Name: "history"}, {Name: "fleet"}}})
-		kept, err := store.SavePublishCopy(w.dir, path, clean, []string{"fleet"}, false)
+		path := save(t, w, agent.Result{Keeps: true, Publish: clean, Stays: "## history\n\nstory",
+			Steps:        []agent.StepResult{{Name: "history"}, {Name: "fleet"}},
+			PublishSteps: []agent.StepResult{{Name: "fleet"}}})
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, _, _ := store.SplitBody(string(data))
+		kept, err := store.SavePublishCopy(w.dir, path, out, false)
 		if err != nil {
 			t.Fatal(err)
 		}

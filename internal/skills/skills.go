@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -24,6 +25,18 @@ type Skill struct {
 	// Builtin marks the skill that came inside the Bazel binary. It is not
 	// anywhere on disk until a review runs, and it is always available.
 	Builtin bool `json:"builtin,omitempty"`
+	// Review says what it is for reads as reviewing code: those come first in
+	// the page's list, and the rest fold away.
+	Review bool `json:"review,omitempty"`
+}
+
+// reviewWordsRe finds a review's vocabulary in a skill's name or description.
+var reviewWordsRe = regexp.MustCompile(`(?i)\b(review\w*|audit\w*|lens|lenses)\b`)
+
+// Reviews says whether a skill looks like one that reviews. It is only a guess
+// to order a list: a skill it misses is a click away, under the fold.
+func Reviews(s Skill) bool {
+	return reviewWordsRe.MatchString(s.Name + " " + s.Description)
 }
 
 // DefaultDir is where Claude Code keeps the user's skills.
@@ -112,12 +125,12 @@ func parseFrontmatter(r io.Reader) (name, description string) {
 			}
 			continue
 		}
-		name, value, ok := strings.Cut(line, ":")
+		field, value, ok := strings.Cut(line, ":")
 		if !ok {
 			key = ""
 			continue
 		}
-		key = strings.TrimSpace(name)
+		key = strings.TrimSpace(field)
 		value = strings.TrimSpace(strings.Trim(strings.TrimSpace(value), `"'`))
 		switch key {
 		case "name":

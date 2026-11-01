@@ -1051,3 +1051,101 @@ func TestGrokDoneLineUsesTheTable(t *testing.T) {
 		t.Errorf("done line %q should carry the card's $%.2f", done, card.CostUSD)
 	}
 }
+
+// streamReview runs a fake CLI that prints events and exits 0.
+func streamReview(t *testing.T, format string, events ...string) (Result, error) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: format,
+		Args: []string{"-c", "cat >/dev/null\ncat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(cfg).Review(context.Background(), testPR(), choice, nil)
+}
+
+// A CLI that says in its stream it failed, and exits 0, did not finish a review.
+func TestErroTerminalComExitZero(t *testing.T) {
+	cases := map[string][]string{
+		"claude-stream": {`{"type":"assistant","message":{"content":[{"type":"text","text":"PARTIAL"}]}}`,
+			`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"PARTIAL"}`},
+		"codex-json": {`{"type":"item.completed","item":{"type":"agent_message","text":"PARTIAL"}}`,
+			`{"type":"turn.failed","error":{"message":"quota exhausted"}}`},
+	}
+	for format, events := range cases {
+		t.Run(format, func(t *testing.T) {
+			res, err := streamReview(t, format, events...)
+			if err == nil && (len(res.Steps) != 1 || res.Steps[0].Err == nil) {
+				t.Errorf("a failed run passed as a review: %+v", res)
+			}
+		})
+	}
+}
+
+// The run's own final event settles the report: a sub-agent's result or a late
+// one from something still holding the pipe does not replace it.
+func TestPrimeiroResultadoVale(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"success","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
+		`{"type":"result","subtype":"success","result":"critical RCE"}`,
+		`{"type":"result","subtype":"success","result":"no findings"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "critical RCE" {
+		t.Errorf("body = %q", res.Body)
+	}
+}
+
+// What a step ran on comes from its format and the model it reported; a CLI
+// that speaks neither is named by its command.
+func TestAttribution(t *testing.T) {
+	for _, c := range []struct {
+		step  config.ResolvedAgent
+		model string
+		want  string
+	}{
+		{config.ResolvedAgent{Command: "claude", Format: "claude-stream"}, "claude-opus-5", "claude · opus-5"},
+		{config.ResolvedAgent{Command: "claude", Format: "claude-stream"}, "claude-haiku-4-5-20251001", "claude · haiku-4-5"},
+		{config.ResolvedAgent{Command: "cc", Args: []string{"--output-format", "stream-json"}}, "", "claude"},
+		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, "codex", "codex"},
+		{config.ResolvedAgent{Command: "codex", Format: "codex-json"}, "gpt-5-codex", "codex · gpt-5-codex"},
+		{config.ResolvedAgent{Command: "grok", Format: "grok-stream"}, "grok-4", "grok · 4"},
+		{config.ResolvedAgent{Command: "/opt/bin/My-Agent.exe", Format: "plain"}, "", "my-agent"},
+	} {
+		if got := attribution(provider(c.step), c.model); got != c.want {
+			t.Errorf("%+v, %q: %q, want %q", c.step, c.model, got, c.want)
+		}
+	}
+}
+
+// What a value brings stays text: a review file's name is not a way into the diff.
+func TestBuildPromptNaoReexpandeValores(t *testing.T) {
+	got := buildPrompt("file {{review_file}}", "", testPR(), "SECRET-DIFF", "", map[string]string{"{{review_file}}": "{{diff}}"})
+	if strings.Contains(got, "SECRET-DIFF") {
+		t.Errorf("expanded: %s", got)
+	}
+	if got := buildPrompt("{{task}}", "publish {{review_file}} of {{number}}", testPR(), "", "", map[string]string{"{{review_file}}": "/x.md"}); !strings.Contains(got, "/x.md of") {
+		t.Errorf("task: %s", got)
+	}
+}
+
+// A result with no subtype is no failure; an error says so itself.
+func TestResultadoSemSubtypeNaoEFalha(t *testing.T) {
+	for line, failed := range map[string]bool{
+		`{"type":"result","result":"ok","duration_ms":1}`:                                    false,
+		`{"type":"result","subtype":"success","result":"ok","duration_ms":1}`:                false,
+		`{"type":"result","subtype":"error_max_turns","result":"ok","duration_ms":1}`:        true,
+		`{"type":"result","subtype":"success","is_error":true,"result":"x","duration_ms":1}`: true,
+	} {
+		var p streamParser
+		p.line(line)
+		if (p.failure != nil) != failed {
+			t.Errorf("%s: %v", line, p.failure)
+		}
+	}
+}

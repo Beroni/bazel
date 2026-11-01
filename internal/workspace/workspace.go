@@ -6,8 +6,10 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -19,6 +21,9 @@ import (
 type Workspace struct {
 	// Dir is the root of the clone.
 	Dir string
+	// Head is the commit that was checked out: what the agents really read,
+	// which may be newer than the head the PR had when it was listed.
+	Head string
 	// Keep preserves the directory on Cleanup, for manual inspection.
 	Keep bool
 }
@@ -29,8 +34,8 @@ type Workspace struct {
 // by hand.
 var cloneTimeout = 15 * time.Minute
 
-// waitDelay is how long Run waits for the pipes after killing the process.
-const waitDelay = 10 * time.Second
+// WaitDelay is how long Run waits for the pipes after killing the process.
+const WaitDelay = 10 * time.Second
 
 // Prepare clones the PR's repository into a temporary folder and checks out
 // the PR branch. The clone is blobless (--filter=blob:none) instead of
@@ -51,11 +56,19 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 		ws.Remove()
 		return nil, fmt.Errorf("clonando %s: %w", pr.Repo, err)
 	}
-	// `gh pr checkout` handles PRs coming from forks on its own.
-	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number)); err != nil {
+	// `gh pr checkout` handles PRs coming from forks on its own. The repository
+	// is named: in a clone of a fork gh would pick the parent, and check out
+	// the parent's PR with this number.
+	if err := run(ctx, dir, "gh", "pr", "checkout", strconv.Itoa(pr.Number), "--repo", pr.Repo); err != nil {
 		ws.Remove()
 		return nil, fmt.Errorf("checkout de %s: %w", pr.Key(), err)
 	}
+	head, err := gitOutput(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		ws.Remove()
+		return nil, fmt.Errorf("reading the head of %s: %w", pr.Key(), err)
+	}
+	ws.Head = head
 	// gh repo clone only brings the remote refs the initial clone configured —
 	// usually the default branch. A PR against a release branch needs the base
 	// fetched explicitly so the agent can compare origin/<base>...HEAD.
@@ -70,7 +83,7 @@ func Prepare(ctx context.Context, pr gh.PR) (*Workspace, error) {
 
 // ensurePRBase makes origin/<base> and a local <base> branch available when
 // possible. A failed fetch is not fatal if the tracking ref is already there;
-// git branch --force is skipped when <base> is already HEAD.
+// the local branch is skipped when <base> is already HEAD.
 func ensurePRBase(ctx context.Context, dir, base string) error {
 	refspec := "+refs/heads/" + base + ":refs/remotes/origin/" + base
 	if err := run(ctx, dir, "git", "fetch", "origin", refspec); err != nil {
@@ -85,21 +98,68 @@ func ensurePRBase(ctx context.Context, dir, base string) error {
 	if head == base {
 		return nil
 	}
-	if err := run(ctx, dir, "git", "branch", "--force", base, "origin/"+base); err != nil {
+	// update-ref and not `git branch`: a base called `-m` is a ref name here.
+	if err := run(ctx, dir, "git", "update-ref", "refs/heads/"+base, "refs/remotes/origin/"+base); err != nil {
 		return fmt.Errorf("criando branch local: %w", err)
 	}
 	return nil
 }
 
+// cloneEnv keeps the machine's git config out of the clone and the checkout.
+// They run before Neutralize and write the PR's files to disk: a filter or LFS
+// set up globally would run over them, with a .gitattributes and an .lfsconfig
+// the PR chose, and hooksPath would run from here too.
+//
+// The one thing that config was also doing is authentication, so that comes back
+// on its own. gh passes its credentials only to the git commands it starts, and
+// a blobless clone fetches blobs later, from the `git checkout` underneath it and
+// from our own fetch: with no helper those fail on a private repository, or sit
+// at a password prompt until the clone times out.
+func cloneEnv() []string {
+	env := make([]string, 0, len(os.Environ())+8)
+	base := 0
+	for _, kv := range os.Environ() {
+		name, value, _ := strings.Cut(kv, "=")
+		switch name {
+		case "PATH":
+			kv = "PATH=" + absolutePath(value)
+		case "GIT_CONFIG_COUNT":
+			if n, err := strconv.Atoi(value); err == nil && n > 0 {
+				base = n
+			}
+			continue
+		}
+		env = append(env, kv)
+	}
+	env = append(env, "GIT_CONFIG_GLOBAL="+os.DevNull, "GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0")
+	for i, helper := range []string{"", "!gh auth git-credential"} {
+		env = append(env, fmt.Sprintf("GIT_CONFIG_KEY_%d=credential.helper", base+i), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", base+i, helper))
+	}
+	return append(env, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+2))
+}
+
+// absolutePath drops the entries of a PATH that are relative: `.` or `bin` would
+// resolve inside the clone, and git would run the PR's own `ssh`.
+func absolutePath(path string) string {
+	kept := []string{}
+	for _, dir := range filepath.SplitList(path) {
+		if filepath.IsAbs(dir) {
+			kept = append(kept, dir)
+		}
+	}
+	return strings.Join(kept, string(os.PathListSeparator))
+}
+
 func gitOutput(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
+	cmd.Env = cloneEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
 	// timeout does not release Run while the hung grandchild holds the pipe.
-	cmd.WaitDelay = waitDelay
+	cmd.WaitDelay = WaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return "", fmt.Errorf("%s", lastLines(msg, 3))
@@ -122,17 +182,31 @@ func (w *Workspace) Remove() {
 	if w == nil || w.Dir == "" {
 		return
 	}
-	os.RemoveAll(w.Dir)
+	if os.RemoveAll(w.Dir) == nil {
+		return
+	}
+	// An agent can leave read-only folders behind, and a clone of a private
+	// repository must not stay in the temporary folder unnoticed.
+	_ = filepath.WalkDir(w.Dir, func(path string, d fs.DirEntry, err error) error {
+		if err == nil && d.IsDir() {
+			_ = os.Chmod(path, 0o700)
+		}
+		return nil
+	})
+	if err := os.RemoveAll(w.Dir); err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: could not remove the clone: %v\n", err)
+	}
 }
 
 func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.Dir = dir
+	cmd.Env = cloneEnv()
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// The git that gh spawns inherits stderr: without WaitDelay, killing gh on
 	// timeout does not release Run while the hung grandchild holds the pipe.
-	cmd.WaitDelay = waitDelay
+	cmd.WaitDelay = WaitDelay
 	if err := cmd.Run(); err != nil {
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			return fmt.Errorf("%s", lastLines(msg, 3))
