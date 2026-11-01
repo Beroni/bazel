@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 test.describe('P1 · saved reviews', () => {
@@ -14,8 +14,8 @@ test.describe('P1 · saved reviews', () => {
     await expect(app.getByText('Add rate limiter to the public API').first()).toBeVisible();
 
     const { reviews } = (await bazel.api('GET', '/api/reviews')).json;
-    const saved = reviews.find((r: any) => r.name.includes('101'));
-    const second = reviews.find((r: any) => r.name.includes('102'));
+    const saved = reviews.find((r: any) => r.name.includes('-101-'));
+    const second = reviews.find((r: any) => r.name.includes('-102-'));
     const one = await bazel.api('GET', `/api/reviews/${saved.name}`);
     expect(one.json.html).toContain('E2E-FINDING-ONE');
 
@@ -37,10 +37,9 @@ test.describe('P1 · saved reviews', () => {
     expect(fs.readFileSync(`${bazel.reviewsDir}/${saved.name}`, 'utf8')).toContain('E2E-FINDING-ONE');
   });
 
-  // S7: a saved review could go to the PR once per door, or twice by the same
+  // S7, fixed in #32: a saved review could go to the PR once per door, or twice by the same
   // one. Expected: the second answer is 409 and gh hears nothing.
   test('a saved review goes to the PR once', async ({ bazel }) => {
-    knownBug('S7', 'a saved review can be published again');
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
@@ -75,7 +74,7 @@ test.describe('P1 · config through the API', () => {
 
   // BUG-QA-03, fixed in #27: handleRepoAdd only checked that the text had a "/" somewhere.
   // "acme/" was stored as "acme" and a PR URL as "acme/web-app/pull/7": both
-  // reached config.yaml and every `gh search prs` as a bogus repo:… term, and
+  // reached config.yaml and every search of gh as a bogus repo:… term, and
   // the second could not be removed. Now: 400 unless it reduces to owner/name.
   test('a repo must be exactly owner/name', async ({ bazel }) => {
     const before = (await bazel.api('GET', '/api/repos')).json.repos;
@@ -177,12 +176,11 @@ test.describe('P1 · config through the API', () => {
     });
   });
 
-  // S24: a token in an agent's env left in the download and in /api/config.
+  // S24, fixed in #32: a token in an agent's env left in the download and in /api/config.
   // Expected: the key stays, the value does not.
   test.describe('with an env', () => {
     test.use({ bazelOptions: { config: { agents: [{ name: 'tokened', task: 'x', command: 'fake-agent', args: [], format: 'plain', env: { E2E_TOKEN: 'E2E-SECRET-VALUE' } }] } } });
     test('the download and the API do not carry its values', async ({ bazel }) => {
-      knownBug('S24', 'env values leave in the config download');
       expect(bazel.configText()).toContain('E2E-SECRET-VALUE');
       const file = await (await fetch(`${bazel.url}/api/config/file`)).text();
       expect(file).toContain('E2E_TOKEN');
@@ -212,7 +210,7 @@ test.describe('P1 · server guard', () => {
 
   // SEC-06, fixed in #30: Origin does not cover GET, so a page on another site can still make
   // the browser fire one. It cannot read the answer (no CORS), and a POST is
-  // refused, but `<img src=…/api/prs?refresh=1>` runs `gh search prs` with the
+  // refused, but `<img src=…/api/prs?refresh=1>` runs `gh pr list` with the
   // user's login: blind, and only spends quota. A client that sends no such
   // header (curl, MCP) goes on as before.
   test('Sec-Fetch-Site cross-site or same-site is refused on /api, and only there', async ({ bazel }) => {
