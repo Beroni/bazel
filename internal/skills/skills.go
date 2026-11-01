@@ -151,8 +151,12 @@ func TaskSkill(task string) string {
 		return ""
 	}
 	name := strings.TrimPrefix(task, "/")
-	if i := strings.IndexAny(name, " \t\n"); i >= 0 {
+	if i := strings.IndexAny(name, " \t\r\n"); i >= 0 {
 		name = name[:i]
+	}
+	// `//name` is not a slash command, and no skill name starts with a slash.
+	if strings.HasPrefix(name, "/") {
+		return ""
 	}
 	return name
 }

@@ -3,6 +3,7 @@ package store
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -56,14 +57,39 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
 	}
+	// What the report owes: the publisher wants one report, or one failure, for
+	// each of these, or it cannot say the whole review is in the file. A step that
+	// stays in Bazel is not in the part that goes to the PR.
+	steps := res.Steps
+	if res.Keeps {
+		steps = res.PublishSteps
+	}
+	if len(steps) > 0 {
+		names := make([]string, len(steps))
+		for i, s := range steps {
+			names[i] = s.Name
+		}
+		list, _ := json.Marshal(names)
+		fmt.Fprintf(&b, "- Steps: %s\n", list)
+	}
+	for _, s := range res.Steps {
+		if s.Cut != "" {
+			fmt.Fprintf(&b, "- Cut from before the report of %s: %q\n", s.Name, s.Cut)
+		}
+	}
 	if len(res.Steps) > 1 && !res.Keeps {
 		b.WriteString(allStepsLine + "\n")
 	}
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
+	// For the publisher, which has no say in the wording of the warning below. It
+	// is written either way: a file that does not say is a file that proves nothing.
 	if res.Truncated {
+		b.WriteString("- Truncated: yes\n")
 		b.WriteString("- ⚠️ The diff was truncated before it reached the agent.\n")
+	} else {
+		b.WriteString("- Truncated: no\n")
 	}
 	b.WriteString("\n---\n\n")
 	if res.Keeps {

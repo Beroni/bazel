@@ -1503,8 +1503,11 @@ func (s *Server) installedSkills() (string, []skills.Skill) {
 	}
 	// The embedded ones join the list: they travel in the binary, are always
 	// available, and it is from this list that the page lets you build agents
-	// and pipelines. A disk skill with the same name loses — inside the clone,
-	// what Claude Code will find is the project's, which is the embedded one.
+	// and pipelines. A disk skill with the same name is left out of the list,
+	// but it is not overridden: the embedded one reaches Claude Code through a
+	// plugin, as bazel:<name>, and a ~/.claude/skills/bazel-<name> may answer
+	// the bare /bazel-<name> instead. That is why every embedded skill
+	// carries the bazel- prefix.
 	list := skills.Builtin()
 	for _, s := range skills.List(dir) {
 		if !skills.IsBuiltin(s.Name) {

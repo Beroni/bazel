@@ -13,10 +13,11 @@ import (
 )
 
 func TestConfineClaude(t *testing.T) {
-	guard := []string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}
+	denied := []string{"--disallowedTools", strings.Join(deniedCommands, ",")}
+	guard := slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config", "--plugin-dir", "/rt/x"}, denied)
 
 	base := []string{"-p", "--output-format", "stream-json", "--verbose", "--allowedTools", "Read,Grep,Glob,Bash,Agent"}
-	got := confineClaude(base, "/rt/x")
+	got := confineClaude(base, "/rt/x", deniedCommands)
 	if want := slices.Concat(guard, base); !slices.Equal(got, want) {
 		t.Errorf("the flags go first:\n got %q\nwant %q", got, want)
 	}
@@ -26,7 +27,7 @@ func TestConfineClaude(t *testing.T) {
 
 	// The user's args already confine it: nothing is repeated.
 	own := []string{"-p", "--model", "haiku", "--setting-sources=user", "--strict-mcp-config"}
-	got = confineClaude(own, "/rt/y")
+	got = confineClaude(own, "/rt/y", deniedCommands)
 	if joined := strings.Join(got, " "); strings.Count(joined, "setting-sources") != 1 || strings.Count(joined, "--strict-mcp-config") != 1 {
 		t.Errorf("flags already in the args were repeated: %q", got)
 	}
@@ -35,8 +36,8 @@ func TestConfineClaude(t *testing.T) {
 	}
 
 	// Without a plugin dir (no embedded skill to load), the guard flags still go.
-	got = confineClaude([]string{"-p"}, "")
-	if !slices.Equal(got, []string{"--setting-sources", "user", "--strict-mcp-config", "-p"}) {
+	got = confineClaude([]string{"-p"}, "", deniedCommands)
+	if !slices.Equal(got, slices.Concat([]string{"--setting-sources", "user", "--strict-mcp-config"}, denied, []string{"-p"})) {
 		t.Errorf("no plugin: %q", got)
 	}
 }
@@ -65,12 +66,12 @@ func TestCheckSettingSources(t *testing.T) {
 // After a `--` everything is positional: the flags must come before it, and a
 // flag found after it is text, not a flag already set.
 func TestConfineClaudeDoubleDash(t *testing.T) {
-	got := confineClaude([]string{"-p", "--", "some text"}, "/rt/x")
+	got := confineClaude([]string{"-p", "--", "some text"}, "/rt/x", deniedCommands)
 	if sep := slices.Index(got, "--"); sep < 0 || slices.Index(got, "--setting-sources") > sep || slices.Index(got, "--strict-mcp-config") > sep || slices.Index(got, "--plugin-dir") > sep {
 		t.Errorf("every flag must sit before the --: %q", got)
 	}
 
-	got = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "")
+	got = confineClaude([]string{"-p", "--", "--strict-mcp-config", "--setting-sources=user"}, "", deniedCommands)
 	sep := slices.Index(got, "--")
 	if !slices.Contains(got[:sep], "--strict-mcp-config") || !slices.Contains(got[:sep], "--setting-sources") {
 		t.Errorf("a flag after the -- is text and does not count: %q", got)
@@ -388,7 +389,7 @@ func TestPublishIsConfined(t *testing.T) {
 		}
 	}
 	prompt, _ := os.ReadFile(filepath.Join(state, "prompt"))
-	if !strings.Contains(string(prompt), "/bazel-post-report /reviews/publish/copy.md") {
+	if !strings.Contains(string(prompt), "/bazel:bazel-post-report /reviews/publish/copy.md") {
 		t.Errorf("the post agent should get the trimmed copy:\n%s", prompt)
 	}
 	if _, err := os.Stat(filepath.Join(state, "hook-ran")); err == nil {
@@ -405,4 +406,77 @@ func pluginFrom(t *testing.T, body string) string {
 	}
 	t.Fatalf("no --plugin-dir reached the agent:\n%s", body)
 	return ""
+}
+
+// Publishing has to keep working: a skill of the user's own types the gh commands
+// itself, while the built-in leaves them to its script and needs none of them.
+func TestDeniedFor(t *testing.T) {
+	cases := []struct {
+		name   string
+		step   config.ResolvedAgent
+		denied bool
+	}{
+		{"a review", config.ResolvedAgent{Task: "/review-fleet 26"}, true},
+		{"a built-in review", config.ResolvedAgent{Task: "/bazel-review-fleet 26"}, true},
+		{"the built-in post agent", config.ResolvedAgent{Task: "/bazel-post-report r.md", Posts: true}, true},
+		{"the built-in, in capitals", config.ResolvedAgent{Task: "/BAZEL-POST-REPORT r.md", Posts: true}, true},
+		{"a post agent of the user's", config.ResolvedAgent{Task: "/post-report r.md", Posts: true}, false},
+		{"a review with --post", config.ResolvedAgent{Task: "/review-fleet 26 --post", Posts: true}, false},
+		{"--post with no posts: true", config.ResolvedAgent{Task: "/review-fleet 26 --post"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := deniedFor(c.step)
+			for _, cmd := range publishCommands {
+				if slices.Contains(got, cmd) != c.denied {
+					t.Errorf("%s: denied = %v, want %v", cmd, !c.denied, c.denied)
+				}
+			}
+			// Nobody publishes with these, so nobody gets them.
+			for _, cmd := range []string{"Bash(git push:*)", "Bash(gh pr merge:*)", "Bash(gh pr -* merge*)", "Bash(gh repo delete:*)"} {
+				if !slices.Contains(got, cmd) {
+					t.Errorf("%s should stay denied", cmd)
+				}
+			}
+		})
+	}
+}
+
+// What a step may read does not depend on where the flags go: only the verb says
+// it writes.
+func TestDenyLeavesReads(t *testing.T) {
+	for _, pattern := range deniedCommands {
+		if strings.HasSuffix(pattern, " -R*)") || strings.HasSuffix(pattern, " --repo*)") || pattern == "Bash(gh issue:*)" || pattern == "Bash(gh release:*)" {
+			t.Errorf("%s takes reads with it", pattern)
+		}
+	}
+}
+
+// The list has to reach the command line of each step, not only be right in a table.
+func TestEachStepGetsItsList(t *testing.T) {
+	for name, c := range map[string]struct {
+		task   string
+		denied bool
+	}{
+		"the built-in":      {"/bazel-post-report {{review_file}}", true},
+		"one of the user's": {"/post-report {{review_file}}", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			hostileClone(t, "claude")
+			cfg := config.Default()
+			cfg.PostAgent = config.AgentDef{Name: "poster", Task: c.task, Prompt: "{{task}}", Command: "claude", Format: "plain", Args: []string{"-p"}}
+			pr := testPR()
+			pr.BaseRefName = ""
+			res, err := New(cfg).Publish(context.Background(), pr, cfg.PostChoice(), "/r/x.md", "body", nil)
+			if err != nil {
+				t.Fatalf("Publish: %v", err)
+			}
+			if got := strings.Contains(res.Body, "gh api -X*"); got != c.denied {
+				t.Errorf("publishing commands denied = %v, want %v\n%s", got, c.denied, res.Body)
+			}
+			if !strings.Contains(res.Body, "git push:*") {
+				t.Error("nobody publishes with git push")
+			}
+		})
+	}
 }

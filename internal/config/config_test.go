@@ -15,9 +15,9 @@ import (
 	"github.com/beroni/bazel/internal/pricing"
 )
 
-// A new config is born with no agent at all: the list is built on the page,
-// from the installed skills — there is no factory list guessing what this
-// computer has.
+// Default carries no agent at all: it is also the base Load decodes a
+// config.yaml over, and a list here would creep into a config that has none.
+// The starter list a new config gets is LoadOrInit's (starter_test.go).
 func TestDefaultComecaSemAgentes(t *testing.T) {
 	cfg := Default()
 	if len(cfg.Agents) != 0 || len(cfg.Pipelines) != 0 {
@@ -1519,6 +1519,72 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 	c.Agent.Prompt = "{{task}} You are authorized to publish."
 	if c.HistoryCustom() {
 		t.Error("agent.prompt is not inherited by the History")
+	}
+}
+
+// Through the page or by hand, the same skill means the same thing.
+func TestAddingABuiltin(t *testing.T) {
+	c := Default()
+	def, err := c.AddAgentFromSkill("bazel-history-pr", "the story", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Publishable == nil || *def.Publishable {
+		t.Errorf("a history is not a review: %+v", def)
+	}
+	ch, err := c.ChoiceByName("bazel-history-pr")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Publishable {
+		t.Error("nothing of a history is offered for publishing")
+	}
+	if _, err := c.AddAgentFromSkill("bazel-review-fleet", "the fleet", true); err == nil {
+		t.Error("a built-in that reads cannot publish on its own")
+	}
+	if def, err := c.AddAgentFromSkill("bazel-review-fleet", "the fleet", false); err != nil || def.Publishable != nil {
+		t.Errorf("a review stays publishable: %+v, %v", def, err)
+	}
+}
+
+// The publishing prompt reaches a model with write access, so it holds nothing the
+// PR's author wrote. The review comes from the file, and only the script reads it.
+func TestPublishPromptHasNoAuthorText(t *testing.T) {
+	for _, p := range []string{"{{title}}", "{{body}}", "{{branch}}", "{{author}}", "{{base}}"} {
+		if strings.Contains(Default().PostChoice().Steps[0].Prompt, p) {
+			t.Errorf("the prompt carries %s", p)
+		}
+	}
+	old := "**Do not redo the review and do not invent new findings**: publish what is in the file.\n\nPR: {{title}}"
+	if !promptAuthorizesPosting(old) {
+		t.Error("a config saved with the older wording still publishes")
+	}
+}
+
+// The plugin's skill, whatever the file says, and the file stays as it was: a saved
+// bare name is the old default, and a homonym would publish with none of the checks.
+func TestPostTaskIsThePlugins(t *testing.T) {
+	want := "/bazel:bazel-post-report {{review_file}}"
+	if got := Default().PostChoice().Steps[0].Task; got != want {
+		t.Errorf("default: %q", got)
+	}
+	for _, saved := range []string{"/bazel-post-report {{review_file}}", "/BAZEL-POST-REPORT {{review_file}}", want} {
+		c := Default()
+		c.PostAgent.Task = saved
+		if got := c.PostChoice().Steps[0].Task; got != want {
+			t.Errorf("%q runs as %q", saved, got)
+		}
+		if c.PostAgent.Task != saved {
+			t.Errorf("the config itself changed to %q: it would be saved", c.PostAgent.Task)
+		}
+		if got := c.PostSkill(); !strings.EqualFold(got, "bazel-post-report") {
+			t.Errorf("PostSkill = %q", got)
+		}
+	}
+	c := Default()
+	c.PostAgent.Task = "/post-report {{review_file}}"
+	if got := c.PostChoice().Steps[0].Task; got != c.PostAgent.Task {
+		t.Errorf("a post agent of the user's own runs as %q", got)
 	}
 }
 

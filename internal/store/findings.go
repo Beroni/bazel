@@ -89,6 +89,14 @@ func SplitFindings(body string) []Part {
 		}
 		return ""
 	}
+	nextIsStep := func(i int) bool {
+		for j := i + 1; j < len(lines); j++ {
+			if t := strings.TrimSpace(lines[j]); t != "" {
+				return headings[j] && strings.HasPrefix(t, "## ")
+			}
+		}
+		return false
+	}
 	for i, line := range lines {
 		trim := strings.TrimSpace(line)
 		// Code, quoted HTML and a fence's own lines are never structure.
@@ -100,6 +108,13 @@ func SplitFindings(body string) []Part {
 		level, title := 0, ""
 		if headings[i] {
 			level, title = headingOf(trim)
+		}
+		// The line Bazel puts between two steps of a pipeline belongs to neither:
+		// dropping a step's last finding must leave the next step behind it. Bazel
+		// writes it after a blank line: right under text it is that text's underline.
+		if trim == "---" && blank && nextIsStep(i) {
+			flush()
+			finding, bold, section, human, blank = false, false, false, false, false
 		}
 		switch {
 		case level == 0:
@@ -281,7 +296,11 @@ func DropFindings(body string, skip []int) string {
 // the PR: the same header, but the body already without the unticked findings.
 // It lives in publish/ inside the reviews directory, so it stays out of the
 // saved list — the real review stays whole, only what goes out changes.
-func SavePublishCopy(dir, original, body string) (string, error) {
+//
+// unticked says a person took findings out: the publisher has to know, because
+// what is left is not what the agent concluded from, and a clean copy is no clean
+// review.
+func SavePublishCopy(dir, original, body string, unticked bool) (string, error) {
 	pubDir := filepath.Join(dir, "publish")
 	if err := os.MkdirAll(pubDir, 0o700); err != nil {
 		return "", err
@@ -289,6 +308,9 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 	header := ""
 	if data, err := os.ReadFile(original); err == nil {
 		if head, _, ok := strings.Cut(string(data), "\n---\n"); ok {
+			if unticked {
+				head = strings.TrimRight(head, "\n") + "\n- Trimmed: yes\n"
+			}
 			header = head + "\n---\n\n"
 		}
 	}

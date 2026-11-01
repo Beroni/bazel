@@ -25,7 +25,7 @@ reviews are all managed from the page.
 
 ## Highlights
 
-- **Agents are your own skills.** The agent list starts empty; you build it from
+- **Agents are skills.** A new config comes with Bazel's own review skills; add
   the [Claude Code skills](#agents-are-your-skills) installed on your machine.
 - **Reviews outlive the tab.** Each review is a server-side job. Close the
   browser, come back later, it's still there.
@@ -64,6 +64,7 @@ the prompt — it is only downloaded if your template uses `{{diff}}`.
   `GOTOOLCHAIN=local` is set
 - [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
+- `jq`, for publishing to the PR
 - An AI agent on your `PATH` that reads a prompt on stdin — by default
   [`claude`](https://claude.com/claude-code) in [stream mode](#the-live-log),
   which is what feeds the live log
@@ -163,9 +164,10 @@ applies to their PRs.
 
 ## Agents are your skills
 
-**An agent is one of your skills running over a PR.** That is why the list ships
-empty: a factory list would only be right by accident, pointing at skills this
-machine may never have had.
+**An agent is one of your skills running over a PR.** A new config starts with
+the [skills that ship inside Bazel](#the-skills-that-ship-inside-bazel), so the
+first review works right after install; everything else comes from your own
+skills.
 
 In **config**, the page lists what is actually installed — read from
 `~/.claude/skills`, or from `skills_dir` in `config.yaml` — and every row turns
@@ -204,24 +206,57 @@ the repository where you version them, and Bazel follows the links; the list is
 read from disk every time you open the page, so installing a skill needs no
 restart.
 
-### The skill that ships inside Bazel
+### The skills that ship inside Bazel
 
-One entry in that list is marked **in Bazel** and is never `✗`:
-`bazel-post-report`, the skill that takes a review you have read to the PR. It
-travels inside the binary and, right before a Claude Code agent runs, is
-written as a Claude Code plugin into a folder of Bazel's —
-`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone — that the agent loads with
+Some entries in that list are marked **in Bazel** and are never `✗`. They travel
+inside the binary and, right before a Claude Code agent runs, are written as a
+Claude Code plugin — skills and the lens agents — into a folder of Bazel's,
+`<BAZEL_HOME>/runtime/<id>/`, never the PR's clone, that the agent loads with
 `--plugin-dir`. Nothing is installed on your machine, and the folder is removed
 when the review ends, however it ends.
 
-This is what makes **publish** true on a machine that has never installed a
-skill. Before it existed, the default `post_agent` called a `/post-report` that
-only some machines had; everywhere else the agent ran with explicit permission
-to write to the PR and no instructions at all.
+| Skill | What it does |
+|---|---|
+| `bazel-review-fleet` | three lenses over the same diff, deduplicated into one report and one verdict |
+| `bazel-senior-code-reviewer` | precision lens: a few findings it can defend at confidence 8+ |
+| `bazel-exploit-digger` | adversarial recall lens, class by class, with what needs a human eye |
+| `bazel-lazy-senior-dev` | subtraction lens: code that should not exist |
+| `bazel-history-pr` | the PR's story — commits, reviews, the review→fix loop; not a review, never published |
+| `bazel-post-report` | takes a review you have read to the PR (the `post_agent`) |
 
-Your own publishing skill still wins whenever you want it: point `post_agent.task`
-at it, or build an agent out of it in the panel. A `post_agent` you have edited
-is never rewritten — only the old untouched default is migrated to the built-in.
+They are written for a run nobody is watching: they never ask a question, take
+the scope from the prompt (`git diff origin/{{base}}...HEAD` in the clone),
+print the whole report as their final output in the format the page splits into
+findings, and when they cannot review they print a report that says why. The
+contract is `bazel-review-fleet/references/headless.md`, in the binary under
+`internal/skills/builtin/`, which is where these skills are written and
+maintained.
+
+A **new** `config.yaml` comes with an agent for each review skill
+(`bazel-review-fleet` is the default), the `serial-fleet` pipeline (the three
+lenses, each in its own process) and `review-then-publish` (the fleet, then you
+choose what goes). A config you already have is never touched; add them from the
+list with **use**.
+
+**Other agent CLIs.** Codex, Grok and the rest do not load Claude Code skills, so
+for a step whose command is not `claude` and whose format is not
+`claude-stream`, Bazel replaces a `/bazel-…` task with the skill's instructions
+and its arguments, and the absolute path of the plugin folder where the files
+they mention are. Without
+subagents the fleet runs its lenses as sequential passes in one process, which
+keeps them less independent; `serial-fleet` keeps each lens in its own process
+on any CLI.
+
+**Your own skill of the same name may win.** The built-ins reach Claude Code as
+plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` may answer
+the bare `/bazel-<name>` instead. That is why they all carry the `bazel-`
+prefix: your `review-fleet` and Bazel's `bazel-review-fleet` live side by side,
+and you pick one by choosing the agent. The same goes for publishing: point
+`post_agent.task` at your own skill, or build an agent out of it in the panel. A
+`post_agent` you have edited is never rewritten — only the old untouched default
+is migrated to the built-in. Publishing is safe from this: the
+`post_agent` always runs `/bazel:bazel-post-report`, even from a config saved with
+the bare name, which is left as it is in the file.
 
 Everything the page does is written to `config.yaml`, and you can edit it by
 hand for what the page doesn't offer — another model, another executable, your
@@ -384,7 +419,22 @@ at the end of the list, log and all, and comes back to the review, now marked
 `✓ published`, when it finishes. Publishing is the end of a review, not a second
 job in the queue.
 
-**2. Paste as a comment** ("or paste as a comment"). This is Bazel writing,
+`bazel-post-report` only takes a report it can check: every step of the review
+has to carry the `review-fleet:v1` header, which the built-in skills always
+print and `/review-fleet` of your own may not. Anything else is refused, the
+card says why, and nothing reaches the PR; use the second way below for those.
+It needs `jq`, and says so if it is missing. The card only says published when
+the skill's script says so: a model that stops early leaves an error on it. The
+all-clear goes up only for a report that proves it: every step reported, the
+report is complete, no lens was skipped, the diff was not truncated, nothing was
+unticked. A clean report that falls short of that says why it does not clear the
+PR. Text around the report goes to the PR as plain text, under a label saying
+Bazel does not vouch for it, and so does a finding that lands in the review's
+body: on the PR they are one document, and no HTML in one may hide the next. An
+inline comment stays rendered, unless it has a tag in it, code included: then it
+goes as plain text too, because a `<details>` would fold what you approved.
+
+**2. As comment**. This is Bazel writing,
 with no agent: the review markdown becomes a single comment, immediately. No
 inline anchors, but no agent spend either.
 
@@ -505,8 +555,8 @@ agent:
     {{task}}
     ...
 
-# The lenses the selector offers. Starts empty — the page fills it from your
-# installed skills. The first one is the default.
+# The lenses the selector offers. A new config comes with Bazel's own; the page
+# adds your installed skills. The first one is the default.
 agents: []
 
 # Sequences run over the same clone. Built in the page, under "config".
@@ -515,13 +565,13 @@ pipelines: []
 # Who takes an already-read review to the PR.
 post_agent:
   name: bazel-post-report
-  task: /bazel-post-report {{review_file}}
+  task: /bazel:bazel-post-report {{review_file}}
   posts: true
 
-# Who writes the History tab. Optional: the default runs /history-pr {{number}}
+# Who writes the History tab. Optional: the default runs /bazel-history-pr {{number}}
 # with the factory prompt, not your agent.prompt.
 # history_agent:
-#   task: /history-pr {{number}}
+#   task: /my-history {{number}}
 ```
 
 `config.yaml` is yours too: Bazel changes only the keys you changed in the page
@@ -622,7 +672,9 @@ left out, as long as every attribute is one the fleet's report format defines,
 in its form. Not everything in the markdown shows on screen, and Bazel cannot
 list all of it: some hidden text, such as a `[//]: # (comment)` or a footnote
 nothing refers to, is flagged on top of the report, and the rest may go along
-when you publish. (The PR description is the author's text, not something Bazel
+when you publish. The report is data for the post agent, not instructions to
+it: `bazel-post-report` hands it to a script, and a post agent of your own
+treats it as its skill says. (The PR description is the author's text, not something Bazel
 publishes, and its raw HTML is hidden, as on GitHub.) When a step's output is
 not a review (`history-pr`, say), it shows up apart, under *stays in Bazel*, and
 the checkboxes live only in the part under *goes to the PR*.
@@ -790,7 +842,13 @@ CLI is running:
   (`format: claude-stream`, or that output in its `args` with no format) gets
   `--setting-sources user --strict-mcp-config --plugin-dir <runtime>` ahead of
   your `args`, and the built-in skills arrive as a plugin from outside the
-  clone. Any other command, like a wrapper called `cc`, has the first layer only.
+  clone. It also gets a `--disallowedTools` list of GitHub writes, in the usual
+  spellings (`gh pr merge`, `gh api` with a method, a field or a mutation, `git
+  push`…). That is a brake on what a steered agent runs by itself, not a wall: it
+  matches the command typed, so a script, a one-liner or `curl` with the token
+  walks past it, and only Claude Code gets the list. The agent runs with your `gh`
+  login. A publishing agent of your own keeps the publishing commands. Any other
+  command, like a wrapper called `cc`, has the first layer only.
 - **Nothing points back into the clone.** Every step is checked before the clone
   is even made, and again right before it starts, with symlinks resolved: an
   earlier step can turn a safe path into a link. One bad step refuses the whole

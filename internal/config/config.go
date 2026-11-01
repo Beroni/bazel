@@ -58,7 +58,7 @@ type Config struct {
 	PostAgent AgentDef `yaml:"post_agent"`
 	// HistoryAgent writes a PR's story for the History tab — what it does,
 	// the decisions taken and what is still open — on demand. Empty is the
-	// default, /history-pr; point its task at another skill to change it.
+	// default, /bazel-history-pr; point its task at another skill to change it.
 	HistoryAgent AgentDef `yaml:"history_agent,omitempty"`
 	// MCPAllowPublish opens the path to the PR for whoever arrives via /mcp.
 	// When off, the MCP surface does not offer publishing — neither as a tool
@@ -220,6 +220,12 @@ func (c Choice) PublishesBy() string {
 	return ""
 }
 
+// Publishes says whether the step writes to the PR on its own, by any of the ways
+// PublishesBy recognizes in a step that names it.
+func (st ResolvedAgent) Publishes() bool {
+	return st.Posts || mentionsPublishing(st.Task) || promptAuthorizesPosting(st.Prompt)
+}
+
 // noPublishLine is the prohibition on writing to GitHub that the default
 // template carries.
 const noPublishLine = "do not publish anything to GitHub"
@@ -242,7 +248,8 @@ func flatten(text string) string {
 // its own words. "Not authorized to publish" says the opposite.
 func promptAuthorizesPosting(prompt string) bool {
 	flat := flatten(prompt)
-	if flat == flatten(postPrompt) || flat == flatten(publishPrompt) {
+	// The sentence, not the whole template: a config can hold an older wording.
+	if flat == flatten(postPrompt) || strings.Contains(flat, flatten("Do not redo the review and do not invent new findings")) {
 		return true
 	}
 	return strings.Contains(strings.ReplaceAll(flat, "not authorized to publish", ""), "authorized to publish")
@@ -325,11 +332,13 @@ published on the PR.`
 // publishPrompt is the template for whoever publishes an already written
 // review. The instruction that matters is the last one: do not redo the review,
 // publish what is in the file — that is what you read on screen before sending.
+// It carries nothing the PR's author wrote: title, branch and author name reach a
+// model with write access here, and publishing does not need them.
 const publishPrompt = `{{task}}
 
 The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
-#{{number}} already checked out on branch ` + "`{{branch}}`" + ` over base ` + "`{{base}}`" + `.
-This is a throwaway clone: read freely, but do not edit files and do not commit.
+#{{number}} already checked out. This is a throwaway clone: read freely, but do
+not edit files and do not commit.
 
 The review is already done and has been read — it is in {{review_file}}. Publish
 it on PR #{{number}} of {{repo}}: a single review, with inline comments on the
@@ -337,9 +346,6 @@ right lines, and do not open another if you already have one on the PR.
 
 **Do not redo the review and do not invent new findings**: publish what is in
 the file. If a finding does not fit on a diff line, leave it in the review body.
-
-PR: {{title}} — @{{author}}
-{{url}}
 
 Write to stdout what was published, in Markdown.`
 
@@ -367,10 +373,41 @@ func defaultPostAgent() AgentDef {
 	return AgentDef{
 		Name:        "bazel-post-report",
 		Description: "publishes the review you have just read, with inline comments",
-		Task:        "/bazel-post-report {{review_file}}",
+		Task:        "/bazel:bazel-post-report {{review_file}}",
 		Prompt:      publishPrompt,
 		Posts:       true,
 	}
+}
+
+// seedStarter fills a brand-new config with agents and pipelines built from
+// the skills that ship inside Bazel, so the first review works right after
+// install. It only runs when config.yaml is created: a config you already have
+// is never touched, even if its list is empty — empty may be what you chose.
+func (c *Config) seedStarter() {
+	off := false
+	c.Agents = []AgentDef{
+		{Name: "bazel-review-fleet", Description: "three review lenses over one diff, deduplicated into one verdict",
+			Task: "/bazel-review-fleet {{number}}"},
+		{Name: "bazel-senior-code-reviewer", Description: "precision lens: a few findings it can defend",
+			Task: "/bazel-senior-code-reviewer {{number}}"},
+		{Name: "bazel-exploit-digger", Description: "adversarial recall lens, class by class",
+			Task: "/bazel-exploit-digger {{number}}"},
+		{Name: "bazel-lazy-senior-dev", Description: "subtraction lens: code that should not exist",
+			Task: "/bazel-lazy-senior-dev {{number}}"},
+		// A PR's history is not a review: publishing it would tell the team the
+		// code was reviewed.
+		{Name: "bazel-history-pr", Description: "the PR's story: commits, reviews and the review→fix loop",
+			Task: "/bazel-history-pr {{number}}", Publishable: &off},
+	}
+	c.Pipelines = []Pipeline{
+		// The lenses in separate processes: what keeps them independent on an
+		// agent CLI that cannot spawn subagents.
+		{Name: "serial-fleet", Description: "the three lenses one at a time, each in its own process",
+			Steps: []string{"bazel-senior-code-reviewer", "bazel-exploit-digger", "bazel-lazy-senior-dev"}},
+		{Name: "review-then-publish", Description: "the fleet, then you choose what goes to the PR",
+			Steps: []string{"bazel-review-fleet", StepPublish}},
+	}
+	c.Default = "bazel-review-fleet"
 }
 
 // legacyPostAgent is the publishing agent Bazel saved before the embedded skill
@@ -423,10 +460,9 @@ func Default() *Config {
 			Prompt:         defaultPrompt,
 			TimeoutSeconds: 1800,
 		},
-		// Agents and Pipelines start empty on purpose: the one who builds the
-		// list is you, on the page, from the skills installed on your machine.
-		// A factory list would only be right by coincidence — it would point to
-		// skills this computer may never have had.
+		// Agents and Pipelines start empty here: this is also the base Load
+		// decodes a config.yaml over, and a list here would creep into a config
+		// that has none. A new config gets the starter list in LoadOrInit.
 		PostAgent: defaultPostAgent(),
 	}
 }
@@ -579,6 +615,7 @@ func LoadOrInit() (*Config, bool, error) {
 	}
 
 	cfg := Default()
+	cfg.seedStarter()
 	if err := cfg.Save(); err != nil {
 		return nil, false, fmt.Errorf("criando %s: %w", path, err)
 	}
@@ -730,10 +767,18 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	if post := c.PostSkill(); post != "" && strings.EqualFold(skill, post) {
 		return AgentDef{}, fmt.Errorf("%q is the publishing skill — in a pipeline it is the publish step, not an agent", skill)
 	}
+	if posts && skills.IsBuiltin(skill) {
+		return AgentDef{}, fmt.Errorf("%q only reads: a built-in skill has no way to publish on its own", skill)
+	}
 	def := AgentDef{
 		Name:        skill,
 		Description: strings.TrimSpace(description),
 		Task:        "/" + skill + " {{number}}",
+	}
+	// Added from the page or from the starter, a history is not a review.
+	if strings.EqualFold(skill, historySkill) {
+		off := false
+		def.Publishable = &off
 	}
 	if posts {
 		// The suffix is what lets the two live together in the list: the same
@@ -1459,7 +1504,7 @@ func (c *Config) PostSkill() string {
 	if strings.TrimSpace(post.Name) == "" {
 		post = defaultPostAgent()
 	}
-	return skills.TaskSkill(post.Task)
+	return skills.Bare(skills.TaskSkill(post.Task))
 }
 
 // isPostAgent reports whether an agent in the list is the post agent in
@@ -1484,7 +1529,7 @@ func (c *Config) isPostAgent(a AgentDef) bool {
 	if strings.EqualFold(strings.TrimSpace(post.Name), name) {
 		return true
 	}
-	if skill := skills.TaskSkill(a.Task); skill != "" && strings.EqualFold(skill, skills.TaskSkill(defaultPostAgent().Task)) {
+	if skill := skills.Bare(skills.TaskSkill(a.Task)); skill != "" && strings.EqualFold(skill, skills.Bare(skills.TaskSkill(defaultPostAgent().Task))) {
 		return true
 	}
 	shape := taskShape(post.Task)
@@ -1633,7 +1678,10 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 
 // defaultHistoryTask is the skill the History tab runs unless history_agent
 // names another one.
-const defaultHistoryTask = "/history-pr {{number}}"
+const defaultHistoryTask = "/" + historySkill + " {{number}}"
+
+// historySkill is the built-in that writes a PR's story.
+const historySkill = "bazel-history-pr"
 
 // HistoryChoice is the agent that writes a PR's history, ready to run. It
 // reads the clone (git log, the diff), and what it writes never goes to the
@@ -1671,6 +1719,9 @@ func (c *Config) PostChoice() Choice {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
+	// Here and not when the config loads: a config saved with the bare name works
+	// the same, and the file is never rewritten.
+	ra.Task = skills.PostTask(ra.Task)
 	// Unless told otherwise, publishing clones: an inline comment needs the
 	// diff to find the line. Whoever wrote `checkout: false` in post_agent
 	// knows what they are doing — an agent that only calls the GitHub API does

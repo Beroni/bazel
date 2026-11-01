@@ -216,7 +216,7 @@ func (m *Manager) publishInputFor(path, body string, skip []int, trimmed bool) (
 	if len(skip) > 0 {
 		body = store.DropFindings(body, skip)
 	}
-	copyPath, err := store.SavePublishCopy(m.reviewsDir, path, body)
+	copyPath, err := store.SavePublishCopy(m.reviewsDir, path, body, len(skip) > 0)
 	if err != nil {
 		return nil, fmt.Errorf("could not write the review without the unticked findings: %w", err)
 	}

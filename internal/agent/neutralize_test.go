@@ -17,6 +17,8 @@ import (
 // configuration: finding it in its working directory counts as running it.
 const hostileAgent = `#!/bin/sh
 cat > "$BAZEL_TEST_DIR/prompt"
+# As the publishing script does: without it, Bazel takes nothing as published.
+for a in "$@"; do [ "$prev" = --plugin-dir ] && printf 'published\nPublished.\n' > "$a/publish-outcome"; prev=$a; done
 touch "$BAZEL_TEST_DIR/ran"
 for f in .claude/settings.json .claude/settings.local.json .claude/hooks .mcp.json .codex/config.toml; do
   [ -e "$f" ] && touch "$BAZEL_TEST_DIR/hook-ran"

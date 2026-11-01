@@ -165,7 +165,7 @@ func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := DropFindings(relatorio, []int{0})
-	path, err := SavePublishCopy(dir, orig, body)
+	path, err := SavePublishCopy(dir, orig, body, true)
 	if err != nil {
 		t.Fatalf("SavePublishCopy: %v", err)
 	}
@@ -173,13 +173,13 @@ func TestSavePublishCopyPreservaOCabecalho(t *testing.T) {
 		t.Errorf("caminho inesperado: %s", path)
 	}
 	// Each publication gets its own copy: the second does not overwrite the first.
-	outra, err := SavePublishCopy(dir, orig, relatorio)
+	outra, err := SavePublishCopy(dir, orig, relatorio, false)
 	if err != nil || outra == path {
 		t.Errorf("a segunda cópia devia ter outro nome: %s (%v)", outra, err)
 	}
 	data, _ := os.ReadFile(path)
 	got := string(data)
-	if !strings.HasPrefix(got, "# acme/api#482 — feat\n\n- Author: @maria\n\n---\n\n") {
+	if !strings.HasPrefix(got, "# acme/api#482 — feat\n\n- Author: @maria\n- Trimmed: yes\n\n---\n\n") {
 		t.Errorf("cabeçalho perdido:\n%s", got)
 	}
 	if strings.Contains(got, "Gas diverges") || !strings.Contains(got, "No host-side test") {
@@ -317,6 +317,34 @@ func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 	// A real doubt that starts with the word is still one.
 	if n := Findings("## Needs human verification\n\n- None of the callers check the error\n"); n != 1 {
 		t.Errorf("dúvida que começa com None devia contar, veio %d", n)
+	}
+}
+
+// Dropping a step's last finding keeps the separator, or the next step would
+// lose the line that says it is a step.
+func TestSplitFindingsStopsAtTheStepSeparator(t *testing.T) {
+	report := "## a\n\n## Findings\n\n### One\n\nBad.\n\n---\n\n## b\n\n## Findings\n\n### Two\n\nWorse.\n"
+	got := DropFindings(report, []int{0})
+	if !strings.Contains(got, "\n---\n\n## b\n") || strings.Contains(got, "One") || !strings.Contains(got, "Two") {
+		t.Errorf("got:\n%s", got)
+	}
+	// In a fence the same two lines are text, and an untick takes them along.
+	fenced := "## Findings\n\n### One\n\n```\n---\n\n## b\n```\n\nHIDDEN\n\n### Two\n\nKept.\n"
+	if got := DropFindings(fenced, []int{0}); strings.Contains(got, "HIDDEN") || strings.Contains(got, "## b") || !strings.Contains(got, "Kept.") {
+		t.Errorf("a fence is not a separator:\n%s", got)
+	}
+	// Under a paragraph `---` makes a heading of it, and no separator: it goes with
+	// the finding, and nothing of it is left to the PR.
+	setext := "## Findings\n\n### One\n\nText\n---\n\n## Cuts\n"
+	var joined strings.Builder
+	for _, p := range SplitFindings(setext) {
+		joined.WriteString(p.Text)
+	}
+	if joined.String() != setext {
+		t.Error("the parts do not add up to the report")
+	}
+	if got := DropFindings(setext, []int{0}); got != "## Findings\n\n## Cuts\n" {
+		t.Errorf("after the untick: %q", got)
 	}
 }
 

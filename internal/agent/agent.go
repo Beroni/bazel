@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
@@ -73,8 +74,10 @@ type Event struct {
 type StepResult struct {
 	Name string
 	// Ran is the provider and model this step ran on (see attribution).
-	Ran      string
-	Body     string
+	Ran  string
+	Body string
+	// Cut is the narration dropPreamble took from before the report.
+	Cut      string
 	Duration time.Duration
 	// Usage is how much model this step spent.
 	Usage Usage
@@ -97,7 +100,9 @@ type Result struct {
 	Publish string
 	Stays   string
 	Keeps   bool
-	Steps   []StepResult
+	// PublishSteps are the steps in Publish.
+	PublishSteps []StepResult
+	Steps        []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -223,7 +228,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// never in the clone, and that folder goes with the review — on success,
 	// error or cancel alike.
 	var plugin string
-	if runsClaudeAnywhere(choice) {
+	if needsPlugin(choice) {
 		dir, err := newRuntime()
 		if err != nil {
 			return Result{}, err
@@ -278,7 +283,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			}
 			removed, err := workspace.Neutralize(workdir)
 			if err != nil {
-				return "", fmt.Errorf("%w: neutralizing the PR's agent configuration: %w", errRefused, err)
+				return "", fmt.Errorf("%w to start the agent: neutralizing the PR's agent configuration: %w", errRefused, err)
 			}
 			if len(removed) > 0 {
 				for _, rel := range removed {
@@ -292,7 +297,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				err = checkConfigDirs(step, workdir)
 			}
 			if err != nil {
-				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
+				return "", fmt.Errorf("%w to start the agent: `%s`: %w", errRefused, step.Name, err)
 			}
 			return neutralizedNote(len(neutralized)), nil
 		}
@@ -301,11 +306,22 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
+		// Claude Code finds the built-in skills in the plugin; the other CLIs
+		// get the skill inside the prompt, with the plugin's path.
+		task := skills.Canonical(step.Task)
+		if !runsClaude(step) {
+			task = skills.Inline(task, plugin)
+		}
 		// A step that does not run in the clone is not told where it is: the git
 		// guard goes by the step's folder, and from inside the clone its git would
 		// obey whatever the PR planted there.
-		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, dir, extra)
+		prompt := buildPrompt(step.Prompt, task, pr, diff, dir, extra)
 		stepStart := time.Now()
+		if skills.IsPost(step.Task) {
+			if err := skills.PublishTarget(plugin, pr.Repo, pr.Number); err != nil {
+				return Result{}, fmt.Errorf("telling the publishing skill its PR: %w", err)
+			}
+		}
 		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
@@ -322,13 +338,29 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			func(l Limits) {
 				emit(Event{Kind: EventLimits, Index: i, Name: step.Name, Limits: l})
 			})
+		// The publishing script says how it went, in a file: an agent's exit code
+		// and its own words say nothing about what reached the PR. A post agent of
+		// the user's own makes no such promise.
+		if err == nil && skills.IsPost(step.Task) {
+			if msg := skills.PublishFailure(plugin); msg != "" {
+				err = refusal(msg)
+			}
+		}
 		// A refused step ends the job: it must not turn into one failed section
 		// of a review that can still be published.
 		if errors.Is(err, errRefused) {
 			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
-		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
+		// Only a skill that ships here promises to print nothing before its report.
+		text, cut := strings.TrimSpace(body), ""
+		if skills.IsBuiltin(skills.TaskSkill(step.Task)) {
+			if text, cut = dropPreamble(text); cut != "" {
+				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
+					Text: "· cut from before the report: " + strconv.Quote(cut)})
+			}
+		}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -365,6 +397,77 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		Workdir:   workdir,
 		StoppedAt: stopped,
 	}, nil
+}
+
+// reportMarkers open the reports the built-in skills print. A report with one
+// of them starts there: the header is its first line.
+var reportMarkers = []string{"<!-- review-fleet:v1", "<!-- history-pr:v1"}
+
+// preambleLimits bound what dropPreamble takes for narration.
+const (
+	preambleLines = 2
+	preambleWidth = 120
+)
+
+// narration is every word a line may have to be taken for narration. It is a list
+// of what is allowed, not of what to fear, because this runs before anyone has read
+// the output: a sentence that says anything about the PR has some other word in it.
+var narration = strings.Fields(`
+	a abaixo agora all and aqui below certo check checks complete completed concluído
+	done e está feito final finished follows full good here here's histórico history
+	imprimindo imprimo is it my now o ok okay passed passes print printing pronta pronto ready
+	relatório report revisão review saved segue story the tudo validação validada
+	validado validated validation validei wrote written`)
+
+// isNarration says whether a line is made of nothing but narration.
+func isNarration(line string) bool {
+	words := strings.FieldsFunc(strings.ToLower(line), func(r rune) bool {
+		return !unicode.IsLetter(r) && r != '\''
+	})
+	return len(words) > 0 && !slices.ContainsFunc(words, func(w string) bool {
+		return !slices.Contains(narration, w)
+	})
+}
+
+// dropPreamble cuts the sentence a built-in skill's agent sometimes writes before
+// its report ("Validated, printing it now."), and returns what it cut. The skills
+// are told not to, but a model narrates anyway, in the user's language, and a report
+// that does not open with its header is not read as one by the History tab.
+//
+// It is narrow: a line or two, short, of narration alone, right before the report.
+// Anything else stays where it is, on screen, and bazel-post-report publishes it
+// under a label that says Bazel does not vouch for it. A report wrapped in
+// ```markdown keeps its fence: Unwrap takes it off.
+func dropPreamble(body string) (kept, cut string) {
+	lines := strings.Split(body, "\n")
+	var preamble []string
+	for i, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if slices.Contains(reportMarkers, t) || ((t == "```markdown" || t == "```md") && nextIs(lines, i, reportMarkers)) {
+			if len(preamble) == 0 {
+				return body, ""
+			}
+			return strings.Join(lines[i:], "\n"), strings.Join(preamble, " ")
+		}
+		if len(preamble) == preambleLines || len(t) > preambleWidth || !isNarration(t) {
+			return body, ""
+		}
+		preamble = append(preamble, t)
+	}
+	return body, ""
+}
+
+// nextIs says whether the first line after i with text is one of want.
+func nextIs(lines []string, i int, want []string) bool {
+	for _, l := range lines[i+1:] {
+		if t := strings.TrimSpace(l); t != "" {
+			return slices.Contains(want, t)
+		}
+	}
+	return false
 }
 
 // gitGuard is the git configuration of every agent with a clone, the second
@@ -407,9 +510,15 @@ func gitGuardEnv(env []string, clone string) []string {
 // exited or been killed.
 const Grace = 5 * time.Second
 
+// refusal is an errRefused that reads as its own message: the one the page shows.
+type refusal string
+
+func (r refusal) Error() string        { return string(r) }
+func (r refusal) Is(target error) bool { return target == errRefused }
+
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
-var errRefused = errors.New("refused to start the agent")
+var errRefused = errors.New("refused")
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,
@@ -454,7 +563,8 @@ const maxLoggedPaths = 20
 // Code, and flags injected there break it. A command that shows neither (a
 // wrapper called `cc`) counts as another CLI, and so does a shell, whose
 // `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
-// protects those runs.
+// protects those runs. Claude Code finds the built-in skills in the plugin;
+// everything else gets them inlined (skills.Inline).
 func runsClaude(step config.ResolvedAgent) bool {
 	if isShell(step.Command) || config.IsLauncher(step.Command) {
 		return false
@@ -491,10 +601,12 @@ func isShell(command string) bool {
 	return false
 }
 
-// runsClaudeAnywhere says whether any step of the choice runs Claude Code.
-func runsClaudeAnywhere(choice config.Choice) bool {
+// needsPlugin says whether a choice needs the built-in plugin: a Claude Code
+// step (which always runs with --plugin-dir), or any step that calls a
+// built-in skill — another CLI gets it inlined, and reads its files there.
+func needsPlugin(choice config.Choice) bool {
 	for _, s := range choice.Steps {
-		if s.Reserved == "" && runsClaude(s) {
+		if s.Reserved == "" && (runsClaude(s) || skills.IsBuiltin(skills.TaskSkill(s.Task))) {
 			return true
 		}
 	}
@@ -533,11 +645,14 @@ func newRuntime() (string, error) {
 //   - --plugin-dir: the embedded skills, which --setting-sources user would
 //     otherwise hide along with the clone's .claude/skills.
 //
+// --disallowedTools keeps the agent's own Bash from GitHub writes: see deniedFor.
+// It matches commands, so it is a brake and not a wall.
+//
 // The flags go first and never at the end: after a `--`, anything is plain text
 // to the CLI, and an appended flag would look added and do nothing. For the same
 // reason a flag found after a `--` does not count as already there.
 // checkSettingSources has already refused any --setting-sources but user.
-func confineClaude(args []string, plugin string) []string {
+func confineClaude(args []string, plugin string, denied []string) []string {
 	own := args
 	if end := slices.Index(args, "--"); end >= 0 {
 		own = args[:end]
@@ -554,7 +669,50 @@ func confineClaude(args []string, plugin string) []string {
 	if plugin != "" {
 		flags = append(flags, "--plugin-dir", plugin)
 	}
+	flags = append(flags, "--disallowedTools", strings.Join(denied, ","))
 	return slices.Concat(flags, args)
+}
+
+// ghWrites denies verbs of a gh command, with or without flags before the verb:
+// `gh pr merge` and `gh pr -R o/r merge`. A flag there says nothing by itself:
+// `gh issue -R o/r view` is a read.
+func ghWrites(command string, verbs ...string) []string {
+	var out []string
+	for _, v := range verbs {
+		out = append(out, "Bash(gh "+command+" "+v+":*)", "Bash(gh "+command+" -* "+v+"*)")
+	}
+	return out
+}
+
+// deniedCommands are the Bash commands no agent runs by itself. Reads stay: the
+// lenses read the PR's issue with `gh issue view`.
+var deniedCommands = slices.Concat(
+	ghWrites("pr", "merge", "close", "reopen", "edit", "ready", "lock", "create"),
+	ghWrites("issue", "create", "edit", "close", "reopen", "comment", "delete", "lock", "transfer"),
+	ghWrites("release", "create", "edit", "delete", "upload"),
+	ghWrites("repo", "delete", "edit", "archive", "rename"),
+	[]string{
+		"Bash(gh workflow run:*)", "Bash(gh secret:*)", "Bash(gh variable:*)", "Bash(gh label:*)", "Bash(gh alias:*)",
+		"Bash(git push:*)", "Bash(git -c*push*)", "Bash(git -C * push*)",
+	},
+)
+
+// publishCommands are the ones publishing takes. `gh api` writes in many spellings:
+// an explicit method anywhere, a field or an input with no method, a mutation.
+var publishCommands = slices.Concat(ghWrites("pr", "review", "comment"), []string{
+	"Bash(gh api -X*)", "Bash(gh api * -X*)", "Bash(gh api --method*)", "Bash(gh api * --method*)",
+	"Bash(gh api repos/* -f *)", "Bash(gh api repos/* -F *)", "Bash(gh api repos/* --field*)",
+	"Bash(gh api repos/* --raw-field*)", "Bash(gh api repos/* --input*)", "Bash(gh api graphql*mutation*)",
+})
+
+// deniedFor is what a step may not run. A step that publishes with a skill of the
+// user's own needs publishCommands, typed by the agent; bazel-post-report does
+// not, because its script calls gh from inside, where these patterns do not reach.
+func deniedFor(step config.ResolvedAgent) []string {
+	if step.Publishes() && !skills.IsBuiltin(skills.TaskSkill(step.Task)) {
+		return deniedCommands
+	}
+	return slices.Concat(deniedCommands, publishCommands)
 }
 
 // checkSettingSources refuses a --setting-sources other than user, wherever it
@@ -776,6 +934,7 @@ func Split(res Result, choice config.Choice) Result {
 	res.Keeps = true
 	if err == nil {
 		res.Publish = body
+		res.PublishSteps = stepsWhere(res, choice, true)
 	}
 	res.Stays = ContextBody(res, choice)
 	return res
@@ -902,7 +1061,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 
 	args := step.Args
 	if runsClaude(step) {
-		args = confineClaude(step.Args, plugin)
+		args = confineClaude(step.Args, plugin, deniedFor(step))
 	}
 	cmd := exec.CommandContext(ctx, step.Command, args...)
 	cmd.Dir = workdir // empty = inherits the current directory

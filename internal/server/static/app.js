@@ -913,7 +913,7 @@ function skipNote(skip) {
   // carry hidden text.
   const unseen = document.querySelectorAll('#viewer .hidden-text pre').length;
   if (unseen) goes += `\n\nIt carries ${unseen} piece${unseen === 1 ? '' : 's'} of hidden text, flagged on top.`;
-  goes += '\n\nNot everything in the markdown shows on screen: some hidden text is flagged, and the rest goes along unflagged.';
+  goes += '\n\nNot everything in the markdown shows on screen: some hidden text is flagged, the rest goes along unflagged, and the post agent reads the report as data.';
   if (!skip.length) return goes;
   return goes + `\n${skip.length} unticked finding${skip.length === 1 ? '' : 's'} will be left out.`;
 }
@@ -3106,7 +3106,8 @@ function skillRow(sk, usadas, nomes) {
     acoes.append(b);
   };
   add('Use', false, `becomes the agent ${sk.name}: runs /${sk.name} on the PR and hands the review back for you to read`);
-  add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
+  // A built-in skill only reads: --post means nothing to it.
+  if (!sk.builtin) add('+ publishes', true, `becomes the agent ${sk.name}-post: runs /${sk.name} --post and publishes the review straight to the PR`);
   return row;
 }
 
