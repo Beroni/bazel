@@ -241,8 +241,11 @@ var policy = func() *bluemonday.Policy {
 	// GFM task list checkbox, which UGCPolicy would strip.
 	p.AllowAttrs("type", "checked", "disabled").Matching(bluemonday.Paragraph).OnElements("input")
 	// Without this the class="language-go" disappears and the code block loses
-	// its marker.
-	p.AllowAttrs("class").OnElements("code", "pre", "span", "div", "li")
+	// its marker. Only the shapes goldmark writes: a fence's info string comes
+	// from the agent, and a free class would hide its block with the page's own
+	// CSS (`text<TAB>sr-only`) while the text still goes to the PR.
+	p.AllowAttrs("class").Matching(regexp.MustCompile(`^language-[A-Za-z0-9_+.#-]+$`)).OnElements("code")
+	p.AllowAttrs("class").Matching(regexp.MustCompile(`^footnotes$`)).OnElements("div")
 	// A click on a link must not tell the other site this page's address.
 	p.RequireNoReferrerOnLinks(true)
 	return p
@@ -250,18 +253,96 @@ var policy = func() *bluemonday.Policy {
 
 // renderMarkdown returns HTML safe to drop into the page's innerHTML.
 func renderMarkdown(src string) string {
+	if len(src) > maxDescriptionBytes {
+		return plainBlock(src[:maxDescriptionBytes]) + "<p>(cut: this description is too long to render)</p>"
+	}
+	if tooCostly(src) {
+		return plainBlock(src)
+	}
 	return convert(md, src)
+}
+
+// goldmark takes quadratic time on some inputs: a PR description of 65 KB made of
+// `[a](()` costs 7 s, and anyone can open a PR on a public repository. Past
+// these sizes the text shows as it is. A review keeps all of it, because all of
+// it may go to the PR. Its limit is per finding, and real reports stay under
+// 30 KB as a whole.
+const (
+	maxDescriptionBytes = 16 << 10
+	maxReviewBytes      = 96 << 10
+	maxLinkScan         = 6 << 20
+	maxTableCells       = 20 << 10
+	maxLinkBytes        = 1 << 20
+)
+
+// plainBlock is text shown as it is.
+func plainBlock(src string) string {
+	return "<pre>" + html.EscapeString(src) + "</pre>"
 }
 
 // renderReviewMarkdown is renderMarkdown for a review: raw HTML shows as text.
 func renderReviewMarkdown(src string) string {
+	if tooCostly(src) {
+		return plainBlock(src)
+	}
 	return convert(reviewMD, src)
+}
+
+// tooCostly says the text is past what is worth parsing. Each `](` that does not
+// close a link makes goldmark scan the rest of the text, the one pattern it pays
+// quadratically for: 16,000 of them in 96 KB take 10 s. So what counts is links
+// times bytes. A report of 100 links in 30 KB, more than any real one, is half of it.
+func tooCostly(src string) bool {
+	return len(src) > maxReviewBytes || strings.Count(src, "](")*len(src) > maxLinkScan ||
+		tableCells(src) > maxTableCells || store.TooNested(src)
+}
+
+// tableCells counts the cells the tables of src would have. A delimiter row fixes
+// the columns, and every row below it, up to the blank line, gets all of them
+// whatever it brought. This has to come before the parser, which is where the
+// memory goes: 16 KB of a wide table made 78 MB of HTML.
+func tableCells(src string) int {
+	cells, cols := 0, 0
+	for line := range strings.Lines(src) {
+		t := strings.TrimLeft(strings.TrimSpace(line), "> \t")
+		switch {
+		case t == "":
+			cols = 0
+		case strings.Contains(t, "|") && strings.Trim(t, "|-: \t") == "":
+			cols = max(cols, strings.Count(t, "|")+1)
+		}
+		cells += cols
+	}
+	return cells
+}
+
+// linkBytes is what the links of doc repeat. A reference is three bytes in the
+// source and its whole destination in the page: 96 KB made 400 MB.
+func linkBytes(doc ast.Node) int {
+	total := 0
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if entering {
+			switch l := n.(type) {
+			case *ast.Link:
+				total += len(l.Destination) + len(l.Title)
+			case *ast.Image:
+				total += len(l.Destination) + len(l.Title)
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return total
 }
 
 // convert runs one of the converters above and sanitizes the result.
 func convert(conv goldmark.Markdown, src string) string {
+	source := []byte(src)
+	doc := conv.Parser().Parse(text.NewReader(source))
+	if linkBytes(doc) > maxLinkBytes {
+		return plainBlock(src)
+	}
 	var buf bytes.Buffer
-	if err := conv.Convert([]byte(src), &buf); err != nil {
+	if err := conv.Renderer().Render(&buf, source, doc); err != nil {
 		return "<pre>" + html.EscapeString(src) + "</pre>"
 	}
 	return string(policy.SanitizeBytes(buf.Bytes()))
@@ -310,6 +391,9 @@ var footnoteDefRe = regexp.MustCompile(`(?m)^ {0,3}\[\^([^\]\n]+)\]:.*(?:\n[ \t]
 // so a definition used only by another part counts as hidden here: the screen
 // shows that link as plain brackets.
 func hiddenText(src string) []string {
+	if tooCostly(src) {
+		return nil // shown whole as text: nothing is hidden
+	}
 	ctx := parser.NewContext()
 	doc := reviewMD.Parser().Parse(text.NewReader([]byte(src)), parser.WithContext(ctx))
 	used := map[string]bool{}

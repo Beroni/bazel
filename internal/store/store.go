@@ -21,7 +21,9 @@ import (
 // pricing may be nil, in which case the cost comes from the Usage's CostUSD
 // field.
 func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) {
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	// Mode 0600 and 0700 from here on: a review quotes a PR's code, and the PR
+	// may be private.
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
 	base := fmt.Sprintf("%s-%d-%s",
@@ -31,7 +33,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	)
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "# %s#%d — %s\n\n", res.PR.Repo, res.PR.Number, res.PR.Title)
+	// One line each: the file's header is read back line by line, and a title
+	// must not be able to write a line of its own.
+	fmt.Fprintf(&b, "# %s#%d — %s\n\n", res.PR.Repo, res.PR.Number, strings.Join(strings.Fields(res.PR.Title), " "))
 	fmt.Fprintf(&b, "- Author: @%s\n", res.PR.Author.Login)
 	fmt.Fprintf(&b, "- Branch: `%s`\n", res.PR.HeadRefName)
 	fmt.Fprintf(&b, "- URL: %s\n", res.PR.URL)
@@ -46,8 +50,14 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Agent != "" {
 		fmt.Fprintf(&b, "- Agent: %s\n", agentLine(res))
 	}
+	if ran := ranLine(res); ran != "" {
+		fmt.Fprintf(&b, "- Ran on: %s\n", ran)
+	}
 	if u := res.Usage.StringWithCost(pricing); u != "" {
 		fmt.Fprintf(&b, "- Spend: %s\n", u)
+	}
+	if len(res.Steps) > 1 && !res.Keeps {
+		b.WriteString(allStepsLine + "\n")
 	}
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
@@ -56,7 +66,13 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 		b.WriteString("- ⚠️ The diff was truncated before it reached the agent.\n")
 	}
 	b.WriteString("\n---\n\n")
-	b.WriteString(res.Body)
+	if res.Keeps {
+		b.WriteString(res.Publish)
+		b.WriteString("\n\n" + staysMarker + "\n\n")
+		b.WriteString(res.Stays)
+	} else {
+		b.WriteString(res.Body)
+	}
 	b.WriteString("\n")
 
 	return writeNew(dir, base, []byte(b.String()))
@@ -77,7 +93,7 @@ func writeNew(dir, base string, data []byte) (string, error) {
 			name = fmt.Sprintf("%s-%d.md", base, i)
 		}
 		path := filepath.Join(dir, name)
-		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
@@ -115,6 +131,22 @@ func CommentBody(res agent.Result) string {
 	return b.String()
 }
 
+// ranLine says what the review ran on, section by section when it has several.
+// It lives in the header, not in the section titles: those go to the PR, and the
+// headings are what the report is cut by.
+func ranLine(res agent.Result) string {
+	if len(res.Steps) == 1 {
+		return res.Steps[0].Ran
+	}
+	parts := make([]string, 0, len(res.Steps))
+	for _, s := range res.Steps {
+		if s.Ran != "" {
+			parts = append(parts, s.Name+": "+s.Ran)
+		}
+	}
+	return strings.Join(parts, ", ")
+}
+
 // agentLine describes who ran: the name of the choice and, when it chains more
 // than one agent, the time of each step.
 func agentLine(res agent.Result) string {
@@ -148,7 +180,9 @@ type Entry struct {
 	// Agent is who produced this review, read from the file header. It is what
 	// lets you know, a session later, whether what is here can go to the PR — a
 	// history report saved on disk is still not a review.
-	Agent   string    `json:"agent,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	// Ran is what it ran on, from the same header; older files have none.
+	Ran     string    `json:"ran,omitempty"`
 	Number  int       `json:"number,omitempty"`
 	ModTime time.Time `json:"mod_time"`
 	Size    int64     `json:"size"`
@@ -173,12 +207,13 @@ func List(dir string) ([]Entry, error) {
 		if err != nil {
 			continue
 		}
-		title, agent := header(filepath.Join(dir, it.Name()))
+		title, agent, ran := header(filepath.Join(dir, it.Name()))
 		repo, number := PRFromTitle(title)
 		out = append(out, Entry{
 			Name:    it.Name(),
 			Title:   title,
 			Agent:   agent,
+			Ran:     ran,
 			Repo:    repo,
 			Number:  number,
 			ModTime: info.ModTime(),
@@ -250,18 +285,72 @@ func PRFromTitle(title string) (string, int) {
 // ReviewBody is the report inside a saved review, without the header that
 // Save wrote — it is the text the agent produced, and it is what goes to the PR.
 func ReviewBody(file string) string {
-	if _, corpo, ok := strings.Cut(file, "\n---\n"); ok {
-		return strings.TrimSpace(Unwrap(corpo))
+	pub, _, _ := SplitBody(file)
+	return pub
+}
+
+// allStepsLine says, in the header of a pipeline's file, that every step may go
+// to the PR. With the marker below for the other case, a file records its own
+// policy: tomorrow's config cannot speak for a run it never saw.
+const allStepsLine = "- Publishes: every step"
+
+// PipelineUnknown says the file came from a pipeline and does not record which of
+// its steps may go to the PR: it was saved before files said so. Its steps can
+// no longer be told apart, whatever the config says now.
+func PipelineUnknown(file string) bool {
+	head, _, _, split := SavedParts(file)
+	if head == "" || split || strings.Contains(head, allStepsLine) {
+		return false
 	}
-	return strings.TrimSpace(Unwrap(file))
+	for _, line := range strings.Split(head, "\n") {
+		if strings.HasPrefix(line, "- Agent: ") && strings.Contains(line, " → ") {
+			return true
+		}
+	}
+	return false
+}
+
+// staysMarker divides a saved review whose steps do not all publish: above it
+// what may go to the PR, below it what stays in Bazel. An agent that writes the
+// marker itself only moves its own text to the side that does not go out.
+const staysMarker = "<!-- bazel:stays-in-bazel -->"
+
+// SavedParts cuts a saved file into its header, what may go to the PR and what
+// stays in Bazel. It is the one reading of a saved review, for the screen and for
+// every door to the PR: a finding has one number only if they all cut the same
+// text. Only blank lines are trimmed, because the spaces of a first line decide
+// whether it is code or a heading. The marker counts only below the header, so a
+// PR's title cannot play it.
+func SavedParts(file string) (head, publish, stays string, split bool) {
+	body := file
+	if before, after, ok := strings.Cut(file, "\n---\n"); ok {
+		head, body = before, after
+	}
+	pub, rest, split := strings.Cut(body, staysMarker)
+	return head, trimBlankLines(Unwrap(pub)), strings.TrimSpace(rest), split
+}
+
+// SplitBody is SavedParts without the header.
+func SplitBody(file string) (publish, stays string, split bool) {
+	_, publish, stays, split = SavedParts(file)
+	return publish, stays, split
+}
+
+// trimBlankLines drops the blank lines around text, and nothing else.
+func trimBlankLines(text string) string {
+	lines := strings.Split(strings.TrimRight(text, " \t\r\n"), "\n")
+	for len(lines) > 1 && strings.TrimSpace(lines[0]) == "" {
+		lines = lines[1:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 // header reads the title and the agent of a saved review without loading the
 // whole file: they are the two things the listing needs from inside it.
-func header(path string) (title, agent string) {
+func header(path string) (title, agent, ran string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -271,14 +360,16 @@ func header(path string) (title, agent string) {
 		line := strings.TrimSpace(sc.Text())
 		switch {
 		case line == "---":
-			return title, agent
+			return title, agent, ran
 		case title == "" && strings.HasPrefix(line, "# "):
 			title = strings.TrimSpace(strings.TrimPrefix(line, "# "))
 		case agent == "" && strings.HasPrefix(line, "- Agent: "):
 			agent = AgentFromLine(line)
+		case ran == "" && strings.HasPrefix(line, "- Ran on: "):
+			ran = strings.TrimPrefix(line, "- Ran on: ")
 		}
 	}
-	return title, agent
+	return title, agent, ran
 }
 
 // AgentFromLine pulls the choice name out of the header's "- Agent: ..." line.

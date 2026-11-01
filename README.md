@@ -6,7 +6,7 @@
 
 **Your team's open pull requests, in one place — reviewed by the AI agents you choose.**
 
-[![Go](https://img.shields.io/badge/Go-1.25%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![Go](https://img.shields.io/badge/Go-1.26.10%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![gh CLI](https://img.shields.io/badge/requires-gh%20CLI-181717?logo=github&logoColor=white)](https://cli.github.com)
 [![Agents](https://img.shields.io/badge/agents-your%20Claude%20Code%20skills-f97316)](https://claude.com/claude-code)
 [![Runs on](https://img.shields.io/badge/runs%20on-127.0.0.1%20only-8b9099)](#security-model)
@@ -60,7 +60,8 @@ the prompt — it is only downloaded if your template uses `{{diff}}`.
 
 ## Requirements
 
-- Go 1.25+ (to build)
+- Go 1.26.10+ (to build). An older Go downloads it by itself, unless
+  `GOTOOLCHAIN=local` is set
 - [`gh`](https://cli.github.com), authenticated (`gh auth login`)
 - `git`
 - An AI agent on your `PATH` that reads a prompt on stdin — by default
@@ -82,7 +83,7 @@ go install github.com/beroni/bazel@latest
 ```
 
 > The binary is called `bazel`, like Google's build tool. If you use both,
-> rename one of them at install time (`-o ~/.local/bin/bz`).
+> rename one of them after installing (`mv "$(go env GOPATH)/bin/bazel" ~/.local/bin/bz`).
 
 ## Quick start
 
@@ -103,6 +104,7 @@ On first run `~/.bazel/config.yaml` is created for you. Then, in the page:
 | `--jobs <n>` | concurrent reviews (default 2) |
 | `--open` | open the browser |
 | `--keep` | keep the throwaway PR clones |
+| `--log-dir <dir>` | write each job's whole log to a file in `dir` |
 | `--no-splash` | skip the opening animation |
 | `--version` | version |
 
@@ -154,6 +156,11 @@ the tooltip names the agent.
 The index lives in `<BAZEL_HOME>/reviews/.index.json`, keyed by the head commit
 seen at review time.
 
+The list comes from one `gh pr list` per repository, up to 100 open PRs each. A
+repository with more says so in the banner, and one that fails keeps the PRs it
+had and says that too. With `authors:` set, the filter goes to `gh`, so the limit
+applies to their PRs.
+
 ## Agents are your skills
 
 **An agent is one of your skills running over a PR.** That is why the list ships
@@ -169,6 +176,10 @@ installed skills · ~/.claude/skills
   /review-fleet     Runs a fleet of review lenses over one diff   [use] [⇧ publishes]
   /exploit-digger   Adversarial sweep of a diff                   [use] [⇧ publishes]
 ```
+
+With more than eight skills, the ones that read as reviewing come first, along
+with those already in use, and the rest fold under *Other skills*; the search
+box looks through all of them.
 
 - **use** creates the agent `review-fleet`, with the task
   `/review-fleet {{number}}`: it hands the review back to you to read.
@@ -252,6 +263,15 @@ The log is a window over the last **500 lines** per review, held in memory. It
 does not travel over SSE: the page remembers where it stopped and fetches only
 what is missing, once a second. The agent's stderr is included, in another color.
 
+To keep the whole log, set `log_dir` in the config or start with `--log-dir
+<dir>`: every job then writes each line, as it arrives and without the window's
+limits, to `<job-id>-<pr>.log`, and the job's Live log and Overview say where.
+The lines are what the log shows, so with `claude-stream` they are the readable
+ones, not the raw events. It is off by default. At boot only the newest
+`log_keep` files stay (200 by default); nothing else in that folder is touched.
+The files hold whatever the agent wrote, so they are readable by you alone. A
+folder that cannot be used turns this off with a line on the terminal.
+
 `format` chooses how Bazel reads stdout: `claude-stream`, `codex-json`,
 `grok-stream`, or `plain`. Leaving it out preserves the old behavior: arguments that ask for
 Claude `stream-json` use the Claude adapter; all other commands use plain
@@ -320,16 +340,34 @@ along in the stream of whichever agent is running (`rate_limit_event`). What
 you see is therefore the reading from the last agent that ran, and the tooltip
 says when that was. A fresh server shows nothing until the first review.
 
+## After a restart
+
+What was queued or running when Bazel stopped comes back **paused**: the card is
+there, and nothing runs or spends quota until you click **Run**, or ask for the
+same review again. Agents are not started on their own. A publication never comes
+back, because it needs someone who has just read what goes out, and neither does
+an agent that may publish and had already started, which may have posted. One that
+never started comes back, and **Run** asks first. The saved review is where a
+publication starts over.
+
+The queue lives in `<BAZEL_HOME>/queue.json`, plain JSON, safe to delete.
+
 ## Where reviews go
 
 Every review lands in three places, in this order:
 
 1. **The page** — markdown rendered in the right-hand pane.
 2. **A file** — `<BAZEL_HOME>/reviews/<repo>-<number>-<date>.md`, with the PR
-   header, the agent that ran (per-step timings in a pipeline) and the
-   [token spend](#token-usage). This is the copy that outlives the server: the
+   header, the agent that ran (per-step timings in a pipeline), what it ran on
+   and the [token spend](#token-usage). This is the copy that outlives the server: the
    **saved** tab reads it back and can still take it to the PR.
 3. **The PR on GitHub** — only if you ask, and only after you have read it.
+
+Each step says what it ran on, such as `claude · opus-5` or `codex`, on the job's
+card, in its step list and in the file's `- Ran on:` line, section by section in
+a pipeline. The label comes from the output format and the model the agent
+reported; a CLI Bazel does not know shows its command name. It stays out of the
+report's own text, because that text is what goes to the PR.
 
 ## Publishing to the PR
 
@@ -400,11 +438,13 @@ claude mcp add --transport http bazel http://127.0.0.1:7777/mcp
 Every result carries `web_ui`, the page where a human reads the review.
 
 **MCP does not offer publishing.** The tool surface is curated so that you stay
-the gate to the PR: there is no publishing tool, and anything that could
-publish on its own is refused — `posts: true`, a task with `--post`, a prompt
-that authorizes publishing, a pipeline with a publish step or with any of
-those, and the bare `agent` block unless its prompt keeps the default's
-"do not publish anything to GitHub". When in doubt, it refuses. To
+the gate to the PR: there is no publishing tool, and a step only runs if it is
+known not to publish. Its prompt has to keep the default's "do not publish
+anything to GitHub", its task has to be a skill call rather than prose, and its
+task, command and args must not name a way to publish: `posts: true`, `--post`,
+`gh`, a post skill, a publish step in a pipeline. Anything else is refused. A
+skill or a command of your own is outside this: what they do cannot be read from
+their names. To
 open that door on purpose, set `mcp_allow_publish: true` in the config — that
 also adds a `publish_review` tool.
 
@@ -449,6 +489,8 @@ include_drafts: false
 
 reviews_dir: ""   # empty = <BAZEL_HOME>/reviews
 max_diff_bytes: 400000   # only used if the prompt has {{diff}}
+log_dir: ""       # empty = job logs stay in memory; see "The live log"
+log_keep: 200     # job log files kept at boot
 skills_dir: ""    # empty = ~/.claude/skills
 
 # The base every named agent inherits from.
@@ -482,12 +524,21 @@ post_agent:
 #   task: /history-pr {{number}}
 ```
 
+`config.yaml` is yours too: Bazel changes only the keys you changed in the page
+and leaves comments, unknown keys and edits by hand alone, including edits made
+while it runs. Those only take effect at the next start, and until then the page
+refuses to change a key you edited, since saving would undo it. An empty file
+stops the boot instead of passing for a new install. If `config.yaml` is a link,
+it stays one and its target is what changes. The file is readable by you alone,
+and the page and its export leave out the values under `env:` and all comments.
+Reviews and their folder are yours alone as well, since they quote the PR's code.
+
 ### The History tab
 
 The History tab runs `history_agent` on demand. Bazel offers nothing of its
 output for publishing, and it refuses a `history_agent` that declares or plainly
 asks for publishing: `posts: true` stops the load, and the rest (a post skill,
-`--post`, a `gh` command that writes, a prompt without the line
+`--post`, any `gh` command, a prompt without the line
 `do not publish anything to GitHub`) stops that history with the reason. That is
 a check, not a guarantee. The default agent is *instructed* not to publish, and
 it has Bash and your `gh` login. A step of your own, whether from `history_agent`
@@ -559,6 +610,9 @@ The wait lives in memory. It survives in the session history — the queue —
 until the server restarts, and then it is gone; the review itself is already
 saved to disk and stays in the **Saved** tab, where it can be published later
 with the same ticks. **keep it here** drops the wait, not the review.
+
+If the PR got commits after the review, the Report and the confirm say so before
+anything goes. What you untick stays unticked across a reload, in this browser.
 
 The screen shows what goes, as Bazel renders it. Raw HTML in the review is
 shown as escaped text (in a block of its own for HTML blocks) instead of being
@@ -722,9 +776,10 @@ that, in layers, and the first is the one that does not depend on knowing which
 CLI is running:
 
 - **It is not there.** Right before each step starts, of any CLI, Bazel removes
-  every `.claude/`, `.codex/` and `.grok/` folder and every `.mcp.json` from the
-  clone's working tree, at any depth (Claude Code also finds a nested
-  `.claude/skills`) and in any spelling the disk folds into those names (on
+  every `.claude/`, `.codex/`, `.grok/`, `.gemini/`, `.cursor/` and `.agents/`
+  folder and every `.mcp.json` from the clone's working tree, at any depth
+  (Claude Code also finds a nested `.claude/skills`) and in any spelling the disk
+  folds into those names (on
   macOS, `.CLAUDE` is `.claude`), without following symlinks. The job's log says
   what went.
   They stay in git, so a review still sees them in the diff and with
@@ -743,11 +798,21 @@ CLI is running:
   `--mcp-config`, `--plugin-dir`, `--add-dir`, the other flags that read
   configuration, and `CLAUDE_CONFIG_DIR`, with anything but an absolute path
   outside the clone.
-- **No launchers in the clone.** With checkout on, `npx`, `bunx`, `npm`, `pnpm`,
-  `yarn`, `uvx`, `pipx`, `env` and relative paths are refused as a `command`,
-  before the clone: they decide what to run from the working directory, and the
-  PR's `node_modules`, `.npmrc` or `.yarnrc` would decide for them. Point
-  `command` at an installed binary, and set variables with `env:`.
+- **No launchers in the clone.** With checkout on, package and version managers
+  (`npx`, `bunx`, `npm`, `pnpm`, `yarn`, `corepack`, `deno`, `uvx`, `pipx`, `mise`,
+  `asdf`, `volta`, `nix`, `make` and the like), `env` and relative paths are
+  refused as a `command`, before the clone, also behind a wrapper such as
+  `timeout 600 npx …`: they decide what to run from the working directory, and
+  the PR's `node_modules`, `.npmrc` or `.tool-versions` would decide for them.
+  Bazel says so at boot, on the terminal, and the job is refused when it runs.
+  The list is of known names, so it cannot be complete. Point `command` at an
+  installed binary, and set variables with `env:`.
+- **The clone ignores your git config.** The clone and the checkout run with
+  `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_NOSYSTEM` set, so a filter, LFS or
+  `core.hooksPath` from your machine does not run over the PR's files, which is
+  before the sweep. `gh` brings its own credentials, for the clone and for the
+  files a blobless clone fetches later. A global `url.insteadOf` or
+  `http.proxy` does not apply to that clone; use `HTTPS_PROXY` for a proxy.
 - **Git stays out of it.** Every agent with a clone runs with `GIT_DIR` and
   `GIT_WORK_TREE` pinned to it, plus `safe.bareRepository=explicit`,
   `core.fsmonitor=false` and `core.hooksPath=/dev/null` through `GIT_CONFIG_*`,

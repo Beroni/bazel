@@ -32,10 +32,6 @@ type prView struct {
 	Base         string    `json:"base"`
 	Decision     string    `json:"review_decision"`
 	Mine         bool      `json:"mine"`
-	// BodyHTML is the PR description already converted and sanitized. It is
-	// only filled in the listing — in job events it would be a pointless
-	// render on every state change.
-	BodyHTML string `json:"body_html,omitempty"`
 
 	// Reviewed and friends are the history: has this PR been through a review?
 	// Has it changed since then? Did the review go to GitHub?
@@ -86,6 +82,7 @@ func newPRView(pr gh.PR, mine bool, now time.Time) prView {
 // second.
 type stepView struct {
 	Name      string     `json:"name"`
+	Ran       string     `json:"ran,omitempty"`
 	State     State      `json:"state"`
 	Seconds   int        `json:"seconds"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
@@ -113,7 +110,11 @@ type jobView struct {
 	// Publishing marks the job that is carrying an already-read review to the
 	// PR — the review's own card while the post agent runs, or the card of a
 	// publication coming from disk.
-	Publishing bool       `json:"publishing,omitempty"`
+	Publishing bool `json:"publishing,omitempty"`
+	// Publishes is why a paused job may write to the PR when it runs.
+	Publishes string `json:"publishes,omitempty"`
+	// Savable is the review SaveAgain can still write.
+	Savable    bool       `json:"savable,omitempty"`
 	LogLines   int        `json:"log_lines"`
 	Steps      []stepView `json:"steps,omitempty"`
 	Cloning    bool       `json:"cloning,omitempty"`
@@ -124,6 +125,7 @@ type jobView struct {
 	Seconds    int        `json:"seconds"`
 	Err        string     `json:"error,omitempty"`
 	SavedTo    string     `json:"saved_to,omitempty"`
+	LogFile    string     `json:"log_file,omitempty"`
 	Workdir    string     `json:"workdir,omitempty"`
 	Truncated  bool       `json:"truncated,omitempty"`
 	// Tokens and Cost are the review's spend. While it runs they are the
@@ -150,6 +152,7 @@ type jobView struct {
 // view serializes the job, without the body. Call with the Manager lock held.
 func (j *Job) view() jobView {
 	v := jobView{
+		Savable:     j.savable(),
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
 		Agent:       j.Choice.Name,
@@ -164,6 +167,7 @@ func (j *Job) view() jobView {
 		Seconds:     int(j.duration().Seconds()),
 		Err:         j.Err,
 		SavedTo:     j.SavedTo,
+		LogFile:     j.LogFile,
 		Workdir:     j.Result.Workdir,
 		Truncated:   j.Result.Truncated,
 		Posted:      j.Posted,
@@ -185,6 +189,9 @@ func (j *Job) view() jobView {
 	}
 	if j.publish != nil {
 		v.Publishing = true
+	}
+	if j.State == StatePaused {
+		v.Publishes = j.Choice.PublishesBy()
 	}
 	v.AwaitsPublish = j.AwaitsPublish
 	v.History = j.History
@@ -235,7 +242,7 @@ func (j *Job) stepViews() []stepView {
 	}
 	out := make([]stepView, 0, len(j.Steps))
 	for _, st := range j.Steps {
-		v := stepView{Name: st.Name, State: st.State, Err: st.Err}
+		v := stepView{Name: st.Name, Ran: st.Ran, State: st.State, Err: st.Err}
 		switch {
 		case st.State == StateRunning && !st.StartedAt.IsZero():
 			t := st.StartedAt

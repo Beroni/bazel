@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,8 +11,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/store"
+	"github.com/beroni/bazel/internal/workspace"
 )
 
 func testPR(number int) gh.PR {
@@ -1105,7 +1109,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil)
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -1115,7 +1119,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 
 	// Asking again while the first one runs doesn't open a second: publishing
 	// the same file twice is commenting twice on the PR.
-	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil)
+	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
 	if err != nil {
 		t.Fatalf("PublishSaved de novo: %v", err)
 	}
@@ -1129,7 +1133,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 	if done.SavedTo != "" {
 		t.Errorf("uma publicação não devia salvar outro review: %q", done.SavedTo)
 	}
-	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil); err == nil {
+	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil, false); err == nil {
 		t.Error("sem arquivo não há o que publicar")
 	}
 }
@@ -1814,11 +1818,11 @@ func TestPublishSavedDeduplicaPelaOrigem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
-	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
-	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved (2): %v", err)
 	}
@@ -2150,7 +2154,7 @@ func TestCopiaDePublicacaoSomeNoPublishSaved(t *testing.T) {
 	ch := hub.Subscribe()
 	defer hub.Unsubscribe(ch)
 	m := NewManager(ctx, cfg, dir, 1, false, hub)
-	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -2349,7 +2353,7 @@ func TestCopiaSomeQuandoAPublicacaoSaiDaFila(t *testing.T) {
 				if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1})
+				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
 			} else {
 				pub, err = m.PublishWithAgent(reviewID, []int{1})
 			}
@@ -2698,5 +2702,714 @@ func TestGuardEInstanciaJuntos(t *testing.T) {
 	}
 	if !strings.HasPrefix(srv.jobs.nextIDLocked(), srv.instance[:4]+"-j") {
 		t.Error("job ids must carry the instance")
+	}
+}
+
+// An event a slow client cannot take would leave its page wrong for good: the
+// client is cut off instead, so it reconnects and reads the state again. The
+// others go on, and leaving afterwards is harmless.
+func TestHubCortaClienteLento(t *testing.T) {
+	h := NewHub()
+	slow, fine := h.Subscribe(), h.Subscribe()
+	defer h.Unsubscribe(fine)
+	for i := range cap(slow) + 1 {
+		h.Broadcast("job", i)
+		<-fine
+	}
+	if h.Clients() != 1 {
+		t.Errorf("%d clients, want the fine one", h.Clients())
+	}
+	n := 0
+	for range slow {
+		n++
+	}
+	if n != cap(slow) {
+		t.Errorf("slow client got %d events before the close", n)
+	}
+	h.Unsubscribe(slow)
+}
+
+// The stream subscribes before the page can see it open: an event right after
+// the first bytes is not lost.
+func TestEventsAssinaAntesDeAbrir(t *testing.T) {
+	srv := newTestServer(t)
+	h := srv.Handler()
+	ts := httptest.NewServer(h)
+	defer ts.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, "GET", ts.URL+"/api/events", nil)
+	req.Host = "127.0.0.1:7777"
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if srv.hub.Clients() != 1 {
+		t.Errorf("headers arrived with %d subscribers", srv.hub.Clients())
+	}
+}
+
+// Shutting down waits for the jobs: the agent dies with the context, and the
+// job gets to clean its clone before the process goes.
+func TestRunEsperaOsJobs(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "trap 'sleep 0.5; exit 1' TERM; sleep 30 & wait")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	done := make(chan error, 1)
+	go func() { done <- srv.Run(ctx) }()
+	view, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, view.ID, StateRunning)
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(shutdownWait + 7*time.Second):
+		t.Fatal("Run did not return")
+	}
+	if v, ok := srv.jobs.View(view.ID, false); !ok || v.State == StateRunning || v.State == StateQueued {
+		t.Errorf("Run returned with the job still going: %+v", v)
+	}
+}
+
+// What a mixed pipeline marked as staying in Bazel stays there from the Saved
+// tab too, by either door: the policy is the one of the run, kept in the file.
+func TestSavedNaoPublicaOQueFica(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482,\"headRefOid\":\"abc\"}'; exit 0; fi\ncat >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	cfg := cfgFor(t, "cat")
+	no := false
+	cfg.Agents = []config.AgentDef{{Name: "notes", Task: "notes", Publishable: &no}, {Name: "lens", Task: "lens"}}
+	cfg.Pipelines = []config.Pipeline{{Name: "mix", Steps: []string{"notes", "lens"}}}
+	choice, err := cfg.ChoiceByName("mix")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := agent.Result{Agent: "mix", PR: testPR(482), Steps: []agent.StepResult{
+		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "PUBLIC_REVIEW"},
+	}}
+	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\nPUBLIC_REVIEW"
+	path, err := store.Save(srv.reviewsDir, agent.Split(res, choice), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	do := func(method, route string) *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, "http://127.0.0.1:7777"+route, strings.NewReader(`{}`)))
+		return w
+	}
+
+	var view struct {
+		HTML    string `json:"html"`
+		Context string `json:"context_html"`
+	}
+	_ = json.Unmarshal(do("GET", "/api/reviews/"+name).Body.Bytes(), &view)
+	if strings.Contains(view.HTML, "INTERNAL_ONLY") || !strings.Contains(view.Context, "INTERNAL_ONLY") || !strings.Contains(view.HTML, "PUBLIC_REVIEW") {
+		t.Errorf("screen: %+v", view)
+	}
+
+	if w := do("POST", "/api/reviews/"+name+"/comment"); w.Code != http.StatusOK {
+		t.Fatalf("comment: %d %s", w.Code, w.Body)
+	}
+	sent, _ := os.ReadFile(log)
+	if strings.Contains(string(sent), "INTERNAL_ONLY") || !strings.Contains(string(sent), "PUBLIC_REVIEW") {
+		t.Errorf("the comment took: %s", sent)
+	}
+
+	// The post agent reads a file: it gets a copy without what stays.
+	sr, err := srv.savedPR(context.Background(), name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := srv.jobs.publishInputFor(sr.Path, sr.Body, nil, sr.Trimmed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer in.discard()
+	copied, _ := os.ReadFile(in.Path)
+	if in.Path == sr.Path || strings.Contains(string(copied), "INTERNAL_ONLY") {
+		t.Errorf("the post agent would read %s: %s", in.Path, copied)
+	}
+
+	// Saved before the marker, nothing can tell the steps apart: refused.
+	old := filepath.Join(srv.reviewsDir, "acme-api-core-482-20200101-000000.md")
+	if err := os.WriteFile(old, []byte("# acme/api-core#482 — t\n\n- Agent: mix\n\n---\n\n"+res.Body+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(old)+"/comment"); w.Code < 400 {
+		t.Errorf("old file: %d", w.Code)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(old)+"/publish"); w.Code < 400 {
+		t.Errorf("old file: %d", w.Code)
+	}
+
+	// And with the pipeline gone from the config, which can no longer say.
+	gone := filepath.Join(srv.reviewsDir, "acme-api-core-482-20200101-000001.md")
+	legacy := "# acme/api-core#482 — t\n\n- Agent: retired — notes (3s) → lens (5s)\n\n---\n\n" + res.Body + "\n"
+	if err := os.WriteFile(gone, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(gone)+"/comment"); w.Code < 400 {
+		t.Errorf("retired pipeline: %d", w.Code)
+	}
+	if data, _ := os.ReadFile(log); strings.Count(string(data), "INTERNAL_ONLY") != 0 {
+		t.Errorf("it went out: %s", data)
+	}
+
+	// A pipeline saved now with every step publishable says so, and passes.
+	all := agent.Result{Agent: "both", PR: testPR(482), Body: "## a\n\nOne\n\n---\n\n## b\n\nTwo",
+		Steps: []agent.StepResult{{Name: "a", Body: "One"}, {Name: "b", Body: "Two"}}}
+	saved, err := store.Save(srv.reviewsDir, all, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w := do("POST", "/api/reviews/"+filepath.Base(saved)+"/comment"); w.Code != http.StatusOK {
+		t.Errorf("a recorded pipeline: %d %s", w.Code, w.Body)
+	}
+}
+
+// One saved review reaches the PR once, whichever of the four doors it takes.
+func TestUmaRevisaoQuatroPortas(t *testing.T) {
+	dir := t.TempDir()
+	log := ghFalso(t, "cat >/dev/null")
+	cfg := cfgFor(t, "cat")
+	noClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &noClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	file := func(name string) string {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("# acme/api-core#482 — t\n\n---\n\nBody.\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	// A publication from the Saved tab settles, and its report cannot be pasted.
+	path := file("a.md")
+	view, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Publishing || !done.Posted {
+		t.Errorf("a finished publication: publishing=%v posted=%v", done.Publishing, done.Posted)
+	}
+	if _, err := m.Post(ctx, view.ID, nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("/post after it: %v", err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("comment after it: %v", err)
+	}
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish again: %v", err)
+	}
+
+	// Comment twice, and then publish: the first one counts.
+	path = file("b.md")
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("second comment: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("%d gh calls", n)
+	}
+
+	// The card of a review and the Saved tab are the same review.
+	path = file("c.md")
+	card := &Job{ID: "j900", State: StateDone, SavedTo: path, Posted: true}
+	poeJob(m, card)
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("publish a posted card's file: %v", err)
+	}
+	path = file("d.md")
+	busy := &Job{ID: "j901", State: StateDone, SavedTo: path, posting: true}
+	poeJob(m, busy)
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errPublishBusy) {
+		t.Errorf("comment while the card posts: %v", err)
+	}
+}
+
+// A save that fails leaves memory as it was: the page must not show a repository
+// the file does not have, and the file stays whole.
+func TestSaveFalhoNaoMudaAMemoria(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if err := os.Chmod(home, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(home, 0o700) })
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(`{"repo":"acme/web"}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("add: %d %s", w.Code, w.Body)
+	}
+	if slices.Contains(cfg.Repos, "acme/web") {
+		t.Errorf("memory has it: %v", cfg.Repos)
+	}
+	after, _ := os.ReadFile(filepath.Join(home, "config.yaml"))
+	if !bytes.Equal(before, after) {
+		t.Errorf("the file changed")
+	}
+}
+
+// A review that could not be saved is not marked as reviewed, and it can still
+// be written: it was paid for, and memory is the only copy.
+func TestReviewSemDiscoNaoFicaMarcado(t *testing.T) {
+	parent := t.TempDir()
+	dir := filepath.Join(parent, "reviews")
+	if err := os.WriteFile(dir, nil, 0o644); err != nil { // a file where the folder goes
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.SavedTo != "" || !strings.Contains(done.Err, "could not save") {
+		t.Fatalf("job: %+v", done)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	if marks := store.LoadMarks(dir); len(marks) != 0 {
+		t.Errorf("marked with nothing on disk: %v", marks)
+	}
+	again, err := m.SaveAgain(view.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.SavedTo == "" || again.Err != "" {
+		t.Errorf("after saving again: %+v", again)
+	}
+	if _, ok := store.LoadMarks(dir)[testPR(482).Key()]; !ok {
+		t.Error("saved, so it counts as reviewed")
+	}
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("nothing left to save: %v", err)
+	}
+}
+
+// Neither the page nor the download carries an agent's env values.
+func TestConfigNaoEntregaEnv(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Env = map[string]string{"TOKEN": "s3cret"}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, route := range []string{"/api/config", "/api/config/file"} {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777"+route, nil))
+		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "s3cret") || !strings.Contains(w.Body.String(), "TOKEN") {
+			t.Errorf("%s: %d %s", route, w.Code, w.Body)
+		}
+	}
+}
+
+// References are bounded and counted: a request cannot run hundreds of gh, and
+// past the budget none runs.
+func TestRefsContamNoOrcamento(t *testing.T) {
+	srv := newTestServer(t)
+	log := ghFalso(t, "echo '{}'")
+	h := srv.Handler()
+	post := func(n int) *httptest.ResponseRecorder {
+		refs := make([]string, n)
+		for i := range refs {
+			refs[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+		}
+		body, _ := json.Marshal(map[string]any{"refs": refs})
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := post(maxRefs + 1); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
+		t.Errorf("too many refs: %d, %d gh", w.Code, contaNoLog(log, "start"))
+	}
+	old := ghReadsPerMin
+	ghReadsPerMin = 0
+	t.Cleanup(func() { ghReadsPerMin = old })
+	if w := post(3); w.Code != http.StatusBadRequest || contaNoLog(log, "start") != 0 {
+		t.Errorf("past the budget: %d, %d gh", w.Code, contaNoLog(log, "start"))
+	}
+}
+
+// The job's steps say what they ran on, from the start of the step, and a
+// command Bazel does not know is named by itself.
+func TestJobDizOQueRodou(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch := srv.jobs.hub.Subscribe()
+	defer srv.jobs.hub.Unsubscribe(ch)
+	view, err := srv.jobs.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if len(done.Steps) != 1 || done.Steps[0].Ran != "sh" {
+		t.Errorf("steps: %+v", done.Steps)
+	}
+}
+
+// The page gets which skills read as reviewing, to put them first.
+func TestSkillsDizQuaisRevisam(t *testing.T) {
+	srv := newTestServer(t)
+	dir := t.TempDir()
+	for name, desc := range map[string]string{"fleet": "Reviews a diff", "notes": "Writes release notes"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		md := "---\nname: " + name + "\ndescription: " + desc + "\n---\n"
+		if err := os.WriteFile(filepath.Join(dir, name, "SKILL.md"), []byte(md), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	srv.cfg.SkillsDir = dir
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/skills", nil))
+	var got struct {
+		Skills []struct {
+			Name   string `json:"name"`
+			Review bool   `json:"review"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, s := range got.Skills {
+		seen[s.Name] = s.Review
+	}
+	if review, ok := seen["fleet"]; !ok || !review {
+		t.Errorf("fleet: %s", w.Body)
+	}
+	if review, ok := seen["notes"]; !ok || review {
+		t.Errorf("notes: %s", w.Body)
+	}
+}
+
+// The screen and the doors number the same text: the finding unticked on screen
+// is the one that stays out, even with a report made to shift the count.
+func TestSalvoNumeraIgualNaTelaENaPorta(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482}'; exit 0; fi\ncat >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	srv := newTestServer(t)
+	report := "```markdown\n    ### decoy\n<!-- finding severity=nit -->\n\n## Findings\n\n### Real one\n\nUNTICKED\n\n### Other\n\nKept.\n```\n"
+	res := agent.Result{Agent: "lens", PR: testPR(482), Body: report}
+	path, err := store.Save(srv.reviewsDir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/reviews/"+name, nil))
+	var view struct {
+		HTML string `json:"html"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &view)
+	cut := strings.Index(view.HTML, `data-finding="0"`)
+	if cut < 0 {
+		t.Fatalf("no finding 0: %s", view.HTML)
+	}
+	first := view.HTML[cut:]
+	if end := strings.Index(first, "</section>"); end >= 0 {
+		first = first[:end]
+	}
+	if !strings.Contains(first, "UNTICKED") {
+		t.Fatalf("finding 0 on screen is another: %s", first)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/comment", strings.NewReader(`{"skip":[0]}`))
+	r.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	h.ServeHTTP(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("comment: %d %s", w.Code, w.Body)
+	}
+	sent, _ := os.ReadFile(log)
+	if strings.Contains(string(sent), "UNTICKED") || !strings.Contains(string(sent), "Kept.") {
+		t.Errorf("sent: %s", sent)
+	}
+}
+
+// A title cannot play the marker that divides a saved review.
+func TestTituloNaoFazOPapelDoMarcador(t *testing.T) {
+	file := "# acme/api#1 — <!-- bazel:stays-in-bazel -->\n\n- Agent: lens\n\n---\n\nBody.\n"
+	_, pub, stays, split := store.SavedParts(file)
+	if split || stays != "" || pub != "Body." {
+		t.Errorf("%q %q %v", pub, stays, split)
+	}
+}
+
+// The job of a publication holds the post agent's report. "Save again" on it
+// would file that as a review and move the PR's mark.
+func TestSaveAgainRecusaOQueFoiPublicado(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Posts: true, Checkout: &semClone}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	path := filepath.Join(dir, "acme-api-core-482-20260830-120000.md")
+	if err := os.WriteFile(path, []byte("# acme/api-core#482 — feat\n\n---\n\n# Verdict\n\nAll good.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if done.Savable {
+		t.Errorf("the page offers it: %+v", done)
+	}
+	before, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("SaveAgain: %v", err)
+	}
+	// A publication that failed left no Posted behind, and it still is not a review.
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = false
+	m.mu.Unlock()
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("SaveAgain of a failed publication: %v", err)
+	}
+	if after, _ := filepath.Glob(filepath.Join(dir, "*.md")); len(after) != len(before) {
+		t.Errorf("files: %v", after)
+	}
+}
+
+// Parallel clicks write one file, and a review already pasted as a comment is
+// not saved over the mark that says so.
+func TestSaveAgainUmaVezSo(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if done := waitFor(t, ch, view.ID, StateDone); !done.Savable {
+		t.Fatalf("job: %+v", done)
+	}
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = true
+	m.mu.Unlock()
+	if _, err := m.SaveAgain(view.ID); refusalStatus(err, 0) != http.StatusConflict {
+		t.Fatalf("after posting: %v", err)
+	}
+	m.mu.Lock()
+	m.jobs[view.ID].Posted = false
+	m.mu.Unlock()
+	var wg sync.WaitGroup
+	var saved atomic.Int32
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := m.SaveAgain(view.ID); err == nil {
+				saved.Add(1)
+			}
+		}()
+	}
+	wg.Wait()
+	files, _ := filepath.Glob(filepath.Join(dir, "*.md"))
+	if saved.Load() != 1 || len(files) != 1 {
+		t.Errorf("saved %d, files %v", saved.Load(), files)
+	}
+}
+
+// A card removed while the comment goes out does not come back with no id.
+func TestPostSemCardNaoDevolveViewVazia(t *testing.T) {
+	dir := t.TempDir()
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	script := "#!/bin/sh\ncat >/dev/null\n: > " + started + "\nsleep 0.3\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, view.ID, StateDone)
+	go func() {
+		for range 200 {
+			if _, err := os.Stat(started); err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_ = m.Remove(view.ID)
+	}()
+	got, err := m.Post(ctx, view.ID, nil)
+	if refusalStatus(err, 0) != http.StatusGone || got.ID != "" {
+		t.Errorf("Post: %+v %v", got, err)
+	}
+}
+
+// A repository added while a listing is out shows up at the next read, not when
+// the cache of that older listing expires.
+func TestInvalidarVenceOFetchEmVoo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	bin := t.TempDir()
+	started := filepath.Join(t.TempDir(), "started")
+	script := "#!/bin/sh\n: > " + started + "\nsleep 0.3\necho '[]'\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	srv := newTestServer(t)
+	srv.cfg.Repos = []string{"acme/api"}
+	done := make(chan error)
+	go func() {
+		_, _, _, err := srv.loadPRs(context.Background(), true)
+		done <- err
+	}()
+	for range 400 {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	srv.invalidatePRs()
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.RLock()
+	defer srv.prMu.RUnlock()
+	if !srv.prsAt.IsZero() {
+		t.Error("the older listing passes for fresh")
+	}
+}
+
+func TestShutdownEsperaOClone(t *testing.T) {
+	if shutdownWait <= workspace.WaitDelay {
+		t.Errorf("%v does not outlast %v", shutdownWait, workspace.WaitDelay)
+	}
+}
+
+// Refusing a key edited by hand is a conflict the user solves, not a server error.
+func TestSaveEmConflitoResponde409(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := config.Path()
+	if err := os.WriteFile(path, []byte("repos: [acme/api]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := []byte("repos: [acme/api, acme/hand]\n")
+	if err := os.WriteFile(path, edited, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/repos", strings.NewReader(`{"repo":"acme/web"}`))
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "restart Bazel") {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, edited) {
+		t.Errorf("file: %s", data)
 	}
 }

@@ -1,9 +1,13 @@
 package server
 
 import (
+	"github.com/beroni/bazel/internal/gh"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // A review's raw HTML goes to the PR verbatim, so the screen has to show it as
@@ -240,5 +244,107 @@ func TestMetaDoAchadoEstrito(t *testing.T) {
 		if !strings.Contains(got, "<pre>") {
 			t.Errorf("%q must stay on screen:\n%s", meta, got)
 		}
+	}
+}
+
+// A fence's info string is the agent's: it cannot pick classes of the page.
+func TestCercaNaoEscolheClasse(t *testing.T) {
+	for _, info := range []string{"text\tonly-collapsed", "text\tsr-only", "text\terror-box", "language-x\tsr-only"} {
+		got := renderReview("```" + info + "\nHIDDEN\n```\n")
+		if !strings.Contains(got, "HIDDEN") || strings.Contains(got, "sr-only") || strings.Contains(got, "only-collapsed") || strings.Contains(got, "error-box") {
+			t.Errorf("%q: %s", info, got)
+		}
+	}
+	if got := renderReview("```go\nx\n```\n"); !strings.Contains(got, `class="language-go"`) {
+		t.Errorf("a real language keeps its class: %s", got)
+	}
+	if got := renderReview("A note[^1].\n\n[^1]: Text.\n"); !strings.Contains(got, `class="footnotes"`) {
+		t.Errorf("footnotes keep their class: %s", got)
+	}
+}
+
+// goldmark is quadratic on this text. A description past the limit is cut and
+// shown as text, a review keeps every byte, and neither takes seconds.
+func TestTextoEnormeNaoCustaCPU(t *testing.T) {
+	bomb := strings.Repeat("[a](()", 65536/6)
+	start := time.Now()
+	got := renderMarkdown(bomb)
+	if !strings.Contains(got, "<pre>") || !strings.Contains(got, "too long") || strings.Contains(got, "<a ") {
+		t.Errorf("description: %.200s", got)
+	}
+	big := strings.Repeat(bomb, 5)
+	if out := renderReview(big); !strings.Contains(out, big[len(big)-60:]) {
+		t.Error("a review must keep all of its text")
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("took %v", took)
+	}
+}
+
+// The list carries no rendered description: the page reads it per PR.
+func TestListaNaoRenderizaDescricao(t *testing.T) {
+	srv := newTestServer(t)
+	pr := testPR(482)
+	pr.Body = "# Title"
+	srv.prs, srv.prsAt = []gh.PR{pr}, time.Now()
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/prs", nil))
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "<h1") || strings.Contains(w.Body.String(), "body_html") {
+		t.Errorf("%d %s", w.Code, w.Body)
+	}
+}
+
+// Right below the limits, with the worst text there is for them, a render still
+// takes a moment and not seconds.
+func TestLogoAbaixoDoLimite(t *testing.T) {
+	bomb := "[a](()"
+	full := strings.Repeat(bomb, 96000/len(bomb))
+	most := maxLinkScan / 96000
+	links := strings.Repeat(bomb, most) + strings.Repeat("x", 96000-most*len(bomb))
+	dense := strings.Repeat(bomb, 800)
+	for name, src := range map[string]string{"96000 bytes of it": full, "the most links allowed": links, "short and dense": dense} {
+		start := time.Now()
+		got := renderReview(src)
+		if took := time.Since(start); took > 3*time.Second { // a loaded machine; unbounded it takes minutes
+			t.Errorf("%s: %v", name, took)
+		}
+		if !strings.Contains(got, "[a]") {
+			t.Errorf("%s: the text is gone", name)
+		}
+	}
+}
+
+// The size of the source says nothing about the size of the page: a table gives
+// every row all the columns and a reference repeats its whole destination. Both
+// go out as plain text, and neither takes its time on the way.
+func TestMarkdownQueMultiplicaViraTexto(t *testing.T) {
+	wide := strings.Repeat("|a", 1500) + "|\n" + strings.Repeat("|-", 1500) + "|\n" + strings.Repeat("|\n", 5000)
+	refs := "[a]: http://x/" + strings.Repeat("b", 48<<10) + "\n\n" + strings.Repeat("[a]", 15000)
+	quotes := strings.Repeat("> ", 40<<10)
+	for name, src := range map[string]string{"table": wide, "refs": refs, "quotes": quotes} {
+		for door, render := range map[string]func(string) string{
+			"description": renderMarkdown, "review": renderReview,
+		} {
+			start := time.Now()
+			out := render(src)
+			if len(out) > 4*len(src) {
+				t.Errorf("%s/%s: %d bytes of %d", name, door, len(out), len(src))
+			}
+			if d := time.Since(start); d > 2*time.Second {
+				t.Errorf("%s/%s: %v", name, door, d)
+			}
+		}
+	}
+}
+
+// What is big and honest keeps rendering.
+func TestTabelaELinkDeVerdadeContinuam(t *testing.T) {
+	table := "| a | b | c | d |\n|---|---|---|---|\n" + strings.Repeat("| 1 | 2 | 3 | 4 |\n", 1000)
+	if out := renderReviewMarkdown(table); !strings.Contains(out, "<table>") {
+		t.Error("real table went plain")
+	}
+	links := "[a]: http://example.com/path\n\n" + strings.Repeat("[a] ", 500)
+	if out := renderReviewMarkdown(links); !strings.Contains(out, "<a ") {
+		t.Error("real references went plain")
 	}
 }

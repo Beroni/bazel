@@ -3,7 +3,12 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+
+	"github.com/yuin/goldmark/ast"
+	"github.com/yuin/goldmark/parser"
+	"github.com/yuin/goldmark/text"
 )
 
 // Part is a piece of the review: either a finding, or the text between findings.
@@ -17,6 +22,33 @@ import (
 // one too: a doubt you have already resolved doesn't need to go to the PR. It
 // is the unit the page lets you tick: a false positive drops out of what goes
 // to the PR without the rest of the review changing.
+// maxNesting is how many quotes and list items a single line may open. The
+// parser spends quadratic time on them: 96 KB of `>` took 3 s, on every GET of a
+// review.
+const maxNesting = 1 << 10
+
+// TooNested says some line opens more blocks than is worth parsing.
+func TooNested(body string) bool {
+	depth := 0
+	opens := func(i int) bool {
+		return strings.IndexByte("-+*.)", body[i]) >= 0 && i+1 < len(body) && (body[i+1] == ' ' || body[i+1] == '\t')
+	}
+	for i := 0; i < len(body); i++ {
+		switch c := body[i]; {
+		case c == '\n':
+			depth = 0
+		case depth < 0, c == ' ', c == '\t', c >= '0' && c <= '9':
+		case c == '>', opens(i):
+			if depth++; depth > maxNesting {
+				return true
+			}
+		case strings.IndexByte("-+*.)", c) < 0:
+			depth = -1
+		}
+	}
+	return false
+}
+
 type Part struct {
 	Text    string
 	Finding bool
@@ -27,13 +59,15 @@ type Part struct {
 // where each finding starts and ends, so the page can number them and publish
 // can drop the unticked ones.
 func SplitFindings(body string) []Part {
+	if TooNested(body) {
+		return []Part{{Text: body}}
+	}
 	lines := strings.SplitAfter(body, "\n")
+	headings, literal, paragraphs := blockLines(body, lines)
 	var (
 		parts   []Part
 		cur     strings.Builder
 		finding bool
-		inFence bool
-		fence   string
 		section bool // inside a `##` of findings/cuts/human verification
 		human   bool // and it is the human verification one, which lists instead of `###`
 		h3Seen  bool // the current section numbers findings with `###`
@@ -57,27 +91,22 @@ func SplitFindings(body string) []Part {
 	}
 	for i, line := range lines {
 		trim := strings.TrimSpace(line)
-		if inFence {
-			if strings.HasPrefix(trim, fence) {
-				inFence = false
-			}
+		// Code, quoted HTML and a fence's own lines are never structure.
+		if literal[i] || strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
 			blank = false
 			cur.WriteString(line)
 			continue
 		}
-		if strings.HasPrefix(trim, "```") || strings.HasPrefix(trim, "~~~") {
-			inFence, fence = true, trim[:3]
-			blank = false
-			cur.WriteString(line)
-			continue
+		level, title := 0, ""
+		if headings[i] {
+			level, title = headingOf(trim)
 		}
-		level, title := headingOf(trim)
 		switch {
 		case level == 0:
 			wasBlank := blank
 			blank = trim == ""
 			// Numbered bold finding, in sections that do not use `###`.
-			if section && !h3Seen && boldNumbered(trim) {
+			if section && !h3Seen && paragraphs[i] && boldNumbered(trim) {
 				flush()
 				finding = true
 				bold = human
@@ -125,6 +154,92 @@ func SplitFindings(body string) []Part {
 	return parts
 }
 
+// blockParser reads a report's blocks as the renderer does, so that both agree on
+// what is a heading. With no inline parsers: they are what takes quadratic time
+// on some text, and this runs over the whole report, however long.
+var blockParser = parser.NewParser(parser.WithBlockParsers(parser.DefaultBlockParsers()...))
+
+// blockLines says, line by line, which are headings at the top of the document,
+// which are text at that level, and which belong to a code or HTML block. A line that merely looks like a
+// heading, such as `# install it` in indented code or in a list item, must not
+// close a finding: what came after it would survive an untick and go to the PR.
+func blockLines(body string, lines []string) (headings, literal, paragraphs map[int]bool) {
+	starts := make([]int, len(lines))
+	at := 0
+	for i, l := range lines {
+		starts[i] = at
+		at += len(l)
+	}
+	lineOf := func(offset int) int {
+		i, found := slices.BinarySearch(starts, offset)
+		if !found {
+			i--
+		}
+		return i
+	}
+	headings, literal, paragraphs = map[int]bool{}, map[int]bool{}, map[int]bool{}
+	src := []byte(body)
+	markLines := func(seg *text.Segments) {
+		for i := 0; i < seg.Len(); i++ {
+			s := seg.At(i)
+			for l := lineOf(s.Start); l >= 0 && l < len(lines) && starts[l] < max(s.Stop, s.Start+1); l++ {
+				literal[l] = true
+			}
+		}
+	}
+	doc := blockParser.Parse(text.NewReader(src))
+	_ = ast.Walk(doc, func(n ast.Node, entering bool) (ast.WalkStatus, error) {
+		if !entering {
+			return ast.WalkContinue, nil
+		}
+		switch b := n.(type) {
+		case *ast.Paragraph:
+			// Every line of a paragraph at the top: `**2. …**` right under
+			// `**1. …**`, with no blank line, is markdown's same paragraph and
+			// still the next finding. In a list item, only its first line.
+			if !topLevel(b, doc) {
+				break
+			}
+			for i := 0; i < b.Lines().Len(); i++ {
+				if i == 0 || b.Parent() == doc {
+					paragraphs[lineOf(b.Lines().At(i).Start)] = true
+				}
+			}
+		case *ast.Heading:
+			if b.Parent() == doc && b.Lines().Len() > 0 {
+				headings[lineOf(b.Lines().At(0).Start)] = true
+			}
+		case *ast.CodeBlock:
+			markLines(b.Lines())
+		case *ast.FencedCodeBlock:
+			markLines(b.Lines())
+		case *ast.HTMLBlock:
+			// The comment review-fleet writes under a heading is read on its own.
+			if b.Lines().Len() > 1 {
+				markLines(b.Lines())
+				if b.HasClosure() {
+					literal[lineOf(b.ClosureLine.Start)] = true
+				}
+			}
+		}
+		return ast.WalkContinue, nil
+	})
+	return headings, literal, paragraphs
+}
+
+// topLevel says n is a block of the document, or the text of a top-level list
+// item: where a finding can start. Deeper down it is part of the one around it.
+func topLevel(n, doc ast.Node) bool {
+	p := n.Parent()
+	if p == doc {
+		return true
+	}
+	if _, item := p.(*ast.ListItem); !item || p.FirstChild() != n {
+		return false
+	}
+	return p.Parent().Parent() == doc
+}
+
 // Findings counts the findings in a review.
 func Findings(body string) int {
 	n := 0
@@ -168,7 +283,7 @@ func DropFindings(body string, skip []int) string {
 // saved list — the real review stays whole, only what goes out changes.
 func SavePublishCopy(dir, original, body string) (string, error) {
 	pubDir := filepath.Join(dir, "publish")
-	if err := os.MkdirAll(pubDir, 0o755); err != nil {
+	if err := os.MkdirAll(pubDir, 0o700); err != nil {
 		return "", err
 	}
 	header := ""
@@ -188,9 +303,6 @@ func SavePublishCopy(dir, original, body string) (string, error) {
 	}
 	path := f.Name()
 	_, err = f.WriteString(header + strings.TrimSpace(body) + "\n")
-	if err == nil {
-		err = f.Chmod(0o644)
-	}
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}

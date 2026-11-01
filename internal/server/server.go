@@ -27,16 +27,19 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
 	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/store"
+	"github.com/beroni/bazel/internal/workspace"
 )
 
 //go:embed static
@@ -51,6 +54,11 @@ type Options struct {
 	Concurrency int
 	Keep        bool
 	Version     string
+	// LogDir turns on the job logs on disk over the config's log_dir.
+	LogDir string
+	// QueueDir is where the queue is kept across restarts; empty keeps it in
+	// memory.
+	QueueDir string
 }
 
 // Server is the web interface.
@@ -77,12 +85,14 @@ type Server struct {
 	// when the requested port is 0.
 	bound atomic.Pointer[string]
 
-	// fetchMu serializes the gh queries; prMu guards the cache.
-	fetchMu sync.Mutex
-	prMu    sync.RWMutex
-	prs     []gh.PR
-	prErrs  []gh.RepoError
-	prsAt   time.Time
+	// fetchSlot serializes the gh queries, and unlike a mutex lets go of whoever
+	// stops waiting; prMu guards the cache.
+	fetchSlot chan struct{}
+	prMu      sync.RWMutex
+	prs       []gh.PR
+	prErrs    []gh.RepoError
+	prsAt     time.Time
+	prGen     int
 
 	// details caches each PR's page (the Overview) by head sha: one gh call
 	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
@@ -115,10 +125,15 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	}
 	jobs := NewManager(ctx, cfg, reviewsDir, opts.Concurrency, opts.Keep, hub)
 	jobs.idPrefix = instance[:4] + "-"
+	jobs.logDir = jobLogDir(cfg, opts.LogDir)
+	if opts.QueueDir != "" {
+		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
+	}
 	return &Server{
 		instance:     instance,
 		details:      map[string]detailsEntry{},
 		reading:      map[string]*detailsRead{},
+		fetchSlot:    make(chan struct{}, 1),
 		retried:      map[string]time.Time{},
 		fetchDetails: gh.GetDetails,
 		cfg:          cfg,
@@ -130,6 +145,23 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs:         jobs,
 		done:         make(chan struct{}),
 	}, nil
+}
+
+// jobLogDir gets the folder for the job logs ready and clears old ones. A folder
+// that cannot be used turns them off with a line on the terminal: they are a
+// debugging aid, and the server is worth more.
+func jobLogDir(cfg *config.Config, flag string) string {
+	dir, err := cfg.ResolvedLogDir(flag)
+	if err == nil && dir != "" {
+		if err = os.MkdirAll(dir, 0o700); err == nil {
+			err = pruneJobLogs(dir, cfg.ResolvedLogKeep())
+		}
+	}
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: job logs are off: %v\n", err)
+		return ""
+	}
+	return dir
 }
 
 // newInstanceID makes the id that tells one server process from the next.
@@ -168,6 +200,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
+	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
+	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResume)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -245,6 +279,11 @@ func semCache(next http.Handler) http.Handler {
 	})
 }
 
+// shutdownWait is how long Run gives the jobs to clean up their clones. An agent
+// that was killed gets agent.Grace for its process and pipes, a git in the middle
+// of a clone gets workspace.WaitDelay, and the cleanup comes after that.
+const shutdownWait = max(agent.Grace, workspace.WaitDelay) + 3*time.Second
+
 // Run starts the server and only returns when ctx dies.
 func (s *Server) Run(ctx context.Context) error {
 	srv := &http.Server{
@@ -278,7 +317,7 @@ func (s *Server) Run(ctx context.Context) error {
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	shutErr := srv.Shutdown(shutCtx)
-	s.jobs.Wait(5 * time.Second)
+	s.jobs.Wait(shutdownWait)
 	return shutErr
 }
 
@@ -437,7 +476,6 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 		Refresh: r.URL.Query().Get("refresh") != "",
 		Mine:    r.URL.Query().Get("scope") == "mine",
 		Author:  r.URL.Query().Get("author"),
-		HTML:    true,
 	})
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
@@ -446,9 +484,32 @@ func (s *Server) handlePRs(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, list)
 }
 
+func (s *Server) listedNow() []gh.PR {
+	s.prMu.RLock()
+	defer s.prMu.RUnlock()
+	return s.prs
+}
+
+// keepFailed puts back the PRs of the repositories that failed this read: one
+// bad answer from GitHub must not empty the list, and the page says what failed
+// from repo_errors.
+func keepFailed(found, old []gh.PR, errs []gh.RepoError) []gh.PR {
+	for _, e := range errs {
+		if e.Truncated {
+			continue
+		}
+		for _, pr := range old {
+			if strings.EqualFold(pr.Repo, e.Repo) {
+				found = append(found, pr)
+			}
+		}
+	}
+	slices.SortStableFunc(found, func(a, b gh.PR) int { return b.UpdatedAt.Compare(a.UpdatedAt) })
+	return found
+}
+
 // prFilter is the cut of the PR list. The page and /mcp ask for the same
-// list; only the MCP filters by repository and review state, and only the
-// page needs the description as HTML.
+// list; only the MCP filters by repository and review state.
 type prFilter struct {
 	Refresh bool
 	Mine    bool
@@ -456,7 +517,6 @@ type prFilter struct {
 	Repo    string
 	// Status is "" (all), "unreviewed", "reviewed", "changed" or "posted".
 	Status string
-	HTML   bool
 }
 
 type prList struct {
@@ -493,11 +553,7 @@ func (s *Server) listPRs(ctx context.Context, f prFilter) (prList, error) {
 		if !statusMatches(st, f.Status) {
 			continue
 		}
-		v := newPRView(pr, mine, now).withStatus(st, now)
-		if f.HTML {
-			v.BodyHTML = renderMarkdown(pr.Body)
-		}
-		out = append(out, v)
+		out = append(out, newPRView(pr, mine, now).withStatus(st, now))
 	}
 
 	errs := make([]map[string]string, 0, len(repoErrs))
@@ -533,8 +589,17 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	}
 	asked := at
 
-	s.fetchMu.Lock()
-	defer s.fetchMu.Unlock()
+	select {
+	case s.fetchSlot <- struct{}{}:
+		defer func() { <-s.fetchSlot }()
+	case <-ctx.Done():
+		// Someone else is reading: whoever has a list keeps it, and whoever does
+		// not goes away instead of queueing behind a stuck gh.
+		if !at.IsZero() {
+			return prs, errs, at, nil
+		}
+		return nil, nil, time.Time{}, ctx.Err()
+	}
 
 	// Another request may have fetched while we waited for the lock.
 	s.prMu.RLock()
@@ -547,6 +612,9 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 		return prs, errs, at, nil
 	}
 
+	s.prMu.RLock()
+	gen := s.prGen
+	s.prMu.RUnlock()
 	s.cfgMu.Lock()
 	repos := append([]string(nil), s.cfg.Repos...)
 	opts := gh.ListOptions{
@@ -559,7 +627,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	// there. A list that expired is read regardless: the page needs one.
 	if fresh {
 		s.detMu.Lock()
-		allowed := s.listReadLocked(timeNow(), len(repos))
+		allowed := s.listReadLocked(timeNow(), gh.ListCalls(repos, opts))
 		s.detMu.Unlock()
 		if !allowed {
 			return prs, errs, at, nil
@@ -578,9 +646,14 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	if err := ctx.Err(); err != nil {
 		return nil, nil, time.Time{}, err
 	}
+	found = keepFailed(found, s.listedNow(), repoErrs)
 	now := time.Now()
 	s.prMu.Lock()
 	s.prs, s.prErrs, s.prsAt = found, repoErrs, now
+	// The list changed while this read was out: it can be shown, not kept.
+	if s.prGen != gen {
+		s.prsAt = time.Time{}
+	}
 	s.prMu.Unlock()
 
 	s.hub.Broadcast("prs", map[string]any{"count": len(found), "fetched_at": now})
@@ -601,6 +674,10 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.Refs) == 0 {
 		writeErr(w, http.StatusBadRequest, errors.New("no PR given"))
+		return
+	}
+	if len(req.Refs) > maxRefs {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("too many PRs: %d given, at most %d per call", len(req.Refs), maxRefs))
 		return
 	}
 	choice, err := s.resolveChoice(req.Agent)
@@ -651,7 +728,7 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		key := fmt.Sprintf("%s#%d", repo, number)
 		pr, ok := cached[key]
 		if !ok {
-			pr, err = gh.Get(ctx, repo, number)
+			pr, err = s.getPR(ctx, repo, number)
 			if err != nil {
 				errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 				continue
@@ -665,6 +742,22 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// maxRefs bounds one request from the page. "Select all" over a busy list is a
+// real request, and PRs on the list cost no gh call: only the rest count against
+// the budget.
+const maxRefs = 200
+
+// getPR is gh.Get under the budget of reads from GitHub.
+func (s *Server) getPR(ctx context.Context, repo string, number int) (gh.PR, error) {
+	s.detMu.Lock()
+	err := s.ghReadLocked(timeNow(), false)
+	s.detMu.Unlock()
+	if err != nil {
+		return gh.PR{}, err
+	}
+	return gh.Get(ctx, repo, number)
 }
 
 func (s *Server) handleJobs(w http.ResponseWriter, r *http.Request) {
@@ -743,6 +836,27 @@ func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
 
 // handleDismiss is "keep it here": the card stops waiting for you to publish,
 // and nothing goes to the PR.
+// handleResume runs a job the last restart left paused.
+func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.Resume(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, refusalStatus(err, http.StatusConflict), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, view)
+}
+
+// handleSaveAgain retries writing a finished review that failed to save.
+func (s *Server) handleSaveAgain(w http.ResponseWriter, r *http.Request) {
+	view, err := s.jobs.SaveAgain(r.PathValue("id"))
+	if err != nil {
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
+		return
+	}
+	s.invalidatePRs()
+	writeJSON(w, http.StatusOK, view)
+}
+
 func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 	view, err := s.jobs.Dismiss(r.PathValue("id"))
 	if err != nil {
@@ -777,14 +891,16 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming not supported", http.StatusInternalServerError)
 		return
 	}
+	// Subscribed before the page can know the stream is open: what happens
+	// after the page reads the state must not fall in between.
+	ch := s.hub.Subscribe()
+	defer s.hub.Unsubscribe(ch)
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
-
-	ch := s.hub.Subscribe()
-	defer s.hub.Unsubscribe(ch)
 
 	// The stream opens with the instance id. EventSource reconnects by itself
 	// after a restart, and this first event is how the page learns the job ids
@@ -839,13 +955,13 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var added bool
+	err = s.editConfig(func() error { added = s.cfg.AddRepo(repo); return nil })
 	s.cfgMu.Lock()
-	added := s.cfg.AddRepo(repo)
-	err = s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if added {
@@ -854,16 +970,36 @@ func (s *Server) handleRepoAdd(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"repos": repos, "added": added})
 }
 
+// editConfig changes the config and saves it, or leaves it as it was: memory and
+// disk must not tell two stories after a failed save.
+func (s *Server) editConfig(edit func() error) error {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	prev := s.cfg.Copy()
+	err := edit()
+	if err == nil {
+		err = s.cfg.Save()
+	}
+	if err != nil {
+		*s.cfg = prev
+	}
+	var edited config.EditedError
+	if errors.As(err, &edited) {
+		return refuse(http.StatusConflict, err)
+	}
+	return err
+}
+
 func (s *Server) handleRepoRemove(w http.ResponseWriter, r *http.Request) {
 	repo := r.PathValue("owner") + "/" + r.PathValue("name")
 
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemoveRepo(repo); return nil })
 	s.cfgMu.Lock()
-	removed := s.cfg.RemoveRepo(repo)
-	err := s.cfg.Save()
 	repos := append([]string(nil), s.cfg.Repos...)
 	s.cfgMu.Unlock()
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if removed {
@@ -911,26 +1047,23 @@ func (s *Server) handleAgentAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cfgMu.Lock()
-	def, err := s.cfg.AddAgentFromSkill(found.Name, summarize(found.Description), req.Posts)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	var def config.AgentDef
+	err := s.editConfig(func() (err error) {
+		def, err = s.cfg.AddAgentFromSkill(found.Name, summarize(found.Description), req.Posts)
+		return err
+	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusCreated, map[string]any{"added": def.Name})
 }
 
 func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	removed := s.cfg.RemoveAgent(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemoveAgent(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
@@ -939,12 +1072,10 @@ func (s *Server) handleAgentRemove(w http.ResponseWriter, r *http.Request) {
 // handleAgentDefault puts an agent at the front of the list — the first one is
 // what runs when nobody chooses.
 func (s *Server) handleAgentDefault(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	ok := s.cfg.SetDefaultAgent(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var ok bool
+	err := s.editConfig(func() error { ok = s.cfg.SetDefaultAgent(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	if !ok {
@@ -965,14 +1096,9 @@ func (s *Server) handleAgentPublishable(w http.ResponseWriter, r *http.Request) 
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	s.cfgMu.Lock()
-	err := s.cfg.SetAgentPublishable(r.PathValue("name"), req.Publishable)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	err := s.editConfig(func() error { return s.cfg.SetAgentPublishable(r.PathValue("name"), req.Publishable) })
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, nil)
@@ -991,26 +1117,23 @@ func (s *Server) handlePipelineAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("invalid body: %w", err))
 		return
 	}
-	s.cfgMu.Lock()
-	p, err := s.cfg.AddPipeline(req.Name, req.Description, req.Steps)
-	if err == nil {
-		err = s.cfg.Save()
-	}
-	s.cfgMu.Unlock()
+	var p config.Pipeline
+	err := s.editConfig(func() (err error) {
+		p, err = s.cfg.AddPipeline(req.Name, req.Description, req.Steps)
+		return err
+	})
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	s.writeAgents(w, http.StatusCreated, map[string]any{"added": p.Name})
 }
 
 func (s *Server) handlePipelineRemove(w http.ResponseWriter, r *http.Request) {
-	s.cfgMu.Lock()
-	removed := s.cfg.RemovePipeline(r.PathValue("name"))
-	err := s.cfg.Save()
-	s.cfgMu.Unlock()
+	var removed bool
+	err := s.editConfig(func() error { removed = s.cfg.RemovePipeline(r.PathValue("name")); return nil })
 	if err != nil {
-		writeErr(w, http.StatusInternalServerError, err)
+		writeErr(w, refusalStatus(err, http.StatusInternalServerError), err)
 		return
 	}
 	s.writeAgents(w, http.StatusOK, map[string]any{"removed": removed})
@@ -1024,6 +1147,11 @@ func (s *Server) handleConfigDownload(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
+		return
+	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
 		return
 	}
 	w.Header().Set("Content-Type", "application/yaml; charset=utf-8")
@@ -1062,6 +1190,11 @@ func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	data, err := os.ReadFile(s.configPath)
 	if err != nil {
 		writeErr(w, http.StatusNotFound, fmt.Errorf("could not read %s", s.configPath))
+		return
+	}
+	data, err = config.Redacted(data)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not read %s: %w", s.configPath, err))
 		return
 	}
 	s.cfgMu.Lock()
@@ -1115,11 +1248,18 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusNotFound, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	// The same text the doors publish, numbered the same; the header goes apart,
+	// since it is neither findings nor anything that goes to the PR.
+	head, pub, stays, split := store.SavedParts(body)
+	view := map[string]any{
 		"name": r.PathValue("name"),
 		"body": body,
-		"html": renderReview(store.Unwrap(body)),
-	})
+		"html": renderReviewMarkdown(head) + renderReview(pub),
+	}
+	if split {
+		view["context_html"] = renderReview(stays)
+	}
+	writeJSON(w, http.StatusOK, view)
 }
 
 // --- publishing a saved review ---
@@ -1135,6 +1275,8 @@ type savedReview struct {
 	Path  string
 	Body  string
 	Agent string
+	// Trimmed says the file holds more than Body: steps that stay in Bazel.
+	Trimmed bool
 }
 
 // savedPR rereads a saved review and returns the PR it came from, along with
@@ -1149,16 +1291,50 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	if repo == "" {
 		return savedReview{}, fmt.Errorf("could not tell which PR %q belongs to", name)
 	}
-	pr, err := gh.Get(ctx, repo, number)
+	body, _, split := store.SplitBody(file)
+	agent := store.AgentOf(file)
+	if split && body == "" {
+		return savedReview{}, fmt.Errorf("no step of %q publishes to the PR", agent)
+	}
+	// A file from before the marker has no way to tell its steps apart, and the
+	// pipeline may no longer exist to ask.
+	if store.PipelineUnknown(file) || !split && s.stepsDiffer(agent) {
+		return savedReview{}, fmt.Errorf("this review of %q was saved before Bazel recorded which steps stay out of the PR: it cannot be published from here", agent)
+	}
+	pr, err := s.getPR(ctx, repo, number)
 	if err != nil {
 		return savedReview{}, err
 	}
 	return savedReview{
-		PR:    pr,
-		Path:  filepath.Join(s.reviewsDir, name),
-		Body:  store.ReviewBody(file),
-		Agent: store.AgentOf(file),
+		PR:      pr,
+		Path:    filepath.Join(s.reviewsDir, name),
+		Body:    body,
+		Agent:   agent,
+		Trimmed: split,
 	}, nil
+}
+
+// stepsDiffer says whether the choice has steps that publish and steps that do
+// not.
+func (s *Server) stepsDiffer(name string) bool {
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+	ch, err := s.cfg.ChoiceByName(name)
+	if err != nil {
+		return false
+	}
+	var yes, no bool
+	for _, st := range ch.Steps {
+		if st.Reserved != "" {
+			continue
+		}
+		if ch.StepPublishes(st.Name) {
+			yes = true
+		} else {
+			no = true
+		}
+	}
+	return yes && no
 }
 
 // refusePublish blocks what is not a review. It holds for the saved one as it
@@ -1188,7 +1364,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pr := sr.PR
-	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip)
+	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed)
 	if err != nil {
 		writeErr(w, http.StatusConflict, err)
 		return
@@ -1211,8 +1387,12 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	if s.refusePublish(w, sr) {
 		return
 	}
-	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Body, skip); err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
+			code = http.StatusConflict
+		}
+		writeErr(w, code, err)
 		return
 	}
 	s.invalidatePRs()
@@ -1304,6 +1484,9 @@ func (s *Server) handleSkills(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Lock()
 	post := s.cfg.PostSkill()
 	s.cfgMu.Unlock()
+	for i := range list {
+		list[i].Review = skills.Reviews(list[i])
+	}
 	// post_skill goes along so the page does not offer it as an agent: it only
 	// publishes when it runs as the publish step.
 	writeJSON(w, http.StatusOK, map[string]any{"dir": dir, "skills": list, "post_skill": post})
@@ -1338,6 +1521,7 @@ func (s *Server) installedSkills() (string, []skills.Skill) {
 func (s *Server) invalidatePRs() {
 	s.prMu.Lock()
 	s.prsAt = time.Time{}
+	s.prGen++
 	s.prMu.Unlock()
 }
 

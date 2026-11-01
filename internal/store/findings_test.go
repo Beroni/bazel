@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const relatorio = `# Review Fleet — PR #55
@@ -316,5 +317,91 @@ func TestSplitFindingsDuvidaVaziaNaoEAchado(t *testing.T) {
 	// A real doubt that starts with the word is still one.
 	if n := Findings("## Needs human verification\n\n- None of the callers check the error\n"); n != 1 {
 		t.Errorf("dúvida que começa com None devia contar, veio %d", n)
+	}
+}
+
+// What only looks like a heading stays in its finding: an untick takes the whole
+// finding, and the next one keeps its box.
+func TestDesmarcarLevaOAchadoInteiro(t *testing.T) {
+	for name, inner := range map[string]string{
+		"indented code":    "Run this:\n\n    # install it\n    make\n\nAfter HIDDEN.",
+		"list item":        "- step\n\n  # x\n\n  more\n\nAfter HIDDEN.",
+		"html comment":     "<!--\n# x\n-->\n\nAfter HIDDEN.",
+		"fence in a fence": "````text\n```py\n# x\n```\n````\n\nAfter HIDDEN.",
+		"tilde fence":      "~~~\n# x\n```\n~~~\n\nAfter HIDDEN.",
+	} {
+		t.Run(name, func(t *testing.T) {
+			body := "## Findings\n\n### One\n\n" + inner + "\n\n### Two\n\nKept.\n"
+			if n := Findings(body); n != 2 {
+				t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+			}
+			got := DropFindings(body, []int{0})
+			if strings.Contains(got, "HIDDEN") || !strings.Contains(got, "### Two") {
+				t.Errorf("after the untick:\n%s", got)
+			}
+			var joined strings.Builder
+			for _, p := range SplitFindings(body) {
+				joined.WriteString(p.Text)
+			}
+			if joined.String() != body {
+				t.Errorf("the parts do not add up to the report")
+			}
+		})
+	}
+}
+
+// Cutting a report takes no quadratic turn on text made to cause one.
+func TestCortarNaoCustaCPU(t *testing.T) {
+	bomb := strings.Repeat("[a](()", 100_000)
+	start := time.Now()
+	if n := Findings("## Findings\n\n### One\n\n" + bomb + "\n\n### Two\n\nx\n"); n != 2 {
+		t.Errorf("%d findings", n)
+	}
+	if took := time.Since(start); took > time.Second {
+		t.Errorf("took %v", took)
+	}
+}
+
+// A numbered bold paragraph inside a list belongs to its item: it does not start
+// a finding, and what follows it does not survive an untick.
+func TestNegritoAninhadoNaoAbreAchado(t *testing.T) {
+	body := "## Findings\n\n**1. major · First**\n\n- a point\n\n    **2. sample item**\n\n    HIDDEN_REMAINDER\n\n**2. minor · Second**\n\nKept.\n"
+	if n := Findings(body); n != 2 {
+		t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+	}
+	got := DropFindings(body, []int{0})
+	if strings.Contains(got, "HIDDEN_REMAINDER") || !strings.Contains(got, "Second") {
+		t.Errorf("after the untick:\n%s", got)
+	}
+}
+
+// Bold findings with no blank line between them are two findings, though
+// markdown reads one paragraph: unticking one must not take the other along.
+func TestNegritoSemLinhaEmBranco(t *testing.T) {
+	body := "## Findings\n\n**1. major · First**\nIts text.\n**2. minor · Second**\nKept.\n"
+	if n := Findings(body); n != 2 {
+		t.Fatalf("%d findings, want 2: %+v", n, SplitFindings(body))
+	}
+	if got := DropFindings(body, []int{0}); strings.Contains(got, "First") || !strings.Contains(got, "Kept.") {
+		t.Errorf("after the untick:\n%s", got)
+	}
+}
+
+// One line of quotes costs quadratic time on every GET, so it is not parsed: the
+// whole review is one part, for the screen and for the doors alike.
+func TestSplitFindingsRecusaCitacaoFunda(t *testing.T) {
+	for _, marker := range []string{"> ", "- 1. ", "1. ", "-\t", "*\t", "1.\t"} {
+		body := "## Findings\n\n### One\n\nText.\n\n" + strings.Repeat(marker, 90<<10/len(marker)) + "\n"
+		start := time.Now()
+		parts := SplitFindings(body)
+		if d := time.Since(start); d > time.Second {
+			t.Errorf("%q took %v", marker, d)
+		}
+		if len(parts) != 1 || parts[0].Text != body || parts[0].Finding {
+			t.Errorf("%q: %d parts", marker, len(parts))
+		}
+	}
+	if TooNested("> > a\n" + strings.Repeat("-", 5000) + "\n" + strings.Repeat("a. ", 5000)) {
+		t.Error("a ruler or a sentence is not nesting")
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -403,7 +404,24 @@ func TestChoicePublishesBy(t *testing.T) {
 		quer bool
 	}{
 		{"lente comum", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review {{number}}", Prompt: defaultPrompt}}}, false},
-		{"flag parecida", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --poster"}}}, false},
+		{"flag parecida", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --poster", Prompt: defaultPrompt}}}, false},
+		{"flag desligada", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/review --post=false", Prompt: defaultPrompt}}}, false},
+		{"prompt sem proibição", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: "{{task}}"}}}, true},
+		{"prompt que pede comentário", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: "{{task}}\nPost your findings on the PR."}}}, true},
+		{"proibição e autorização", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt + "\nYou are authorized to publish."}}}, true},
+		{"prompt com gh pr comment", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt + "\nThen run gh pr comment."}}}, true},
+		{"task com gh", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "gh pr comment {{number}}", Prompt: defaultPrompt}}}, true},
+		{"task --POST", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r --POST", Prompt: defaultPrompt}}}, true},
+		{"task entre crases", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r `--post`", Prompt: defaultPrompt}}}, true},
+		{"--post=1", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r --post=1", Prompt: defaultPrompt}}}, true},
+		{"skill que publica", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/post-report {{number}}", Prompt: defaultPrompt}}}, true},
+		{"skill de plugin", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/bazel:bazel-post-report x", Prompt: defaultPrompt}}}, true},
+		{"args com gh", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt, Command: "sh", Args: []string{"-c", "gh api repos/a/b/issues/1/comments"}}}}, true},
+		{"args com --post", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r", Prompt: defaultPrompt, Args: []string{"--post"}}}}, true},
+		{"task em prosa", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "Post your findings on the PR.", Prompt: defaultPrompt}}}, true},
+		{"skill com prosa", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/r {{number}} and post a comment", Prompt: defaultPrompt}}}, true},
+		{"skill com flag", Choice{Steps: []ResolvedAgent{{Name: "l", Task: "/plugin:review {{number}} --deep --mode=fast", Prompt: defaultPrompt}}}, false},
+		{"o segundo passo", Choice{Steps: []ResolvedAgent{{Name: "a", Task: "/r", Prompt: defaultPrompt}, {Name: "b", Task: "/r", Prompt: "{{task}}"}}}, true},
 		{"posts", Choice{Steps: []ResolvedAgent{{Name: "p", Posts: true}}}, true},
 		{"--post", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review {{number}} --post"}}}, true},
 		{"--post=inline", Choice{Steps: []ResolvedAgent{{Name: "p", Task: "/review --post=inline"}}}, true},
@@ -1501,5 +1519,367 @@ func TestHistoryCustomPeloPassoResolvido(t *testing.T) {
 	c.Agent.Prompt = "{{task}} You are authorized to publish."
 	if c.HistoryCustom() {
 		t.Error("agent.prompt is not inherited by the History")
+	}
+}
+
+// A launcher behind a wrapper is the same launcher, and the program a wrapper
+// runs by relative path resolves in the clone too. Other args are left alone.
+func TestCheckLauncherAtrasDeWrapper(t *testing.T) {
+	refused := []ResolvedAgent{
+		{Command: "timeout", Args: []string{"600", "npx", "tool"}},
+		{Command: "/usr/bin/nice", Args: []string{"-n", "5", "yarnpkg", "x"}},
+		{Command: "nohup", Args: []string{"./scripts/agent.sh"}},
+		{Command: "stdbuf", Args: []string{"-oL", "/usr/local/bin/corepack"}},
+	}
+	for _, st := range refused {
+		st.Checkout = true
+		if CheckLauncher(st) == nil {
+			t.Errorf("%s %v must be refused", st.Command, st.Args)
+		}
+		st.Checkout = false
+		if err := CheckLauncher(st); err != nil {
+			t.Errorf("%s %v without a clone: %v", st.Command, st.Args, err)
+		}
+	}
+	for _, st := range []ResolvedAgent{
+		{Command: "timeout", Args: []string{"600", "claude", "-p"}, Checkout: true},
+		{Command: "claude", Args: []string{"--allowedTools", "npx", "./x"}, Checkout: true},
+		{Command: "timeout", Args: []string{"10m", "/usr/local/bin/agent", "--add-dir", "some/dir"}, Checkout: true},
+	} {
+		if err := CheckLauncher(st); err != nil {
+			t.Errorf("%s %v: %v", st.Command, st.Args, err)
+		}
+	}
+}
+
+// A launcher in the config is said at boot, for every place a step can come
+// from, and the config still loads: the job is what gets refused.
+func TestLauncherAvisaNoBoot(t *testing.T) {
+	c := Default()
+	c.Agents = []AgentDef{{Name: "lens", Task: "/x", Command: "npx"}, {Name: "ok", Task: "/y"}}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/h", Command: "timeout", Args: []string{"60", "bunx"}}
+	c.warnLaunchers()
+	joined := strings.Join(c.Warnings, "\n")
+	for _, name := range []string{`"lens"`, `"story"`} {
+		if !strings.Contains(joined, name) {
+			t.Errorf("no warning for %s: %q", name, c.Warnings)
+		}
+	}
+	if strings.Contains(joined, `"ok"`) {
+		t.Errorf("a good agent was flagged: %q", c.Warnings)
+	}
+	if err := c.validateFormats(); err != nil {
+		t.Errorf("the config must still load: %v", err)
+	}
+}
+
+// Names are what the gate goes by: an agent cannot take a pipeline's, a pipeline
+// name survives the trip through the saved file, and the post skill does not
+// come in as a lens.
+func TestNomesNaoConfundemOGate(t *testing.T) {
+	c := Default()
+	c.Agents = []AgentDef{{Name: "lens", Task: "/lens"}}
+	c.Pipelines = []Pipeline{{Name: "Review-Post", Steps: []string{"lens"}}}
+	if _, err := c.AddAgentFromSkill("review", "", true); err == nil {
+		t.Error("review-post must not take the pipeline's name")
+	}
+	for _, name := range []string{"notes — weekly", "a\nb", "a\r\n- Agent: lens"} {
+		if _, err := c.AddPipeline(name, "", []string{"lens"}); err == nil {
+			t.Errorf("pipeline %q must be refused", name)
+		}
+	}
+	c.PostAgent = AgentDef{Name: "mine", Task: "/my-post {{review_file}}", Posts: true}
+	if _, err := c.AddAgentFromSkill("bazel-post-report", "", false); err == nil {
+		t.Error("the built-in post skill must not become a lens under a custom post_agent")
+	}
+}
+
+const handWritten = `# my repos
+repos:
+  - acme/api   # the main one
+future_key: keep me # a key this version does not know
+mcp_allow_publish: false
+agent:
+  command: claude
+`
+
+// A save touches only what this process changed: comments, unknown keys and
+// what was edited by hand stay, the publish gate included.
+func TestSavePreservaOArquivo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// An edit by hand while the server runs.
+	edited := strings.Replace(handWritten, "future_key: keep me", "future_key: edited later\nauthors: [maria]", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	got := string(data)
+	for _, want := range []string{"# my repos", "future_key: edited later", "# a key this version does not know", "acme/web", "mcp_allow_publish: false", "maria"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "max_diff_bytes") {
+		t.Errorf("a default the file never had was written:\n%s", got)
+	}
+	back, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(back.Repos, "acme/web") {
+		t.Errorf("repos: %v", back.Repos)
+	}
+}
+
+// A config that fails to parse on disk is someone's work: Save does not replace
+// it. Nor does an empty one pass for a new install.
+func TestSaveNaoPisaEmArquivoQuebrado(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(handWritten), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	broken := []byte("repos: [unclosed\n")
+	if err := os.WriteFile(path, broken, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/web")
+	if err := c.Save(); err == nil {
+		t.Error("Save went over a broken file")
+	}
+	if data, _ := os.ReadFile(path); !bytes.Equal(data, broken) {
+		t.Errorf("file changed: %s", data)
+	}
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := LoadOrInit(); err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Errorf("empty file: %v", err)
+	}
+	if data, _ := os.ReadFile(path); len(data) != 0 {
+		t.Errorf("an empty file was overwritten: %s", data)
+	}
+}
+
+// What the page shows and hands over keeps env names and loses their values,
+// wherever an env sits; the file itself is the user's alone.
+func TestRedactedTiraOSegredos(t *testing.T) {
+	src := "# GH_TOKEN: ghp_old\nagent:\n  env:\n    TOKEN: s3cret # was hunter3\nagents:\n  - name: a\n    env:\n      KEY: hunter2\npost_agent:\n  env: {OTHER: abc123}\n"
+	out, err := Redacted([]byte(src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(out)
+	for _, bad := range []string{"s3cret", "hunter2", "abc123", "ghp_old", "hunter3"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("%q leaked:\n%s", bad, got)
+		}
+	}
+	for _, want := range []string{"TOKEN", "KEY", "OTHER"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q:\n%s", want, got)
+		}
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	if err := Default().Save(); err != nil {
+		t.Fatal(err)
+	}
+	path, _ := Path()
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o600 {
+		t.Errorf("config mode: %v %v", info.Mode(), err)
+	}
+}
+
+// A file with no env and no comment goes out byte for byte, and a JSON-style one
+// gets readable values on save.
+func TestRedactedSemEnvEArquivoJSON(t *testing.T) {
+	src := []byte("repos:   [a/b]\n")
+	if out, err := Redacted(src); err != nil || !bytes.Equal(out, src) {
+		t.Errorf("%q %v", out, err)
+	}
+	if out, err := Redacted([]byte("# GH_TOKEN: x\n")); err != nil || len(out) != 0 {
+		t.Errorf("only comments: %q %v", out, err)
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte(`{"repos": ["a/b"], "agents": []}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "x", Task: "/x {{number}}"})
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "task: /x {{number}}") {
+		t.Errorf("flow value:\n%s", data)
+	}
+}
+
+// A value about to be replaced may hold an anchor something else refers to: the
+// alias keeps what it meant, and the next boot loads.
+func TestSaveMantemAliases(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	src := "repos: &watched [acme/one]\nmirror: *watched\nagent:\n  command: claude\n"
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.AddRepo("acme/two")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	back, err := Load()
+	if err != nil {
+		data, _ := os.ReadFile(path)
+		t.Fatalf("the next boot fails: %v\n%s", err, data)
+	}
+	if !slices.Contains(back.Repos, "acme/two") {
+		t.Errorf("repos: %v", back.Repos)
+	}
+	var raw struct {
+		Mirror []string `yaml:"mirror"`
+	}
+	data, _ := os.ReadFile(path)
+	if err := yaml.Unmarshal(data, &raw); err != nil || !slices.Equal(raw.Mirror, []string{"acme/one"}) {
+		t.Errorf("mirror: %v %v\n%s", raw.Mirror, err, data)
+	}
+}
+
+// A secret reached through an alias or a merge is a secret all the same.
+func TestRedactedSegueAlias(t *testing.T) {
+	for name, src := range map[string]string{
+		"alias":    "secrets: &s {TOKEN: PRIVATE}\nagent: {env: *s}\n",
+		"merge":    "base: &b {TOKEN: PRIVATE}\nagent:\n  env:\n    <<: *b\n    OTHER: x\n",
+		"value":    "tok: &t PRIVATE\nagent:\n  env:\n    TOKEN: *t\n",
+		"anchored": "agent:\n  env: &e\n    TOKEN: PRIVATE\npost_agent:\n  env: *e\n",
+	} {
+		out, err := Redacted([]byte(src))
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if strings.Contains(string(out), "PRIVATE") {
+			t.Errorf("%s leaked:\n%s", name, out)
+		}
+		if !strings.Contains(string(out), "TOKEN") {
+			t.Errorf("%s lost the name:\n%s", name, out)
+		}
+	}
+}
+
+// A gate edited by hand inside a key the page replaces is refused, not lost; and
+// after a restart the same click goes through with the gate in place.
+func TestSaveRecusaGateEditadoAMao(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	src := "repos: [a/b]\nmcp_allow_publish: false\nagents:\n  - name: gate\n    task: /x {{number}}\n"
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := strings.Replace(src, "    task: /x {{number}}\n", "    task: /x {{number}}\n    publishable: false\n", 1)
+	edited = strings.Replace(edited, "mcp_allow_publish: false", "mcp_allow_publish: true", 1)
+	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c.Repos = append(c.Repos, "c/d")
+	if err := c.Save(); err != nil {
+		t.Fatalf("another key's edit must not stop it: %v", err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "new", Task: "/y {{number}}"})
+	err = c.Save()
+	if err == nil || !strings.Contains(err.Error(), `"agents"`) {
+		t.Fatalf("Save: %v", err)
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "publishable: false") || strings.Contains(string(data), "name: new") {
+		t.Errorf("file changed on a refused save:\n%s", data)
+	}
+	if c, err = Load(); err != nil {
+		t.Fatal(err)
+	}
+	c.Agents = append(c.Agents, AgentDef{Name: "new", Task: "/y {{number}}"})
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = os.ReadFile(path)
+	if !strings.Contains(string(data), "publishable: false") || !strings.Contains(string(data), "name: new") {
+		t.Errorf("after restart:\n%s", data)
+	}
+	c.Agents = c.Agents[:1]
+	if err := c.Save(); err != nil {
+		t.Errorf("our own save counts as an edit: %v", err)
+	}
+}
+
+// config.yaml kept in a dotfiles repository stays a link, and the target changes.
+func TestSaveMantemSymlink(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	path, _ := Path()
+	target := filepath.Join(t.TempDir(), "bazel.yaml")
+	if err := os.WriteFile(target, []byte("repos: [a/b]\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, path); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Repos = append(c.Repos, "c/d")
+	if err := c.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(path); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("no longer a link: %v %v", info, err)
+	}
+	if data, _ := os.ReadFile(target); !strings.Contains(string(data), "c/d") {
+		t.Errorf("target: %s", data)
+	}
+}
+
+func TestTightenFechaOQueFicouAberto(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("BAZEL_HOME", home)
+	path, _ := Path()
+	if err := os.WriteFile(path, []byte("repos: [a/b]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	Tighten()
+	if info, _ := os.Stat(path); info.Mode().Perm() != 0o600 {
+		t.Errorf("config: %v", info.Mode())
+	}
+	if info, _ := os.Stat(home); info.Mode().Perm() != 0o700 {
+		t.Errorf("home: %v", info.Mode())
 	}
 }

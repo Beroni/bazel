@@ -198,23 +198,23 @@ func TestCheckClaudeConfigDir(t *testing.T) {
 	outside := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	for _, bad := range []string{".x", "./.x", "~/.claude", filepath.Join(clone, ".x")} {
-		err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": bad}}, clone)
+		err := checkConfigDirs(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": bad}}, clone)
 		if err == nil || !strings.Contains(err.Error(), "CLAUDE_CONFIG_DIR") {
 			t.Errorf("%q should be refused, got %v", bad, err)
 		}
 	}
-	if err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
+	if err := checkConfigDirs(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
 		t.Errorf("an absolute path outside the clone is fine: %v", err)
 	}
-	if err := checkClaudeConfigDir(config.ResolvedAgent{}, clone); err != nil {
+	if err := checkConfigDirs(config.ResolvedAgent{}, clone); err != nil {
 		t.Errorf("not set, nothing to refuse: %v", err)
 	}
 
 	t.Setenv("CLAUDE_CONFIG_DIR", ".inherited")
-	if err := checkClaudeConfigDir(config.ResolvedAgent{}, clone); err == nil {
+	if err := checkConfigDirs(config.ResolvedAgent{}, clone); err == nil {
 		t.Error("a relative value inherited from Bazel's environment should be refused")
 	}
-	if err := checkClaudeConfigDir(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
+	if err := checkConfigDirs(config.ResolvedAgent{Env: map[string]string{"CLAUDE_CONFIG_DIR": outside}}, clone); err != nil {
 		t.Errorf("the step's value wins over the inherited one: %v", err)
 	}
 }
@@ -244,5 +244,19 @@ func TestRelativeConfigDirRefusedBeforeTheClone(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(state, "ran")); err == nil {
 		t.Error("the agent must not start")
+	}
+}
+
+func TestCheckConfigDirsVeTodosOsCLIs(t *testing.T) {
+	clone := t.TempDir()
+	for _, name := range []string{"GROK_HOME", "CODEX_HOME"} {
+		for _, bad := range []string{".cfg", filepath.Join(clone, ".cfg")} {
+			if err := checkConfigDirs(config.ResolvedAgent{Env: map[string]string{name: bad}}, clone); err == nil {
+				t.Errorf("%s=%s passed", name, bad)
+			}
+		}
+		if err := checkConfigDirs(config.ResolvedAgent{Env: map[string]string{name: t.TempDir()}}, clone); err != nil {
+			t.Errorf("%s outside: %v", name, err)
+		}
 	}
 }

@@ -523,7 +523,7 @@ func TestRefreshEmFilaNaoRelê(t *testing.T) {
 	srv := newTestServer(t)
 	srv.cfg.Repos = []string{"acme/api-core"}
 	srv.prsAt = time.Now()
-	srv.fetchMu.Lock()
+	srv.fetchSlot <- struct{}{}
 	done := make(chan time.Time)
 	go func() {
 		_, _, at, _ := srv.loadPRs(context.Background(), true)
@@ -534,7 +534,7 @@ func TestRefreshEmFilaNaoRelê(t *testing.T) {
 	srv.prsAt = time.Now()
 	landed := srv.prsAt
 	srv.prMu.Unlock()
-	srv.fetchMu.Unlock()
+	<-srv.fetchSlot
 	if at := <-done; !at.Equal(landed) {
 		t.Errorf("got the list of %v, want the one that landed", at)
 	}
@@ -653,5 +653,58 @@ func TestPRDetailsQuemEspera(t *testing.T) {
 	<-leader
 	if code := <-codes; code != http.StatusBadGateway || calls.Load() != 1 {
 		t.Errorf("waiter after the read blew up: %d, %d calls", code, calls.Load())
+	}
+}
+
+// A read that fails keeps what the repository had, and a stuck gh does not hold
+// everyone behind it.
+func TestListaAguentaFalha(t *testing.T) {
+	srv := newTestServer(t)
+	old := testPR(1)
+	old.UpdatedAt = time.Now()
+	found := keepFailed(nil, []gh.PR{old}, []gh.RepoError{{Repo: "ACME/api-core", Err: errors.New("HTTP 502")}})
+	if len(found) != 1 || found[0].Number != 1 {
+		t.Errorf("after a failed read: %+v", found)
+	}
+	if kept := keepFailed(nil, []gh.PR{old}, []gh.RepoError{{Repo: old.Repo, Truncated: true, Err: errors.New("many")}}); len(kept) != 0 {
+		t.Errorf("a truncated read is a good one: %+v", kept)
+	}
+
+	srv.fetchSlot <- struct{}{}
+	defer func() { <-srv.fetchSlot }()
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, _, _, err := srv.loadPRs(ctx, false)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("with no list, a canceled wait is an error")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("loadPRs ignored its context")
+	}
+}
+
+// A forced refresh is charged what it runs: with authors configured that is one
+// gh per repository and author, and the budget holds however many ask.
+func TestRefreshCobraRepoVezesAutor(t *testing.T) {
+	srv := newTestServer(t)
+	srv.cfg.Repos = []string{"acme/api-core"}
+	for i := range 10 {
+		srv.cfg.Authors = append(srv.cfg.Authors, fmt.Sprintf("author%d", i))
+	}
+	log := ghFalso(t, "echo '[]'")
+	srv.prsAt = time.Now()
+	for range 8 {
+		if _, _, _, err := srv.loadPRs(context.Background(), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := contaNoLog(log, "start"); n > listReadsPerMin {
+		t.Errorf("%d gh processes, budget %d", n, listReadsPerMin)
 	}
 }

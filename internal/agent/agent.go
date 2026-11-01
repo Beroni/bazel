@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -50,6 +51,9 @@ type Event struct {
 	Index int // step position, starting at 0
 	Total int
 	Name  string
+	// Ran is what the step runs on: the provider on EventStep, and the provider
+	// and model on EventStepDone, when the model is known.
+	Ran string
 	// Duration is only filled in on EventStepDone.
 	Duration time.Duration
 	Err      error
@@ -67,7 +71,9 @@ type Event struct {
 
 // StepResult is the output of one review step.
 type StepResult struct {
-	Name     string
+	Name string
+	// Ran is the provider and model this step ran on (see attribution).
+	Ran      string
 	Body     string
 	Duration time.Duration
 	// Usage is how much model this step spent.
@@ -84,8 +90,14 @@ type Result struct {
 	// going to publish again on top of it needs to know.
 	Posts bool
 	// Body is the report: the single step's output, or the steps concatenated.
-	Body  string
-	Steps []StepResult
+	Body string
+	// Publish and Stays hold Body split by what may go to the PR, when a step
+	// of the choice stays in Bazel; see Result.Split. Unsplit, both are empty
+	// and Keeps is false.
+	Publish string
+	Stays   string
+	Keeps   bool
+	Steps   []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -157,9 +169,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	// Before the clone and before any step: one bad step refuses the whole job,
 	// instead of failing midway through a review that can still be published.
 	for _, s := range choice.Steps {
-		err := checkLauncher(s)
+		err := config.CheckLauncher(s)
 		if err == nil {
-			err = checkClaudeConfigDir(s, "")
+			err = checkConfigDirs(s, "")
 		}
 		if err == nil {
 			err = checkSettingSources(s.Args)
@@ -187,6 +199,16 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		ws.Keep = r.KeepWorkspace
 		defer ws.Cleanup()
 		workdir = ws.Dir
+		// What gets recorded is what was read. The PR may have moved since the
+		// list was read, and a sha it no longer describes would mark code nobody
+		// looked at as reviewed, and pass the post skill's check.
+		if ws.Head != "" && ws.Head != pr.HeadRefOid {
+			if pr.HeadRefOid != "" {
+				emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+					Text: fmt.Sprintf("⟳ the PR moved since it was listed: reviewing %.12s, not %.12s", ws.Head, pr.HeadRefOid)})
+			}
+			pr.HeadRefOid = ws.Head
+		}
 	}
 
 	// Now that the clone has a path: a flag that reads a file from it hands the
@@ -227,13 +249,23 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	neutralized := map[string]bool{}
 	for i := 0; i < len(choice.Steps); i++ {
 		step := choice.Steps[i]
+		// In a clone of a fork gh would answer for the parent: the agent's own
+		// `gh pr comment` must land on this PR, whatever the clone says.
+		if pr.Repo != "" {
+			env := maps.Clone(step.Env)
+			if env == nil {
+				env = map[string]string{}
+			}
+			env["GH_REPO"] = pr.Repo
+			step.Env = env
+		}
 		// `publish` belongs to Bazel, not to the Runner: it returns what came out
 		// and the caller shows you what goes to the PR before sending it.
 		if step.Reserved != "" {
 			stopped = i
 			break
 		}
-		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name})
+		emit(Event{Kind: EventStep, Index: i, Total: total, Name: step.Name, Ran: provider(step)})
 
 		// Right before the agent starts, inside exec, with nothing in between:
 		// an earlier step can run commands in the clone, bring the files back
@@ -257,7 +289,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			}
 			err = checkPathFlags(step.Args, workdir)
 			if err == nil {
-				err = checkClaudeConfigDir(step, workdir)
+				err = checkConfigDirs(step, workdir)
 			}
 			if err != nil {
 				return "", fmt.Errorf("%w: `%s`: %w", errRefused, step.Name, err)
@@ -269,7 +301,10 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if !step.Checkout {
 			dir = "" // inherits the current directory
 		}
-		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, workdir, extra)
+		// A step that does not run in the clone is not told where it is: the git
+		// guard goes by the step's folder, and from inside the clone its git would
+		// obey whatever the PR planted there.
+		prompt := buildPrompt(step.Prompt, step.Task, pr, diff, dir, extra)
 		stepStart := time.Now()
 		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
@@ -293,13 +328,13 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: time.Since(stepStart), Err: err})
 			return Result{}, err
 		}
-		res := StepResult{Name: step.Name, Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: strings.TrimSpace(body), Duration: time.Since(stepStart), Usage: used, Err: err}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
 		fechado.add(used)
 		steps = append(steps, res)
-		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Duration: res.Duration, Err: res.Err})
+		emit(Event{Kind: EventStepDone, Index: i, Total: total, Name: step.Name, Ran: res.Ran, Duration: res.Duration, Err: res.Err})
 
 		// Cancellation aborts the whole queue: the clone is gone, and pushing on
 		// with the next steps only burns time on a review nobody wants anymore.
@@ -368,9 +403,9 @@ func gitGuardEnv(env []string, clone string) []string {
 	return append(out, fmt.Sprintf("GIT_CONFIG_COUNT=%d", base+len(gitGuard)))
 }
 
-// agentGrace is how long an agent's process and pipes get to finish once it has
+// Grace is how long an agent's process and pipes get to finish once it has
 // exited or been killed.
-const agentGrace = 5 * time.Second
+const Grace = 5 * time.Second
 
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
@@ -386,7 +421,7 @@ func neutralizedNote(n int) string {
 		return ""
 	}
 	return fmt.Sprintf("\n\nBazel removed %d path(s) from the working tree before you ran (.claude, .codex, .grok and "+
-		".mcp.json, at any depth), because agent CLIs execute them. They are still in git and still part of the review: "+
+		".mcp.json, at any depth, and the same for other CLIs), because agent CLIs execute them. They are still in git and still part of the review: "+
 		"the diff shows them, and `git show HEAD:<path>` reads them.", n)
 }
 
@@ -421,27 +456,17 @@ const maxLoggedPaths = 20
 // `sh -c '…'` takes no flags for what it calls: workspace.Neutralize is what
 // protects those runs.
 func runsClaude(step config.ResolvedAgent) bool {
-	if isShell(step.Command) || isLauncher(step.Command) {
+	if isShell(step.Command) || config.IsLauncher(step.Command) {
 		return false
 	}
 	return isClaudeCommand(step.Command) || outputFormat(step.Format, step.Args) == "claude-stream"
-}
-
-// programName is a command's base name as a program: lower case, because the
-// macOS and Windows filesystems ignore case, and with no Windows extension.
-func programName(command string) string {
-	name := strings.ToLower(filepath.Base(strings.ReplaceAll(command, `\`, "/")))
-	for _, ext := range []string{".exe", ".cmd", ".bat"} {
-		name = strings.TrimSuffix(name, ext)
-	}
-	return name
 }
 
 // isClaudeCommand says whether command is Claude Code, by name or through PATH
 // and symlinks: an npm install ends in its package, the native one in
 // ~/.local/share/claude/versions/<version>, where the file is the version.
 func isClaudeCommand(command string) bool {
-	if programName(command) == "claude" {
+	if config.ProgramName(command) == "claude" {
 		return true
 	}
 	path, err := exec.LookPath(command)
@@ -453,44 +478,17 @@ func isClaudeCommand(command string) bool {
 		return false
 	}
 	slashed := filepath.ToSlash(real)
-	return programName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
+	return config.ProgramName(real) == "claude" || strings.Contains(slashed, "/@anthropic-ai/claude-code/") ||
 		strings.Contains(slashed, "/claude/versions/")
 }
 
 // isShell says whether command is a shell.
 func isShell(command string) bool {
-	switch programName(command) {
+	switch config.ProgramName(command) {
 	case "sh", "bash", "zsh", "dash", "ksh", "fish":
 		return true
 	}
 	return false
-}
-
-// isLauncher says whether command picks what it runs at run time. With the
-// clone as working directory, that choice is the PR's: npx runs the
-// node_modules the PR versions, an .npmrc points the registry at its server,
-// and a .yarnrc runs a file of its own — all before any flag of Bazel's counts.
-func isLauncher(command string) bool {
-	switch programName(command) {
-	case "npx", "npm", "pnpx", "pnpm", "yarn", "bun", "bunx", "uv", "uvx", "pipx", "env":
-		return true
-	}
-	return false
-}
-
-// checkLauncher refuses a command that would decide inside the clone what to
-// run: a launcher, or a relative path, which resolves in the clone too.
-func checkLauncher(step config.ResolvedAgent) error {
-	if !step.Checkout {
-		return nil
-	}
-	if isLauncher(step.Command) {
-		return fmt.Errorf("`%s` is not supported with checkout on: it resolves what it runs from the working directory (package.json, node_modules, .npmrc, .yarnrc), and that is the PR's clone — point command at an installed binary, and set environment variables with env:", step.Command)
-	}
-	if strings.ContainsAny(step.Command, `/\`) && !filepath.IsAbs(step.Command) {
-		return fmt.Errorf("command %q is a relative path, which resolves inside the PR's clone with checkout on: use an installed binary or an absolute path", step.Command)
-	}
-	return nil
 }
 
 // runsClaudeAnywhere says whether any step of the choice runs Claude Code.
@@ -580,22 +578,24 @@ func checkSettingSources(args []string) error {
 	return nil
 }
 
-// checkClaudeConfigDir refuses a CLAUDE_CONFIG_DIR, set on the step or inherited,
-// that is relative or inside the clone: it is where `--setting-sources user`
-// reads the user's settings, so there it would read the PR's, hooks included.
-func checkClaudeConfigDir(step config.ResolvedAgent, clone string) error {
-	dir, ok := step.Env["CLAUDE_CONFIG_DIR"]
-	if !ok {
-		dir = os.Getenv("CLAUDE_CONFIG_DIR")
-	}
-	if dir == "" {
-		return nil
-	}
-	if !filepath.IsAbs(dir) {
-		return fmt.Errorf("CLAUDE_CONFIG_DIR %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", dir)
-	}
-	if clone != "" && insideDir(dir, clone) {
-		return fmt.Errorf("CLAUDE_CONFIG_DIR %q is inside the PR's clone, where the PR controls the settings: point it outside", dir)
+// checkConfigDirs refuses a CLI's config folder, set on the step or inherited,
+// that is relative or inside the clone: it is where the CLI reads the user's
+// settings, so there it would read the PR's, hooks included.
+func checkConfigDirs(step config.ResolvedAgent, clone string) error {
+	for _, name := range []string{"CLAUDE_CONFIG_DIR", "GROK_HOME", "CODEX_HOME"} {
+		dir, ok := step.Env[name]
+		if !ok {
+			dir = os.Getenv(name)
+		}
+		if dir == "" {
+			continue
+		}
+		if !filepath.IsAbs(dir) {
+			return fmt.Errorf("%s %q: it must be an absolute path outside the PR's clone — a relative one resolves inside it", name, dir)
+		}
+		if clone != "" && insideDir(dir, clone) {
+			return fmt.Errorf("%s %q is inside the PR's clone, where the PR controls the settings: point it outside", name, dir)
+		}
 	}
 	return nil
 }
@@ -765,6 +765,22 @@ func PublishableBody(res Result, choice config.Choice) (string, bool, error) {
 	return body, true, nil
 }
 
+// Split records in res what may go to the PR, for whoever keeps the review past
+// this process: the policy is the one this run had, and the config may say
+// something else tomorrow.
+func Split(res Result, choice config.Choice) Result {
+	body, split, err := PublishableBody(res, choice)
+	if !split {
+		return res
+	}
+	res.Keeps = true
+	if err == nil {
+		res.Publish = body
+	}
+	res.Stays = ContextBody(res, choice)
+	return res
+}
+
 // ContextBody is the flip side of PublishableBody: the body of the steps that
 // stay in Bazel. It's what the screen shows separately, to make clear it
 // doesn't go to the PR.
@@ -913,7 +929,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	defer stderr.Close()
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
-	cmd.WaitDelay = agentGrace // a child holding stdin must not hold Wait
+	cmd.WaitDelay = Grace // a child holding stdin must not hold Wait
 	ownProcessGroup(cmd)
 
 	// The last thing before the process: the smaller the gap between checking
@@ -977,7 +993,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
 	killProcessGroup(cmd)
-	stray := time.AfterFunc(agentGrace, func() {
+	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()
 		stderr.Close()
 	})
@@ -999,6 +1015,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			msg = err.Error()
 		}
 		return "", adapter.usage(), agentFailure(step, msg)
+	}
+	// A CLI can say in its stream that it failed and still exit 0: what it wrote
+	// until then is not a finished review.
+	if ae := adapter.err(); ae != nil {
+		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 	}
 	// With a pricing table configured, recompute the cost from the tokens and
 	// the model — that is what lets the cost change without rebuilding the
@@ -1082,16 +1103,13 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 	}
 	tmpl = strings.ReplaceAll(tmpl, "{{task}}", task)
 
-	pairs := []string{}
+	// One pass over the template: what a value brings ("{{diff}}" in a PR's title)
+	// stays text. The extras count as well, since {{review_file}} may be in the task.
+	pairs := make([]string, 0, 2*len(extra)+20)
 	for k, v := range extra {
 		pairs = append(pairs, k, v)
 	}
-	// The extras go in first: {{review_file}} may be inside the task.
-	if len(pairs) > 0 {
-		tmpl = strings.NewReplacer(pairs...).Replace(tmpl)
-	}
-
-	rep := strings.NewReplacer(
+	rep := strings.NewReplacer(append(pairs,
 		"{{repo}}", pr.Repo,
 		"{{number}}", strconv.Itoa(pr.Number),
 		"{{title}}", pr.Title,
@@ -1102,6 +1120,6 @@ func buildPrompt(tmpl, task string, pr gh.PR, diff, workdir string, extra map[st
 		"{{workdir}}", workdir,
 		"{{body}}", body,
 		"{{diff}}", diff,
-	)
+	)...)
 	return strings.TrimSpace(rep.Replace(tmpl))
 }

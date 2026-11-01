@@ -147,22 +147,23 @@ func TestRunsClaude(t *testing.T) {
 // refused up front, and a relative command too. Without a clone, it is the
 // user's own folder and nothing changes.
 func TestCheckLauncher(t *testing.T) {
-	for _, command := range []string{"npx", "bunx", "pnpm", "yarn", "npm", "uvx", "pipx", "env", "/usr/local/bin/npx", "npx.cmd"} {
-		err := checkLauncher(config.ResolvedAgent{Name: "x", Command: command, Checkout: true})
+	for _, command := range []string{"npx", "bunx", "pnpm", "yarn", "npm", "uvx", "pipx", "env", "/usr/local/bin/npx", "npx.cmd",
+		"yarnpkg", "corepack", "deno", "mise", "asdf", "volta", "nix", "pnpx", "uv", "bun", "fnm", "nvm", "poetry", "pipenv", "bundle", "cargo", "make", "just"} {
+		err := config.CheckLauncher(config.ResolvedAgent{Name: "x", Command: command, Checkout: true})
 		if err == nil || !strings.Contains(err.Error(), "not supported with checkout on") {
 			t.Errorf("%s with checkout should be refused clearly, got %v", command, err)
 		}
-		if err := checkLauncher(config.ResolvedAgent{Command: command}); err != nil {
+		if err := config.CheckLauncher(config.ResolvedAgent{Command: command}); err != nil {
 			t.Errorf("%s without checkout: %v", command, err)
 		}
 	}
 	for _, command := range []string{"./bin/agent", "bin/agent", "../x"} {
-		if err := checkLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err == nil {
+		if err := config.CheckLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err == nil {
 			t.Errorf("%s resolves inside the clone and should be refused", command)
 		}
 	}
 	for _, command := range []string{"claude", "codex", "/usr/local/bin/agent"} {
-		if err := checkLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err != nil {
+		if err := config.CheckLauncher(config.ResolvedAgent{Command: command, Checkout: true}); err != nil {
 			t.Errorf("%s is an installed binary: %v", command, err)
 		}
 	}
