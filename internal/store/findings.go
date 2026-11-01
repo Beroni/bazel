@@ -110,8 +110,9 @@ func SplitFindings(body string) []Part {
 			level, title = headingOf(trim)
 		}
 		// The line Bazel puts between two steps of a pipeline belongs to neither:
-		// dropping a step's last finding must leave the next step behind it.
-		if trim == "---" && !headings[i] && nextIsStep(i) {
+		// dropping a step's last finding must leave the next step behind it. Bazel
+		// writes it after a blank line: right under text it is that text's underline.
+		if trim == "---" && blank && nextIsStep(i) {
 			flush()
 			finding, bold, section, human, blank = false, false, false, false, false
 		}

@@ -333,7 +333,8 @@ func TestSplitFindingsStopsAtTheStepSeparator(t *testing.T) {
 	if got := DropFindings(fenced, []int{0}); strings.Contains(got, "HIDDEN") || strings.Contains(got, "## b") || !strings.Contains(got, "Kept.") {
 		t.Errorf("a fence is not a separator:\n%s", got)
 	}
-	// Under a paragraph `---` makes a heading of it, and no separator.
+	// Under a paragraph `---` makes a heading of it, and no separator: it goes with
+	// the finding, and nothing of it is left to the PR.
 	setext := "## Findings\n\n### One\n\nText\n---\n\n## Cuts\n"
 	var joined strings.Builder
 	for _, p := range SplitFindings(setext) {
@@ -341,6 +342,9 @@ func TestSplitFindingsStopsAtTheStepSeparator(t *testing.T) {
 	}
 	if joined.String() != setext {
 		t.Error("the parts do not add up to the report")
+	}
+	if got := DropFindings(setext, []int{0}); got != "## Findings\n\n## Cuts\n" {
+		t.Errorf("after the untick: %q", got)
 	}
 }
 
