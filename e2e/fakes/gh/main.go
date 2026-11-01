@@ -1,0 +1,785 @@
+// Command gh is a fake GitHub CLI for the e2e harness. It answers the calls
+// Bazel makes (internal/gh and internal/workspace) from fixtures on disk,
+// records every invocation, and never touches the network.
+//
+// Environment:
+//
+//	FAKE_GH_FIXTURES  directory with prs.json (and optional gh.json)
+//	FAKE_GH_STATE     writable directory: calls.jsonl and the fixture git repos
+//
+// Anything it does not know exits 1 with "fake gh: unsupported", so a new
+// gh call in Bazel shows up as a failing test instead of a silent pass.
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"sort"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// fixturePR is one PR in prs.json: the gh JSON fields plus the repo it belongs
+// to and a few harness-only knobs.
+type fixturePR struct {
+	Repo         string `json:"repo"`
+	Number       int    `json:"number"`
+	Title        string `json:"title"`
+	URL          string `json:"url,omitempty"`
+	Body         string `json:"body"`
+	IsDraft      bool   `json:"isDraft"`
+	Additions    int    `json:"additions"`
+	Deletions    int    `json:"deletions"`
+	ChangedFiles int    `json:"changedFiles"`
+	UpdatedAt    string `json:"updatedAt,omitempty"`
+	UpdatedAgo   string `json:"updatedAgo,omitempty"` // "2h": now minus this
+	HeadRefName  string `json:"headRefName"`
+	// HeadRefOid is empty in a fixture: gh then answers the tip of the branch the
+	// clone gets. Moved adds that many commits to the branch (bazel.movePR).
+	HeadRefOid  string `json:"headRefOid,omitempty"`
+	Moved       int    `json:"moved,omitempty"`
+	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
+	BaseRefName string `json:"baseRefName"`
+	// What bazel-post-report surveys. The script reads them as GitHub answers.
+	InlineComments []json.RawMessage `json:"inline_comments,omitempty"`
+	IssueComments  []json.RawMessage `json:"issue_comments,omitempty"`
+	Submitted      []json.RawMessage `json:"submitted_reviews,omitempty"`
+	Threads        []json.RawMessage `json:"review_threads,omitempty"`
+	Author         struct {
+		Login string `json:"login"`
+	} `json:"author"`
+	ReviewDecision string            `json:"reviewDecision"`
+	Diff           string            `json:"diff,omitempty"`
+	Files          map[string]string `json:"files,omitempty"` // what the PR branch adds
+	// Symlinks maps a path in the branch to its target, committed as a link.
+	Symlinks map[string]string `json:"symlinks,omitempty"`
+	// The PR page fields (gh pr view --json …). Missing ones are synthesized
+	// from the rest: one commit at headRefOid, files from Files, empty lists.
+	CreatedAt         string `json:"createdAt,omitempty"`
+	Commits           []any  `json:"commits,omitempty"`
+	ReviewRequests    []any  `json:"reviewRequests,omitempty"`
+	LatestReviews     []any  `json:"latestReviews,omitempty"`
+	Labels            []any  `json:"labels,omitempty"`
+	StatusCheckRollup []any  `json:"statusCheckRollup,omitempty"`
+}
+
+// settings is gh.json: who is logged in and which calls fail on purpose.
+type settings struct {
+	User string `json:"user"`
+	// Fail maps a call key to the stderr it should die with. Keys:
+	// "auth", "user", "list:<owner/repo>", "view:<owner/repo>#<n>",
+	// "diff:<owner/repo>#<n>", "comment", "clone:<owner/repo>", "checkout", "api".
+	Fail map[string]string `json:"fail"`
+	// Forks maps a fork to its parent. In a clone of the fork, gh pr checkout N
+	// without --repo or GH_REPO resolves N in the parent, as gh does.
+	Forks map[string]string `json:"forks"`
+}
+
+var (
+	fixtures = os.Getenv("FAKE_GH_FIXTURES")
+	state    = os.Getenv("FAKE_GH_STATE")
+	cfg      settings
+	stdin    string
+	// unknown marks a call the fake does not implement; the harness fails
+	// the test when one shows up in the log.
+	unknown bool
+)
+
+func main() {
+	args := os.Args[1:]
+	if len(args) == 1 && args[0] == "--version" {
+		fmt.Println("gh version 0.0.0-fake (e2e)")
+		return
+	}
+	if fixtures == "" || state == "" {
+		die(2, "fake gh: FAKE_GH_FIXTURES and FAKE_GH_STATE must be set")
+	}
+	if b, err := os.ReadFile(filepath.Join(fixtures, "gh.json")); err == nil {
+		if err := json.Unmarshal(b, &cfg); err != nil {
+			die(2, "fake gh: bad gh.json: "+err.Error())
+		}
+	}
+	if cfg.User == "" {
+		cfg.User = "e2e-user"
+	}
+	if wantsStdin(args) {
+		b, _ := io.ReadAll(os.Stdin)
+		stdin = string(b)
+	}
+	code := dispatch(args)
+	record(args, code)
+	os.Exit(code)
+}
+
+func wantsStdin(args []string) bool {
+	for i, a := range args {
+		if (a == "--body-file" || a == "--input") && i+1 < len(args) && args[i+1] == "-" {
+			return true
+		}
+	}
+	return false
+}
+
+func dispatch(args []string) int {
+	switch {
+	case len(args) == 0:
+		return unsupported(args)
+	case is(args, "auth", "status"):
+		if failed("auth") {
+			return 1
+		}
+		fmt.Fprintf(os.Stderr, "github.com\n  ✓ Logged in to github.com account %s (fake)\n", cfg.User)
+		return 0
+	case slices.Equal(args, []string{"api", "user", "--jq", ".login"}):
+		if failed("user") {
+			return 1
+		}
+		fmt.Println(cfg.User)
+		return 0
+	case is(args, "api"):
+		return apiCall(args)
+	case is(args, "pr", "list"):
+		return listPRs(args)
+	case is(args, "pr", "view"):
+		return viewPR(args)
+	case is(args, "pr", "diff"):
+		return diffPR(args)
+	case is(args, "pr", "comment"):
+		return comment(args)
+	case is(args, "repo", "clone"):
+		return cloneRepo(args)
+	case is(args, "pr", "checkout"):
+		return checkoutPR(args)
+	}
+	return unsupported(args)
+}
+
+func is(args []string, words ...string) bool {
+	if len(args) < len(words) {
+		return false
+	}
+	for i, w := range words {
+		if args[i] != w {
+			return false
+		}
+	}
+	return true
+}
+
+func flag(args []string, name string) string {
+	for i, a := range args {
+		if a == name && i+1 < len(args) {
+			return args[i+1]
+		}
+	}
+	return ""
+}
+
+func failed(key string) bool {
+	if msg, ok := cfg.Fail[key]; ok {
+		fmt.Fprintln(os.Stderr, msg)
+		return true
+	}
+	return false
+}
+
+func unsupported(args []string) int {
+	unknown = true
+	fmt.Fprintf(os.Stderr, "fake gh: unsupported: gh %s\n", strings.Join(args, " "))
+	return 1
+}
+
+func die(code int, msg string) {
+	fmt.Fprintln(os.Stderr, msg)
+	os.Exit(code)
+}
+
+// record appends the call and its exit code to calls.jsonl under an exclusive
+// lock: reviews run in parallel and two gh processes may write at once.
+func record(args []string, code int) {
+	cwd, _ := os.Getwd()
+	line, _ := json.Marshal(map[string]any{
+		"argv":        args,
+		"stdin":       stdin,
+		"exit":        code,
+		"home":        os.Getenv("HOME"),
+		"bazel_home":  os.Getenv("BAZEL_HOME"),
+		"unsupported": unknown,
+		"cwd":         cwd,
+		"at":          time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	_ = os.MkdirAll(state, 0o755)
+	f, err := os.OpenFile(filepath.Join(state, "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		die(2, "fake gh: cannot record call: "+err.Error())
+	}
+	defer f.Close()
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	f.Write(append(line, '\n'))
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// --- PRs ---
+
+func loadPRs() []fixturePR {
+	b, err := os.ReadFile(filepath.Join(fixtures, "prs.json"))
+	if err != nil {
+		die(2, "fake gh: "+err.Error())
+	}
+	var prs []fixturePR
+	if err := json.Unmarshal(b, &prs); err != nil {
+		die(2, "fake gh: bad prs.json: "+err.Error())
+	}
+	for i := range prs {
+		p := &prs[i]
+		if p.URL == "" {
+			p.URL = fmt.Sprintf("https://github.com/%s/pull/%d", p.Repo, p.Number)
+		}
+		if p.UpdatedAgo != "" {
+			d, err := time.ParseDuration(p.UpdatedAgo)
+			if err != nil {
+				die(2, "fake gh: bad updatedAgo: "+p.UpdatedAgo)
+			}
+			p.UpdatedAt = time.Now().Add(-d).UTC().Format(time.RFC3339)
+		}
+		if p.UpdatedAt == "" {
+			p.UpdatedAt = "2026-01-01T00:00:00Z"
+		}
+		if p.BaseRefName == "" {
+			p.BaseRefName = "main"
+		}
+		if p.State == "" {
+			p.State = "OPEN"
+		}
+	}
+	return prs
+}
+
+// out writes the PRs keeping only the fields asked for with --json, like gh.
+func out(args []string, prs []fixturePR) int {
+	b, _ := json.Marshal(rows(args, prs))
+	fmt.Println(string(b))
+	return 0
+}
+
+func rows(args []string, prs []fixturePR) []map[string]any {
+	fields := strings.Split(flag(args, "--json"), ",")
+	out := make([]map[string]any, 0, len(prs))
+	for _, p := range prs {
+		p.HeadRefOid = head(p)
+		raw, _ := json.Marshal(p)
+		var all map[string]any
+		_ = json.Unmarshal(raw, &all)
+		row := map[string]any{}
+		for _, f := range fields {
+			if v, ok := synthesized(p, f); ok {
+				row[f] = v
+			} else if v, ok := all[f]; ok {
+				row[f] = v
+			}
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+// The --json fields gh accepts, from `gh pr list --help` (gh 2.87). A field out of
+// the list is refused like gh refuses it, so the fake cannot answer what the real
+// one would not.
+var prFields = strings.Split("additions,assignees,author,autoMergeRequest,baseRefName,baseRefOid,body,changedFiles,closed,closedAt,closingIssuesReferences,comments,commits,createdAt,deletions,files,fullDatabaseId,headRefName,headRefOid,headRepository,headRepositoryOwner,id,isCrossRepository,isDraft,labels,latestReviews,maintainerCanModify,mergeCommit,mergeStateStatus,mergeable,mergedAt,mergedBy,milestone,number,potentialMergeCommit,projectCards,projectItems,reactionGroups,reviewDecision,reviewRequests,reviews,state,statusCheckRollup,title,updatedAt,url", ",")
+
+func badFields(args, known []string) bool {
+	for _, f := range strings.Split(flag(args, "--json"), ",") {
+		if !slices.Contains(known, f) {
+			fmt.Fprintf(os.Stderr, "Unknown JSON field: %q\nAvailable fields:\n  %s\n", f, strings.Join(known, "\n  "))
+			return true
+		}
+	}
+	return false
+}
+
+var reviewsRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/pulls/(\d+)/reviews$`)
+var listRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/(pulls|issues)/(\d+)/(comments|reviews)$`)
+var reactionsRe = regexp.MustCompile(`^repos/([^/]+/[^/]+)/(pulls|issues)/comments/(\d+)/reactions$`)
+
+// apiCall answers what bazel-post-report's script asks and the one review write.
+// Anything else was not thought through, so it fails.
+func apiCall(args []string) int {
+	switch {
+	case len(args) == 3 && args[2] == "--paginate":
+		return apiList(args)
+	case len(args) > 2 && args[1] == "graphql":
+		return apiThreads(args)
+	case len(args) == 6 && reactionsRe.MatchString(args[3]):
+		return apiReaction(args)
+	}
+	method := flag(args, "--method")
+	if method == "" {
+		method = flag(args, "-X")
+	}
+	if len(args) != 6 || method != "POST" || flag(args, "--input") != "-" {
+		return unsupported(args)
+	}
+	m := reviewsRe.FindStringSubmatch(args[3])
+	if m == nil {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	n, _ := strconv.Atoi(m[2])
+	if _, ok := find(m[1], n); !ok {
+		fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+		return 1
+	}
+	var review struct {
+		Event string `json:"event"`
+		Body  string `json:"body"`
+	}
+	if err := json.Unmarshal([]byte(stdin), &review); err != nil || strings.TrimSpace(review.Body) == "" ||
+		!slices.Contains([]string{"COMMENT", "APPROVE", "REQUEST_CHANGES"}, review.Event) {
+		fmt.Fprintln(os.Stderr, "gh: Validation Failed (HTTP 422)")
+		return 1
+	}
+	fmt.Printf("{\"id\":1,\"html_url\":\"https://github.invalid/%s/pull/%d#pullrequestreview-1\"}\n", m[1], n)
+	return 0
+}
+
+// apiList answers the three reads with --paginate, from the PR's fixture.
+func apiList(args []string) int {
+	m := listRe.FindStringSubmatch(args[1])
+	if m == nil {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	n, _ := strconv.Atoi(m[3])
+	pr, ok := find(m[1], n)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+		return 1
+	}
+	list := pr.IssueComments
+	switch m[2] + "/" + m[4] {
+	case "issues/comments":
+	case "pulls/comments":
+		list = pr.InlineComments
+	case "pulls/reviews":
+		list = pr.Submitted
+	default:
+		return unsupported(args)
+	}
+	out, _ := json.Marshal(append([]json.RawMessage{}, list...))
+	fmt.Println(string(out))
+	return 0
+}
+
+// apiThreads answers the review-threads query, one page, from the PR's fixture.
+func apiThreads(args []string) int {
+	owner, repo, number := "", "", 0
+	query := false
+	for i := 2; i < len(args); i++ {
+		k, v, ok := strings.Cut(args[i], "=")
+		switch {
+		case args[i] == "--paginate" || args[i] == "-f" || args[i] == "-F":
+		case ok && k == "owner":
+			owner = v
+		case ok && k == "repo":
+			repo = v
+		case ok && k == "number":
+			number, _ = strconv.Atoi(v)
+		case ok && k == "query":
+			query = strings.Contains(v, "reviewThreads")
+		default:
+			return unsupported(args)
+		}
+	}
+	if !query || owner == "" || repo == "" || number == 0 {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	pr, ok := find(owner+"/"+repo, number)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "gh: Could not resolve to a PullRequest")
+		return 1
+	}
+	nodes, _ := json.Marshal(append([]json.RawMessage{}, pr.Threads...))
+	fmt.Printf(`{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":%s}}}}}`+"\n", nodes)
+	return 0
+}
+
+// apiReaction answers a 👍 on a comment that exists on some PR of the repo.
+func apiReaction(args []string) int {
+	if flag(args, "-X") != "POST" || flag(args, "-f") != "content=+1" {
+		return unsupported(args)
+	}
+	if failed("api") {
+		return 1
+	}
+	m := reactionsRe.FindStringSubmatch(args[3])
+	id, _ := strconv.Atoi(m[3])
+	for _, pr := range loadPRs() {
+		list := pr.IssueComments
+		if m[2] == "pulls" {
+			list = pr.InlineComments
+		}
+		for _, c := range list {
+			var comment struct {
+				ID int `json:"id"`
+			}
+			if json.Unmarshal(c, &comment) == nil && pr.Repo == m[1] && comment.ID == id {
+				fmt.Println(`{"id":1,"content":"+1"}`)
+				return 0
+			}
+		}
+	}
+	fmt.Fprintln(os.Stderr, "gh: Not Found (HTTP 404)")
+	return 1
+}
+
+// comment answers `gh pr comment N --repo R --body-file -` on a known PR.
+func comment(args []string) int {
+	n, err := strconv.Atoi(args[2])
+	repo := flag(args, "--repo")
+	if err != nil || repo == "" || flag(args, "--body-file") != "-" || len(args) != 7 {
+		return unsupported(args)
+	}
+	if failed("comment") {
+		return 1
+	}
+	if _, ok := find(repo, n); !ok {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a PullRequest with the number of %d.\n", n)
+		return 1
+	}
+	if strings.TrimSpace(stdin) == "" {
+		fmt.Fprintln(os.Stderr, "body cannot be blank")
+		return 1
+	}
+	fmt.Printf("https://github.invalid/%s/pull/%d#issuecomment-1\n", repo, n)
+	return 0
+}
+
+// synthesized answers the PR page fields a fixture left out, in gh's shape.
+// `files` is always gh's list: the fixture's files map is the branch content.
+func synthesized(p fixturePR, field string) (any, bool) {
+	switch field {
+	case "files":
+		out := []map[string]any{}
+		for _, path := range sortedKeys(p.Files) {
+			out = append(out, map[string]any{"path": path, "additions": strings.Count(p.Files[path], "\n") + 1, "deletions": 0})
+		}
+		return out, true
+	case "createdAt":
+		if p.CreatedAt == "" {
+			return p.UpdatedAt, true
+		}
+	case "commits":
+		if p.Commits == nil {
+			return []map[string]any{{
+				"oid": head(p), "messageHeadline": p.Title, "committedDate": p.UpdatedAt,
+				"authors": []map[string]string{{"login": p.Author.Login, "name": p.Author.Login}},
+			}}, true
+		}
+	case "reviewRequests", "latestReviews", "labels", "statusCheckRollup":
+		raw, _ := json.Marshal(p)
+		var all map[string]any
+		_ = json.Unmarshal(raw, &all)
+		if _, ok := all[field]; !ok {
+			return []any{}, true
+		}
+	}
+	return nil, false
+}
+
+// listPRs is gh pr list: open PRs unless --state says otherwise, newest first.
+func listPRs(args []string) int {
+	repo := flag(args, "--repo")
+	if failed("list:"+repo) || badFields(args, prFields) {
+		return 1
+	}
+	state := flag(args, "--state")
+	if state == "" {
+		state = "open"
+	}
+	author := flag(args, "--author")
+	var hit []fixturePR
+	for _, p := range loadPRs() {
+		if strings.EqualFold(p.Repo, repo) && inState(p, state) && (author == "" || strings.EqualFold(p.Author.Login, author)) {
+			hit = append(hit, p)
+		}
+	}
+	sort.SliceStable(hit, func(i, j int) bool { return hit[i].Number > hit[j].Number })
+	return out(args, limit(args, hit))
+}
+
+func inState(p fixturePR, state string) bool {
+	return state == "all" || strings.EqualFold(p.State, state)
+}
+
+func limit(args []string, prs []fixturePR) []fixturePR {
+	if n, err := strconv.Atoi(flag(args, "--limit")); err == nil && n > 0 && len(prs) > n {
+		return prs[:n]
+	}
+	return prs
+}
+
+func find(repo string, number int) (fixturePR, bool) {
+	for _, p := range loadPRs() {
+		if strings.EqualFold(p.Repo, repo) && p.Number == number {
+			return p, true
+		}
+	}
+	return fixturePR{}, false
+}
+
+func viewPR(args []string) int {
+	repo := flag(args, "--repo")
+	n, _ := strconv.Atoi(args[2])
+	if failed(fmt.Sprintf("view:%s#%d", repo, n)) || badFields(args, prFields) {
+		return 1
+	}
+	p, ok := find(repo, n)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a PullRequest with the number of %d. (repository.pullRequest)\n", n)
+		return 1
+	}
+	// gh pr view prints an object, not a list.
+	b, _ := json.Marshal(rows(args, []fixturePR{p})[0])
+	fmt.Println(string(b))
+	return 0
+}
+
+func diffPR(args []string) int {
+	repo := flag(args, "--repo")
+	n, err := strconv.Atoi(args[2])
+	if err != nil || repo == "" || len(args) != 5 {
+		return unsupported(args)
+	}
+	if failed(fmt.Sprintf("diff:%s#%d", repo, n)) {
+		return 1
+	}
+	p, ok := find(repo, n)
+	if !ok {
+		fmt.Fprintln(os.Stderr, "fake gh: no such PR")
+		return 1
+	}
+	if p.Diff != "" {
+		fmt.Print(p.Diff)
+		return 0
+	}
+	for _, path := range sortedKeys(p.Files) {
+		fmt.Printf("diff --git a/%s b/%s\n--- /dev/null\n+++ b/%s\n@@ -0,0 +1 @@\n+%s\n", path, path, path, p.Files[path])
+	}
+	return 0
+}
+
+// --- clone ---
+
+var originRe = regexp.MustCompile(`repos/([^/]+)/([^/]+)\.git/?$`)
+
+// A fixed date makes the commits of a fixture the same on every build.
+const stamp = "e2e <e2e@example.invalid> 1767225600 +0000"
+
+// origin builds (once, atomically) a bare repo for the fixture repository: main
+// with a README, plus one branch per PR adding its files. One git process does
+// it all, so that knowing a PR's head costs a listing next to nothing.
+func origin(repo string) (string, error) {
+	final := filepath.Join(state, "repos", repo+".git")
+	if _, err := os.Stat(final); err == nil {
+		return final, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
+		return "", err
+	}
+	work, err := os.MkdirTemp(filepath.Dir(final), ".build-")
+	if err != nil {
+		return "", err
+	}
+	defer os.RemoveAll(work)
+	if err := gitAll("", [][]string{{"init", "-q", "--bare", "-b", "main", work}}); err != nil {
+		return "", err
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir = work
+	cmd.Stdin = strings.NewReader(importStream(repo))
+	if b, err := cmd.CombinedOutput(); err != nil {
+		return "", fmt.Errorf("git fast-import: %v: %s", err, strings.TrimSpace(string(b)))
+	}
+	if err := os.Rename(work, final); err != nil {
+		if _, statErr := os.Stat(final); statErr == nil {
+			return final, nil // another call won the race
+		}
+		return "", err
+	}
+	return final, nil
+}
+
+func importStream(repo string) string {
+	var b strings.Builder
+	blob := func(mode, path, content string) {
+		fmt.Fprintf(&b, "M %s inline %s\ndata %d\n%s\n", mode, quotePath(path), len(content), content)
+	}
+	commit := func(branch, mark, message, from string, files func()) {
+		fmt.Fprintf(&b, "commit refs/heads/%s\n%sauthor %s\ncommitter %s\ndata %d\n%s\n%s", branch, mark, stamp, stamp, len(message), message, from)
+		files()
+		b.WriteString("\n")
+	}
+	commit("main", "mark :1\n", "init", "", func() { blob("100644", "README.md", "# "+repo+"\n") })
+	for _, p := range loadPRs() {
+		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
+			continue
+		}
+		commit(p.HeadRefName, "", p.Title, "from :1\n", func() {
+			files := p.Files
+			if len(files) == 0 {
+				files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}
+			}
+			for _, path := range sortedKeys(files) {
+				blob("100644", path, files[path]+"\n")
+			}
+			for _, path := range sortedKeys(p.Symlinks) {
+				blob("120000", path, p.Symlinks[path])
+			}
+		})
+		for i := 1; i <= p.Moved; i++ {
+			commit(p.HeadRefName, "", fmt.Sprintf("moved %d", i), "", func() { blob("100644", "moved.txt", strconv.Itoa(i)+"\n") })
+		}
+	}
+	return b.String()
+}
+
+func quotePath(path string) string {
+	return `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`, "\n", `\n`).Replace(path) + `"`
+}
+
+// head answers headRefOid: what the fixture says, else the tip of its branch.
+func head(p fixturePR) string {
+	if p.HeadRefOid != "" || p.HeadRefName == "" {
+		return p.HeadRefOid
+	}
+	bare, err := origin(p.Repo)
+	if err != nil {
+		die(2, "fake gh: building origin: "+err.Error())
+	}
+	b, err := os.ReadFile(filepath.Join(bare, "refs", "heads", p.HeadRefName))
+	if err != nil {
+		die(2, "fake gh: "+err.Error())
+	}
+	return strings.TrimSpace(string(b))
+}
+
+func cloneRepo(args []string) int {
+	if len(args) < 4 {
+		return unsupported(args)
+	}
+	repo, dir := args[2], args[3]
+	if failed("clone:" + repo) {
+		return 1
+	}
+	if !slices.ContainsFunc(loadPRs(), func(p fixturePR) bool { return strings.EqualFold(p.Repo, repo) }) {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a Repository with the name '%s'. (repository)\n", repo)
+		return 1
+	}
+	src, err := origin(repo)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake gh: building origin:", err)
+		return 1
+	}
+	gitArgs := []string{"clone", "-q"}
+	for i, a := range args {
+		if a == "--" {
+			gitArgs = append(gitArgs, args[i+1:]...)
+			break
+		}
+	}
+	gitArgs = append(gitArgs, "file://"+src, dir)
+	if err := gitAll("", [][]string{gitArgs}); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+// checkoutPR resolves N where gh does: --repo, then GH_REPO, then the clone's
+// repository, or the parent when that is a fork.
+func checkoutPR(args []string) int {
+	n, err := strconv.Atoi(args[2])
+	repo := flag(args, "--repo")
+	if err != nil || (repo == "" && len(args) != 3) || (repo != "" && len(args) != 5) {
+		return unsupported(args)
+	}
+	if failed("checkout") {
+		return 1
+	}
+	url, err := exec.Command("git", "config", "remote.origin.url").Output()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "fake gh: not inside a clone")
+		return 1
+	}
+	m := originRe.FindStringSubmatch(strings.TrimSpace(string(url)))
+	if m == nil {
+		fmt.Fprintln(os.Stderr, "fake gh: origin is not a fixture repo:", string(url))
+		return 1
+	}
+	if repo == "" {
+		repo = os.Getenv("GH_REPO")
+	}
+	if repo == "" {
+		repo = m[1] + "/" + m[2]
+		if parent, ok := cfg.Forks[repo]; ok {
+			repo = parent
+		}
+	}
+	p, ok := find(repo, n)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "fake gh: no PR #%d in %s\n", n, repo)
+		return 1
+	}
+	from := "origin/" + p.HeadRefName
+	var steps [][]string
+	if !strings.EqualFold(repo, m[1]+"/"+m[2]) {
+		src, err := origin(p.Repo)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "fake gh: building origin:", err)
+			return 1
+		}
+		steps = append(steps, []string{"fetch", "-q", "file://" + src, "refs/heads/" + p.HeadRefName})
+		from = "FETCH_HEAD"
+	}
+	if err := gitAll("", append(steps, []string{"checkout", "-q", "-B", p.HeadRefName, from})); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	return 0
+}
+
+func gitAll(dir string, steps [][]string) error {
+	for _, s := range steps {
+		cmd := exec.Command("git", s...)
+		cmd.Dir = dir
+		if b, err := cmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("git %s: %v: %s", strings.Join(s, " "), err, strings.TrimSpace(string(b)))
+		}
+	}
+	return nil
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}

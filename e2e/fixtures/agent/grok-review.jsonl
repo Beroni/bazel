@@ -1,0 +1,10 @@
+#!# grok --output-format streaming-json: grep with no match, a command, token-by-token text, end with cost.
+{"type":"tool_call","toolCallId":"g1","toolName":"grep","rawInput":{"command":"grep -rn E2E-GROK-GREP ."}}
+{"type":"tool_call_update","toolCallId":"g1","status":"completed","rawOutput":{"exit_code":1,"output_for_prompt":""}}
+{"type":"tool_call","toolCallId":"g2","toolName":"run_terminal_cmd","rawInput":{"command":"go vet ./... E2E-GROK-CMD"}}
+{"type":"tool_call_update","toolCallId":"g2","status":"completed","rawOutput":{"exit_code":0,"output_for_prompt":"ok"}}
+{"type":"usage","usage":{"input_tokens":1000,"output_tokens":100}}
+{"type":"text","data":"# Grok review E2E-GROK-REPORT\n\n## Findings\n\n"}
+{"type":"text","data":"### G1 · minor · Shadowed variable\n\n"}
+{"type":"text","data":"`internal/limit/bucket.go:3` E2E-GROK-FINDING err shadows the outer err.\n"}
+{"type":"end","stopReason":"end_turn","usage":{"input_tokens":3000,"output_tokens":400,"cache_read_input_tokens":1000},"total_cost_usd":0.07}

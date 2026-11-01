@@ -1,0 +1,5 @@
+#!# The post agent: publishes the review file it was handed, through gh.
+{"type":"system","subtype":"init","tools":["Read","Bash"],"model":"claude-opus-5-5"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","content":[{"type":"tool_use","id":"tu_p","name":"Bash","input":{"command":"gh api --method POST repos/.../reviews"}}],"usage":{"input_tokens":300,"output_tokens":40}},"parent_tool_use_id":null}
+#!gh-review
+{"type":"result","subtype":"success","is_error":false,"duration_ms":900,"total_cost_usd":0.05,"result":"Published one review E2E-POSTED.","usage":{"input_tokens":300,"output_tokens":60}}

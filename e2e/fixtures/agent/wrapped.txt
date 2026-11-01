@@ -1,0 +1,9 @@
+```markdown
+# Wrapped review E2E-WRAPPED
+
+## Findings
+
+### W1 · minor · Inside a fence
+
+E2E-WRAPPED-FINDING rendered as markdown, not as a code block.
+```

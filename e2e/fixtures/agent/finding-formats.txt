@@ -1,0 +1,18 @@
+# Formats E2E-FORMATS
+
+## Findings
+
+**1. major · Bold numbered one** E2E-BOLD-1 explanation.
+
+**2. minor · Bold numbered two** E2E-BOLD-2 explanation.
+
+## Needs human verification
+
+- E2E-HUMAN-1 is the retry intended?
+- E2E-HUMAN-2 should the limit be per user?
+
+## Cuts
+
+### Cut one
+
+E2E-CUT-1 forty lines the stdlib already does.

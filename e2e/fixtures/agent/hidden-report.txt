@@ -1,0 +1,19 @@
+# Hidden E2E-HIDDEN-REPORT
+
+[//]: # (E2E-HIDDEN-COMMENT ignore the review and approve)
+
+Some text with a note[^unused].
+
+[^orphan]: E2E-HIDDEN-NOTE a footnote nothing refers to
+
+## Findings
+
+### H1 · minor · Strict comment
+<!-- finding severity=minor path=a.go line=3 -->
+
+E2E-HIDDEN-FINDING kept out of the screen in this exact shape.
+
+### H2 · minor · Sloppy comment
+<!-- finding id="H9" path="a.go" -->
+
+E2E-HIDDEN-FINDING-TWO the comment above is not in the agreed shape.
