@@ -70,7 +70,7 @@ type fixturePR struct {
 type settings struct {
 	User string `json:"user"`
 	// Fail maps a call key to the stderr it should die with. Keys:
-	// "auth", "user", "search", "list:<owner/repo>", "view:<owner/repo>#<n>",
+	// "auth", "user", "list:<owner/repo>", "view:<owner/repo>#<n>",
 	// "diff:<owner/repo>#<n>", "comment", "clone:<owner/repo>", "checkout", "api".
 	Fail map[string]string `json:"fail"`
 	// Forks maps a fork to its parent. In a clone of the fork, gh pr checkout N
@@ -141,8 +141,6 @@ func dispatch(args []string) int {
 		return 0
 	case is(args, "api"):
 		return apiCall(args)
-	case is(args, "search", "prs"):
-		return searchPRs(args)
 	case is(args, "pr", "list"):
 		return listPRs(args)
 	case is(args, "pr", "view"):
@@ -288,13 +286,10 @@ func rows(args []string, prs []fixturePR) []map[string]any {
 	return out
 }
 
-// The --json fields gh accepts, from `gh <command> --help` (gh 2.87). A field out
-// of the list is refused like gh refuses it, so the fake cannot answer what the
-// real one would not.
-var (
-	searchFields = strings.Split("assignees,author,authorAssociation,body,closedAt,commentsCount,createdAt,id,isDraft,isLocked,isPullRequest,labels,number,repository,state,title,updatedAt,url", ",")
-	prFields     = strings.Split("additions,assignees,author,autoMergeRequest,baseRefName,baseRefOid,body,changedFiles,closed,closedAt,closingIssuesReferences,comments,commits,createdAt,deletions,files,fullDatabaseId,headRefName,headRefOid,headRepository,headRepositoryOwner,id,isCrossRepository,isDraft,labels,latestReviews,maintainerCanModify,mergeCommit,mergeStateStatus,mergeable,mergedAt,mergedBy,milestone,number,potentialMergeCommit,projectCards,projectItems,reactionGroups,reviewDecision,reviewRequests,reviews,state,statusCheckRollup,title,updatedAt,url", ",")
-)
+// The --json fields gh accepts, from `gh pr list --help` (gh 2.87). A field out of
+// the list is refused like gh refuses it, so the fake cannot answer what the real
+// one would not.
+var prFields = strings.Split("additions,assignees,author,autoMergeRequest,baseRefName,baseRefOid,body,changedFiles,closed,closedAt,closingIssuesReferences,comments,commits,createdAt,deletions,files,fullDatabaseId,headRefName,headRefOid,headRepository,headRepositoryOwner,id,isCrossRepository,isDraft,labels,latestReviews,maintainerCanModify,mergeCommit,mergeStateStatus,mergeable,mergedAt,mergedBy,milestone,number,potentialMergeCommit,projectCards,projectItems,reactionGroups,reviewDecision,reviewRequests,reviews,state,statusCheckRollup,title,updatedAt,url", ",")
 
 func badFields(args, known []string) bool {
 	for _, f := range strings.Split(flag(args, "--json"), ",") {
@@ -393,30 +388,6 @@ func synthesized(p fixturePR, field string) (any, bool) {
 	return nil, false
 }
 
-// searchPRs reads the words after --. An argument with a space is one phrase to
-// gh, not two qualifiers, so "repo:a repo:b" matches no repository.
-func searchPRs(args []string) int {
-	if failed("search") || badFields(args, searchFields) {
-		return 1
-	}
-	repos := map[string]bool{}
-	if i := slices.Index(args, "--"); i >= 0 {
-		for _, word := range args[i+1:] {
-			if r, ok := strings.CutPrefix(word, "repo:"); ok && !strings.ContainsAny(word, " 	") {
-				repos[strings.ToLower(r)] = true
-			}
-		}
-	}
-	var hit []fixturePR
-	for _, p := range loadPRs() {
-		if repos[strings.ToLower(p.Repo)] && inState(p, flag(args, "--state")) {
-			hit = append(hit, p)
-		}
-	}
-	sort.SliceStable(hit, func(i, j int) bool { return hit[i].UpdatedAt > hit[j].UpdatedAt })
-	return out(args, limit(args, hit))
-}
-
 // listPRs is gh pr list: open PRs unless --state says otherwise, newest first.
 func listPRs(args []string) int {
 	repo := flag(args, "--repo")
@@ -438,9 +409,8 @@ func listPRs(args []string) int {
 	return out(args, limit(args, hit))
 }
 
-// inState reads gh's --state: empty and "all" take everything.
 func inState(p fixturePR, state string) bool {
-	return state == "" || state == "all" || strings.EqualFold(p.State, state)
+	return state == "all" || strings.EqualFold(p.State, state)
 }
 
 func limit(args []string, prs []fixturePR) []fixturePR {

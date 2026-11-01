@@ -12,7 +12,6 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh auth status` | ok, logged in as `gh.json.user` |
 | `gh api user --jq .login` | `gh.json.user` (default `e2e-user`) |
 | `gh api --method POST repos/O/R/pulls/N/reviews --input -` | fake review URL; stdin recorded; unknown PR → 404, bad payload → 422 |
-| `gh search prs … -- repo:a repo:b` | PRs of those repos, `--json` fields only, `--state`, `--limit`; a field gh's search does not have → `Unknown JSON field`; one argument with a space is a phrase, not two qualifiers. Goes when master stops calling it |
 | `gh pr list --repo R …` | PRs of R, newest number first; `--state` (open by default), `--author`, `--limit` |
 | `gh pr view N --repo R --json …` | one object; unknown PR → GraphQL-style error |
 | `gh pr diff N --repo R` | `diff` from the fixture, or one generated from `files` |
@@ -21,8 +20,8 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh pr checkout N [--repo R]` (in a clone) | the PR's branch; a PR of another repo comes by fetch |
 | anything else, any other `gh api` included | exit 1, `fake gh: unsupported: gh …` |
 
-`gh search prs`, `gh pr list` and `gh pr view` check `--json` against the field
-lists of `gh <cmd> --help` (gh 2.87.3), in `searchFields` and `prFields`.
+`gh pr list` and `gh pr view` check `--json` against the field list of
+`gh pr list --help` (gh 2.87.3), in `prFields`.
 
 The origin repo is built once per server (atomic rename, one `git fast-import`
 with fixed dates, so the same fixture gives the same SHAs): `main` with a README,
@@ -72,7 +71,7 @@ of the fixtures, read on every gh call; `updatePR` and `addPR` change them.
 
 ```json
 { "user": "e2e-user",
-  "fail": { "auth": "…", "user": "…", "search": "HTTP 502", "list:acme/web-app": "HTTP 404",
+  "fail": { "auth": "…", "user": "…", "list:acme/web-app": "HTTP 404",
             "comment": "HTTP 403", "clone:acme/api-core": "repository not found", "checkout": "…",
             "view:acme/api-core#101": "…", "diff:acme/api-core#101": "…", "api": "…" },
   "forks": { "acme/fork": "acme/api-core" } }

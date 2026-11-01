@@ -83,6 +83,7 @@ test.describe('P0 · the fakes fail closed', () => {
       ['api', 'user', '--jq', '.login', '--input', '-'],
       ['api', '-X', 'POST', review, '--input', '-'],
       ['pr', 'merge', '101'],
+      ['search', 'prs', '--json', 'number', '--', 'repo:acme/api-core'],
       ['pr', 'comment', '101', '--repo', 'acme/api-core', '--body', 'x'],
     ]) {
       const r = gh(args, body);
@@ -101,10 +102,6 @@ test.describe('P0 · the fakes fail closed', () => {
 
   test('gh knows the --json fields of each command, from gh --help', () => {
     expect(gh(['pr', 'list', '--repo', 'acme/api-core', '--json', 'headRefOid']).status).toBe(0);
-    const search = gh(['search', 'prs', '--json', 'headRefOid', '--', 'repo:acme/api-core']);
-    expect(search.status).toBe(1);
-    expect(search.stderr).toContain('Unknown JSON field: "headRefOid"');
-    expect(gh(['search', 'prs', '--json', 'number,title', '--', 'repo:acme/api-core']).status).toBe(0);
     expect(gh(['pr', 'view', '101', '--repo', 'acme/api-core', '--json', 'nope']).status).toBe(1);
   });
 
@@ -116,12 +113,6 @@ test.describe('P0 · the fakes fail closed', () => {
     expect(list('--state', 'all')).toHaveLength(3);
     expect(list()[0].state).toBe('OPEN');
     expect(list('--author', 'ALICE').map((p: any) => p.number)).toEqual([101]);
-  });
-
-  test('a query with a space is one phrase, as gh quotes it', () => {
-    const search = (...words: string[]) => JSON.parse(gh(['search', 'prs', '--json', 'number', '--', ...words]).stdout).length;
-    expect(search('repo:acme/api-core', 'repo:acme/web-app')).toBe(5);
-    expect(search('repo:acme/api-core repo:acme/web-app')).toBe(0);
   });
 
   test('every read can fail on purpose, and pr diff takes only what Bazel sends', () => {
