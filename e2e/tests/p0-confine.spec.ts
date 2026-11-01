@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { AgentCall, Bazel } from '../harness/bazel';
 import { FAKE_CLAUDE, FAKE_WRAPPER } from '../harness/paths';
 
@@ -71,9 +71,8 @@ const PIPELINES = [
 function expectConfined(bazel: Bazel, call: AgentCall, userArgs?: string[]) {
   // First, ahead of the user's args: after a `--` a flag would be plain text.
   expect(call.argv.slice(0, 4), call.argv.join(' ')).toEqual([...CONFINED, '--plugin-dir']);
-  // --disallowedTools may come next: the test of SEC-07 is the one that requires it.
-  const rest = call.argv.slice(5);
-  if (userArgs) expect(rest[0] === '--disallowedTools' ? rest.slice(2) : rest).toEqual(userArgs);
+  expect(call.argv[5], call.argv.join(' ')).toBe('--disallowedTools');
+  if (userArgs) expect(call.argv.slice(7)).toEqual(userArgs);
   expect(call.setting_sources_user).toBe(true);
   expect(call.strict_mcp_config).toBe(true);
   // The plugin is Bazel's, outside the PR's tree.
@@ -318,11 +317,7 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
   // wrote. Commands that change a PR or a repository are denied by name, whatever
   // the PR talks the agent into. Only a step of the user's own that publishes
   // keeps what publishing takes; bazel-post-report calls gh from its script.
-  // That script only exists on feat/builtin-skills: on master the skill publishes
-  // with these same commands, so this list must not land before it, or inline
-  // publishing breaks with this suite green. Lift the knownBug with that merge.
   test('an agent cannot merge, push or publish by itself', async ({ bazel }) => {
-    knownBug('SEC-07', 'no deny list on the agent\'s commands');
     const { id } = await reviewRuns(bazel, 'review-fleet');
     await bazel.api('POST', `/api/jobs/${id}/publish`, {});
     await bazel.waitJob(id, (j) => j.posted || !!j.post_error, 25_000);
