@@ -45,7 +45,7 @@ test.describe('P1 · config by hand', () => {
 
   test('skills become agents, the default moves, an agent stops publishing and goes', async ({ app, bazel, dialogs }) => {
     await app.getByTestId('nav-config').click();
-    const skill = app.getByTestId('skill-row').filter({ hasText: 'exploit-digger' });
+    const skill = app.getByTestId('skill-row').and(app.locator('[data-skill="exploit-digger"]'));
     await skill.getByTestId('skill-use').click();
     const agent = app.getByTestId('agent-row').and(app.locator('[data-agent="exploit-digger"]'));
     await expect(agent).toBeVisible();
