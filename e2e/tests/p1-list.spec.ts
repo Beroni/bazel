@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { filterByReview, openFilters, ui } from '../harness/ui';
 
 test.describe('P1 · list filters', () => {
@@ -80,10 +80,9 @@ test.describe('P1 · what gh lists', () => {
     expect(json.prs.map((p: any) => p.key)).toHaveLength(5);
   });
 
-  // S16: gh stops at the limit in silence, so a repo with more open PRs looks
+  // S16, fixed in #32: gh stops at the limit in silence, so a repo with more open PRs looks
   // like a repo with exactly that many. Expected: the list says it is cut short.
   test('a repository past the limit says the list is cut short', async ({ bazel }) => {
-    knownBug('S16', 'a list cut at the limit looks complete');
     for (let n = 200; n < 301; n++) {
       bazel.addPR({ repo: 'acme/web-app', number: n, title: `Generated ${n}`, headRefName: `gen/${n}`, headRefOid: `gen${n}`, author: { login: 'zoe' } });
     }

@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
 const TITLES = [
@@ -16,15 +16,11 @@ test.describe('P0 · PR list', () => {
     await expect(ui.whoami(app)).toHaveText('@e2e-user');
   });
 
-  // BUG-QA-26: with two or more repositories Bazel asks `gh search prs --json`
-  // for fields only `gh pr list` has (additions, headRefName, headRefOid…;
-  // `gh search prs --help`). gh refuses them, so every listing fails the search,
-  // falls back to one `gh pr list` per repo, and shows a banner saying
-  // "⚠ : gh search prs fallback: Unknown JSON field". Until this fake learned
-  // gh's field lists it answered them, and this test passed. Expected: a listing
-  // with no error, and no call that cannot work.
+  // BUG-QA-26, fixed in #32: with two or more repositories Bazel asked `gh search
+  // prs --json` for fields only `gh pr list` has, so every listing failed, fell
+  // back to one `gh pr list` per repo and showed "⚠ : gh search prs fallback". A
+  // fake that took any field hid it: the fake now keeps gh's field lists.
   test('listing two repos fails nothing', async ({ app, bazel }) => {
-    knownBug('BUG-QA-26', 'gh search prs is asked for fields it does not have');
     await expect(ui.prCount(app)).toHaveText('5 PRs');
     expect((await bazel.api('GET', '/api/prs')).json.repo_errors).toEqual([]);
     await expect(ui.banner(app)).toBeHidden();

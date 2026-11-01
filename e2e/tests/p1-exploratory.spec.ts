@@ -219,8 +219,7 @@ test.describe('P1 · moving around', () => {
 });
 
 test.describe('P2 · layout holds', () => {
-  // One repo: with two, the banner of BUG-QA-26 takes height these do not measure.
-  test.use({ bazelOptions: { config: { agents: AGENTS, repos: ['acme/api-core'] } } });
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
   for (const [width, height] of [[1440, 900], [1000, 800], [800, 700], [1280, 420]]) {
     test(`no sideways scroll on the page at ${width}x${height}`, async ({ app }) => {
       await app.setViewportSize({ width, height });

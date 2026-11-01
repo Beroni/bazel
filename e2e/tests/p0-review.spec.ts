@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { expandFindings, tickByFilter, ui } from '../harness/ui';
 
 test.describe('P0 · review', () => {
@@ -96,11 +96,10 @@ test.describe('P0 · review', () => {
   });
 });
 
-// S6: the mark of a review was the head on the list, which the clone may be past.
+// S6, fixed in #32: the mark of a review was the head on the list, which the clone may be past.
 // Expected: the head reviewed is the clone's, and the log says it moved.
 test.describe('P0 · what was reviewed', () => {
   test('a PR that moved after the listing is reviewed at its new head, and the log says so', async ({ bazel }) => {
-    knownBug('S6', 'the review records the listed head, not the clone\'s');
     await bazel.api('GET', '/api/prs');
     bazel.movePR('acme/api-core#101');
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
@@ -109,13 +108,12 @@ test.describe('P0 · what was reviewed', () => {
     expect(lines.map((l: any) => l.text).join('\n')).toContain('the PR moved');
   });
 
-  // S2: in a clone of a fork, a bare `gh pr checkout N` resolves N in the parent,
+  // S2, fixed in #32: in a clone of a fork, a bare `gh pr checkout N` resolves N in the parent,
   // so the review ran on someone else's PR with the same number.
   test.describe('a fork', () => {
     test.use({ bazelOptions: { config: { repos: ['acme/api-core', 'acme/fork'] }, gh: { forks: { 'acme/fork': 'acme/api-core' } } } });
 
     test('is reviewed at its own PR, not at its parent\'s with that number', async ({ bazel }) => {
-      knownBug('S2', 'gh pr checkout resolves the number in the parent');
       bazel.addPR({ repo: 'acme/fork', number: 101, title: 'Work on the fork', headRefName: 'fork/work', author: { login: 'zoe' } });
       await bazel.api('GET', '/api/prs?refresh=1');
       const id = await bazel.enqueue('acme/fork#101', 'review-fleet');

@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { Page } from '@playwright/test';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { jobTab, openFilters, openJob } from '../harness/ui';
 
 // axe-core over the main screens: WCAG 2.x A/AA plus best practices.
@@ -19,18 +19,16 @@ async function violations(page: Page): Promise<string[]> {
 test.describe('P2 · accessibility', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
-  // BUG-QA-16: `#agent`, `#repo-filter` and `#owner-filter` are named only by
+  // BUG-QA-16, fixed in #32: `#agent`, `#repo-filter` and `#owner-filter` are named only by
   // `title` (serious); the dim text on the empty dashboard is 4.25:1 (serious,
   // AA asks 4.5); no page has an <h1>; the Config page has no <main>.
   // Expected: axe clean on these screens.
   test('the dashboard and its filters are clean', async ({ app }) => {
-    knownBug('BUG-QA-16', 'unnamed selects, contrast, landmarks');
     await openFilters(app);
     expect(await violations(app)).toEqual([]);
   });
 
   test('the config page is clean', async ({ app }) => {
-    knownBug('BUG-QA-16', 'unnamed selects, contrast, landmarks');
     await app.getByTestId('nav-config').click();
     await expect(app.getByTestId('repo-input')).toBeVisible();
     expect(await violations(app)).toEqual([]);

@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { FlakyProxy } from '../harness/flaky-proxy';
 import { ui } from '../harness/ui';
 
@@ -10,7 +10,7 @@ const AGENTS = [
 test.describe('P1 · the connection drops and comes back', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
-  // BUG-QA-09: the server stays up and the page's EventSource dies (the lid
+  // BUG-QA-09, fixed in #32: the server stays up and the page's EventSource dies (the lid
   // closes, the wifi blips). It reconnects by itself and `hello` carries the
   // same instance, so adoptInstance does nothing, and the events of the gap are
   // gone: nothing asks the server what happened meanwhile. A job that ended in
@@ -18,7 +18,6 @@ test.describe('P1 · the connection drops and comes back', () => {
   // job started in the gap never shows, until a reload. Expected: on
   // reconnecting the page reads the state again.
   test('a job that ended during the drop shows as done afterwards', async ({ page, bazel }) => {
-    knownBug('BUG-QA-09', 'nothing resyncs after the event stream reconnects');
     const proxy = new FlakyProxy(bazel.port);
     await proxy.start();
     bazel.extraOrigins.add(`http://127.0.0.1:${proxy.port}`);
@@ -48,7 +47,6 @@ test.describe('P1 · the connection drops and comes back', () => {
 
   // The same gap, with the list: a read that failed while down says so forever.
   test('a PR list that failed during the drop loads again', async ({ page, bazel }) => {
-    knownBug('BUG-QA-09', 'nothing resyncs after the event stream reconnects');
     const proxy = new FlakyProxy(bazel.port);
     await proxy.start();
     bazel.extraOrigins.add(`http://127.0.0.1:${proxy.port}`);
