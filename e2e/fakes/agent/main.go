@@ -1,0 +1,391 @@
+// Command fake-agent stands in for claude/codex/grok/pi in the e2e harness. It
+// reads the prompt on stdin like a real agent, records the call, and replays a
+// recorded scenario to stdout.
+//
+// Environment:
+//
+//	FAKE_AGENT_SCENARIOS  directories with the scenario files, ':'-separated
+//	FAKE_AGENT_SCENARIO   which one to play (file name, extension optional)
+//	FAKE_AGENT_STATE      writable directory: calls.jsonl and the release files
+//	FAKE_AGENT_GATE       optional: wait for FAKE_AGENT_STATE/<gate> before playing
+//
+// A scenario is replayed line by line. Lines are copied to stdout verbatim
+// (JSON events for claude-stream/codex-json/grok-stream, Markdown for plain),
+// except the directives, which start with "#!":
+//
+//	#!sleep <ms>         pause
+//	#!stderr <text>      write a line to stderr
+//	#!exit <code>        stop here with that exit code
+//	#!wait <name>        block until FAKE_AGENT_STATE/<name> exists (max 120s)
+//	#!block              block until killed (max 120s)
+//	#!repeat <n> <text>  print text n times; {i} becomes 1..n
+//	#!gh-review          publish the review file named in the prompt with gh
+//	#!sh <command>       run a shell command in the working directory
+//	#!# <comment>        ignored
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
+	"syscall"
+	"time"
+)
+
+var (
+	dir      = os.Getenv("FAKE_AGENT_SCENARIOS")
+	name     = os.Getenv("FAKE_AGENT_SCENARIO")
+	stateDir = os.Getenv("FAKE_AGENT_STATE")
+)
+
+func main() {
+	if dir == "" || name == "" || stateDir == "" {
+		fail(2, "fake-agent: FAKE_AGENT_SCENARIOS, FAKE_AGENT_SCENARIO and FAKE_AGENT_STATE must be set")
+	}
+	raw, _ := io.ReadAll(os.Stdin)
+	prompt := string(raw)
+	record(prompt)
+	if gate := os.Getenv("FAKE_AGENT_GATE"); gate != "" {
+		waitFor(filepath.Join(stateDir, gate))
+	}
+
+	path := scenarioPath()
+	f, err := os.Open(path)
+	if err != nil {
+		fail(2, "fake-agent: scenario: "+err.Error())
+	}
+	defer f.Close()
+
+	// Line by line with no limit: an event can be as long as a real one, and a
+	// scenario that cannot be read to its end must not pass as a short review.
+	r := bufio.NewReader(f)
+	for {
+		raw, err := r.ReadString('\n')
+		if err != nil && err != io.EOF {
+			fail(2, "fake-agent: reading the scenario: "+err.Error())
+		}
+		if raw == "" {
+			return
+		}
+		line := strings.TrimSuffix(strings.TrimSuffix(raw, "\n"), "\r")
+		if !strings.HasPrefix(line, "#!") {
+			fmt.Println(line)
+			continue
+		}
+		verb, arg, _ := strings.Cut(strings.TrimPrefix(line, "#!"), " ")
+		switch verb {
+		case "#":
+		case "sleep":
+			time.Sleep(time.Duration(number(line, arg)) * time.Millisecond)
+		case "stderr":
+			fmt.Fprintln(os.Stderr, arg)
+		case "exit":
+			os.Exit(number(line, arg))
+		case "wait":
+			waitFor(filepath.Join(stateDir, arg))
+		case "block":
+			time.Sleep(120 * time.Second)
+		case "repeat":
+			nStr, text, _ := strings.Cut(arg, " ")
+			n := number(line, nStr)
+			w := bufio.NewWriter(os.Stdout)
+			for i := 1; i <= n; i++ {
+				fmt.Fprintln(w, strings.ReplaceAll(text, "{i}", strconv.Itoa(i)))
+			}
+			w.Flush()
+		case "gh-review":
+			publish(prompt)
+		case "sh":
+			if out, err := exec.Command("/bin/sh", "-c", arg).CombinedOutput(); err != nil {
+				fail(6, "fake-agent: #!sh "+arg+": "+err.Error()+": "+string(out))
+			}
+		default:
+			fail(2, "fake-agent: unknown directive "+line)
+		}
+	}
+}
+
+// number reads a directive's count: a bad one must not turn into a 0, which for
+// #!exit would be a success.
+func number(line, arg string) int {
+	n, err := strconv.Atoi(arg)
+	if err != nil {
+		fail(2, "fake-agent: bad number in "+line)
+	}
+	return n
+}
+
+func scenarioPath() string {
+	for _, d := range filepath.SplitList(dir) {
+		for _, ext := range []string{"", ".jsonl", ".txt", ".md"} {
+			p := filepath.Join(d, name+ext)
+			if st, err := os.Stat(p); err == nil && !st.IsDir() {
+				return p
+			}
+		}
+	}
+	fail(2, "fake-agent: no scenario named "+name+" in "+dir)
+	return ""
+}
+
+func waitFor(path string) {
+	deadline := time.Now().Add(120 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	fail(3, "fake-agent: gave up waiting for "+path)
+}
+
+// record appends the call to calls.jsonl: what the agent was given (argv,
+// prompt, cwd), the confinement flags, the skills it could load, what the clone
+// looked like, and the GROK_* env Bazel set.
+//
+// `agent_config` is what is left of .claude, .codex, .grok and .mcp.json at the
+// root, `config_readable` what opens under the lower-case names a CLI uses, and
+// `config_anywhere` the same names at any depth and in any case.
+// `skills` are the ones a real Claude Code would load from Bazel: those of
+// --plugin-dir, or of <cwd>/.claude/skills on a base that still writes them in
+// the clone. `builtin_skill_source` says which of the two served
+// bazel-post-report, and `clone_skills` lists what is in the clone either way:
+// with a hostile PR that is the PR's own.
+func record(prompt string) {
+	cwd, _ := os.Getwd()
+	plugin := argValue("--plugin-dir")
+	cloneSkills := skillsIn(filepath.Join(cwd, ".claude", "skills"))
+	skills, source := skillsIn(filepath.Join(plugin, "skills")), "plugin"
+	if plugin == "" {
+		skills, source = cloneSkills, "clone"
+	}
+	if !slices.Contains(skills, "bazel-post-report") {
+		source = ""
+	}
+	pluginName := ""
+	if raw, err := os.ReadFile(filepath.Join(plugin, ".claude-plugin", "plugin.json")); plugin != "" && err == nil {
+		var manifest struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(raw, &manifest)
+		pluginName = manifest.Name
+	}
+	grok := map[string]string{}
+	for _, kv := range os.Environ() {
+		if k, v, _ := strings.Cut(kv, "="); strings.HasPrefix(k, "GROK_") {
+			grok[k] = v
+		}
+	}
+	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
+	gitStatus, _ := exec.Command("git", "status", "--porcelain").Output()
+	branch, _ := exec.Command("git", "branch", "--show-current").Output()
+	gitExclude, _ := os.ReadFile(filepath.Join(cwd, ".git", "info", "exclude"))
+	line, _ := json.Marshal(map[string]any{
+		"scenario":             name,
+		"pid":                  os.Getpid(),
+		"branch":               strings.TrimSpace(string(branch)),
+		"home":                 os.Getenv("HOME"),
+		"bazel_home":           os.Getenv("BAZEL_HOME"),
+		"git_dir":              os.Getenv("GIT_DIR"),
+		"git_work_tree":        os.Getenv("GIT_WORK_TREE"),
+		"argv":                 os.Args[1:],
+		"cwd":                  cwd,
+		"prompt":               prompt,
+		"builtin_skill":        source != "",
+		"builtin_skill_source": source,
+		"skills":               skills,
+		"clone_skills":         cloneSkills,
+		"plugin_dir":           plugin,
+		"plugin_name":          pluginName,
+		"setting_sources_user": argValue("--setting-sources") == "user",
+		"strict_mcp_config":    strictMCP(),
+		"agent_config":         agentConfig(cwd),
+		"config_readable":      readableConfig(cwd),
+		"config_anywhere":      configAnywhere(cwd),
+		"git_status":           string(gitStatus),
+		"git_exclude":          string(gitExclude),
+		"git_config":           gitConfig(cwd),
+		"grok_env":             grok,
+		"grok_home_config":     os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
+		"at":                   time.Now().UTC().Format(time.RFC3339Nano),
+	})
+	_ = os.MkdirAll(stateDir, 0o755)
+	f, err := os.OpenFile(filepath.Join(stateDir, "calls.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		fail(2, "fake-agent: cannot record call: "+err.Error())
+	}
+	defer f.Close()
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_EX)
+	f.Write(append(line, '\n'))
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+}
+
+// skillsIn lists the skills under dir: <dir>/<name>/SKILL.md.
+func skillsIn(dir string) []string {
+	out := []string{}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return out
+	}
+	for _, e := range entries {
+		if _, err := os.Stat(filepath.Join(dir, e.Name(), "SKILL.md")); err == nil {
+			out = append(out, e.Name())
+		}
+	}
+	return out
+}
+
+// configFiles are the paths a CLI opens, always spelled in lower case, as the
+// real ones do. On a case-insensitive disk (the default on macOS) a PR's
+// `.CLAUDE/settings.json` answers to `.claude/settings.json`.
+var configFiles = []string{
+	".claude/settings.json", ".mcp.json", ".codex/config.toml", ".grok/config.toml",
+	"sub/.claude/settings.json",
+}
+
+// readableConfig lists the configFiles the agent can actually open in dir.
+func readableConfig(dir string) []string {
+	out := []string{}
+	for _, rel := range configFiles {
+		if _, err := os.ReadFile(filepath.Join(dir, rel)); err == nil {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// configAnywhere walks dir for the agent config names at any depth, in any
+// case, so the answer does not depend on the disk the suite runs on.
+func configAnywhere(dir string) []string {
+	out := []string{}
+	_ = filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() && d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		for _, name := range []string{".claude", ".codex", ".grok", ".mcp.json"} {
+			if strings.EqualFold(d.Name(), name) {
+				rel, _ := filepath.Rel(dir, path)
+				out = append(out, rel)
+				if d.IsDir() {
+					return filepath.SkipDir
+				}
+			}
+		}
+		return nil
+	})
+	return out
+}
+
+// gitConfig is the value git itself reads in dir for the settings Bazel guards,
+// plus one a user could have set: env, config files and all.
+func gitConfig(dir string) map[string]string {
+	out := map[string]string{}
+	for _, key := range []string{"safe.bareRepository", "core.fsmonitor", "core.hooksPath", "e2e.user"} {
+		cmd := exec.Command("git", "config", "--get", key)
+		cmd.Dir = dir
+		if v, err := cmd.Output(); err == nil {
+			out[key] = strings.TrimSpace(string(v))
+		}
+	}
+	return out
+}
+
+// strictMCP says whether --strict-mcp-config came before any `--`.
+func strictMCP() bool {
+	args := os.Args[1:]
+	if end := slices.Index(args, "--"); end >= 0 {
+		args = args[:end]
+	}
+	return slices.Contains(args, "--strict-mcp-config")
+}
+
+// agentConfig lists what is left in dir of the paths that make an agent CLI
+// run something. Lstat: a dangling symlink is still the PR's file.
+func agentConfig(dir string) []string {
+	out := []string{}
+	for _, rel := range []string{".claude", ".codex", ".grok", ".mcp.json"} {
+		if _, err := os.Lstat(filepath.Join(dir, rel)); err == nil {
+			out = append(out, rel)
+		}
+	}
+	return out
+}
+
+// argValue reads a flag from argv, as `--flag value` or `--flag=value`. It
+// stops at `--`, like a real CLI: what comes after is text, not a flag.
+func argValue(flag string) string {
+	args := os.Args[1:]
+	if end := slices.Index(args, "--"); end >= 0 {
+		args = args[:end]
+	}
+	for i, a := range args {
+		if a == flag && i+1 < len(args) {
+			return args[i+1]
+		}
+		if v, ok := strings.CutPrefix(a, flag+"="); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+var (
+	reviewFileRe = regexp.MustCompile(`/bazel-post-report\s+(\S+)`)
+	repoRe       = regexp.MustCompile(`The repository ([\w.-]+/[\w.-]+) is cloned`)
+	numberRe     = regexp.MustCompile(`PR\s+#(\d+)`)
+)
+
+// publish is what the post skill does, minus the intelligence: it sends the
+// review file it was handed to the PR as one review, through gh. With the
+// fake gh on PATH that lands in the gh call log, which is what the tests read.
+// Like the skill's script, it leaves the outcome in the plugin folder: a Bazel
+// that reads it must not take a missing file for a publication.
+func publish(prompt string) {
+	file := reviewFileRe.FindStringSubmatch(prompt)
+	repo := repoRe.FindStringSubmatch(prompt)
+	number := numberRe.FindStringSubmatch(prompt)
+	if file == nil || repo == nil || number == nil {
+		fail(4, "fake-agent: #!gh-review needs the review file and the PR in the prompt")
+	}
+	body, err := os.ReadFile(file[1])
+	if err != nil {
+		fail(4, "fake-agent: reading the review: "+err.Error())
+	}
+	payload, _ := json.Marshal(map[string]any{"event": "COMMENT", "body": string(body)})
+	cmd := exec.Command("gh", "api", "--method", "POST",
+		fmt.Sprintf("repos/%s/pulls/%s/reviews", repo[1], number[1]), "--input", "-")
+	cmd.Stdin = strings.NewReader(string(payload))
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		outcome("failed", "Publishing failed: "+err.Error())
+		fail(5, "fake-agent: gh api failed: "+err.Error())
+	}
+	outcome("published", "Published.")
+}
+
+func outcome(status, message string) {
+	plugin := argValue("--plugin-dir")
+	if plugin == "" {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(plugin, "publish-outcome"), []byte(status+"\n"+message+"\n"), 0o644); err != nil {
+		fail(4, "fake-agent: writing the outcome: "+err.Error())
+	}
+}
+
+func fail(code int, msg string) {
+	fmt.Fprintln(os.Stderr, msg)
+	os.Exit(code)
+}

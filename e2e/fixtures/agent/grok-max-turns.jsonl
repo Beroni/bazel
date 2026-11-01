@@ -1,0 +1,4 @@
+{"type":"tool_call","toolCallId":"g1","toolName":"read_file","rawInput":{"command":"read_file a.go"}}
+{"type":"end","stopReason":"cancelled","usage":{"input_tokens":500,"output_tokens":20}}
+#!stderr Error: max turns reached (8)
+#!exit 1

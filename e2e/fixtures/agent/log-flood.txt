@@ -1,0 +1,2 @@
+#!# 650 stdout lines: more than the 500-line log window.
+#!repeat 650 E2E-LINE {i}

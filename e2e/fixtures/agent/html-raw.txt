@@ -1,0 +1,10 @@
+# Raw HTML review E2E-RAWHTML
+
+## Findings
+
+### H1 · major · Script in the text
+<!-- finding severity=minor path=a.go line=3 -->
+
+The PR adds <script>alert('E2E-XSS')</script> to the template.
+
+<div onclick="steal()">E2E-HTMLBLOCK</div>

@@ -1,0 +1,4 @@
+{"type":"thread.started","thread_id":"th_e2e"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"E2E-CODEX-TURNFAIL usage limit reached"}}
+#!exit 1
