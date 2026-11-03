@@ -187,6 +187,7 @@ func TestPipelineJobReportsEveryStep(t *testing.T) {
 func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
+	cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
 	semClone := false
 	cfg.PostAgent = config.AgentDef{
 		Name: "post-report",
@@ -1393,7 +1394,7 @@ func TestPipelineEsperaParaPublicar(t *testing.T) {
 	nao := false
 	cfg.Agents = []config.AgentDef{
 		{Name: "historia", Command: "echo", Args: []string{"a história do PR"}, Publishable: &nao},
-		{Name: "frota", Command: "echo", Args: []string{"o review da frota"}},
+		{Name: "frota", Command: "echo", Args: []string{"# Verdict: o review da frota"}},
 	}
 	cfg.Pipelines = []config.Pipeline{{Name: "ler antes", Steps: []string{"historia", "frota", "publish"}}}
 	choice, err := cfg.ChoiceByName("ler antes")
@@ -2808,9 +2809,9 @@ func TestSavedNaoPublicaOQueFica(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := agent.Result{Agent: "mix", PR: testPR(482), Steps: []agent.StepResult{
-		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "PUBLIC_REVIEW"},
+		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "# Verdict\n\nPUBLIC_REVIEW"},
 	}}
-	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\nPUBLIC_REVIEW"
+	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\n# Verdict\n\nPUBLIC_REVIEW"
 	path, err := store.Save(srv.reviewsDir, agent.Split(res, choice), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -3314,7 +3315,7 @@ func TestPostSemCardNaoDevolveViewVazia(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo '# Verdict: report'")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hub := NewHub()
@@ -3411,5 +3412,72 @@ func TestSaveEmConflitoResponde409(t *testing.T) {
 	}
 	if data, _ := os.ReadFile(path); !bytes.Equal(data, edited) {
 		t.Errorf("file: %s", data)
+	}
+}
+
+// A short report with no findings is a review all the same: it waits on you,
+// with a warning, and every door stays open.
+func TestReviewCurtoSoAvisa(t *testing.T) {
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agents = []config.AgentDef{{Name: "frota", Command: "echo", Args: []string{"No issues found."}}}
+	cfg.Pipelines = []config.Pipeline{{Name: "review and publish", Steps: []string{"frota", "publish"}}}
+	choice, err := cfg.ChoiceByName("review and publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	dir := t.TempDir()
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, choice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if !done.AwaitsPublish || !done.Short || done.Incomplete != "" {
+		t.Fatalf("job: awaits=%v short=%v incomplete=%q", done.AwaitsPublish, done.Short, done.Incomplete)
+	}
+	file, _ := os.ReadFile(done.SavedTo)
+	if !store.ShortOf(string(file)) || store.PendingOf(string(file)) != "" {
+		t.Errorf("saved header:\n%s", file)
+	}
+}
+
+// What the stream said never came is refused at every door, live and saved.
+func TestReviewPendenteNaoPublica(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	srv := newTestServer(t)
+	res := agent.Result{Agent: "lens", PR: testPR(482), Body: "The lenses are running.", Pending: "`lens` ended with 3 background agents still running"}
+	path, err := store.Save(srv.reviewsDir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := srv.jobs
+	poeJob(m, &Job{ID: "p1", State: StateDone, PR: testPR(482), Choice: srv.cfg.DefaultChoice(), Result: res, SavedTo: path, Incomplete: res.Pending})
+	if _, err := m.Post(context.Background(), "p1", nil); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("Post: %v", err)
+	}
+	if _, err := m.PublishWithAgent("p1", nil); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("PublishWithAgent: %v", err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/reviews/"+name, nil))
+	if !strings.Contains(w.Body.String(), `"incomplete":"`+"`lens`") {
+		t.Errorf("view: %.300s", w.Body)
+	}
+	for _, door := range []string{"comment", "publish"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/"+door, strings.NewReader(`{"skip":[]}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusConflict {
+			t.Errorf("%s: %d %s", door, w.Code, w.Body)
+		}
 	}
 }

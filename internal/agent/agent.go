@@ -82,6 +82,12 @@ type StepResult struct {
 	// Usage is how much model this step spent.
 	Usage Usage
 	Err   error
+	// Pending is why the step's own stream says its report never came: the
+	// process ended with work it had sent to the background still out.
+	Pending string
+	// Doubt is why the stream makes the report worth a second look, short of
+	// proving it incomplete.
+	Doubt string
 }
 
 // Result is the output of a review.
@@ -102,7 +108,15 @@ type Result struct {
 	Keeps   bool
 	// PublishSteps are the steps in Publish.
 	PublishSteps []StepResult
-	Steps        []StepResult
+	// Pending is why what would go to the PR is not a report, from the stream of
+	// the steps that publish. Nothing of such a review is published.
+	Pending string
+	// Short says what would go to the PR has no finding and no structure in any
+	// step: a hint for the one who sends it, not a block.
+	Short bool
+	// Doubt is the first publishing step's reason to read twice, from its stream.
+	Doubt string
+	Steps []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -322,7 +336,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				return Result{}, fmt.Errorf("telling the publishing skill its PR: %w", err)
 			}
 		}
-		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
+		out, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -353,14 +367,14 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			return Result{}, err
 		}
 		// Only a skill that ships here promises to print nothing before its report.
-		text, cut := strings.TrimSpace(body), ""
+		text, cut := strings.TrimSpace(out.Body), ""
 		if skills.IsBuiltin(skills.TaskSkill(step.Task)) {
 			if text, cut = dropPreamble(text); cut != "" {
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
 					Text: "· cut from before the report: " + strconv.Quote(cut)})
 			}
 		}
-		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err, Pending: out.Pending, Doubt: out.Doubt}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -940,6 +954,11 @@ func Split(res Result, choice config.Choice) Result {
 	return res
 }
 
+// PublishingSteps are the steps of res whose output may go to the PR.
+func PublishingSteps(res Result, choice config.Choice) []StepResult {
+	return stepsWhere(res, choice, true)
+}
+
 // ContextBody is the flip side of PublishableBody: the body of the steps that
 // stay in Bazel. It's what the screen shows separately, to make clear it
 // doesn't go to the PR.
@@ -1030,7 +1049,18 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
+// idleGrace is how long a process may linger once its stream said it is done.
+var idleGrace = 10 * time.Second
+
+// execOut is what a step's process left: its report and, when its own stream
+// said the report never came, why.
+type execOut struct {
+	Body    string
+	Pending string
+	Doubt   string
+}
+
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (execOut, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -1038,11 +1068,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 
 	if _, err := exec.LookPath(step.Command); err != nil {
-		return "", Usage{}, fmt.Errorf("agent `%s` not found in PATH", step.Command)
+		return execOut{}, Usage{}, fmt.Errorf("agent `%s` not found in PATH", step.Command)
 	}
 	adapter, err := newOutputAdapter(step.Format, step.Args)
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	// The done line prices the run with the same table the Runner settles on.
 	switch a := adapter.(type) {
@@ -1053,7 +1083,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	createdHome, err := isolateGrok(&step)
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	if createdHome != "" {
 		defer os.RemoveAll(createdHome)
@@ -1078,13 +1108,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// even if something it left behind still holds its output open.
 	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	defer stdout.Close()
 	stderr, stderrW, err := os.Pipe()
 	if err != nil {
 		stdoutW.Close()
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	defer stderr.Close()
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
@@ -1097,14 +1127,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if err != nil {
 		stdoutW.Close()
 		stderrW.Close()
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	cmd.Stdin = strings.NewReader(prompt + note)
 	err = cmd.Start()
 	stdoutW.Close()
 	stderrW.Close()
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
+		return execOut{}, Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
 
 	log := func(stream, who, text string) {
@@ -1117,12 +1147,60 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		errBuf lastLines
 	)
 
+	raw := openRawStream(step.Name)
+	defer raw.Close()
+
+	// A run whose stream says it is over does not get to keep the step: past a
+	// short grace with nothing more on stdout, its process goes. A wakeup the
+	// agent scheduled for half an hour later held a finished review "running".
+	ender, _ := adapter.(interface{ finished() bool })
+	var (
+		idleMu    sync.Mutex
+		idleTimer *time.Timer
+		idleGen   int
+		idleEnded bool
+	)
+	// Each line starts a new generation: a timer that already fired for an older
+	// one finds it stale and kills nothing.
+	settle := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		idleGen++
+		if idleTimer != nil {
+			idleTimer.Stop()
+			idleTimer = nil
+		}
+		if ender == nil || !ender.finished() {
+			return
+		}
+		gen := idleGen
+		idleTimer = time.AfterFunc(idleGrace, func() {
+			idleMu.Lock()
+			if gen != idleGen || !ender.finished() {
+				idleMu.Unlock()
+				return
+			}
+			idleEnded = true
+			idleMu.Unlock()
+			killProcessGroup(cmd)
+			_ = cmd.Process.Kill()
+		})
+	}
+	defer func() {
+		idleMu.Lock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		idleMu.Unlock()
+	}()
+
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		visto := 0
 		var cota time.Time
 		eachLine(stdout, func(line string) {
+			raw.write(line)
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
 			}
@@ -1136,6 +1214,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 				cota = limits.At
 				onLimits(limits)
 			}
+			settle()
 		})
 	}()
 	go func() {
@@ -1151,6 +1230,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// left it, and a background process could write to it. That also closes the
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
+	idleMu.Lock()
+	if idleEnded {
+		// Bazel ended it, after its stream said it was done.
+		err = nil
+		log("stdout", "", fmt.Sprintf("· the agent stayed alive %s after its report; Bazel ended it", idleGrace))
+	}
+	idleMu.Unlock()
 	killProcessGroup(cmd)
 	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()
@@ -1160,25 +1246,25 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	stray.Stop()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
+		return execOut{}, Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return "", Usage{}, context.Canceled
+		return execOut{}, Usage{}, context.Canceled
 	}
 	if err != nil {
 		if ae := adapter.err(); ae != nil && errBuf.String() == "" {
-			return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
+			return execOut{}, adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 		}
 		msg := errBuf.String()
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", adapter.usage(), agentFailure(step, msg)
+		return execOut{}, adapter.usage(), agentFailure(step, msg)
 	}
 	// A CLI can say in its stream that it failed and still exit 0: what it wrote
 	// until then is not a finished review.
 	if ae := adapter.err(); ae != nil {
-		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
+		return execOut{}, adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 	}
 	// With a pricing table configured, recompute the cost from the tokens and
 	// the model — that is what lets the cost change without rebuilding the
@@ -1187,7 +1273,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if m, ok := adapter.(interface{ models() []Usage }); ok {
 		byModel = m.models()
 	}
-	return adapter.report(), priced(adapter.usage(), byModel, r.PricingTable), nil
+	out := execOut{Body: adapter.report()}
+	if p, ok := adapter.(interface{ pending() string }); ok {
+		out.Pending = p.pending()
+	}
+	if d, ok := adapter.(interface{ doubtful() string }); ok {
+		out.Doubt = d.doubtful()
+	}
+	return out, priced(adapter.usage(), byModel, r.PricingTable), nil
 }
 
 func agentFailure(step config.ResolvedAgent, message string) error {

@@ -359,9 +359,13 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
   background: color-mix(in srgb, currentColor 15%, transparent); border: 1px solid transparent;
 }
 /* Ready is outlined in the accent, Running is filled, like the design. */
-.state-pill.done:not(.awaits) { color: var(--accent); background: transparent; border-color: var(--accent-line); }
+.state-pill.done:not(.awaits):not(.incomplete) { color: var(--accent); background: transparent; border-color: var(--accent-line); }
 .state-pill.running { color: var(--text); background: var(--accent-soft-2); }
 .state.awaits { color: var(--warn); }
+/* A review that came back without a report: an ending, but not a good one. */
+.card.incomplete .card-top .dot, .state.incomplete { color: var(--warn); }
+.card.incomplete .progress > span { background: var(--warn); }
+.state-pill.done.incomplete { color: var(--warn); border-color: currentColor; }
 
 .vtabs { display: flex; gap: 4px; padding: 10px 18px 0; border-bottom: 1px solid var(--line); }
 .vtab {

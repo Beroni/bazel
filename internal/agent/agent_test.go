@@ -2,9 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1086,18 +1089,48 @@ func TestErroTerminalComExitZero(t *testing.T) {
 	}
 }
 
-// The run's own final event settles the report: a sub-agent's result or a late
-// one from something still holding the pipe does not replace it.
-func TestPrimeiroResultadoVale(t *testing.T) {
+// A fleet that sends its lenses to the background ends a first turn saying so
+// and writes the report in a later one: the run's last result is the report. A
+// sub-agent's result, or one from another conversation, never takes its place,
+// wherever it comes.
+func TestUltimoResultadoDoProcessoVale(t *testing.T) {
+	report := "# Verdict\n\n## Findings\n\n### critical RCE\n\nDetails."
+	enc, _ := json.Marshal(report)
 	res, err := streamReview(t, "claude-stream",
-		`{"type":"result","subtype":"success","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
-		`{"type":"result","subtype":"success","result":"critical RCE"}`,
-		`{"type":"result","subtype":"success","result":"no findings"}`)
+		`{"type":"system","subtype":"init","session_id":"s1","tools":["Agent"]}`,
+		`{"type":"assistant","session_id":"s1","message":{"content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"exploit-digger","run_in_background":true}}]}}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"The three lenses are running in the background.","total_cost_usd":0.5,"usage":{"output_tokens":10}}`,
+		`{"type":"result","subtype":"success","session_id":"s1","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":`+string(enc)+`,"total_cost_usd":2.4,"usage":{"output_tokens":400}}`,
+		`{"type":"result","subtype":"success","session_id":"other","result":"STRAY"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","parent_tool_use_id":"t1","result":"LATE SUBAGENT"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Body != "critical RCE" {
+	if res.Body != report {
 		t.Errorf("body = %q", res.Body)
+	}
+	// No modelUsage: `usage` is per turn and adds up; total_cost_usd is the
+	// session's and the last one is the total.
+	if res.Usage.OutputTokens != 410 || res.Usage.CostUSD != 2.4 {
+		t.Errorf("spend: %+v", res.Usage)
+	}
+}
+
+// A first result that failed does not fail a run whose last one succeeded, and
+// the other way round.
+func TestUltimoResultadoDecideAFalha(t *testing.T) {
+	_, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"x"}`,
+		`{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`)
+	if err != nil {
+		t.Errorf("recovered run: %v", err)
+	}
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`,
+		`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"x"}`)
+	if err == nil && (len(res.Steps) != 1 || res.Steps[0].Err == nil) {
+		t.Errorf("failed last turn passed: %+v", res)
 	}
 }
 
@@ -1147,5 +1180,260 @@ func TestResultadoSemSubtypeNaoEFalha(t *testing.T) {
 		if (p.failure != nil) != failed {
 			t.Errorf("%s: %v", line, p.failure)
 		}
+	}
+}
+
+// modelUsage counts the session: the last one is the spend, not the sum.
+func TestUltimoModelUsageSubstitui(t *testing.T) {
+	mu := func(out int) string {
+		return fmt.Sprintf(`"modelUsage":{"claude-opus-5-5":{"inputTokens":1,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.1}}`, out)
+	}
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"running","total_cost_usd":0.5,`+mu(10)+`}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nok","total_cost_usd":2.4,`+mu(400)+`}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.OutputTokens != 400 || res.Usage.CostUSD != 2.4 {
+		t.Errorf("spend: %+v", res.Usage)
+	}
+}
+
+// Once the init named the run, a result with no session, or with no text, does
+// not replace the report.
+func TestResultSemSessaoOuVazioNaoSubstitui(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nREAL"}`,
+		`{"type":"result","subtype":"success","result":"NO SESSION"}`,
+		`{"type":"result","subtype":"success","session_id":"","result":"EMPTY SESSION"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREAL" {
+		t.Errorf("body = %q", res.Body)
+	}
+}
+
+// BAZEL_RAW_STREAM keeps the agent's stdout as it came, line for line.
+func TestRawStreamGuardaOStdout(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(RawStreamEnv, dir)
+	line := `{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`
+	if _, err := streamReview(t, "claude-stream", line); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*-lens.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("files: %v", files)
+	}
+	data, _ := os.ReadFile(files[0])
+	if string(data) != line+"\n" {
+		t.Errorf("raw: %q", data)
+	}
+	if info, _ := os.Stat(files[0]); info.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", info.Mode())
+	}
+}
+
+// backgroundRun is the shape of a real run that sends its lenses to the
+// background, with nothing of the real one: each lens that ends starts a turn of
+// its own, and the results of every turn come together at the end.
+func backgroundRun(finalTasks string) []string {
+	task := func(id string) string {
+		return `{"task_id":"` + id + `","task_type":"local_agent","subagent_type":"lens","description":"lens"}`
+	}
+	changed := func(ids ...string) string {
+		list := make([]string, len(ids))
+		for i, id := range ids {
+			list[i] = task(id)
+		}
+		return `{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[` + strings.Join(list, ",") + `]}`
+	}
+	done := func(id, tool string) []string {
+		return []string{
+			`{"type":"system","subtype":"task_updated","session_id":"s1","task_id":"` + id + `","patch":{"status":"completed"}}`,
+			`{"type":"system","subtype":"task_notification","session_id":"s1","task_id":"` + id + `","tool_use_id":"` + tool + `","status":"completed","summary":"{}"}`,
+		}
+	}
+	launch := func(tool string) []string {
+		return []string{
+			`{"type":"assistant","session_id":"s1","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"` + tool + `","name":"Agent","input":{"subagent_type":"lens","description":"lens"}}]}}`,
+			`{"type":"user","session_id":"s1","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"` + tool + `","content":[{"type":"text","text":"Async agent launched successfully."}]}]}}`,
+		}
+	}
+	result := func(text string) string {
+		enc, _ := json.Marshal(text)
+		return `{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":3.09,"result":` + string(enc) + `}`
+	}
+	ev := []string{`{"type":"system","subtype":"init","session_id":"s1"}`}
+	ev = append(ev, launch("t1")...)
+	ev = append(ev, changed("a"), `{"type":"system","subtype":"task_started","session_id":"s1","task_id":"a","tool_use_id":"t1","task_type":"local_agent"}`)
+	ev = append(ev, launch("t2")...)
+	ev = append(ev, changed("a", "b"))
+	ev = append(ev, launch("t3")...)
+	ev = append(ev, changed("a", "b", "c"))
+	ev = append(ev, done("c", "t3")...)
+	ev = append(ev, changed("a", "b"), `{"type":"system","subtype":"init","session_id":"s1"}`)
+	// A task a lens starts for itself is not the run's.
+	ev = append(ev, `{"type":"system","subtype":"task_started","session_id":"s1","task_id":"x","owned_by_subagent":true,"tool_use_id":"tx","task_type":"local_bash"}`)
+	ev = append(ev, done("a", "t1")...)
+	ev = append(ev, changed("b"), `{"type":"system","subtype":"init","session_id":"s1"}`)
+	if finalTasks == "" {
+		ev = append(ev, done("b", "t2")...)
+		ev = append(ev, changed(), `{"type":"system","subtype":"init","session_id":"s1"}`)
+		return append(ev, result("NARRATION the lenses are running"), result("NARRATION one done"),
+			result("NARRATION one to go"), result("# Verdict\n\nREPORT"))
+	}
+	return append(ev, result("NARRATION the lenses are running"), result("NARRATION one done"), result("NARRATION one to go"))
+}
+
+// The report is the result of the turn that began with nothing in the background.
+func TestLentesEmSegundoPlanoReportNoFim(t *testing.T) {
+	res, err := streamReview(t, "claude-stream", backgroundRun("")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" || len(res.Steps) != 1 || res.Steps[0].Pending != "" {
+		t.Errorf("body %q, steps %+v", res.Body, res.Steps)
+	}
+	if res.Usage.CostUSD != 3.09 {
+		t.Errorf("the session's cost, once: %+v", res.Usage)
+	}
+}
+
+// A run that ends with a lens still out, or whose last result is a turn that
+// began with lenses out, has no report: the step is pending.
+func TestLentesEmSegundoPlanoPendentes(t *testing.T) {
+	res, err := streamReview(t, "claude-stream", backgroundRun("b")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || !strings.Contains(res.Steps[0].Pending, "1 background agent") {
+		t.Errorf("steps %+v", res.Steps)
+	}
+	var p streamParser
+	for _, l := range []string{
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[{"task_id":"a"}]}`,
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"first"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"lenses still running"}`,
+	} {
+		p.line(l)
+	}
+	// The agent may have waited for the lens inside that turn: a doubt, not a block.
+	if p.pendingWork() != "" || !strings.Contains(p.doubt(), "began with") {
+		t.Errorf("pending %q doubt %q", p.pendingWork(), p.doubt())
+	}
+	var none streamParser
+	none.line(`{"type":"system","subtype":"init","session_id":"s1"}`)
+	none.line(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[{"task_id":"x","owned_by_subagent":true}]}`)
+	none.line(`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict"}`)
+	if none.pendingWork() != "" || !none.finished() {
+		t.Errorf("a lens's own task held the run: %q", none.pendingWork())
+	}
+}
+
+// lingering runs events through a CLI that stays alive after them.
+func lingering(t *testing.T, timeout int, events ...string) (Result, error, time.Duration) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = timeout
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream",
+		Args: []string{"-c", "cat >/dev/null\ncat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\nexec sleep 60\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	return res, err, time.Since(start)
+}
+
+// A process that stays alive after its report (a wakeup it scheduled) does not
+// hold the step: Bazel ends it after a short grace, and the review stands.
+func TestProcessoQueFicaDepoisDoReportEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 300 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	res, err, took := lingering(t, 30, backgroundRun("")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" || took > 10*time.Second {
+		t.Errorf("body %q after %v", res.Body, took)
+	}
+}
+
+// With a lens still out, the grace does not apply: the process keeps the step
+// until it ends on its own or the timeout does.
+func TestProcessoComLentePendenteNaoEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 300 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	_, err, took := lingering(t, 2, backgroundRun("b")...)
+	if err == nil || !strings.Contains(err.Error(), "timeout") || took < 2*time.Second {
+		t.Errorf("err %v after %v", err, took)
+	}
+}
+
+// Turns that started and never delivered their result: the stream is not over,
+// and if it ends like that, the report never came.
+func TestTurnoSemResultNaoTerminou(t *testing.T) {
+	var p streamParser
+	for _, l := range backgroundRun("")[:len(backgroundRun(""))-3] {
+		p.line(l)
+	}
+	if p.finished() {
+		t.Error("one result of four is not the end")
+	}
+	if !strings.Contains(p.pendingWork(), "3 of its 4 turns") {
+		t.Errorf("pending %q", p.pendingWork())
+	}
+}
+
+// A pause before the results still owed does not let the grace end the run: the
+// report comes after it.
+func TestPausaEntreResultsNaoEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 100 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	ev := backgroundRun("")
+	first := strings.Join(ev[:len(ev)-3], "\n")
+	rest := strings.Join(ev[len(ev)-3:], "\n")
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream",
+		Args: []string{"-c", "cat >/dev/null\ncat <<'A'\n" + first + "\nA\nsleep 1\ncat <<'B'\n" + rest + "\nB\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" {
+		t.Errorf("body %q", res.Body)
+	}
+}
+
+// usage is per turn even when an event brings modelUsage too: a later event with
+// only usage adds to the turns before it.
+func TestUsagePorTurnoNaTrocaDeContrato(t *testing.T) {
+	var p streamParser
+	p.line(`{"type":"system","subtype":"init","session_id":"s1"}`)
+	p.line(`{"type":"result","subtype":"success","session_id":"s1","result":"a","usage":{"output_tokens":10},"modelUsage":{"m":{"inputTokens":0,"outputTokens":10,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.1}}}`)
+	p.line(`{"type":"result","subtype":"success","session_id":"s1","result":"b","usage":{"output_tokens":400}}`)
+	if p.usage.OutputTokens != 410 {
+		t.Errorf("tokens %d", p.usage.OutputTokens)
 	}
 }

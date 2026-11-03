@@ -1259,6 +1259,15 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 	if split {
 		view["context_html"] = renderReview(stays)
 	}
+	if why := store.PendingOf(body); why != "" {
+		view["incomplete"] = why
+	}
+	if store.ShortOf(body) {
+		view["short"] = true
+	}
+	if why := store.DoubtOf(body); why != "" {
+		view["doubt"] = why
+	}
 	writeJSON(w, http.StatusOK, view)
 }
 
@@ -1295,6 +1304,9 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	agent := store.AgentOf(file)
 	if split && body == "" {
 		return savedReview{}, fmt.Errorf("no step of %q publishes to the PR", agent)
+	}
+	if why := store.PendingOf(file); why != "" {
+		return savedReview{}, refuse(http.StatusConflict, fmt.Errorf("the review came back incomplete: %s", why))
 	}
 	// A file from before the marker has no way to tell its steps apart, and the
 	// pipeline may no longer exist to ask.
@@ -1357,7 +1369,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 	}
 	sr, err := s.savedPR(r.Context(), r.PathValue("name"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	if s.refusePublish(w, sr) {
@@ -1381,7 +1393,7 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	}
 	sr, err := s.savedPR(r.Context(), r.PathValue("name"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
 	if s.refusePublish(w, sr) {

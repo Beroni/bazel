@@ -31,6 +31,8 @@ const state = {
   activePR: null,      // key of the PR open in the right-hand pane
   bodies: {},        // job id -> review html
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
+  savedShort: {},    // saved review name -> true when it is short with no findings
+  savedDoubt: {},    // saved review name -> why its stream makes it worth a second look
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
   skillFilter: '',   // the search over the installed skills
@@ -641,7 +643,7 @@ async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const skip = skipList(pickKey('job', id));
-  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}`)) return;
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}${doubtNote(job.doubt)}`)) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -702,7 +704,7 @@ async function postJob(id, btn) {
   const aviso = job.posts
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
-  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key))) return;
+  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key) + shortNote(job.short) + doubtNote(job.doubt))) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -753,6 +755,11 @@ async function openSaved(name) {
     v.append(head);
     const moved = entry && entry.repo ? reportChanged(`${entry.repo}#${entry.number}`) : null;
     if (moved) v.append(moved);
+    if (data.incomplete) v.append(incompleteNote(data.incomplete));
+    else if (data.short) v.append(shortBox());
+    if (!data.incomplete && data.doubt) v.append(doubtBox(data.doubt));
+    state.savedShort[name] = !!data.short;
+    state.savedDoubt[name] = data.doubt || '';
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
@@ -781,11 +788,64 @@ async function openSaved(name) {
       cm.title = `pastes this review as a single comment on ${entry.repo}#${entry.number}`;
       cm.addEventListener('click', () => commentSaved(name, cm));
       bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'), cm, pub);
+      if (data.incomplete) lockPublish(bar, data.incomplete);
       v.append(bar);
     }
     v.scrollTop = 0;
   } catch (err) {
     banner(err.message);
+  }
+}
+
+// incompleteNote says the review came back without a report, above the text the
+// agent did leave: there is nothing to pick and nothing to send.
+function incompleteNote(why) {
+  return tid(el('div', 'error-box', `The review came back incomplete: ${why}. Nothing of it can go to the PR; run it again.`), 'review-incomplete');
+}
+
+// shortBox and shortNote warn about a report with no finding and no structure.
+// It may be a whole review ("No issues found.") or an agent that stopped early:
+// only the one reading can tell, so it is said, not blocked.
+function shortBox() {
+  return tid(el('div', 'stale-box', 'This review is short and has no findings. Read it before it goes to the PR: the agent may have stopped early.'), 'review-short');
+}
+const shortNote = (short) => (short ? '\n\nThis review is short and has no findings.' : '');
+
+// doubtBox and doubtNote say the stream gives a reason to read the review twice:
+// its last turn began with background agents still out.
+function doubtBox(why) {
+  return tid(el('div', 'stale-box', `Read this one carefully: ${why}.`), 'review-doubt');
+}
+const doubtNote = (why) => (why ? `\n\nThe agent's stream says ${why}.` : '');
+
+// lockPublish turns off the ways to the PR of a review with no report, and says
+// why on each of them.
+function lockPublish(bar, why) {
+  for (const id of ['paste-comment', 'publish-inline', 'saved-comment', 'saved-publish']) {
+    const b = bar.querySelector(`[data-testid=${id}]`);
+    if (!b) continue;
+    b.disabled = true;
+    b.dataset.locked = 'incomplete';
+    b.title = why;
+  }
+}
+
+// runAgain queues the same agent over the same PR: what a review that came back
+// incomplete leaves to do.
+async function runAgain(job, btn) {
+  btn.disabled = true;
+  clearAlert();
+  try {
+    const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs: [job.pr.key], agent: job.agent }) });
+    (res.jobs || []).forEach(upsertJob);
+    if (res.errors && res.errors.length) banner(res.errors.join('\n'));
+    if (res.jobs && res.jobs.length) {
+      state.activeJob = res.jobs[0].id;
+      renderJobs();
+    }
+  } catch (err) {
+    alertError('Could not run it again: ' + err.message);
+    btn.disabled = false;
   }
 }
 
@@ -795,7 +855,7 @@ async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}`)) return;
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}${doubtNote(state.savedDoubt[name])}`)) return;
   btn.disabled = true;
   clearAlert();
   try {
@@ -818,7 +878,7 @@ async function commentSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo))) return;
+  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo) + shortNote(state.savedShort[name]) + doubtNote(state.savedDoubt[name]))) return;
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
@@ -1091,7 +1151,7 @@ function refreshPickSummary(s = document.querySelector('#viewer .pick-summary'))
   // With every finding out, only a verdict over an empty list would go.
   for (const id of ['paste-comment', 'publish-inline', 'saved-publish', 'saved-comment']) {
     const b = document.querySelector(`#viewer [data-testid=${id}]`);
-    if (!b) continue;
+    if (!b || b.dataset.locked) continue;
     b.disabled = total > 0 && !kept;
     if (b.disabled) b.title = 'every finding is unticked: there is nothing to publish';
   }
@@ -1876,7 +1936,7 @@ function setAttr(node, name, value) {
 
 // fillCard writes the job into its card, in place.
 function fillCard(card, job) {
-  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : '');
+  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : '') + (state.activeJob === job.id ? ' on' : '');
   if (card.className !== cls) card.className = cls;
   if (card.dataset.state !== job.state) card.dataset.state = job.state;
   if (card.dataset.prKey !== job.pr.key) card.dataset.prKey = job.pr.key;
@@ -1941,8 +2001,8 @@ function labelParts(job) {
     case 'queued': return ['queued', ''];
     case 'paused': return ['paused', ''];
     case 'running': return ['running', jobSeconds(job) + 's'];
-    case 'done': return waiting(job)
-      ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
+    case 'done': return job.incomplete ? ['incomplete', '']
+      : waiting(job) ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
     case 'failed': return ['failed', ''];
     case 'canceled': return ['canceled', ''];
     default: return [job.state, ''];
@@ -1960,6 +2020,7 @@ function fillState(span, job) {
   // Waiting for you to publish is only half an ending: the warning color is
   // what sets the card apart from reviews that ask for nothing more.
   if (waiting(job)) span.classList.add('awaits');
+  if (job.incomplete) span.classList.add('incomplete');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
   return span;
@@ -2069,7 +2130,7 @@ function renderViewer() {
 // pillText is the word in the detail's state pill, as the design writes it:
 // Running, Ready… The clock goes to its tooltip.
 function pillText(job) {
-  if (job.state === 'done') return waiting(job) ? 'Waiting on you' : 'Ready';
+  if (job.state === 'done') return job.incomplete ? 'Incomplete' : waiting(job) ? 'Waiting on you' : 'Ready';
   return { queued: 'Queued', running: 'Running', failed: 'Failed', canceled: 'Canceled', paused: 'Paused' }[job.state] || job.state;
 }
 
@@ -2086,7 +2147,7 @@ function jobHead(job) {
   heading.dir = 'auto';
   grow.append(kicker, heading);
   if (job.history && state.historyCustom) grow.append(historyCustomNote());
-  const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
+  const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : ''), pillText(job));
   pill.title = label(job);
   head.append(grow, pill);
   if (job.state === 'paused') {
@@ -2521,6 +2582,9 @@ function renderReportView(v, job) {
   }
   const moved = job.publishable === false ? null : reportChanged(job.pr.key);
   if (moved) v.append(moved);
+  if (job.incomplete) v.append(incompleteNote(job.incomplete));
+  else if (job.short) v.append(shortBox());
+  if (!job.incomplete && job.doubt) v.append(doubtBox(job.doubt));
   // It ended on a `publish`: the pipeline sent nothing, and this is where you
   // choose what goes. Saying so before the review is what makes you read it
   // as the one who decides, not as someone who only checks.
@@ -2570,6 +2634,12 @@ function renderReportView(v, job) {
     // PR on the right — a plain comment, and Publish with inline comments.
     const bar = el('div', 'viewer-actions');
     bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'));
+    if (job.incomplete) {
+      const again = tid(el('button', 'btn primary', '↻ Run again'), 'run-again');
+      again.title = `runs "${job.agent}" over ${job.pr.key} again`;
+      again.addEventListener('click', () => runAgain(job, again));
+      bar.append(again);
+    }
     if (waiting(job)) {
       const keep = tid(el('button', 'btn ghost', 'Keep it here'), 'keep-here');
       keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
@@ -2585,11 +2655,12 @@ function renderReportView(v, job) {
       bar.append(cm);
     }
     if (!job.posted) {
-      const pub = tid(el('button', 'btn primary', '↗ Publish'), 'publish-inline');
+      const pub = tid(el('button', job.incomplete ? 'btn ghost' : 'btn primary', '↗ Publish'), 'publish-inline');
       pub.title = 'runs the post skill and publishes to the PR with inline comments';
       pub.addEventListener('click', () => publishJob(job.id, pub));
       bar.append(pub);
     }
+    if (job.incomplete) lockPublish(bar, job.incomplete);
     actionBar = bar;
   }
   if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));

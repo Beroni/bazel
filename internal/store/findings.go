@@ -1,11 +1,14 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 
+	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/config"
 	"github.com/yuin/goldmark/ast"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/text"
@@ -167,6 +170,49 @@ func SplitFindings(body string) []Part {
 	}
 	flush()
 	return parts
+}
+
+// Assess reads the steps of res that publish, each on its own body: the headings
+// Bazel puts between steps say nothing of what an agent wrote. Pending is the
+// first such step whose stream says the report never came; Short is every one
+// of them with no finding and no structure. Save records both.
+func Assess(res agent.Result, choice config.Choice) agent.Result {
+	steps := agent.PublishingSteps(res, choice)
+	res.Pending, res.Short, res.Doubt = "", len(steps) > 0, ""
+	for _, s := range steps {
+		if s.Err != nil {
+			continue
+		}
+		if s.Pending != "" && res.Pending == "" {
+			res.Pending = fmt.Sprintf("`%s` %s", s.Name, s.Pending)
+		}
+		if s.Doubt != "" && res.Doubt == "" {
+			res.Doubt = fmt.Sprintf("`%s`: %s", s.Name, s.Doubt)
+		}
+		res.Short = res.Short && Short(s.Body)
+	}
+	return res
+}
+
+// maxShort is how long a report with no finding and no heading may be and still
+// count as short. It is a warning, never a block: "No issues found." is a
+// complete review.
+const maxShort = 1500
+
+// Short says body is a report with no finding and no structure: worth a second
+// look before it goes to the PR, since the agent may have stopped early.
+func Short(body string) bool {
+	text := strings.TrimSpace(body)
+	if text == "" || len(text) >= maxShort {
+		return text == ""
+	}
+	for _, p := range SplitFindings(text) {
+		if p.Finding {
+			return false
+		}
+	}
+	headings, _, _ := blockLines(text, strings.SplitAfter(text, "\n"))
+	return len(headings) == 0
 }
 
 // blockParser reads a report's blocks as the renderer does, so that both agree on
