@@ -47,6 +47,9 @@ var (
 	stateDir = os.Getenv("FAKE_AGENT_STATE")
 )
 
+// started is when Bazel spawned the agent; `at` is when its record is written.
+var started = time.Now()
+
 func main() {
 	if dir == "" || name == "" || stateDir == "" {
 		fail(2, "fake-agent: FAKE_AGENT_SCENARIOS, FAKE_AGENT_SCENARIO and FAKE_AGENT_STATE must be set")
@@ -216,6 +219,7 @@ func record(prompt string) {
 		"git_config":           gitConfig(cwd),
 		"grok_env":             grok,
 		"grok_home_config":     os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
+		"started_at":           started.UTC().Format(time.RFC3339Nano),
 		"at":                   time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(stateDir, 0o755)

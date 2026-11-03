@@ -10,7 +10,7 @@ test.describe('P0 · cancel', () => {
     const card = ui.jobCard(app, 'Dark mode toggle in settings');
     await expect(card).toBeVisible();
     // Running for real: the agent started and its first tool call reached the log.
-    await expect.poll(() => bazel.agentCalls().length).toBe(1);
+    await bazel.waitAgents(1);
     const id = (await bazel.api('GET', '/api/jobs')).json.jobs[0].id;
     await bazel.waitJob(id, (j) => j.state === 'running' && j.log_lines >= 2);
     const { pid } = bazel.agentCalls()[0];

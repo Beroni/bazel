@@ -22,7 +22,7 @@ test.describe('P1 · saved reviews', () => {
   test('two reviews of one PR finishing in the same second keep two files', async ({ bazel }) => {
     const a = await bazel.enqueue('acme/api-core#101', 'fleet-gated');
     const b = await bazel.enqueue('acme/api-core#101', 'plain-gated');
-    await expect.poll(() => bazel.agentCalls().length, { timeout: 25_000 }).toBe(2);
+    await bazel.waitAgents(2);
     // Release right after a second boundary so both land in the same second.
     while (Date.now() % 1000 > 100) await new Promise((r) => setTimeout(r, 5));
     bazel.release('release-gate');

@@ -217,7 +217,7 @@ test.describe('P1 · a history job is not a review', () => {
     await expect(activity).toContainText('is writing the history with');
     bazel.release('release-history');
     await bazel.waitJob(q.json.id, (j) => j.state === 'done');
-    await expect(activity).toContainText('wrote the history with', { timeout: 5_000 });
+    await expect(activity).toContainText('wrote the history with');
   });
 
   test('a running review does get the tag (the control for the test above)', async ({ app, bazel }) => {
