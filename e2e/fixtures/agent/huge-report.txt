@@ -1,0 +1,6 @@
+#!# A report with 3000 findings.
+# Huge E2E-HUGE
+
+## Findings
+
+#!repeat 3000 ### F{i} · minor · Finding number {i}

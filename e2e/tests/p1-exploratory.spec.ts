@@ -1,10 +1,8 @@
 import { Page } from '@playwright/test';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { SYNTH } from '../harness/paths';
 import { expandFindings, jobTab, openJob, ui } from '../harness/ui';
-import fs from 'node:fs';
-import path from 'node:path';
 
 // What the exploratory session on the new UI tried and found sound. Each of
 // these was a real doubt: they stay so that it stays sound.
@@ -14,7 +12,7 @@ const plain = (name: string, scenario: string, extra: Record<string, unknown> = 
 const AGENTS = [
   { name: 'review-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings' } },
   plain('order', 'order-report'), plain('hostile', 'hostile-report'), plain('history', 'history-plain', { publishable: false }),
-  plain('huge', 'x-huge'), plain('ticker', 'x-ticker'),
+  plain('huge', 'huge-report'), plain('ticker', 'ticker'),
 ];
 const MARKS = ['E2E-O-MINOR', 'E2E-O-CRIT', 'E2E-O-MAJOR', 'E2E-O-CUT', 'E2E-O-HUMAN'];
 const kept = (body: string) => MARKS.filter((m) => body.includes(m));
@@ -30,11 +28,6 @@ async function report(app: Page, bazel: Bazel, agent = 'order') {
   return { id, v };
 }
 
-test.beforeAll(() => {
-  fs.mkdirSync(SYNTH, { recursive: true });
-  fs.writeFileSync(path.join(SYNTH, 'x-huge.txt'), '# Huge E2E-HUGE\n\n## Findings\n\n#!repeat 3000 ### F{i} · minor · Finding number {i}\n');
-  fs.writeFileSync(path.join(SYNTH, 'x-ticker.txt'), `${Array.from({ length: 30 }, (_, i) => `#!repeat 20 tick ${i}-{i}\n#!sleep 80\n`).join('')}#!wait release-ticker\n# Done E2E-TICKER\n`);
-});
 
 test.describe('P1 · the tick on screen is the finding that stays out', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS, pipelines: [{ name: 'with-history', steps: ['history', 'order', 'publish'] }] } } });
@@ -128,7 +121,7 @@ test.describe('P2 · a lot of everything', () => {
   test('3000 findings open, tick and all/none in time a person would accept', async ({ app, bazel }) => {
     test.setTimeout(90_000);
     const { v } = await report(app, bazel, 'huge');
-    await expect(ui.findingPicks(v)).toHaveCount(3000, { timeout: 30_000 });
+    await expect(ui.findingPicks(v)).toHaveCount(3000, { timeout: BUDGET });
     await ui.findingPicks(v).nth(5).uncheck();
     await expect(app.getByTestId('pick-summary')).toContainText('2999 of 3000');
     await app.getByTestId('finding-pick-none').click();
@@ -157,7 +150,8 @@ test.describe('P1 · moving around', () => {
 
   test('a reload in the middle of a job finds it running, and its log goes on', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'ticker');
-    await bazel.waitJob(id, (j) => j.state === 'running');
+    // Running starts at the clone: wait for the agent's first line.
+    await bazel.waitJob(id, (j) => j.state === 'running' && j.log_lines > 0);
     await app.reload();
     await openJob(app, T);
     await jobTab(app, 'Live log');
