@@ -2,7 +2,7 @@ import { Page } from '@playwright/test';
 import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { expandFindings, jobTab, openJob, ui } from '../harness/ui';
+import { expandFindings, jobTab, openCard, openJob, ui } from '../harness/ui';
 
 // What the exploratory session on the new UI tried and found sound. Each of
 // these was a real doubt: they stay so that it stays sound.
@@ -102,7 +102,7 @@ test.describe('P1 · what a PR or an agent writes never runs in the page', () =>
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await expect(ui.prCount(app)).toHaveText('5 PRs');
-    await app.getByTestId('job-card').first().click();
+    await openCard(app, app.getByTestId('job-card').first());
     for (const tab of ['Report', 'Live log', 'History', 'Overview'] as const) await jobTab(app, tab);
     await jobTab(app, 'Report');
     await expandFindings(ui.viewer(app));

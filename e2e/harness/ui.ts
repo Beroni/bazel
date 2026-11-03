@@ -1,4 +1,5 @@
 import { expect, Locator, Page } from '@playwright/test';
+import { BUDGET } from './budget';
 
 /**
  * Every UI selector the tests use lives here, so a redesign changes one file.
@@ -121,13 +122,28 @@ export async function tickByFilter(page: Page, text: string): Promise<void> {
 
 /** Opens the newest job of a PR in the review pane: the queue lists newest first. */
 export async function openJob(page: Page, title: string): Promise<Locator> {
-  await ui.jobCard(page, title).first().click();
+  await openCard(page, ui.jobCard(page, title).first());
   return ui.viewer(page);
+}
+
+/**
+ * Clicks a job card until its detail is the one on screen. BUG-QA-28: while a
+ * job runs, the rail is rebuilt every second, and a click whose mousedown and
+ * mouseup straddle a rebuild is lost. The bug has its own test
+ * (p2-exploratory-bugs); here a lost click is clicked again, so that the tests
+ * that only need a job open do not fail on it. Drop the retry with the fix.
+ */
+export async function openCard(page: Page, card: Locator): Promise<void> {
+  const id = await card.getAttribute('data-job-id');
+  await expect(async () => {
+    if ((await ui.viewer(page).getAttribute('data-job-id')) !== id) await card.click();
+    await expect(ui.viewer(page)).toHaveAttribute('data-job-id', id!, { timeout: 2_000 });
+  }).toPass({ timeout: BUDGET });
 }
 
 /** Cancels a job: the button is in the header of its detail. */
 export async function cancelJob(page: Page, title: string): Promise<void> {
-  await ui.jobCard(page, title).first().click();
+  await openCard(page, ui.jobCard(page, title).first());
   await ui.cancelControl(page).click();
 }
 
