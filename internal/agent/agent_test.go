@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1212,5 +1214,26 @@ func TestResultSemSessaoOuVazioNaoSubstitui(t *testing.T) {
 	}
 	if res.Body != "# Verdict\n\nREAL" {
 		t.Errorf("body = %q", res.Body)
+	}
+}
+
+// BAZEL_RAW_STREAM keeps the agent's stdout as it came, line for line.
+func TestRawStreamGuardaOStdout(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(RawStreamEnv, dir)
+	line := `{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`
+	if _, err := streamReview(t, "claude-stream", line); err != nil {
+		t.Fatal(err)
+	}
+	files, _ := filepath.Glob(filepath.Join(dir, "*-lens.jsonl"))
+	if len(files) != 1 {
+		t.Fatalf("files: %v", files)
+	}
+	data, _ := os.ReadFile(files[0])
+	if string(data) != line+"\n" {
+		t.Errorf("raw: %q", data)
+	}
+	if info, _ := os.Stat(files[0]); info.Mode().Perm() != 0o600 {
+		t.Errorf("mode %v", info.Mode())
 	}
 }

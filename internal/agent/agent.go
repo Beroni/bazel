@@ -1138,12 +1138,16 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		errBuf lastLines
 	)
 
+	raw := openRawStream(step.Name)
+	defer raw.Close()
+
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		visto := 0
 		var cota time.Time
 		eachLine(stdout, func(line string) {
+			raw.write(line)
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
 			}

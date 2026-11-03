@@ -302,7 +302,9 @@ To keep the whole log, set `log_dir` in the config or start with `--log-dir
 <dir>`: every job then writes each line, as it arrives and without the window's
 limits, to `<job-id>-<pr>.log`, and the job's Live log and Overview say where.
 The lines are what the log shows, so with `claude-stream` they are the readable
-ones, not the raw events. It is off by default. At boot only the newest
+ones, not the raw events. To debug what a CLI really sends, start Bazel with
+`BAZEL_RAW_STREAM=<dir>`: each step's stdout goes, line for line, to a private
+file in that folder. It holds the PR's code and is never pruned. It is off by default. At boot only the newest
 `log_keep` files stay (200 by default); nothing else in that folder is touched.
 The files hold whatever the agent wrote, so they are readable by you alone. A
 folder that cannot be used turns this off with a line on the terminal.
