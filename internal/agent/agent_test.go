@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -1086,18 +1087,46 @@ func TestErroTerminalComExitZero(t *testing.T) {
 	}
 }
 
-// The run's own final event settles the report: a sub-agent's result or a late
-// one from something still holding the pipe does not replace it.
-func TestPrimeiroResultadoVale(t *testing.T) {
+// A fleet that sends its lenses to the background ends a first turn saying so
+// and writes the report in a later one: the run's last result is the report. A
+// sub-agent's result, or one from another conversation, never takes its place,
+// wherever it comes.
+func TestUltimoResultadoDoProcessoVale(t *testing.T) {
+	report := "# Verdict\n\n## Findings\n\n### critical RCE\n\nDetails."
+	enc, _ := json.Marshal(report)
 	res, err := streamReview(t, "claude-stream",
-		`{"type":"result","subtype":"success","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
-		`{"type":"result","subtype":"success","result":"critical RCE"}`,
-		`{"type":"result","subtype":"success","result":"no findings"}`)
+		`{"type":"system","subtype":"init","session_id":"s1","tools":["Agent"]}`,
+		`{"type":"assistant","session_id":"s1","message":{"content":[{"type":"tool_use","id":"t1","name":"Agent","input":{"subagent_type":"exploit-digger","run_in_background":true}}]}}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"The three lenses are running in the background.","total_cost_usd":0.5,"usage":{"output_tokens":10}}`,
+		`{"type":"result","subtype":"success","session_id":"s1","parent_tool_use_id":"t1","result":"SUBAGENT"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":`+string(enc)+`,"total_cost_usd":2.4,"usage":{"output_tokens":400}}`,
+		`{"type":"result","subtype":"success","session_id":"other","result":"STRAY"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","parent_tool_use_id":"t1","result":"LATE SUBAGENT"}`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Body != "critical RCE" {
+	if res.Body != report {
 		t.Errorf("body = %q", res.Body)
+	}
+	if res.Usage.OutputTokens != 400 {
+		t.Errorf("the last result counts the session, it is not added: %+v", res.Usage)
+	}
+}
+
+// A first result that failed does not fail a run whose last one succeeded, and
+// the other way round.
+func TestUltimoResultadoDecideAFalha(t *testing.T) {
+	_, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"error_during_execution","is_error":true,"result":"x"}`,
+		`{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`)
+	if err != nil {
+		t.Errorf("recovered run: %v", err)
+	}
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"result","subtype":"success","result":"# Verdict\n\nok"}`,
+		`{"type":"result","subtype":"error_max_turns","is_error":true,"result":"x"}`)
+	if err == nil && (len(res.Steps) != 1 || res.Steps[0].Err == nil) {
+		t.Errorf("failed last turn passed: %+v", res)
 	}
 }
 

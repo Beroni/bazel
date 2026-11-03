@@ -69,8 +69,11 @@ type streamEvent struct {
 	} `json:"rate_limit_info"`
 	// ParentToolUseID marks what ran inside a sub-agent.
 	ParentToolUseID *string `json:"parent_tool_use_id"`
-	Tools           []any   `json:"tools"`
-	Message         struct {
+	// SessionID is the conversation the event belongs to: the init event gives
+	// the run's own.
+	SessionID string `json:"session_id"`
+	Tools     []any  `json:"tools"`
+	Message   struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		// Usage is the spend of the call that produced this message. It's what
@@ -190,11 +193,15 @@ type logEntry struct {
 // streamParser reads the JSONL and keeps the agent's final text.
 type streamParser struct {
 	result string
-	// settled is set by the agent's own final event: nothing after it replaces
-	// the report. A process left behind can still hold the pipe, and a sub-agent's
-	// result is not the run's.
+	// settled is set by the run's own final event. The run may have more than
+	// one: an agent that sends its lenses to the background ends a first turn
+	// with "the lenses are running" and writes the report in a later one, so the
+	// last such event is the report. What decides it is who wrote the event, not
+	// the order: a sub-agent's result, or another conversation's, is not the run's.
 	settled bool
-	// failure is what that event said went wrong.
+	// session is the run's own conversation, from its init event.
+	session string
+	// failure is what the last of those events said went wrong.
 	failure error
 	// usage is the settled spend, from the final event. An agent that doesn't
 	// speak stream-json leaves this zeroed — there's nowhere to get it from.
@@ -254,30 +261,31 @@ func (p *streamParser) line(raw string) []logEntry {
 
 	case "system":
 		if ev.Subtype == "init" {
+			if p.session == "" {
+				p.session = ev.SessionID
+			}
 			return one(fmt.Sprintf("· session started · %d tools", len(ev.Tools)))
 		}
 		return nil
 
 	case "result":
-		if p.settled || ev.ParentToolUseID != nil && *ev.ParentToolUseID != "" {
+		if ev.ParentToolUseID != nil && *ev.ParentToolUseID != "" {
+			return nil
+		}
+		if p.session != "" && ev.SessionID != "" && ev.SessionID != p.session {
 			return nil
 		}
 		p.settled = true
 		p.result = ev.Result
+		p.failure = nil
 		took := time.Duration(ev.DurationMS) * time.Millisecond
 		// The spend counts even when the agent ends badly: the tokens were burned
-		// just the same.
+		// just the same. A later final event of the same conversation counts the
+		// whole session so far, so it replaces the earlier one instead of adding.
 		u, byModel := ev.spent()
-		p.usage.add(u)
-		// add sums tokens and cost, not the name: the closing model is the one from
-		// the first final event that brought it.
-		if p.usage.Model == "" {
-			p.usage.Model = u.Model
-		}
-		if byModel == nil {
-			p.unsplit = true
-		}
-		p.byModel = append(p.byModel, byModel...)
+		p.usage = u
+		p.unsplit = byModel == nil
+		p.byModel = byModel
 		if ev.IsError || (ev.Subtype != "" && ev.Subtype != "success") {
 			p.failure = fmt.Errorf("it ended with an error (%s)", ev.Subtype)
 			return one(fmt.Sprintf("✗ the agent ended with an error (%s)", ev.Subtype))
