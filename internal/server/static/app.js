@@ -1801,84 +1801,113 @@ function renderJobs() {
   document.title = active ? `(${active}) Bazel` : 'Bazel';
   if (state.tab !== 'queue') return;
 
+  // The rail updates every second while a job runs. The cards stay the same
+  // nodes and only what changed is written: a card recreated under the pointer
+  // loses the click whose press and release straddle the update (BUG-QA-28), and
+  // whoever is on a card with the keyboard keeps the focus.
   const rail = $('#rail');
-  const scroll = rail.scrollLeft;
-  // The rail is rebuilt every second while a job runs. Whoever is on a card
-  // (or its ✕) with the keyboard keeps their place: note it and put the focus
-  // back on the same element of the rebuilt card (review F2).
-  const focused = rail.contains(document.activeElement) ? document.activeElement : null;
-  const focusCard = focused && focused.closest('.card') ? focused.closest('.card').dataset.jobId : null;
-  const focusX = !!(focused && focused.classList.contains('card-x'));
-  rail.innerHTML = '';
-  // A card is a summary: which PR, what runs over it, how far it got. The
-  // actions (cancel, publish, comment, keep it here) live in the job's detail,
-  // next to what they act on.
+  // What another tab left in the rail is not a card.
+  for (const c of [...rail.children]) if (!c.matches('.card[data-job-id]')) c.remove();
+  const old = new Map([...rail.querySelectorAll(':scope > .card')].map((c) => [c.dataset.jobId, c]));
+  let at = rail.firstElementChild;
   for (const job of state.jobs) {
-    const card = el('div', 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : ''));
-    tid(card, 'job-card', { jobId: job.id, state: job.state, prKey: job.pr.key });
-    // A named group that takes the keyboard too: Enter or Space opens it, like a click.
-    card.setAttribute('role', 'group');
-    card.setAttribute('aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
-    card.tabIndex = 0;
-    card.addEventListener('click', () => openJob(job.id));
-    card.addEventListener('keydown', (e) => {
-      if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openJob(job.id); }
-    });
-
-    const top = el('div', 'card-top');
-    top.append(el('span', 'dot'), el('span', 'card-ref', `${cardRepo(job)} #${job.pr.number}`));
-    const sp = el('div', 'spacer');
-    const x = tid(el('button', 'card-x', '✕'), 'job-remove');
-    x.title = 'drop from the queue';
-    x.setAttribute('aria-label', 'drop from the queue');
-    x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
-    top.append(sp, x);
-    const title = el('div', 'title', job.pr.title);
-    title.dir = 'auto';
-    card.append(top, title);
-    const ran = ranOn(job);
-    if (ran) card.append(tid(el('div', 'card-ran', ran), 'job-ran'));
-
-    // The design's card is the dot, repo #n, ✕, the title and the bar. State,
-    // agent and spend go to the tooltip and to the detail; the state stays in
-    // the card as screen-reader text, so the card still says it out loud.
-    const meta = el('div', 'sr-only');
-    meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
-    if (job.agent) meta.append(el('span', null, ' · ' + job.agent));
-    if (job.posted) meta.append(tid(el('span', null, ' ✓ published'), 'job-published'));
-    const custo = gasto(job);
-    if (custo) meta.append(tid(el('span', 'tokens', ' · ' + custo), 'job-tokens', { partial: !!job.tokens_partial }));
-    card.title = [
-      `${job.pr.key} — ${job.pr.title}`,
-      label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
-      job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
-      custo,
-    ].filter(Boolean).join('\n');
-    card.append(meta, progressBar(job));
-    rail.append(card);
+    let card = old.get(job.id);
+    old.delete(job.id);
+    if (!card) card = newCard(job.id);
+    fillCard(card, job);
+    if (card !== at) rail.insertBefore(card, at);
+    else at = at.nextElementSibling;
   }
-  rail.scrollLeft = scroll;
-  if (focusCard) {
-    const card = [...rail.querySelectorAll('.card')].find((c) => c.dataset.jobId === focusCard);
-    const target = card && (focusX ? card.querySelector('.card-x') : card);
-    if (target) target.focus({ preventScroll: true });
-  }
+  for (const gone of old.values()) gone.remove();
 }
 
-// progressBar is the card's bar: the share of steps already finished, a moving
-// stripe while a lone step runs, and full once the job is over.
-function progressBar(job) {
+// newCard is a job's card with its controls, empty of the job: fillCard writes
+// that. A card is a summary: which PR, what runs over it, how far it got. The
+// actions (cancel, publish, comment, keep it here) live in the job's detail,
+// next to what they act on.
+function newCard(id) {
+  const card = el('div', 'card');
+  tid(card, 'job-card', { jobId: id });
+  // A named group that takes the keyboard too: Enter or Space opens it, like a click.
+  card.setAttribute('role', 'group');
+  card.tabIndex = 0;
+  card.addEventListener('click', () => openJob(id));
+  card.addEventListener('keydown', (e) => {
+    if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openJob(id); }
+  });
+  const top = el('div', 'card-top');
+  const x = tid(el('button', 'card-x', '✕'), 'job-remove');
+  x.title = 'drop from the queue';
+  x.setAttribute('aria-label', 'drop from the queue');
+  x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(id, x); });
+  top.append(el('span', 'dot'), el('span', 'card-ref'), el('div', 'spacer'), x);
+  const title = el('div', 'title');
+  title.dir = 'auto';
   const bar = el('div', 'progress');
-  const fill = el('span');
+  bar.append(el('span'));
+  card.append(top, title, el('div', 'sr-only'), bar);
+  return card;
+}
+
+// setText writes text only when it changed: a write is a mutation, and the rail
+// updates every second.
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function setAttr(node, name, value) {
+  if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
+// fillCard writes the job into its card, in place.
+function fillCard(card, job) {
+  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : '');
+  if (card.className !== cls) card.className = cls;
+  if (card.dataset.state !== job.state) card.dataset.state = job.state;
+  if (card.dataset.prKey !== job.pr.key) card.dataset.prKey = job.pr.key;
+  setAttr(card, 'aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
+  setText(card.querySelector('.card-ref'), `${cardRepo(job)} #${job.pr.number}`);
+  setText(card.querySelector(':scope > .title'), job.pr.title);
+  const ranText = ranOn(job) || '';
+  let ran = card.querySelector(':scope > .card-ran');
+  if (ranText && !ran) {
+    ran = tid(el('div', 'card-ran'), 'job-ran');
+    card.querySelector(':scope > .title').after(ran);
+  }
+  if (ran && !ranText) ran.remove();
+  if (ran && ranText) setText(ran, ranText);
+
+  // The design's card is the dot, repo #n, ✕, the title and the bar. State,
+  // agent and spend go to the tooltip and to the detail; the state stays in
+  // the card as screen-reader text, so the card still says it out loud.
+  const meta = el('div', 'sr-only');
+  meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
+  if (job.agent) meta.append(el('span', null, ' · ' + job.agent));
+  if (job.posted) meta.append(tid(el('span', null, ' ✓ published'), 'job-published'));
+  const custo = gasto(job);
+  if (custo) meta.append(tid(el('span', 'tokens', ' · ' + custo), 'job-tokens', { partial: !!job.tokens_partial }));
+  const oldMeta = card.querySelector(':scope > .sr-only');
+  if (oldMeta.innerHTML !== meta.innerHTML) oldMeta.replaceChildren(...meta.childNodes);
+  setAttr(card, 'title', [
+    `${job.pr.key} — ${job.pr.title}`,
+    label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
+    job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
+    custo,
+  ].filter(Boolean).join('\n'));
+  fillProgress(card.querySelector(':scope > .progress'), job);
+}
+
+// fillProgress writes the card's bar, in place: the share of steps already
+// finished, a moving stripe while a lone step runs, and full once the job is over.
+function fillProgress(bar, job) {
+  const fill = bar.firstElementChild;
   const steps = job.steps || [];
   const finished = steps.filter((s) => s.state === 'done' || s.state === 'failed').length;
   let pct = 0;
   if (job.state === 'done' || job.state === 'failed' || job.state === 'canceled') pct = 100;
   else if (job.state === 'running' && steps.length > 1) pct = Math.max(6, Math.round((100 * finished) / steps.length));
-  else if (job.state === 'running') bar.classList.add('indeterminate');
-  fill.style.width = pct + '%';
-  bar.append(fill);
-  return bar;
+  bar.classList.toggle('indeterminate', job.state === 'running' && steps.length <= 1);
+  if (fill.style.width !== pct + '%') fill.style.width = pct + '%';
 }
 
 // jobSeconds counts from started_at while the job runs, so the clock doesn't
