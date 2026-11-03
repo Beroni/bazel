@@ -433,3 +433,20 @@ func TestSplitFindingsRecusaCitacaoFunda(t *testing.T) {
 		t.Error("a ruler or a sentence is not nesting")
 	}
 }
+
+func TestIncompleteSeparaNarracaoDeReport(t *testing.T) {
+	for body, want := range map[string]bool{
+		"": true,
+		"As três lentes estão rodando em segundo plano. Escrevo o relatório assim que todas terminarem.": true,
+		"The lenses are running in the background.":                                                      true,
+		"# Verdict\n\nNothing to block.":                                                                 false,
+		"**Verdict:** approve, nothing found.":                                                           false,
+		"## Findings\n\n### SQL injection\n\nIn `db.go`.":                                                false,
+		"## Summary\n\nSmall PR.":                                                                        false,
+		strings.Repeat("Long prose with no headings at all. ", 60):                                       false,
+	} {
+		if got := Incomplete(body) != ""; got != want {
+			t.Errorf("%.50q: incomplete=%v", body, got)
+		}
+	}
+}

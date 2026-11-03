@@ -105,6 +105,9 @@ type jobView struct {
 	// AwaitsPublish marks the pipeline that ended in a `publish` step and
 	// waits for you to choose what goes to the PR.
 	AwaitsPublish bool `json:"awaits_publish,omitempty"`
+	// Incomplete is why the review has nothing to publish, when it came back
+	// without a report.
+	Incomplete string `json:"incomplete,omitempty"`
 	// History is a job writing the PR's history for the History tab.
 	History bool `json:"history,omitempty"`
 	// Publishing marks the job that is carrying an already-read review to the
@@ -153,6 +156,7 @@ type jobView struct {
 func (j *Job) view() jobView {
 	v := jobView{
 		Savable:     j.savable(),
+		Incomplete:  j.Incomplete,
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
 		Agent:       j.Choice.Name,

@@ -169,6 +169,37 @@ func SplitFindings(body string) []Part {
 	return parts
 }
 
+// maxNarration is how long a text with no finding and no verdict may be and
+// still be read as the agent talking, not reporting. Past it a person judges.
+const maxNarration = 1500
+
+// Incomplete says why body is not a report anyone can publish, or "" when it
+// is one. A report has findings, a heading of its own or a verdict; a short
+// text with none of them is the agent narrating ("the lenses are running in
+// the background"), and publishing it would put that sentence on the PR.
+func Incomplete(body string) string {
+	text := strings.TrimSpace(body)
+	if text == "" {
+		return "the agent ended without writing a report"
+	}
+	if len(text) >= maxNarration {
+		return ""
+	}
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "verdict") || strings.Contains(lower, "veredito") {
+		return ""
+	}
+	for _, p := range SplitFindings(text) {
+		if p.Finding {
+			return ""
+		}
+	}
+	if headings, _, _ := blockLines(text, strings.SplitAfter(text, "\n")); len(headings) > 0 {
+		return ""
+	}
+	return "the review came back incomplete: the agent's last message has no findings and no verdict, so there is nothing to publish"
+}
+
 // blockParser reads a report's blocks as the renderer does, so that both agree on
 // what is a heading. With no inline parsers: they are what takes quadratic time
 // on some text, and this runs over the whole report, however long.
