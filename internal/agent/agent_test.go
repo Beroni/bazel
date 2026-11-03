@@ -1437,3 +1437,41 @@ func TestUsagePorTurnoNaTrocaDeContrato(t *testing.T) {
 		t.Errorf("tokens %d", p.usage.OutputTokens)
 	}
 }
+
+// The grace's timer and the line that just arrived must not both read the
+// parser: a result arms the timer, a new turn begins, and while its log line is
+// still on its way the timer fires. Under -race this is the interleaving that
+// read the parser from two goroutines.
+func TestTimerNaoLeOParserDuranteUmaLinha(t *testing.T) {
+	old := idleGrace
+	idleGrace = 50 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	events1 := `{"type":"system","subtype":"init","session_id":"s1"}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s1","result":"FIRST"}` + "\n" +
+		`{"type":"system","subtype":"init","session_id":"s1"}`
+	events2 := `{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nSECOND"}`
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream",
+		Args: []string{"-c", "cat >/dev/null\ncat <<'A'\n" + events1 + "\nA\nsleep 0.25\ncat <<'B'\n" + events2 + "\nB\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inits := 0
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, func(e Event) {
+		if e.Kind == EventLog && strings.Contains(e.Text, "session started") {
+			if inits++; inits == 2 {
+				time.Sleep(100 * time.Millisecond) // the timer of FIRST fires in here
+			}
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nSECOND" {
+		t.Errorf("body %q", res.Body)
+	}
+}
