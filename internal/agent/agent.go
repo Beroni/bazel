@@ -1153,6 +1153,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// A run whose stream says it is over does not get to keep the step: past a
 	// short grace with nothing more on stdout, its process goes. A wakeup the
 	// agent scheduled for half an hour later held a finished review "running".
+	//
+	// The parser has one owner, the goroutine that reads stdout: it decides
+	// whether the stream is over and hands the timer only that answer. touch,
+	// before each line, makes any timer already armed stale, so one that fires
+	// while the line is being read kills nothing.
 	ender, _ := adapter.(interface{ finished() bool })
 	var (
 		idleMu    sync.Mutex
@@ -1160,9 +1165,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		idleGen   int
 		idleEnded bool
 	)
-	// Each line starts a new generation: a timer that already fired for an older
-	// one finds it stale and kills nothing.
-	settle := func() {
+	touch := func() {
 		idleMu.Lock()
 		defer idleMu.Unlock()
 		idleGen++
@@ -1170,18 +1173,18 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			idleTimer.Stop()
 			idleTimer = nil
 		}
-		if ender == nil || !ender.finished() {
-			return
-		}
+	}
+	arm := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
 		gen := idleGen
 		idleTimer = time.AfterFunc(idleGrace, func() {
 			idleMu.Lock()
-			if gen != idleGen || !ender.finished() {
-				idleMu.Unlock()
+			defer idleMu.Unlock()
+			if gen != idleGen {
 				return
 			}
 			idleEnded = true
-			idleMu.Unlock()
 			killProcessGroup(cmd)
 			_ = cmd.Process.Kill()
 		})
@@ -1200,6 +1203,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		visto := 0
 		var cota time.Time
 		eachLine(stdout, func(line string) {
+			touch()
 			raw.write(line)
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
@@ -1214,7 +1218,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 				cota = limits.At
 				onLimits(limits)
 			}
-			settle()
+			if ender != nil && ender.finished() {
+				arm()
+			}
 		})
 	}()
 	go func() {
