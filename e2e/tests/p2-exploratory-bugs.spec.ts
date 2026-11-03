@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 import { BUDGET } from '../harness/budget';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { jobTab, openJob, ui } from '../harness/ui';
 
@@ -164,6 +164,40 @@ test.describe('P2 · bugs', () => {
     await expect(ui.publishInline(v)).toHaveCount(0);
     expect(comments(bazel)).toHaveLength(1);
   });
+});
+
+// BUG-QA-28: while a job runs the rail of cards is rebuilt every second
+// (renderJobs: rail.innerHTML = ''), and a click whose mousedown lands on a card
+// and whose mouseup lands on its rebuilt copy is no click at all: the job does
+// not open. A person clicks in ~100ms, so about one click in ten on a card is
+// lost while anything runs. Expected: the click opens the job, whatever the rail
+// does in between (keep the nodes and update them, or open on pointerdown).
+test.describe('P2 · a card under a running job', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+
+  for (const rebuild of [false, true]) {
+    test(`a click opens the job${rebuild ? ', with the rail rebuilt in between' : ''}`, async ({ app, bazel }) => {
+      if (rebuild) knownBug('BUG-QA-28', 'a click across a rebuild of the rail is lost');
+      const done = await bazel.enqueue('acme/web-app#7', 'review-fleet');
+      await bazel.waitJob(done, (j) => j.state === 'done');
+      const running = await bazel.enqueue('acme/api-core#101', 'slow-lens');
+      await bazel.waitJob(running, (j) => j.state === 'running' && j.log_lines > 0);
+      await app.reload();
+      const card = ui.jobCard(app, 'Dark mode toggle in settings');
+      const box = (await card.boundingBox())!;
+      await app.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const rebuilt = () => app.evaluate(() => new Promise<void>((r) => {
+        const o = new MutationObserver(() => { o.disconnect(); r(); });
+        o.observe(document.querySelector('[data-testid=job-card]')!.parentElement!, { childList: true });
+      }));
+      await rebuilt(); // a second to the next rebuild: the press goes in between, or across it
+      await app.mouse.down();
+      if (rebuild) await rebuilt();
+      await app.mouse.up();
+      await expect(ui.viewer(app)).toHaveAttribute('data-job-id', done);
+      bazel.release('release-slow');
+    });
+  }
 });
 
 test.describe('P3 · pipeline builder', () => {
