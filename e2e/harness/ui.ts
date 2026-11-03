@@ -134,18 +134,13 @@ export async function openJob(page: Page, title: string): Promise<Locator> {
 }
 
 /**
- * Clicks a job card until its detail is the one on screen. BUG-QA-28: while a
- * job runs, the rail is rebuilt every second, and a click whose mousedown and
- * mouseup straddle a rebuild is lost. The bug has its own test
- * (p2-exploratory-bugs); here a lost click is clicked again, so that the tests
- * that only need a job open do not fail on it. Drop the retry with the fix.
+ * Clicks a job card and waits for its detail. The rail updates its cards in
+ * place (BUG-QA-28 fixed), so one click is enough.
  */
 export async function openCard(page: Page, card: Locator): Promise<void> {
   const id = await card.getAttribute('data-job-id');
-  await expect(async () => {
-    if ((await ui.viewer(page).getAttribute('data-job-id')) !== id) await card.click();
-    await expect(ui.viewer(page)).toHaveAttribute('data-job-id', id!, { timeout: 2_000 });
-  }).toPass({ timeout: BUDGET });
+  await card.click();
+  await expect(ui.viewer(page)).toHaveAttribute('data-job-id', id!);
 }
 
 /** Cancels a job: the button is in the header of its detail. */

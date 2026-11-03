@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 import { BUDGET } from '../harness/budget';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { jobTab, openJob, ui } from '../harness/ui';
 
@@ -177,7 +177,6 @@ test.describe('P2 · a card under a running job', () => {
 
   for (const rebuild of [false, true]) {
     test(`a click opens the job${rebuild ? ', with the rail rebuilt in between' : ''}`, async ({ app, bazel }) => {
-      if (rebuild) knownBug('BUG-QA-28', 'a click across a rebuild of the rail is lost');
       const done = await bazel.enqueue('acme/web-app#7', 'review-fleet');
       await bazel.waitJob(done, (j) => j.state === 'done');
       const running = await bazel.enqueue('acme/api-core#101', 'slow-lens');
