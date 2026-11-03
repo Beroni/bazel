@@ -1108,8 +1108,10 @@ func TestUltimoResultadoDoProcessoVale(t *testing.T) {
 	if res.Body != report {
 		t.Errorf("body = %q", res.Body)
 	}
-	if res.Usage.OutputTokens != 400 {
-		t.Errorf("the last result counts the session, it is not added: %+v", res.Usage)
+	// No modelUsage: `usage` is per turn and adds up; total_cost_usd is the
+	// session's and the last one is the total.
+	if res.Usage.OutputTokens != 410 || res.Usage.CostUSD != 2.4 {
+		t.Errorf("spend: %+v", res.Usage)
 	}
 }
 
@@ -1176,5 +1178,39 @@ func TestResultadoSemSubtypeNaoEFalha(t *testing.T) {
 		if (p.failure != nil) != failed {
 			t.Errorf("%s: %v", line, p.failure)
 		}
+	}
+}
+
+// modelUsage counts the session: the last one is the spend, not the sum.
+func TestUltimoModelUsageSubstitui(t *testing.T) {
+	mu := func(out int) string {
+		return fmt.Sprintf(`"modelUsage":{"claude-opus-5-5":{"inputTokens":1,"outputTokens":%d,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.1}}`, out)
+	}
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"running","total_cost_usd":0.5,`+mu(10)+`}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nok","total_cost_usd":2.4,`+mu(400)+`}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Usage.OutputTokens != 400 || res.Usage.CostUSD != 2.4 {
+		t.Errorf("spend: %+v", res.Usage)
+	}
+}
+
+// Once the init named the run, a result with no session, or with no text, does
+// not replace the report.
+func TestResultSemSessaoOuVazioNaoSubstitui(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nREAL"}`,
+		`{"type":"result","subtype":"success","result":"NO SESSION"}`,
+		`{"type":"result","subtype":"success","session_id":"","result":"EMPTY SESSION"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":""}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREAL" {
+		t.Errorf("body = %q", res.Body)
 	}
 }

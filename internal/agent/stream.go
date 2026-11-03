@@ -211,6 +211,9 @@ type streamParser struct {
 	// total, and whoever charges uses the total.
 	byModel []Usage
 	unsplit bool
+	// turns adds up the `usage` of each final event, for when that is all the
+	// events bring: it counts its own turn, not the session.
+	turns Usage
 	// live is the partial count, summed message by message while the agent
 	// works. It stays below the total: it only sees the main conversation, and
 	// the lenses that run as a sub-agent only come in at closing.
@@ -272,20 +275,31 @@ func (p *streamParser) line(raw string) []logEntry {
 		if ev.ParentToolUseID != nil && *ev.ParentToolUseID != "" {
 			return nil
 		}
-		if p.session != "" && ev.SessionID != "" && ev.SessionID != p.session {
+		// Once the run said who it is, only that conversation settles it: a
+		// result with no session, or another one, is not the run's.
+		if p.session != "" && ev.SessionID != p.session {
 			return nil
 		}
 		p.settled = true
-		p.result = ev.Result
+		// An empty result says nothing of the report: the last text stays.
+		if strings.TrimSpace(ev.Result) != "" {
+			p.result = ev.Result
+		}
 		p.failure = nil
 		took := time.Duration(ev.DurationMS) * time.Millisecond
 		// The spend counts even when the agent ends badly: the tokens were burned
-		// just the same. A later final event of the same conversation counts the
-		// whole session so far, so it replaces the earlier one instead of adding.
+		// just the same. modelUsage and total_cost_usd count the whole session so
+		// far, so a later final event replaces them; `usage` counts only its own
+		// turn, so with nothing else to go on the turns add up.
 		u, byModel := ev.spent()
-		p.usage = u
-		p.unsplit = byModel == nil
-		p.byModel = byModel
+		if byModel != nil {
+			p.usage, p.byModel, p.unsplit = u, byModel, false
+		} else {
+			p.turns.add(Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead})
+			p.usage = p.turns
+			p.usage.CostUSD, p.usage.Model = u.CostUSD, u.Model
+			p.byModel, p.unsplit = nil, true
+		}
 		if ev.IsError || (ev.Subtype != "" && ev.Subtype != "success") {
 			p.failure = fmt.Errorf("it ended with an error (%s)", ev.Subtype)
 			return one(fmt.Sprintf("✗ the agent ended with an error (%s)", ev.Subtype))
@@ -550,3 +564,8 @@ func truncateRunes(s string, n int) string {
 	}
 	return string(r[:n-1]) + "…"
 }
+
+// pendingWork is why the run's own stream says its report never came, or "".
+// TODO(capture): set from what the claude stream shows for work left in the
+// background when the process ends.
+func (p *streamParser) pendingWork() string { return "" }
