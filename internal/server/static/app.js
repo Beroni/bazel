@@ -1598,13 +1598,22 @@ function renderPRs() {
     // and ticking for review has a target of its own.
     row.addEventListener('click', () => openPR(pr.key));
 
-    // Two lines, as the design draws them: the title, then the repository and
-    // number with one state tag on the right — reviewing, changed or
-    // reviewed. Everything else about the PR (author, size, age, draft,
-    // approvals) is in the row's tooltip and in its Overview.
+    // Two lines, as the design draws them: the title, then the repository,
+    // number and author with one state tag on the right — reviewing, changed
+    // or reviewed. Short of room the author gives way first, then the
+    // repository; the tag never does. Everything else about the PR (size, age,
+    // draft, approvals) is in the row's tooltip and in its Overview.
     const main = el('div', 'pr-main');
     const sub = el('div', 'pr-sub');
-    sub.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
+    const meta = el('span', 'meta');
+    meta.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
+    if (pr.author) {
+      const who = tid(el('span', 'author' + (pr.mine ? ' mine' : ''), '@' + pr.author), 'pr-author', { mine: !!pr.mine });
+      who.dir = 'auto';
+      if (pr.mine) who.title = 'your PR';
+      meta.append(el('span', 'sep', ' · '), who);
+    }
+    sub.append(meta);
     const tag = prStateTag(pr);
     if (tag) sub.append(tag);
     // The title is the keyboard way in: the row's click opens the PR, and the

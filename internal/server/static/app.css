@@ -254,8 +254,15 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .pr .title { display: block; font-weight: 500; font-size: 13.5px; line-height: 1.35; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The title is the row's keyboard target; its box clips, so the ring goes inside. */
 .pr .title:focus-visible, .saved:focus-visible { outline-offset: -2px; border-radius: 4px; }
-.pr-sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
-.pr-sub .repo { color: var(--dim); font-size: 12px; white-space: nowrap; }
+.pr-sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; min-width: 0; }
+/* repo #n · @author: only the author gives way; the repository and number keep
+   their room, and the row clips them only past the narrowest sidebar. */
+.pr-sub .meta { display: flex; align-items: baseline; gap: 5px; min-width: 0; overflow: hidden; color: var(--dim); font-size: 12px; white-space: nowrap; }
+.pr-sub .repo { flex: none; }
+.pr-sub .author { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.pr-sub .sep { flex: none; opacity: .7; }
+/* Your own PR: the accent, quietly, as the old "you" tag did. */
+.pr-sub .author.mine { color: var(--accent); }
 .title { display: block; margin: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .add { color: var(--ok); }
 .del { color: var(--err); }
