@@ -43,35 +43,26 @@ test.describe('P0 · the report is the last result', () => {
     await expect(ui.publishInline(viewer)).toBeEnabled();
   });
 
-  test('only a status line: incomplete, nothing waits, nothing can be published', async ({ app, bazel }) => {
+  test('only a short line and no stream signal: a warning, and it can still go', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'narrate-and-publish');
     const job = await bazel.waitJob(id, (j) => j.state === 'done');
-    expect(job.incomplete).toContain('incomplete');
-    expect(job.awaits_publish ?? false).toBe(false);
+    expect(job.incomplete ?? '').toBe('');
+    expect(job.short).toBe(true);
+    expect(job.awaits_publish).toBe(true);
 
     await app.reload();
-    const card = ui.jobCard(app, TITLE);
-    await expect(card).toContainText(/incomplete/i);
     const viewer = await openJob(app, TITLE);
-    await expect(viewer.getByTestId('review-incomplete')).toBeVisible();
-    await expect(ui.viewer(app).getByText('E2E-NARRATION', { exact: false })).toBeVisible();
-    await expect(ui.keepHere(viewer)).toHaveCount(0);
-    for (const b of [ui.publishInline(viewer), viewer.getByTestId('paste-comment')]) {
-      await expect(b).toBeDisabled();
-      await expect(b).toHaveAttribute('title', /incomplete/);
-    }
-    await expect(viewer.getByTestId('run-again')).toBeEnabled();
-
-    // The API refuses too, and so does the saved copy.
-    expect((await bazel.api('POST', `/api/jobs/${id}/post`, { skip: [] })).status).toBe(409);
-    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] })).status).toBe(409);
-    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
-    expect((await bazel.api('POST', `/api/reviews/${saved.name}/comment`, { skip: [] })).status).toBe(409);
-    expect((await bazel.api('POST', `/api/reviews/${saved.name}/publish`, { skip: [] })).status).toBe(409);
+    await expect(viewer.getByTestId('review-short')).toBeVisible();
+    await expect(viewer.getByTestId('review-incomplete')).toHaveCount(0);
+    await expect(ui.publishInline(viewer)).toBeEnabled();
+    app.removeAllListeners('dialog');
+    let asked = '';
+    app.once('dialog', (d) => { asked = d.message(); void d.dismiss(); });
+    await ui.publishInline(viewer).click();
+    await expect.poll(() => asked).toContain('short and has no findings');
     expect(writes(bazel)).toEqual([]);
 
-    // Run again queues the same agent over the same PR.
-    await viewer.getByTestId('run-again').click();
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    expect((await bazel.api('GET', `/api/reviews/${saved.name}`)).json.short).toBe(true);
   });
 });

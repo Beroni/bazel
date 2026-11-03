@@ -75,6 +75,7 @@ func newOutputAdapter(format string, args []string) (outputAdapter, error) {
 
 type claudeAdapter struct{ streamParser }
 
-func (a *claudeAdapter) usage() Usage   { return a.spend() }
-func (a *claudeAdapter) limits() Limits { return a.streamParser.limits }
-func (a *claudeAdapter) err() error     { return a.failure }
+func (a *claudeAdapter) usage() Usage    { return a.spend() }
+func (a *claudeAdapter) limits() Limits  { return a.streamParser.limits }
+func (a *claudeAdapter) err() error      { return a.failure }
+func (a *claudeAdapter) pending() string { return a.streamParser.pendingWork() }

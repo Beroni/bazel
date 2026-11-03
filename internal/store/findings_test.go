@@ -1,6 +1,8 @@
 package store
 
 import (
+	"github.com/beroni/bazel/internal/agent"
+	"github.com/beroni/bazel/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -434,19 +436,47 @@ func TestSplitFindingsRecusaCitacaoFunda(t *testing.T) {
 	}
 }
 
-func TestIncompleteSeparaNarracaoDeReport(t *testing.T) {
+// Short is only a hint: a brief conclusion is short, and so is narration.
+func TestShortSoAvisa(t *testing.T) {
 	for body, want := range map[string]bool{
-		"": true,
-		"As três lentes estão rodando em segundo plano. Escrevo o relatório assim que todas terminarem.": true,
-		"The lenses are running in the background.":                                                      true,
-		"# Verdict\n\nNothing to block.":                                                                 false,
-		"**Verdict:** approve, nothing found.":                                                           false,
-		"## Findings\n\n### SQL injection\n\nIn `db.go`.":                                                false,
-		"## Summary\n\nSmall PR.":                                                                        false,
-		strings.Repeat("Long prose with no headings at all. ", 60):                                       false,
+		"":                       true,
+		"No issues found.":       true,
+		"**Parecer:** aprovado.": true,
+		"The lenses are running; the verdict comes next.":          true,
+		"# Verdict\n\nNothing to block.":                           false,
+		"## Findings\n\n### SQL injection\n\nIn `db.go`.":          false,
+		strings.Repeat("Long prose with no headings at all. ", 60): false,
 	} {
-		if got := Incomplete(body) != ""; got != want {
-			t.Errorf("%.50q: incomplete=%v", body, got)
+		if got := Short(body); got != want {
+			t.Errorf("%.50q: short=%v", body, got)
 		}
+	}
+}
+
+// Assess reads each step that publishes on its own: the `## step` headings of the
+// join do not make two narrations a report, and a step that stays in Bazel
+// decides nothing.
+func TestAssessPorPasso(t *testing.T) {
+	no := false
+	cfg := config.Default()
+	cfg.Agents = []config.AgentDef{{Name: "a", Task: "a"}, {Name: "b", Task: "b"}, {Name: "notes", Task: "n", Publishable: &no}}
+	cfg.Pipelines = []config.Pipeline{{Name: "p", Steps: []string{"notes", "a", "b"}}}
+	choice, err := cfg.ChoiceByName("p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := agent.Result{Steps: []agent.StepResult{
+		{Name: "notes", Body: "# Notes", Pending: "left work behind"},
+		{Name: "a", Body: "The lenses are running."},
+		{Name: "b", Body: "Still waiting for the lenses."},
+	}}
+	got := Assess(res, choice)
+	if !got.Short || got.Pending != "" {
+		t.Errorf("short=%v pending=%q", got.Short, got.Pending)
+	}
+	res.Steps[2] = agent.StepResult{Name: "b", Body: "# Verdict\n\nok", Pending: "ended with 1 background agent still running"}
+	got = Assess(res, choice)
+	if got.Short || !strings.Contains(got.Pending, "`b`") {
+		t.Errorf("short=%v pending=%q", got.Short, got.Pending)
 	}
 }

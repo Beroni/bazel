@@ -3415,12 +3415,12 @@ func TestSaveEmConflitoResponde409(t *testing.T) {
 	}
 }
 
-// A review step that ended on a status line has no report: the pipeline does not
-// wait on you with Publish on, and no door takes that sentence to the PR.
-func TestReviewIncompletoNaoPublica(t *testing.T) {
+// A short report with no findings is a review all the same: it waits on you,
+// with a warning, and every door stays open.
+func TestReviewCurtoSoAvisa(t *testing.T) {
 	cfg := cfgFor(t, "echo")
 	cfg.Agent.Prompt = "{{task}}"
-	cfg.Agents = []config.AgentDef{{Name: "frota", Command: "echo", Args: []string{"The three lenses are running in the background."}}}
+	cfg.Agents = []config.AgentDef{{Name: "frota", Command: "echo", Args: []string{"No issues found."}}}
 	cfg.Pipelines = []config.Pipeline{{Name: "review and publish", Steps: []string{"frota", "publish"}}}
 	choice, err := cfg.ChoiceByName("review and publish")
 	if err != nil {
@@ -3431,40 +3431,45 @@ func TestReviewIncompletoNaoPublica(t *testing.T) {
 	hub := NewHub()
 	ch := hub.Subscribe()
 	defer hub.Unsubscribe(ch)
-	m := NewManager(ctx, cfg, t.TempDir(), 1, false, hub)
+	dir := t.TempDir()
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
 	view, err := m.Enqueue(testPR(482), false, choice)
 	if err != nil {
 		t.Fatal(err)
 	}
 	done := waitFor(t, ch, view.ID, StateDone)
-	if done.AwaitsPublish || !strings.Contains(done.Incomplete, "incomplete") {
-		t.Fatalf("job: awaits=%v incomplete=%q", done.AwaitsPublish, done.Incomplete)
+	if !done.AwaitsPublish || !done.Short || done.Incomplete != "" {
+		t.Fatalf("job: awaits=%v short=%v incomplete=%q", done.AwaitsPublish, done.Short, done.Incomplete)
 	}
-	if _, err := m.Post(ctx, view.ID, nil); refusalStatus(err, 0) != http.StatusConflict {
-		t.Errorf("Post: %v", err)
-	}
-	if _, err := m.PublishWithAgent(view.ID, nil); refusalStatus(err, 0) != http.StatusConflict {
-		t.Errorf("PublishWithAgent: %v", err)
-	}
-	if _, err := m.Dismiss(view.ID); err == nil {
-		t.Error("nothing waits on you, so there is nothing to keep")
+	file, _ := os.ReadFile(done.SavedTo)
+	if !store.ShortOf(string(file)) || store.PendingOf(string(file)) != "" {
+		t.Errorf("saved header:\n%s", file)
 	}
 }
 
-// The saved file of such a review says so on screen, and both saved doors refuse.
-func TestSalvoIncompletoNaoPublica(t *testing.T) {
+// What the stream said never came is refused at every door, live and saved.
+func TestReviewPendenteNaoPublica(t *testing.T) {
 	t.Setenv("BAZEL_HOME", t.TempDir())
 	srv := newTestServer(t)
-	path, err := store.Save(srv.reviewsDir, agent.Result{Agent: "lens", PR: testPR(482), Body: "The lenses are running in the background."}, nil)
+	res := agent.Result{Agent: "lens", PR: testPR(482), Body: "The lenses are running.", Pending: "`lens` ended with 3 background agents still running"}
+	path, err := store.Save(srv.reviewsDir, res, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	m := srv.jobs
+	poeJob(m, &Job{ID: "p1", State: StateDone, PR: testPR(482), Choice: srv.cfg.DefaultChoice(), Result: res, SavedTo: path, Incomplete: res.Pending})
+	if _, err := m.Post(context.Background(), "p1", nil); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("Post: %v", err)
+	}
+	if _, err := m.PublishWithAgent("p1", nil); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("PublishWithAgent: %v", err)
 	}
 	name := filepath.Base(path)
 	h := srv.Handler()
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/reviews/"+name, nil))
-	if !strings.Contains(w.Body.String(), `"incomplete"`) {
-		t.Errorf("view: %s", w.Body)
+	if !strings.Contains(w.Body.String(), `"incomplete":"`+"`lens`") {
+		t.Errorf("view: %.300s", w.Body)
 	}
 	for _, door := range []string{"comment", "publish"} {
 		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/"+door, strings.NewReader(`{"skip":[]}`))

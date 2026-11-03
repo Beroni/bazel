@@ -140,7 +140,8 @@ type Job struct {
 	Posted  bool
 	PostErr string
 	// Incomplete says why what the review would publish is not a report: the
-	// agent ended on a status line instead. Nothing of it goes to the PR.
+	// stream of a step that publishes ended with work still in the background.
+	// Nothing of it goes to the PR.
 	Incomplete string
 	// AwaitsPublish is the pipeline that ended in a `publish` step: it does
 	// not publish on its own, it waits for you to choose what goes to the PR
@@ -587,6 +588,11 @@ func (m *Manager) run(q queued) {
 	// fresh is a review that just ran, as opposed to a publish. Captured
 	// before the in-place branch below clears job.publish.
 	fresh := job.publish == nil && !job.History
+	// What the steps that publish left: a report that never came, said by
+	// their own stream, or one that is short and has no findings.
+	if fresh && job.Choice.Publishable {
+		res = store.Assess(res, job.Choice)
+	}
 
 	// A publish report does not become a file: the review is already saved, and
 	// this job only records what went to the PR.
@@ -618,12 +624,7 @@ func (m *Manager) run(q queued) {
 	// already posted on its own, and at least one publishable step that
 	// produced a body. job.Choice does not change after Enqueue.
 	gated := fresh && res.StoppedAt >= 0
-	incomplete := ""
-	if fresh && job.Choice.Publishable {
-		if body, _, err := agent.PublishableBody(res, job.Choice); err == nil {
-			incomplete = store.Incomplete(body)
-		}
-	}
+	incomplete := res.Pending
 	awaits := false
 	if gated && saveErr == nil && job.Choice.Publishable && !job.Choice.Posts && incomplete == "" {
 		_, _, bodyErr := agent.PublishableBody(res, job.Choice)
@@ -1039,7 +1040,7 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 	}
 	if job.Incomplete != "" {
 		m.mu.Unlock()
-		return jobView{}, refuse(http.StatusConflict, errors.New(job.Incomplete))
+		return jobView{}, refuse(http.StatusConflict, fmt.Errorf("the review came back incomplete: %s", job.Incomplete))
 	}
 	choice := m.cfg.PostChoice()
 	if len(choice.Steps) == 0 {
@@ -1243,7 +1244,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 	}
 	if job.Incomplete != "" {
 		m.mu.Unlock()
-		return jobView{}, refuse(http.StatusConflict, errors.New(job.Incomplete))
+		return jobView{}, refuse(http.StatusConflict, fmt.Errorf("the review came back incomplete: %s", job.Incomplete))
 	}
 	res := job.Result
 	// Pasting as a comment is the same destination through another door: from
