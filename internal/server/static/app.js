@@ -1806,19 +1806,25 @@ function renderJobs() {
   // loses the click whose press and release straddle the update (BUG-QA-28), and
   // whoever is on a card with the keyboard keeps the focus.
   const rail = $('#rail');
-  // What another tab left in the rail is not a card.
-  for (const c of [...rail.children]) if (!c.matches('.card[data-job-id]')) c.remove();
-  const old = new Map([...rail.querySelectorAll(':scope > .card')].map((c) => [c.dataset.jobId, c]));
+  // The cards of jobs that left go first: with one still in place, every card
+  // after it would be moved, and a moved card drops the focus it held.
+  const live = new Set(state.jobs.map((j) => j.id));
+  const old = new Map();
+  for (const c of [...rail.children]) {
+    if (live.has(c.dataset.jobId)) old.set(c.dataset.jobId, c);
+    else c.remove();
+  }
+  const focused = rail.contains(document.activeElement) ? document.activeElement : null;
   let at = rail.firstElementChild;
   for (const job of state.jobs) {
     let card = old.get(job.id);
-    old.delete(job.id);
     if (!card) card = newCard(job.id);
     fillCard(card, job);
     if (card !== at) rail.insertBefore(card, at);
     else at = at.nextElementSibling;
   }
-  for (const gone of old.values()) gone.remove();
+  // A card that did move (the order changed) takes its focus along.
+  if (focused && document.activeElement !== focused && rail.contains(focused)) focused.focus({ preventScroll: true });
 }
 
 // newCard is a job's card with its controls, empty of the job: fillCard writes

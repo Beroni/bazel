@@ -47,4 +47,35 @@ test.describe('P1 · the rail updates in place', () => {
     await expect(card).toBeFocused();
     bazel.release('release-slow');
   });
+
+  test('dropping an earlier card moves no other, and the focus stays', async ({ app, bazel }) => {
+    // Newest first: the done review is drawn before the running one.
+    const running = await bazel.enqueue('acme/api-core#101', 'slow-lens');
+    await bazel.waitJob(running, (j) => j.state === 'running');
+    const done = await bazel.enqueue('acme/web-app#7', 'review-fleet');
+    await bazel.waitJob(done, (j) => j.state === 'done');
+    await app.reload();
+    const gone = app.locator(`[data-testid=job-card][data-job-id="${done}"]`);
+    const keep = app.locator(`[data-testid=job-card][data-job-id="${running}"]`);
+    await expect(gone).toBeVisible();
+    expect(await app.evaluate(([a, b]) => {
+      const cards = [...document.querySelectorAll('[data-testid=job-card]')].map((c) => (c as HTMLElement).dataset.jobId);
+      return cards.indexOf(a) < cards.indexOf(b);
+    }, [done, running])).toBe(true);
+    await keep.focus();
+    await app.evaluate(() => {
+      const rail = document.querySelector('[data-testid=job-card]')!.parentElement!;
+      const w = window as any;
+      w.__removed = [];
+      new MutationObserver((rs) => {
+        for (const r of rs) for (const n of r.removedNodes) w.__removed.push((n as HTMLElement).dataset?.jobId ?? '?');
+      }).observe(rail, { childList: true });
+    });
+    expect((await bazel.api('DELETE', `/api/jobs/${done}`)).status).toBeLessThan(300);
+    await expect(gone).toHaveCount(0);
+    await app.waitForTimeout(1500); // and a tick of the running job after it
+    expect(await app.evaluate(() => (window as any).__removed)).toEqual([done]);
+    await expect(keep).toBeFocused();
+    bazel.release('release-slow');
+  });
 });
