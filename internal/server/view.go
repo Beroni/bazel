@@ -111,6 +111,8 @@ type jobView struct {
 	// Short is a review with no finding and no structure in what goes to the
 	// PR: the page warns before it goes.
 	Short bool `json:"short,omitempty"`
+	// Doubt is why the stream makes the review worth a second look.
+	Doubt string `json:"doubt,omitempty"`
 	// History is a job writing the PR's history for the History tab.
 	History bool `json:"history,omitempty"`
 	// Publishing marks the job that is carrying an already-read review to the
@@ -161,6 +163,7 @@ func (j *Job) view() jobView {
 		Savable:     j.savable(),
 		Incomplete:  j.Incomplete,
 		Short:       j.Result.Short && j.publish == nil,
+		Doubt:       doubtOf(j),
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
 		Agent:       j.Choice.Name,
@@ -262,4 +265,11 @@ func (j *Job) stepViews() []stepView {
 		out = append(out, v)
 	}
 	return out
+}
+
+func doubtOf(j *Job) string {
+	if j.publish != nil || j.Incomplete != "" {
+		return ""
+	}
+	return j.Result.Doubt
 }

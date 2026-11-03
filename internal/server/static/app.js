@@ -32,6 +32,7 @@ const state = {
   bodies: {},        // job id -> review html
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
   savedShort: {},    // saved review name -> true when it is short with no findings
+  savedDoubt: {},    // saved review name -> why its stream makes it worth a second look
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
   skillFilter: '',   // the search over the installed skills
@@ -642,7 +643,7 @@ async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const skip = skipList(pickKey('job', id));
-  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}`)) return;
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}${doubtNote(job.doubt)}`)) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -703,7 +704,7 @@ async function postJob(id, btn) {
   const aviso = job.posts
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
-  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key) + shortNote(job.short))) return;
+  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key) + shortNote(job.short) + doubtNote(job.doubt))) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -756,7 +757,9 @@ async function openSaved(name) {
     if (moved) v.append(moved);
     if (data.incomplete) v.append(incompleteNote(data.incomplete));
     else if (data.short) v.append(shortBox());
+    if (!data.incomplete && data.doubt) v.append(doubtBox(data.doubt));
     state.savedShort[name] = !!data.short;
+    state.savedDoubt[name] = data.doubt || '';
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
@@ -808,6 +811,13 @@ function shortBox() {
 }
 const shortNote = (short) => (short ? '\n\nThis review is short and has no findings.' : '');
 
+// doubtBox and doubtNote say the stream gives a reason to read the review twice:
+// its last turn began with background agents still out.
+function doubtBox(why) {
+  return tid(el('div', 'stale-box', `Read this one carefully: ${why}.`), 'review-doubt');
+}
+const doubtNote = (why) => (why ? `\n\nThe agent's stream says ${why}.` : '');
+
 // lockPublish turns off the ways to the PR of a review with no report, and says
 // why on each of them.
 function lockPublish(bar, why) {
@@ -845,7 +855,7 @@ async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}`)) return;
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}${doubtNote(state.savedDoubt[name])}`)) return;
   btn.disabled = true;
   clearAlert();
   try {
@@ -868,7 +878,7 @@ async function commentSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo) + shortNote(state.savedShort[name]))) return;
+  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo) + shortNote(state.savedShort[name]) + doubtNote(state.savedDoubt[name]))) return;
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
@@ -2530,6 +2540,7 @@ function renderReportView(v, job) {
   if (moved) v.append(moved);
   if (job.incomplete) v.append(incompleteNote(job.incomplete));
   else if (job.short) v.append(shortBox());
+  if (!job.incomplete && job.doubt) v.append(doubtBox(job.doubt));
   // It ended on a `publish`: the pipeline sent nothing, and this is where you
   // choose what goes. Saying so before the review is what makes you read it
   // as the one who decides, not as someone who only checks.

@@ -1325,8 +1325,9 @@ func TestLentesEmSegundoPlanoPendentes(t *testing.T) {
 	} {
 		p.line(l)
 	}
-	if !strings.Contains(p.pendingWork(), "began with") || p.finished() {
-		t.Errorf("pending %q finished %v", p.pendingWork(), p.finished())
+	// The agent may have waited for the lens inside that turn: a doubt, not a block.
+	if p.pendingWork() != "" || !strings.Contains(p.doubt(), "began with") {
+		t.Errorf("pending %q doubt %q", p.pendingWork(), p.doubt())
 	}
 	var none streamParser
 	none.line(`{"type":"system","subtype":"init","session_id":"s1"}`)
@@ -1379,5 +1380,60 @@ func TestProcessoComLentePendenteNaoEncerra(t *testing.T) {
 	_, err, took := lingering(t, 2, backgroundRun("b")...)
 	if err == nil || !strings.Contains(err.Error(), "timeout") || took < 2*time.Second {
 		t.Errorf("err %v after %v", err, took)
+	}
+}
+
+// Turns that started and never delivered their result: the stream is not over,
+// and if it ends like that, the report never came.
+func TestTurnoSemResultNaoTerminou(t *testing.T) {
+	var p streamParser
+	for _, l := range backgroundRun("")[:len(backgroundRun(""))-3] {
+		p.line(l)
+	}
+	if p.finished() {
+		t.Error("one result of four is not the end")
+	}
+	if !strings.Contains(p.pendingWork(), "3 of its 4 turns") {
+		t.Errorf("pending %q", p.pendingWork())
+	}
+}
+
+// A pause before the results still owed does not let the grace end the run: the
+// report comes after it.
+func TestPausaEntreResultsNaoEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 100 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	ev := backgroundRun("")
+	first := strings.Join(ev[:len(ev)-3], "\n")
+	rest := strings.Join(ev[len(ev)-3:], "\n")
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream",
+		Args: []string{"-c", "cat >/dev/null\ncat <<'A'\n" + first + "\nA\nsleep 1\ncat <<'B'\n" + rest + "\nB\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" {
+		t.Errorf("body %q", res.Body)
+	}
+}
+
+// usage is per turn even when an event brings modelUsage too: a later event with
+// only usage adds to the turns before it.
+func TestUsagePorTurnoNaTrocaDeContrato(t *testing.T) {
+	var p streamParser
+	p.line(`{"type":"system","subtype":"init","session_id":"s1"}`)
+	p.line(`{"type":"result","subtype":"success","session_id":"s1","result":"a","usage":{"output_tokens":10},"modelUsage":{"m":{"inputTokens":0,"outputTokens":10,"cacheReadInputTokens":0,"cacheCreationInputTokens":0,"costUSD":0.1}}}`)
+	p.line(`{"type":"result","subtype":"success","session_id":"s1","result":"b","usage":{"output_tokens":400}}`)
+	if p.usage.OutputTokens != 410 {
+		t.Errorf("tokens %d", p.usage.OutputTokens)
 	}
 }

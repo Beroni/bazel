@@ -282,6 +282,8 @@ func (p *streamParser) line(raw string) []logEntry {
 
 	case "system":
 		if ev.Subtype == "background_tasks_changed" && (p.session == "" || ev.SessionID == p.session) {
+			// The list holds the run's own tasks; owned_by_subagent comes in
+			// task_started, so this filter only guards a list that ever carries it.
 			p.background = 0
 			for _, t := range ev.Tasks {
 				if !t.OwnedBySubagent {
@@ -324,10 +326,12 @@ func (p *streamParser) line(raw string) []logEntry {
 		// far, so a later final event replaces them; `usage` counts only its own
 		// turn, so with nothing else to go on the turns add up.
 		u, byModel := ev.spent()
+		// usage is this turn's, whatever else the event brings: kept for a later
+		// event that has nothing but it.
+		p.turns.add(Usage{InputTokens: ev.Usage.InputTokens, OutputTokens: ev.Usage.OutputTokens, CacheWrite: ev.Usage.CacheWrite, CacheRead: ev.Usage.CacheRead})
 		if byModel != nil {
 			p.usage, p.byModel, p.unsplit = u, byModel, false
 		} else {
-			p.turns.add(Usage{InputTokens: u.InputTokens, OutputTokens: u.OutputTokens, CacheWrite: u.CacheWrite, CacheRead: u.CacheRead})
 			p.usage = p.turns
 			p.usage.CostUSD, p.usage.Model = u.CostUSD, u.Model
 			p.byModel, p.unsplit = nil, true
@@ -597,9 +601,9 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// pendingWork is why the run's own stream says its report never came, or "".
-// Only a run that sent work to the background can say so: either some of it is
-// still out, or the last result belongs to a turn that began while it was.
+// pendingWork is why the run's own stream proves its report never came, or "".
+// Only a run that sent work to the background can say so: some of it is still
+// out at the end, or a turn it started never delivered its result.
 func (p *streamParser) pendingWork() string {
 	switch {
 	case !p.backgrounded:
@@ -608,15 +612,27 @@ func (p *streamParser) pendingWork() string {
 		return "ended with 1 background agent still running"
 	case p.background > 1:
 		return fmt.Sprintf("ended with %d background agents still running", p.background)
-	case p.results > 0 && p.results == len(p.turnsBusy) && p.turnsBusy[p.results-1]:
-		return "ended on a turn that began with its background agents still running"
+	case p.results < len(p.turnsBusy):
+		return fmt.Sprintf("ended with %d of its %d turns still owing a result", len(p.turnsBusy)-p.results, len(p.turnsBusy))
 	}
 	return ""
 }
 
-// finished says the run's stream is over: a final event arrived, nothing it sent
-// to the background is still out, and that event is the report. What the process
-// does after that (a wakeup it scheduled, for one) is not part of the review.
+// doubt is what makes the report worth a second look without proving it
+// incomplete: the last result is of a turn that began with work in the
+// background. The agent may have waited for it inside that turn, or not.
+func (p *streamParser) doubt() string {
+	if p.backgrounded && p.background == 0 && p.results > 0 && p.results == len(p.turnsBusy) && p.turnsBusy[p.results-1] {
+		return "its last turn began with background agents still running, so the report may not include them"
+	}
+	return ""
+}
+
+// finished says the run's stream is over: every turn it started delivered its
+// result, nothing it sent to the background is still out. The results of a run
+// that backgrounds its lenses come together at the end, so one result is not
+// enough. What the process does after that (a wakeup it scheduled, for one) is
+// not part of the review.
 func (p *streamParser) finished() bool {
-	return p.settled && p.background == 0 && p.pendingWork() == ""
+	return p.settled && p.background == 0 && p.results >= len(p.turnsBusy)
 }

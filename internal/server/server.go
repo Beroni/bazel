@@ -1265,6 +1265,9 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 	if store.ShortOf(body) {
 		view["short"] = true
 	}
+	if why := store.DoubtOf(body); why != "" {
+		view["doubt"] = why
+	}
 	writeJSON(w, http.StatusOK, view)
 }
 

@@ -178,13 +178,16 @@ func SplitFindings(body string) []Part {
 // of them with no finding and no structure. Save records both.
 func Assess(res agent.Result, choice config.Choice) agent.Result {
 	steps := agent.PublishingSteps(res, choice)
-	res.Pending, res.Short = "", len(steps) > 0
+	res.Pending, res.Short, res.Doubt = "", len(steps) > 0, ""
 	for _, s := range steps {
 		if s.Err != nil {
 			continue
 		}
 		if s.Pending != "" && res.Pending == "" {
 			res.Pending = fmt.Sprintf("`%s` %s", s.Name, s.Pending)
+		}
+		if s.Doubt != "" && res.Doubt == "" {
+			res.Doubt = fmt.Sprintf("`%s`: %s", s.Name, s.Doubt)
 		}
 		res.Short = res.Short && Short(s.Body)
 	}

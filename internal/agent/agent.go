@@ -85,6 +85,9 @@ type StepResult struct {
 	// Pending is why the step's own stream says its report never came: the
 	// process ended with work it had sent to the background still out.
 	Pending string
+	// Doubt is why the stream makes the report worth a second look, short of
+	// proving it incomplete.
+	Doubt string
 }
 
 // Result is the output of a review.
@@ -111,6 +114,8 @@ type Result struct {
 	// Short says what would go to the PR has no finding and no structure in any
 	// step: a hint for the one who sends it, not a block.
 	Short bool
+	// Doubt is the first publishing step's reason to read twice, from its stream.
+	Doubt string
 	Steps []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
@@ -369,7 +374,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 					Text: "· cut from before the report: " + strconv.Quote(cut)})
 			}
 		}
-		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err, Pending: out.Pending}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err, Pending: out.Pending, Doubt: out.Doubt}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -1052,6 +1057,7 @@ var idleGrace = 10 * time.Second
 type execOut struct {
 	Body    string
 	Pending string
+	Doubt   string
 }
 
 func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (execOut, Usage, error) {
@@ -1151,11 +1157,15 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	var (
 		idleMu    sync.Mutex
 		idleTimer *time.Timer
+		idleGen   int
 		idleEnded bool
 	)
+	// Each line starts a new generation: a timer that already fired for an older
+	// one finds it stale and kills nothing.
 	settle := func() {
 		idleMu.Lock()
 		defer idleMu.Unlock()
+		idleGen++
 		if idleTimer != nil {
 			idleTimer.Stop()
 			idleTimer = nil
@@ -1163,8 +1173,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		if ender == nil || !ender.finished() {
 			return
 		}
+		gen := idleGen
 		idleTimer = time.AfterFunc(idleGrace, func() {
 			idleMu.Lock()
+			if gen != idleGen || !ender.finished() {
+				idleMu.Unlock()
+				return
+			}
 			idleEnded = true
 			idleMu.Unlock()
 			killProcessGroup(cmd)
@@ -1261,6 +1276,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	out := execOut{Body: adapter.report()}
 	if p, ok := adapter.(interface{ pending() string }); ok {
 		out.Pending = p.pending()
+	}
+	if d, ok := adapter.(interface{ doubtful() string }); ok {
+		out.Doubt = d.doubtful()
 	}
 	return out, priced(adapter.usage(), byModel, r.PricingTable), nil
 }

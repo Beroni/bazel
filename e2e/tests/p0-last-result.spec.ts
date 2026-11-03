@@ -13,11 +13,13 @@ const TITLE = 'Add rate limiter to the public API';
 const AGENTS = [
   { name: 'background-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background' } },
   { name: 'narrating-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-narration' } },
+  { name: 'doubtful-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background-doubt' } },
   { name: 'unfinished-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background-pending' } },
 ];
 const PIPELINES = [
   { name: 'review-and-publish', steps: ['background-fleet', 'publish'] },
   { name: 'narrate-and-publish', steps: ['narrating-fleet', 'publish'] },
+  { name: 'doubt-and-publish', steps: ['doubtful-fleet', 'publish'] },
   { name: 'unfinished-and-publish', steps: ['unfinished-fleet', 'publish'] },
 ];
 
@@ -91,5 +93,26 @@ test.describe('P0 · the report is the last result', () => {
     expect(writes(bazel)).toEqual([]);
     await viewer.getByTestId('run-again').click();
     await expect.poll(() => bazel.agentCalls().length).toBe(2);
+  });
+
+  test('the last turn began with a lens out: a warning, and it can still go', async ({ app, bazel }) => {
+    const id = await bazel.enqueue('acme/api-core#101', 'doubt-and-publish');
+    const job = await bazel.waitJob(id, (j) => j.state === 'done');
+    expect(job.body).toContain('E2E-DOUBT-REPORT');
+    expect(job.incomplete ?? '').toBe('');
+    expect(job.doubt).toContain('background');
+    expect(job.awaits_publish).toBe(true);
+    await app.reload();
+    const viewer = await openJob(app, TITLE);
+    await expect(viewer.getByTestId('review-doubt')).toBeVisible();
+    await expect(ui.publishInline(viewer)).toBeEnabled();
+    app.removeAllListeners('dialog');
+    let asked = '';
+    app.once('dialog', (d) => { asked = d.message(); void d.dismiss(); });
+    await ui.publishInline(viewer).click();
+    await expect.poll(() => asked).toContain('background agents');
+    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    expect((await bazel.api('GET', `/api/reviews/${saved.name}`)).json.doubt).toContain('background');
+    expect(writes(bazel)).toEqual([]);
   });
 });
