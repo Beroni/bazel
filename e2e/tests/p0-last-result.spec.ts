@@ -13,21 +13,22 @@ const TITLE = 'Add rate limiter to the public API';
 const AGENTS = [
   { name: 'background-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background' } },
   { name: 'narrating-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-narration' } },
+  { name: 'unfinished-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background-pending' } },
 ];
 const PIPELINES = [
   { name: 'review-and-publish', steps: ['background-fleet', 'publish'] },
   { name: 'narrate-and-publish', steps: ['narrating-fleet', 'publish'] },
+  { name: 'unfinished-and-publish', steps: ['unfinished-fleet', 'publish'] },
 ];
 
 test.describe('P0 · the report is the last result', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS, pipelines: PIPELINES } } });
 
-  test('two results: the second is the report, saved and shown, and it waits on you', async ({ app, bazel }) => {
+  test('lenses in the background: the last turn is the report, and a process that lingers is ended', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'review-and-publish');
     const job = await bazel.waitJob(id, (j) => j.state === 'done');
     expect(job.body).toContain('E2E-BG-REPORT');
     expect(job.body).not.toContain('E2E-BG-FIRST');
-    expect(job.body).not.toContain('E2E-BG-SUBAGENT');
     expect(job.incomplete ?? '').toBe('');
     expect(job.awaits_publish).toBe(true);
     const saved = (await bazel.api('GET', '/api/reviews')).json.reviews;
@@ -64,5 +65,31 @@ test.describe('P0 · the report is the last result', () => {
 
     const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
     expect((await bazel.api('GET', `/api/reviews/${saved.name}`)).json.short).toBe(true);
+  });
+
+  test('a lens still out when the process ends: incomplete, and no door to the PR', async ({ app, bazel }) => {
+    const id = await bazel.enqueue('acme/api-core#101', 'unfinished-and-publish');
+    const job = await bazel.waitJob(id, (j) => j.state === 'done');
+    expect(job.incomplete).toContain('background agent');
+    expect(job.awaits_publish ?? false).toBe(false);
+
+    await app.reload();
+    await expect(ui.jobCard(app, TITLE)).toContainText(/incomplete/i);
+    const viewer = await openJob(app, TITLE);
+    await expect(viewer.getByTestId('review-incomplete')).toBeVisible();
+    await expect(ui.keepHere(viewer)).toHaveCount(0);
+    for (const b of [ui.publishInline(viewer), viewer.getByTestId('paste-comment')]) {
+      await expect(b).toBeDisabled();
+      await expect(b).toHaveAttribute('title', /background/);
+    }
+    await expect(viewer.getByTestId('run-again')).toBeEnabled();
+    expect((await bazel.api('POST', `/api/jobs/${id}/post`, { skip: [] })).status).toBe(409);
+    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] })).status).toBe(409);
+    const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    expect((await bazel.api('POST', `/api/reviews/${saved.name}/comment`, { skip: [] })).status).toBe(409);
+    expect((await bazel.api('POST', `/api/reviews/${saved.name}/publish`, { skip: [] })).status).toBe(409);
+    expect(writes(bazel)).toEqual([]);
+    await viewer.getByTestId('run-again').click();
+    await expect.poll(() => bazel.agentCalls().length).toBe(2);
   });
 });

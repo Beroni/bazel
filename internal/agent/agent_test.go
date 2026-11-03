@@ -1237,3 +1237,147 @@ func TestRawStreamGuardaOStdout(t *testing.T) {
 		t.Errorf("mode %v", info.Mode())
 	}
 }
+
+// backgroundRun is the shape of a real run that sends its lenses to the
+// background, with nothing of the real one: each lens that ends starts a turn of
+// its own, and the results of every turn come together at the end.
+func backgroundRun(finalTasks string) []string {
+	task := func(id string) string {
+		return `{"task_id":"` + id + `","task_type":"local_agent","subagent_type":"lens","description":"lens"}`
+	}
+	changed := func(ids ...string) string {
+		list := make([]string, len(ids))
+		for i, id := range ids {
+			list[i] = task(id)
+		}
+		return `{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[` + strings.Join(list, ",") + `]}`
+	}
+	done := func(id, tool string) []string {
+		return []string{
+			`{"type":"system","subtype":"task_updated","session_id":"s1","task_id":"` + id + `","patch":{"status":"completed"}}`,
+			`{"type":"system","subtype":"task_notification","session_id":"s1","task_id":"` + id + `","tool_use_id":"` + tool + `","status":"completed","summary":"{}"}`,
+		}
+	}
+	launch := func(tool string) []string {
+		return []string{
+			`{"type":"assistant","session_id":"s1","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"` + tool + `","name":"Agent","input":{"subagent_type":"lens","description":"lens"}}]}}`,
+			`{"type":"user","session_id":"s1","parent_tool_use_id":null,"message":{"content":[{"type":"tool_result","tool_use_id":"` + tool + `","content":[{"type":"text","text":"Async agent launched successfully."}]}]}}`,
+		}
+	}
+	result := func(text string) string {
+		enc, _ := json.Marshal(text)
+		return `{"type":"result","subtype":"success","session_id":"s1","total_cost_usd":3.09,"result":` + string(enc) + `}`
+	}
+	ev := []string{`{"type":"system","subtype":"init","session_id":"s1"}`}
+	ev = append(ev, launch("t1")...)
+	ev = append(ev, changed("a"), `{"type":"system","subtype":"task_started","session_id":"s1","task_id":"a","tool_use_id":"t1","task_type":"local_agent"}`)
+	ev = append(ev, launch("t2")...)
+	ev = append(ev, changed("a", "b"))
+	ev = append(ev, launch("t3")...)
+	ev = append(ev, changed("a", "b", "c"))
+	ev = append(ev, done("c", "t3")...)
+	ev = append(ev, changed("a", "b"), `{"type":"system","subtype":"init","session_id":"s1"}`)
+	// A task a lens starts for itself is not the run's.
+	ev = append(ev, `{"type":"system","subtype":"task_started","session_id":"s1","task_id":"x","owned_by_subagent":true,"tool_use_id":"tx","task_type":"local_bash"}`)
+	ev = append(ev, done("a", "t1")...)
+	ev = append(ev, changed("b"), `{"type":"system","subtype":"init","session_id":"s1"}`)
+	if finalTasks == "" {
+		ev = append(ev, done("b", "t2")...)
+		ev = append(ev, changed(), `{"type":"system","subtype":"init","session_id":"s1"}`)
+		return append(ev, result("NARRATION the lenses are running"), result("NARRATION one done"),
+			result("NARRATION one to go"), result("# Verdict\n\nREPORT"))
+	}
+	return append(ev, result("NARRATION the lenses are running"), result("NARRATION one done"), result("NARRATION one to go"))
+}
+
+// The report is the result of the turn that began with nothing in the background.
+func TestLentesEmSegundoPlanoReportNoFim(t *testing.T) {
+	res, err := streamReview(t, "claude-stream", backgroundRun("")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" || len(res.Steps) != 1 || res.Steps[0].Pending != "" {
+		t.Errorf("body %q, steps %+v", res.Body, res.Steps)
+	}
+	if res.Usage.CostUSD != 3.09 {
+		t.Errorf("the session's cost, once: %+v", res.Usage)
+	}
+}
+
+// A run that ends with a lens still out, or whose last result is a turn that
+// began with lenses out, has no report: the step is pending.
+func TestLentesEmSegundoPlanoPendentes(t *testing.T) {
+	res, err := streamReview(t, "claude-stream", backgroundRun("b")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || !strings.Contains(res.Steps[0].Pending, "1 background agent") {
+		t.Errorf("steps %+v", res.Steps)
+	}
+	var p streamParser
+	for _, l := range []string{
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[{"task_id":"a"}]}`,
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[]}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"first"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"lenses still running"}`,
+	} {
+		p.line(l)
+	}
+	if !strings.Contains(p.pendingWork(), "began with") || p.finished() {
+		t.Errorf("pending %q finished %v", p.pendingWork(), p.finished())
+	}
+	var none streamParser
+	none.line(`{"type":"system","subtype":"init","session_id":"s1"}`)
+	none.line(`{"type":"system","subtype":"background_tasks_changed","session_id":"s1","tasks":[{"task_id":"x","owned_by_subagent":true}]}`)
+	none.line(`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict"}`)
+	if none.pendingWork() != "" || !none.finished() {
+		t.Errorf("a lens's own task held the run: %q", none.pendingWork())
+	}
+}
+
+// lingering runs events through a CLI that stays alive after them.
+func lingering(t *testing.T, timeout int, events ...string) (Result, error, time.Duration) {
+	t.Helper()
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = timeout
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream",
+		Args: []string{"-c", "cat >/dev/null\ncat <<'FIM'\n" + strings.Join(events, "\n") + "\nFIM\nexec sleep 60\n"}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	return res, err, time.Since(start)
+}
+
+// A process that stays alive after its report (a wakeup it scheduled) does not
+// hold the step: Bazel ends it after a short grace, and the review stands.
+func TestProcessoQueFicaDepoisDoReportEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 300 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	res, err, took := lingering(t, 30, backgroundRun("")...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nREPORT" || took > 10*time.Second {
+		t.Errorf("body %q after %v", res.Body, took)
+	}
+}
+
+// With a lens still out, the grace does not apply: the process keeps the step
+// until it ends on its own or the timeout does.
+func TestProcessoComLentePendenteNaoEncerra(t *testing.T) {
+	old := idleGrace
+	idleGrace = 300 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	_, err, took := lingering(t, 2, backgroundRun("b")...)
+	if err == nil || !strings.Contains(err.Error(), "timeout") || took < 2*time.Second {
+		t.Errorf("err %v after %v", err, took)
+	}
+}

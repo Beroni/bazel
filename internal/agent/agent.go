@@ -1044,6 +1044,9 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
+// idleGrace is how long a process may linger once its stream said it is done.
+var idleGrace = 10 * time.Second
+
 // execOut is what a step's process left: its report and, when its own stream
 // said the report never came, why.
 type execOut struct {
@@ -1141,6 +1144,41 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	raw := openRawStream(step.Name)
 	defer raw.Close()
 
+	// A run whose stream says it is over does not get to keep the step: past a
+	// short grace with nothing more on stdout, its process goes. A wakeup the
+	// agent scheduled for half an hour later held a finished review "running".
+	ender, _ := adapter.(interface{ finished() bool })
+	var (
+		idleMu    sync.Mutex
+		idleTimer *time.Timer
+		idleEnded bool
+	)
+	settle := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+			idleTimer = nil
+		}
+		if ender == nil || !ender.finished() {
+			return
+		}
+		idleTimer = time.AfterFunc(idleGrace, func() {
+			idleMu.Lock()
+			idleEnded = true
+			idleMu.Unlock()
+			killProcessGroup(cmd)
+			_ = cmd.Process.Kill()
+		})
+	}
+	defer func() {
+		idleMu.Lock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		idleMu.Unlock()
+	}()
+
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -1161,6 +1199,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 				cota = limits.At
 				onLimits(limits)
 			}
+			settle()
 		})
 	}()
 	go func() {
@@ -1176,6 +1215,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// left it, and a background process could write to it. That also closes the
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
+	idleMu.Lock()
+	if idleEnded {
+		// Bazel ended it, after its stream said it was done.
+		err = nil
+		log("stdout", "", fmt.Sprintf("· the agent stayed alive %s after its report; Bazel ended it", idleGrace))
+	}
+	idleMu.Unlock()
 	killProcessGroup(cmd)
 	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()

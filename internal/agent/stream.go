@@ -73,7 +73,13 @@ type streamEvent struct {
 	// the run's own.
 	SessionID string `json:"session_id"`
 	Tools     []any  `json:"tools"`
-	Message   struct {
+	// Tasks is the work the run has in the background, in
+	// `system/background_tasks_changed`: the whole list, each time it changes.
+	Tasks []struct {
+		TaskID          string `json:"task_id"`
+		OwnedBySubagent bool   `json:"owned_by_subagent"`
+	} `json:"tasks"`
+	Message struct {
 		Model   string          `json:"model"`
 		Content json.RawMessage `json:"content"`
 		// Usage is the spend of the call that produced this message. It's what
@@ -201,6 +207,18 @@ type streamParser struct {
 	settled bool
 	// session is the run's own conversation, from its init event.
 	session string
+	// background is how many tasks of the run itself are out, as the last
+	// background_tasks_changed listed them; backgrounded says there ever were.
+	// A sub-agent's own tasks do not count: they end with it.
+	background   int
+	backgrounded bool
+	// turnsBusy says, for each turn of the run (each init), whether it began with
+	// work still in the background. The results of a run that backgrounds its
+	// lenses all come at the end, together, one per turn: this is what tells the
+	// report's turn from the ones that only said "the lenses are running".
+	turnsBusy []bool
+	// results counts the run's own final events.
+	results int
 	// failure is what the last of those events said went wrong.
 	failure error
 	// usage is the settled spend, from the final event. An agent that doesn't
@@ -263,9 +281,22 @@ func (p *streamParser) line(raw string) []logEntry {
 		return nil
 
 	case "system":
+		if ev.Subtype == "background_tasks_changed" && (p.session == "" || ev.SessionID == p.session) {
+			p.background = 0
+			for _, t := range ev.Tasks {
+				if !t.OwnedBySubagent {
+					p.background++
+				}
+			}
+			p.backgrounded = p.backgrounded || p.background > 0
+			return nil
+		}
 		if ev.Subtype == "init" {
 			if p.session == "" {
 				p.session = ev.SessionID
+			}
+			if ev.SessionID == p.session {
+				p.turnsBusy = append(p.turnsBusy, p.background > 0)
 			}
 			return one(fmt.Sprintf("· session started · %d tools", len(ev.Tools)))
 		}
@@ -281,6 +312,7 @@ func (p *streamParser) line(raw string) []logEntry {
 			return nil
 		}
 		p.settled = true
+		p.results++
 		// An empty result says nothing of the report: the last text stays.
 		if strings.TrimSpace(ev.Result) != "" {
 			p.result = ev.Result
@@ -566,6 +598,25 @@ func truncateRunes(s string, n int) string {
 }
 
 // pendingWork is why the run's own stream says its report never came, or "".
-// TODO(capture): set from what the claude stream shows for work left in the
-// background when the process ends.
-func (p *streamParser) pendingWork() string { return "" }
+// Only a run that sent work to the background can say so: either some of it is
+// still out, or the last result belongs to a turn that began while it was.
+func (p *streamParser) pendingWork() string {
+	switch {
+	case !p.backgrounded:
+		return ""
+	case p.background == 1:
+		return "ended with 1 background agent still running"
+	case p.background > 1:
+		return fmt.Sprintf("ended with %d background agents still running", p.background)
+	case p.results > 0 && p.results == len(p.turnsBusy) && p.turnsBusy[p.results-1]:
+		return "ended on a turn that began with its background agents still running"
+	}
+	return ""
+}
+
+// finished says the run's stream is over: a final event arrived, nothing it sent
+// to the background is still out, and that event is the report. What the process
+// does after that (a wakeup it scheduled, for one) is not part of the review.
+func (p *streamParser) finished() bool {
+	return p.settled && p.background == 0 && p.pendingWork() == ""
+}
