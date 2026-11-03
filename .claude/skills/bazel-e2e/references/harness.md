@@ -117,6 +117,15 @@ keeps the port, so an open page reconnects: `bazel.restart({ samePort: true })`.
 
 ## Determinism
 
+- A wait on a chain of processes the test does not drive (clone, agent spawn,
+  job, boot, the browser's EventSource retry) uses `BUDGET` from
+  `harness/budget.ts`, and waits on the event itself: `bazel.waitAgents(n)` for
+  an agent, never `running` (a job is running from its clone on). A clone slowed
+  on purpose (`gh: { slow_clone_ms }`) turns that race into a certain failure.
+- Scenario files are shared by every worker: never write one from a test; add
+  it to `fixtures/agent/`, or use `testInfo.outputPath`.
+- A failed test attaches `timeline.txt`: every gh and agent call with its start
+  and duration, and the load average every 2s.
 - Never sleep for "long enough". Hold an agent with `#!wait <name>` and call
   `bazel.release(name)` when the test has seen what it needs. A negative gets a
   barrier: `settled(page)` after a dismissed confirm, `agentAlive(pid)` for a kill.
