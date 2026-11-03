@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { tickByFilter, ui } from '../harness/ui';
+import { runReview, tickByFilter, ui } from '../harness/ui';
 
 // test/e2e-stability: under load the suite failed now and then, a different test
 // each time. Most of those tests read `running` as "the agent started" and gave
@@ -28,8 +28,7 @@ test.describe('P1 · a slow machine', () => {
   test('a review from the page lands, however long the clone takes', async ({ app, bazel }) => {
     await tickByFilter(app, 'rate limiter');
     await ui.agentSelect(app).selectOption('review-fleet');
-    await ui.runButton(app).click();
-    const [job] = (await bazel.api('GET', '/api/jobs')).json.jobs;
+    const [job] = await runReview(app);
     await bazel.waitJob(job.id, (j) => j.state === 'done');
     await expect(ui.viewer(app).getByText('E2E-FINDING-ONE')).toBeVisible();
   });

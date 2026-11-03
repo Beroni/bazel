@@ -112,6 +112,13 @@ export async function jobTab(page: Page, name: 'Overview' | 'History' | 'Live lo
   await page.getByRole('tab', { name }).click();
 }
 
+/** Clicks Run and returns the jobs it queued, from the server's own answer. */
+export async function runReview(page: Page): Promise<any[]> {
+  const posted = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/reviews', { timeout: BUDGET });
+  await ui.runButton(page).click();
+  return (await (await posted).json()).jobs;
+}
+
 /** Ticks the PRs matching `text` through the filter + "select all". */
 export async function tickByFilter(page: Page, text: string): Promise<void> {
   await ui.filter(page).fill(text);
