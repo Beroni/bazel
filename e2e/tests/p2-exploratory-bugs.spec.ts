@@ -188,7 +188,8 @@ test.describe('P2 · a card under a running job', () => {
       await app.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
       const rebuilt = () => app.evaluate(() => new Promise<void>((r) => {
         const o = new MutationObserver(() => { o.disconnect(); r(); });
-        o.observe(document.querySelector('[data-testid=job-card]')!.parentElement!, { childList: true });
+        // Any redraw of the rail: rebuilt (master) or updated in place (the fix).
+        o.observe(document.querySelector('[data-testid=job-card]')!.parentElement!, { childList: true, subtree: true, attributes: true, characterData: true });
       }));
       await rebuilt(); // a second to the next rebuild: the press goes in between, or across it
       await app.mouse.down();
