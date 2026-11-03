@@ -81,6 +81,10 @@ type settings struct {
 	// Forks maps a fork to its parent. In a clone of the fork, gh pr checkout N
 	// without --repo or GH_REPO resolves N in the parent, as gh does.
 	Forks map[string]string `json:"forks"`
+	// SlowClone makes gh repo clone take this many milliseconds more: what a
+	// loaded machine does, on purpose, so a test that confuses a running job with
+	// a running agent fails every time instead of now and then.
+	SlowClone int `json:"slow_clone_ms"`
 }
 
 var (
@@ -91,6 +95,8 @@ var (
 	// unknown marks a call the fake does not implement; the harness fails
 	// the test when one shows up in the log.
 	unknown bool
+	// started is when gh was called; `at` in the log is when it ended.
+	started = time.Now()
 )
 
 func main() {
@@ -214,6 +220,7 @@ func record(args []string, code int) {
 		"bazel_home":  os.Getenv("BAZEL_HOME"),
 		"unsupported": unknown,
 		"cwd":         cwd,
+		"started_at":  started.UTC().Format(time.RFC3339Nano),
 		"at":          time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(state, 0o755)
@@ -684,6 +691,7 @@ func cloneRepo(args []string) int {
 		return unsupported(args)
 	}
 	repo, dir := args[2], args[3]
+	time.Sleep(time.Duration(cfg.SlowClone) * time.Millisecond)
 	if failed("clone:" + repo) {
 		return 1
 	}

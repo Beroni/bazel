@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { openJob, recordPosts, settled, ui } from '../harness/ui';
@@ -191,7 +192,7 @@ test.describe('P0 · cancel a publication', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [1] });
     await bazel.waitJob(id, (j) => j.state === 'running' && j.publishing);
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
 
     expect((await bazel.api('POST', `/api/jobs/${id}/cancel`)).status).toBe(200);
     const back = await bazel.waitJob(id, (j) => j.state === 'done');
@@ -210,7 +211,7 @@ test.describe('P0 · cancel a publication', () => {
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [0] });
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
     const reviewFile = bazel.agentCalls()[1].prompt.match(/\/bazel:bazel-post-report\s+(\S+)/)![1];
     expect(fs.existsSync(reviewFile)).toBe(true); // exists while the post agent runs
     bazel.release('release-post');
@@ -254,7 +255,7 @@ test.describe('P0 · the page asks before writing', () => {
     dialogs.accept = true;
     await ui.runButton(app).click();
     const viewer = ui.viewer(app);
-    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: 20_000 });
+    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: BUDGET }); // a whole job
     expect(bazel.agentCalls()[0].prompt).toContain('/review-fleet 101 --post');
 
     posts.length = 0;

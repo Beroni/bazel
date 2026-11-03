@@ -1,3 +1,4 @@
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { jobTab, openJob, ui } from '../harness/ui';
 
@@ -143,7 +144,7 @@ test.describe('P1 · corners of the dashboard', () => {
     await app.getByTestId('saved-publish').click();
     await expect.poll(() => dialogs.messages.length).toBe(1);
     expect(dialogs.messages[0]).toContain('Publish this saved review on acme/api-core#101');
-    await expect.poll(() => bazel.ghCalls().filter((c) => c.argv.some((a) => a.endsWith('/reviews'))).length, { timeout: 20_000 }).toBe(1);
+    await expect.poll(() => bazel.ghCalls().filter((c) => c.argv.some((a) => a.endsWith('/reviews'))).length, { timeout: BUDGET }).toBe(1); // a post agent's run
     const [sent] = bazel.ghCalls().filter((c) => c.argv.some((a) => a.endsWith('/reviews')));
     expect(JSON.parse(sent.stdin).body).toContain('E2E-FINDING-ONE');
     expect(JSON.parse(sent.stdin).body).not.toContain('E2E-FINDING-TWO');

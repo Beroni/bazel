@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'node:child_process';
+import { BUDGET } from './budget';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -7,6 +8,8 @@ import { BIN, FIXTURES, OUT, SCENARIOS, safeEnv } from './paths';
 
 /** One recorded call to the fake gh. */
 export interface GhCall {
+  /** When gh was called; `at` is when it returned. */
+  started_at: string;
   /** HOME and BAZEL_HOME gh got: the isolation canary. */
   home: string;
   bazel_home: string;
@@ -22,6 +25,8 @@ export interface GhCall {
 /** One recorded run of the fake agent. */
 export interface AgentCall {
   scenario: string;
+  /** When Bazel spawned the agent; `at` is when it got past its record. */
+  started_at: string;
   /** The agent's process: see agentAlive. */
   pid: number;
   /** The branch the clone was on when the agent started. */
@@ -71,6 +76,8 @@ export interface GhSettings {
   fail?: Record<string, string>;
   /** fork → parent: see `Forks` in the fake gh. */
   forks?: Record<string, string>;
+  /** Extra milliseconds for every gh repo clone: a loaded machine, on purpose. */
+  slow_clone_ms?: number;
 }
 
 export interface BazelOptions {
@@ -337,6 +344,20 @@ export class Bazel {
     fs.rmSync(path.join(this.ghState, 'repos', `${repo}.git`), { recursive: true, force: true });
   }
 
+  /**
+   * Waits until n agent calls match pred, and returns them. `running` is not
+   * enough: a job is running from its clone on, and the agent starts after it.
+   */
+  async waitAgents(n: number, pred: (c: AgentCall) => boolean = () => true, timeoutMs = BUDGET): Promise<AgentCall[]> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const calls = this.agentCalls().filter(pred);
+      if (calls.length >= n) return calls;
+      if (Date.now() > deadline) throw new Error(`${calls.length} of ${n} agent calls after ${timeoutMs}ms: ${calls.map((c) => c.scenario).join(', ')}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
   /** Whether that agent process is still there: what "killed" means. */
   agentAlive(pid: number): boolean {
     try {
@@ -397,12 +418,8 @@ export class Bazel {
     return (await this.api('GET', `/api/jobs/${id}`)).json;
   }
 
-  /**
-   * Polls a job until pred holds; returns the last view. The budget is what a
-   * plain job took with the load average above 70 (over 40s), and a passing test
-   * never waits for it.
-   */
-  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 60_000): Promise<any> {
+  /** Polls a job until pred holds; returns the last view. */
+  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = BUDGET): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any;
     while (Date.now() < deadline) {

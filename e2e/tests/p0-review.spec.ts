@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { expandFindings, tickByFilter, ui } from '../harness/ui';
 
@@ -11,7 +12,7 @@ test.describe('P0 · review', () => {
 
     // The report lands in the viewer, findings and all.
     const viewer = ui.viewer(app);
-    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: 20_000 });
+    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: BUDGET }); // a whole job
     await expandFindings(viewer);
     await expect(viewer.getByText('E2E-FINDING-TWO')).toBeVisible();
     await expect(ui.findingPicks(viewer)).toHaveCount(2);

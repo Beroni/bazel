@@ -1,3 +1,4 @@
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { FlakyProxy } from '../harness/flaky-proxy';
 import { ui } from '../harness/ui';
@@ -37,8 +38,8 @@ test.describe('P1 · the connection drops and comes back', () => {
       await bazel.waitJob(other, (j) => j.state === 'done');
 
       proxy.resume();
-      await expect(page.getByTestId('conn-status')).toHaveAttribute('data-state', 'open', { timeout: 15_000 });
-      await expect(page.getByTestId('job-card').filter({ hasText: 'api-core #101' })).toHaveAttribute('data-state', 'done', { timeout: 5_000 });
+      await expect(page.getByTestId('conn-status')).toHaveAttribute('data-state', 'open', { timeout: BUDGET }); // the browser's retry
+      await expect(page.getByTestId('job-card').filter({ hasText: 'api-core #101' })).toHaveAttribute('data-state', 'done', { timeout: BUDGET });
       await expect(page.getByTestId('job-card')).toHaveCount(2);
     } finally {
       proxy.stop();
@@ -57,8 +58,8 @@ test.describe('P1 · the connection drops and comes back', () => {
       await page.getByTestId('refresh').click();
       await expect(page.locator('#pr-list')).toContainText('Failed to fetch');
       proxy.resume();
-      await expect(page.getByTestId('conn-status')).toHaveAttribute('data-state', 'open', { timeout: 15_000 });
-      await expect(ui.prRow(page, 'Bump dependencies')).toBeVisible({ timeout: 5_000 });
+      await expect(page.getByTestId('conn-status')).toHaveAttribute('data-state', 'open', { timeout: BUDGET }); // the browser's retry
+      await expect(ui.prRow(page, 'Bump dependencies')).toBeVisible({ timeout: BUDGET });
     } finally {
       proxy.stop();
     }

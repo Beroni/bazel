@@ -22,7 +22,7 @@ test.describe('P1 · queue', () => {
       await bazel.enqueue('acme/web-app#7', 'slow-lens'),
     ];
     // Two clones before two agents: slow when the laptop is busy.
-    await expect.poll(() => bazel.agentCalls().length, { timeout: 25_000 }).toBe(2);
+    await bazel.waitAgents(2);
     const states = await Promise.all(ids.map(async (id) => (await bazel.job(id)).state));
     expect(states.sort()).toEqual(['queued', 'running', 'running']);
     bazel.release('release-slow');
@@ -54,8 +54,7 @@ test.describe('P1 · queue', () => {
 
   test('✕ on a running card cancels it and drops it from the server', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
-    await bazel.waitJob(id, (j) => j.state === 'running');
-    await expect.poll(() => bazel.agentCalls().length).toBe(1);
+    await bazel.waitAgents(1);
     const { pid } = bazel.agentCalls()[0];
     expect(bazel.agentAlive(pid)).toBe(true);
     await app.reload();
