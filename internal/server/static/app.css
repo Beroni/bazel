@@ -151,6 +151,27 @@ select.on { border-color: var(--accent-line); color: var(--accent); }
 }
 .nav a:hover { color: var(--text); }
 .nav a.on { color: var(--text); border-bottom-color: var(--accent); }
+.nav-count {
+  margin-left: 6px; padding: 0 6px; border-radius: 9px; font-size: 11px; line-height: 17px;
+  background: var(--accent-soft); color: var(--accent);
+}
+
+/* --- needs you --- */
+.page.needs { flex: 1; overflow: auto; min-height: 0; padding: 18px 24px 40px; }
+.needs-head { display: flex; align-items: center; gap: 12px; max-width: 880px; margin: 0 auto 8px; }
+.needs-head h2 { font-size: 18px; margin: 0; }
+.needs-note { font-size: 12px; }
+.needs-scope { display: flex; gap: 4px; }
+.needs-scope .btn[aria-pressed="true"] { color: var(--text); background: var(--hover-2); }
+.needs-list { max-width: 880px; margin: 0 auto; }
+.needs-list .plabel { margin: 18px 0 4px; }
+.needs-list .plabel-extra { margin-left: 8px; font-weight: 500; }
+/* Waiting on the author asks nothing of you: it is there, quieter. */
+.needs-group.waiting .pr { opacity: .72; }
+.needs-list .pr { align-items: center; }
+.needs-list .pr .why { display: block; margin-top: 2px; font-size: 12px; color: var(--text); opacity: .85; }
+.needs-list .pr .why .age { color: var(--dim); }
+.needs-list .pr .btn { flex: none; }
 
 .banner {
   padding: 8px 16px; font-size: 12.5px;

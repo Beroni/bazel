@@ -14,6 +14,7 @@
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
   <nav class="nav" id="nav">
     <a href="#/" data-page="dashboard" data-testid="nav-dashboard" class="on">Dashboard</a>
+    <a href="#/needs" data-page="needs" data-testid="nav-needs">Needs you <span class="nav-count" id="needs-count" data-testid="needs-count" hidden></span></a>
     <a href="#/config" data-page="config" data-testid="nav-config">Config</a>
   </nav>
   <div class="spacer"></div>
@@ -99,6 +100,21 @@
     </article>
   </section>
 </main>
+
+<!-- The PRs where you have something to do: asked to review, the author
+     answered your changes, still waiting on the author, and your own PRs. -->
+<section id="page-needs" class="page needs" role="main" hidden data-testid="needs-page">
+  <div class="needs-head">
+    <h2>Needs you</h2>
+    <div class="spacer"></div>
+    <span class="dim needs-note" id="needs-note" data-testid="needs-note"></span>
+    <div class="needs-scope" role="group" aria-label="where to look">
+      <button class="btn small" id="needs-watched" data-testid="needs-scope-watched" aria-pressed="true">watched repos</button>
+      <button class="btn small" id="needs-all" data-testid="needs-scope-all" aria-pressed="false">all repos</button>
+    </div>
+  </div>
+  <div id="needs-list" class="needs-list" data-testid="needs-list"></div>
+</section>
 
 <section id="page-config" class="page config" role="main" hidden>
   <!-- Two columns, as the design lays it out: what Bazel watches and what this

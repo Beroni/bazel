@@ -162,6 +162,29 @@ repository with more says so in the banner, and one that fails keeps the PRs it
 had and says that too. With `authors:` set, the filter goes to `gh`, so the limit
 applies to their PRs.
 
+### Needs you
+
+The **Needs you** tab lists the open PRs where you have something to do, each
+once, under the first reason that applies:
+
+1. **Review requested from you**, or from a team of yours, with no review of
+   yours since the last request.
+2. **You asked for changes and the author answered**: your last review asked
+   for changes, or a thread you started is still open, and the PR's author
+   pushed, commented, replied in a thread or resolved a thread of that review
+   since.
+3. **You asked for changes, waiting for the author**: the same, with nothing
+   from the author yet. It is shown quieter and does not count in the tab.
+4. **Your PRs** with changes requested, a thread or comment waiting for you,
+   failing checks, a conflict with the base, or approved and ready to merge.
+
+Only the PR's author counts as an answer, and bots' comments are not news. A
+commit made before your review and pushed after it is not seen as a push, so
+such a PR stays in "waiting". The page reads GitHub with one `gh api graphql`
+call that runs three searches (50 PRs each), kept a minute and read again on ↻,
+under the same budget as the PR list. It shows the repositories you watch, and
+**all repos** shows the rest, from the same read. Nothing is written to GitHub.
+
 ## Agents are your skills
 
 **An agent is one of your skills running over a PR.** A new config starts with

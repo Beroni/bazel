@@ -31,6 +31,11 @@ const state = {
   activePR: null,      // key of the PR open in the right-hand pane
   bodies: {},        // job id -> review html
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
+  needs: null,       // the last answer of /api/needs
+  needsSig: '',      // what it looked like, to draw only on a change
+  needsAll: false,   // all repos, or only the watched ones
+  needsError: '',
+  needsPRs: {},      // key -> PR from the needs page, for opening one outside the list
   savedShort: {},    // saved review name -> true when it is short with no findings
   savedDoubt: {},    // saved review name -> why its stream makes it worth a second look
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
@@ -275,6 +280,8 @@ async function boot() {
   // at #/config needs the agent list to draw anything.
   await route();
   loadPRs(false);
+  // The tab's counter is there from the start, whatever page is open.
+  if (pageFromHash() !== 'needs') loadNeeds(false);
 }
 
 async function loadPRs(force) {
@@ -564,7 +571,7 @@ async function reviewRefs(refs) {
 }
 
 function openPR(key) {
-  const pr = state.prs.find((p) => p.key === key);
+  const pr = state.prs.find((p) => p.key === key) || state.needsPRs[key];
   if (!pr) return;
   // Drawn again over itself (a read landed, a job moved), it stays where you
   // were reading.
@@ -2696,7 +2703,9 @@ function renderReportView(v, job) {
 // --- bindings ---
 
 function wire() {
-  $('#refresh').addEventListener('click', () => loadPRs(true));
+  $('#refresh').addEventListener('click', () => { loadPRs(true); loadNeeds(true); });
+  $('#needs-watched').addEventListener('click', () => { state.needsAll = false; loadNeeds(false); });
+  $('#needs-all').addEventListener('click', () => { state.needsAll = true; loadNeeds(false); });
   $('#run').addEventListener('click', startReview);
   $('#agent').addEventListener('change', (e) => {
     state.agent = e.target.value;
@@ -3244,19 +3253,145 @@ async function loadSkills() {
 // Reloading the tab at #/config opens straight into the config, which is what
 // you expect from a real page.
 function pageFromHash() {
-  return location.hash.replace(/^#\/?/, '') === 'config' ? 'config' : 'dashboard';
+  const page = location.hash.replace(/^#\/?/, '');
+  return page === 'config' || page === 'needs' ? page : 'dashboard';
 }
 
 async function showPage(nome) {
   $('#page-dashboard').hidden = nome !== 'dashboard';
   $('#page-config').hidden = nome !== 'config';
+  $('#page-needs').hidden = nome !== 'needs';
   for (const a of document.querySelectorAll('#nav a')) {
     a.classList.toggle('on', a.dataset.page === nome);
   }
-  document.title = nome === 'config' ? 'Bazel · config' : 'Bazel';
+  document.title = nome === 'config' ? 'Bazel · config' : nome === 'needs' ? needsTitle() : 'Bazel';
   // The config is read from disk on every visit: it changes from outside —
   // another tab, an editor — and showing what was in memory would be lying.
   if (nome === 'config') await refreshConfig();
+  if (nome === 'needs') loadNeeds(false);
+}
+
+// --- needs you ---
+//
+// The PRs where you have something to do. One read of GitHub answers the page
+// for both scopes; the server keeps it a minute, and ↻ reads it again.
+const NEEDS_GROUPS = [
+  ['requested', 'Review requested from you'],
+  ['replied', 'You asked for changes — the author answered'],
+  ['waiting', 'You asked for changes — waiting for the author'],
+  ['yours', 'Your PRs'],
+];
+
+// actionable is what asks something of you: waiting on the author does not.
+const needsActionable = () => (state.needs ? state.needs.items.filter((i) => i.category !== 'waiting').length : 0);
+
+function needsTitle() {
+  const n = needsActionable();
+  return n ? `(${n}) Bazel · needs you` : 'Bazel · needs you';
+}
+
+async function loadNeeds(force) {
+  const all = state.needsAll ? '&all=1' : '';
+  try {
+    const data = await api('/api/needs?' + (force ? 'refresh=1' : '') + all);
+    state.needsError = '';
+    // Drawn only when it changed: a refresh that brings the same list leaves
+    // the page as it is, without a flicker.
+    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all;
+    if (sig === state.needsSig) return;
+    state.needsSig = sig;
+    state.needs = data;
+    for (const it of data.items) state.needsPRs[it.key] = it;
+  } catch (err) {
+    state.needsError = err.message;
+    state.needsSig = '';
+  }
+  renderNeeds();
+}
+
+function renderNeeds() {
+  const count = $('#needs-count');
+  const n = needsActionable();
+  count.hidden = !n;
+  count.textContent = String(n);
+  if (pageFromHash() === 'needs') document.title = needsTitle();
+  $('#needs-watched').setAttribute('aria-pressed', String(!state.needsAll));
+  $('#needs-all').setAttribute('aria-pressed', String(!!state.needsAll));
+  const list = $('#needs-list');
+  const note = $('#needs-note');
+  if (state.needsError) {
+    list.replaceChildren(tid(el('div', 'error-box', 'Could not read GitHub: ' + state.needsError), 'needs-error'));
+    note.textContent = '';
+    return;
+  }
+  const data = state.needs;
+  if (!data) {
+    list.replaceChildren(el('p', 'dim', 'loading…'));
+    return;
+  }
+  note.textContent = [
+    data.elsewhere ? `${data.elsewhere} more in repos you don't watch` : '',
+    data.truncated ? 'GitHub has more than these: the oldest are not shown' : '',
+  ].filter(Boolean).join(' · ');
+  const nodes = [];
+  for (const [cat, label] of NEEDS_GROUPS) {
+    const items = data.items.filter((i) => i.category === cat);
+    if (!items.length) continue;
+    const group = tid(el('div', 'needs-group ' + cat), 'needs-group', { category: cat });
+    group.append(sectionLabel(label, String(items.length)));
+    for (const it of items) group.append(needsRow(it));
+    nodes.push(group);
+  }
+  if (!nodes.length) {
+    nodes.push(tid(el('p', 'empty', data.all ? 'Nothing needs you right now.' : 'Nothing needs you in the repos you watch.'), 'needs-empty'));
+  }
+  list.replaceChildren(...nodes);
+}
+
+// needsRow is a row of the sidebar's list: the title, then repo #n · @author,
+// and the reason with how long ago it happened.
+function needsRow(it) {
+  const row = tid(el('div', 'pr'), 'needs-row', { prKey: it.key, category: it.category });
+  const main = el('div', 'pr-main');
+  const title = operable(el('span', 'title', it.title), `open ${it.key}: ${it.title}`, () => openNeeds(it.key));
+  title.dir = 'auto';
+  const sub = el('div', 'pr-sub');
+  const meta = el('span', 'meta');
+  meta.append(el('span', 'repo', `${it.watched ? it.slug : it.repo} #${it.number}`));
+  if (it.author) {
+    const who = el('span', 'author' + (it.mine ? ' mine' : ''), '@' + it.author);
+    who.dir = 'auto';
+    meta.append(el('span', 'sep', ' · '), who);
+  }
+  sub.append(meta);
+  if (it.draft) sub.append(el('span', 'tag draft', 'draft'));
+  const why = tid(el('span', 'why', it.reason), 'needs-reason');
+  why.append(el('span', 'age', ' · ' + ago(it.since_age)));
+  main.append(title, sub, why);
+  row.title = `${it.key} — ${it.title}\n${it.reason}`;
+  row.addEventListener('click', () => openNeeds(it.key));
+  row.append(main);
+  // Your own PR has nothing for an agent to review on your behalf.
+  if (it.category !== 'yours') {
+    const go = tid(el('button', 'btn small', '▶ Review'), 'needs-review', { prKey: it.key });
+    go.title = `runs ${state.agent || 'the default agent'} over ${it.key}`;
+    go.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      go.disabled = true;
+      location.hash = '#/';
+      await reviewRefs([it.key]);
+      go.disabled = false;
+    });
+    row.append(go);
+  }
+  return row;
+}
+
+// openNeeds opens the PR's page on the dashboard, in its Overview. A PR outside
+// the watched list is read from GitHub on purpose, like any other opened one.
+function openNeeds(key) {
+  location.hash = '#/';
+  openPR(key);
 }
 
 function route() {
