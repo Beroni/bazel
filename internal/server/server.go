@@ -105,6 +105,11 @@ type Server struct {
 	listReads    []time.Time             // gh processes of forced list refreshes, last minute
 	retried      map[string]time.Time    // when each PR last got a Retry, within the gap
 	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
+
+	// needs is the last read of the "Needs you" searches; needsMu also keeps a
+	// second read from starting while one is out.
+	needsMu sync.Mutex
+	needs   needsCache
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -196,6 +201,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	mux.HandleFunc("GET /api/jobs/{id}/log", s.handleJobLog)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleJobRemove)
+	mux.HandleFunc("GET /api/needs", s.handleNeeds)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
