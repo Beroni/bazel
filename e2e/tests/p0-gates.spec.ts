@@ -2,14 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
-import { Bazel } from '../harness/bazel';
+import { Bazel, isNeedsRead } from '../harness/bazel';
 import { openJob, recordPosts, settled, ui } from '../harness/ui';
 
 // The gates in front of GitHub. "GitHub" is the fake gh's log; a write is a
 // `gh pr comment` or any `gh api` other than `api user`.
 
 const writes = (bz: Bazel) =>
-  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
 const reviewCalls = (bz: Bazel) => bz.ghCalls().filter((c) => c.argv[0] === 'api' && c.argv.some((a) => a.endsWith('/reviews')));
 const TITLE = 'Add rate limiter to the public API';
 

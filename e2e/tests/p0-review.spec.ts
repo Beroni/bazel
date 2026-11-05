@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { BUDGET } from '../harness/budget';
+import { isNeedsRead } from '../harness/bazel';
 import { test, expect } from '../harness/fixtures';
 import { expandFindings, tickByFilter, ui } from '../harness/ui';
 
@@ -34,7 +35,7 @@ test.describe('P0 · review', () => {
     expect(lines.map((l: any) => l.text).join('\n')).not.toContain('the PR moved');
 
     // The gh calls of a review: clone + checkout, nothing that writes.
-    const verbs = bazel.ghCalls().map((c) => c.argv.slice(0, 2).join(' '));
+    const verbs = bazel.ghCalls().filter((c) => !isNeedsRead(c)).map((c) => c.argv.slice(0, 2).join(' '));
     expect(verbs).toContain('repo clone');
     expect(verbs).toContain('pr checkout');
     expect(verbs).not.toContain('pr comment');

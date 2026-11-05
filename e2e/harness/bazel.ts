@@ -7,6 +7,14 @@ import path from 'node:path';
 import { BIN, FIXTURES, OUT, SCENARIOS, safeEnv } from './paths';
 
 /** One recorded call to the fake gh. */
+/**
+ * The "Needs you" read: one GraphQL query the page makes on its own, on load
+ * and on refresh. It writes nothing, so the "nothing reached GitHub" checks
+ * leave it out.
+ */
+export const isNeedsRead = (c: GhCall): boolean =>
+  c.argv[0] === 'api' && c.argv[1] === 'graphql' && c.argv.some((a) => a.startsWith('query=query bazelNeedsYou'));
+
 export interface GhCall {
   /** When gh was called; `at` is when it returned. */
   started_at: string;
@@ -289,6 +297,16 @@ export class Bazel {
   /** Rewrites gh.json in this test's fixtures (the fake gh rereads it on every call). */
   setGh(settings: GhSettings): void {
     fs.writeFileSync(path.join(this.fixturesDir, 'gh.json'), JSON.stringify({ user: 'e2e-user', ...settings }, null, 2));
+  }
+
+  /**
+   * Writes needs.json: what the fake gh answers to the "Needs you" searches, in
+   * the GraphQL answer's shape ({ requested, reviewed, authored } → nodes).
+   */
+  setNeeds(searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] }): void {
+    const one = (nodes: unknown[] = []) => ({ issueCount: nodes.length, nodes });
+    const data = { requested: one(searches.requested), reviewed: one(searches.reviewed), authored: one(searches.authored) };
+    fs.writeFileSync(path.join(this.fixturesDir, 'needs.json'), JSON.stringify({ data }, null, 2));
   }
 
   /** Patches one PR of prs.json ("owner/repo#n"). */

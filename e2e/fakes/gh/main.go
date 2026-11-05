@@ -323,6 +323,8 @@ func apiCall(args []string) int {
 	switch {
 	case len(args) == 3 && args[2] == "--paginate":
 		return apiList(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelNeedsYou") }):
+		return apiNeeds(args)
 	case len(args) > 2 && args[1] == "graphql":
 		return apiThreads(args)
 	case len(args) == 6 && reactionsRe.MatchString(args[3]):
@@ -391,6 +393,38 @@ func apiList(args []string) int {
 }
 
 // apiThreads answers the review-threads query, one page, from the PR's fixture.
+// apiNeeds answers the "Needs you" searches from needs.json in the fixtures, in
+// the GraphQL answer's own shape; without it, every search is empty. The three
+// queries must be there and name the logged-in user.
+func apiNeeds(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	for _, k := range []string{"requested", "reviewed", "authored"} {
+		if !strings.Contains(vars[k], ":"+cfg.User) {
+			return unsupported(args)
+		}
+	}
+	if failed("needs") {
+		return 1
+	}
+	b, err := os.ReadFile(filepath.Join(fixtures, "needs.json"))
+	if err != nil {
+		empty := `{"issueCount":0,"nodes":[]}`
+		b = []byte(`{"data":{"requested":` + empty + `,"reviewed":` + empty + `,"authored":` + empty + `}}`)
+	}
+	os.Stdout.Write(b)
+	return 0
+}
+
 func apiThreads(args []string) int {
 	owner, repo, number := "", "", 0
 	query := false

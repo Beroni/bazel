@@ -1,5 +1,5 @@
 import { test, expect } from '../harness/fixtures';
-import { Bazel } from '../harness/bazel';
+import { Bazel, isNeedsRead } from '../harness/bazel';
 import { openJob, ui } from '../harness/ui';
 
 // A fleet that runs its lenses in the background ends a first turn saying so and
@@ -7,7 +7,7 @@ import { openJob, ui } from '../harness/ui';
 // only left the status line has nothing to publish.
 
 const writes = (bz: Bazel) =>
-  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
 const TITLE = 'Add rate limiter to the public API';
 
 const AGENTS = [

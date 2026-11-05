@@ -1,6 +1,6 @@
 import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
-import { Bazel } from '../harness/bazel';
+import { Bazel, isNeedsRead } from '../harness/bazel';
 import { openJob, ui } from '../harness/ui';
 
 // The PR's own page (Overview) and its History.
@@ -114,7 +114,7 @@ test.describe('P1 · History', () => {
     expect(pr.reviewed ?? false).toBe(false);
     expect((await bazel.api('GET', '/api/reviews')).json.reviews).toEqual([]);
     expect(bazel.savedReviews()).toEqual([]);
-    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
     expect(writes).toEqual([]);
 
     // A new head makes the history stale until it is generated again.
