@@ -1333,3 +1333,33 @@ func TestIncrementalIsNoAllClear(t *testing.T) {
 		}
 	})
 }
+
+// The script runs on the user's jq, and macOS ships an older one than Homebrew: a
+// construct only the newer one parses refuses every report on the other.
+func TestScriptsParseOnEveryJq(t *testing.T) {
+	dir := t.TempDir()
+	if err := skills.Materialize(dir); err != nil {
+		t.Fatal(err)
+	}
+	parser := filepath.Join(dir, "skills", "bazel-post-report", "scripts", "parse-report.jq")
+	file := filepath.Join(t.TempDir(), "r.md")
+	if err := os.WriteFile(file, []byte(bazelFile(header("approve", 3))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, jq := range []string{"/usr/bin/jq", "/opt/homebrew/bin/jq", "/usr/local/bin/jq", "jq"} {
+		path, err := exec.LookPath(jq)
+		if err != nil || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out, err := exec.Command(path, "-Rs", "-f", parser, file).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), `"deny": []`) {
+			v, _ := exec.Command(path, "--version").Output()
+			t.Errorf("%s (%s): %v\n%s", path, strings.TrimSpace(string(v)), err, out)
+		}
+	}
+	if len(seen) == 0 {
+		t.Skip("no jq")
+	}
+}
