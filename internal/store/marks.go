@@ -67,6 +67,11 @@ func (m Marks) Status(pr gh.PR) Status {
 	}
 }
 
+// ReviewedHead is the head commit of the PR's last review, or "".
+func (m Marks) ReviewedHead(key string) string {
+	return m[markKey(key)].HeadOid
+}
+
 // Age summarizes when the review was done ("2h", "3d").
 func (s Status) Age(now time.Time) string {
 	d := now.Sub(s.At)

@@ -670,6 +670,9 @@ type reviewRequest struct {
 	Refs []string `json:"refs"`
 	// Agent is the name of the chosen agent or pipeline. Empty = the default.
 	Agent string `json:"agent"`
+	// Since asks for a review of what changed since each PR's last review:
+	// the head it recorded goes to the agent as {{since}}.
+	Since bool `json:"since"`
 }
 
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
@@ -692,7 +695,7 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice)
+	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice, req.Since)
 	status := http.StatusAccepted
 	if len(queued) == 0 {
 		status = http.StatusBadRequest
@@ -716,7 +719,11 @@ func (s *Server) resolveChoice(name string) (config.Choice, error) {
 
 // enqueueRefs queues one review per reference. What went wrong comes back
 // in errs, one per item — a bad ref does not take down the others.
-func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
+func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice, since bool) (queued []jobView, errs []string) {
+	var marks store.Marks
+	if since {
+		marks = store.LoadMarks(s.reviewsDir)
+	}
 	// Cached PRs avoid a `gh pr view` per item when they came from the list.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
@@ -740,7 +747,7 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 				continue
 			}
 		}
-		view, err := s.jobs.Enqueue(pr, strings.EqualFold(pr.Author.Login, s.me), choice)
+		view, err := s.jobs.EnqueueSince(pr, strings.EqualFold(pr.Author.Login, s.me), choice, marks.ReviewedHead(key))
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 			continue

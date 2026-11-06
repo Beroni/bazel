@@ -3593,3 +3593,42 @@ func TestSalvoPublicadoNaoVaiDeNovo(t *testing.T) {
 		t.Errorf("legacy with a yes: %d %s, %d comments", w.Code, w.Body, calls())
 	}
 }
+
+// "Review changes since last review" sends the head the PR's last review
+// recorded; a PR never reviewed gets a whole review.
+func TestReviewSinceUsaAMarca(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	srv := newTestServer(t)
+	old := testPR(482)
+	old.HeadRefOid = strings.Repeat("c", 40)
+	path, err := store.Save(srv.reviewsDir, agent.Result{Agent: "lens", PR: old, Body: "# Verdict"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReviewed(srv.reviewsDir, agent.Result{Agent: "lens", PR: old}, path); err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{testPR(482), testPR(483)}
+	srv.prMu.Unlock()
+	post := func(ref string) jobView {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":["`+ref+`"],"since":true}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		var body struct {
+			Jobs []jobView `json:"jobs"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != http.StatusAccepted || len(body.Jobs) != 1 {
+			t.Fatalf("%s: %d %s", ref, w.Code, w.Body)
+		}
+		return body.Jobs[0]
+	}
+	if got := post(testPR(482).Key()); got.Since != old.HeadRefOid {
+		t.Errorf("since %q", got.Since)
+	}
+	if got := post(testPR(483).Key()); got.Since != "" {
+		t.Errorf("never reviewed: since %q", got.Since)
+	}
+}

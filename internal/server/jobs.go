@@ -140,6 +140,9 @@ type Job struct {
 	SavedTo string
 	Posted  bool
 	PostErr string
+	// Since is the head of the last review when this one covers only what
+	// changed after it; empty is a whole review.
+	Since string
 	// Incomplete says why what the review would publish is not a report: the
 	// stream of a step that publishes ended with work still in the background.
 	// Nothing of it goes to the PR.
@@ -353,7 +356,14 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 // cloning the repository twice — with another agent it is another review, and
 // it goes into the queue.
 func (m *Manager) Enqueue(pr gh.PR, mine bool, choice config.Choice) (jobView, error) {
-	return m.enqueue(pr, mine, choice, false)
+	return m.enqueue(pr, mine, choice, false, "")
+}
+
+// EnqueueSince queues a review of what changed in pr since the head of its
+// last review, since; empty is a whole review. A review of the same PR with the
+// same choice already waiting is returned instead.
+func (m *Manager) EnqueueSince(pr gh.PR, mine bool, choice config.Choice, since string) (jobView, error) {
+	return m.enqueue(pr, mine, choice, false, since)
 }
 
 // EnqueueHistory queues the history agent over pr. A history of this PR still
@@ -365,7 +375,7 @@ func (m *Manager) EnqueueHistory(pr gh.PR, mine bool) (jobView, error) {
 	if err := m.cfg.ValidateHistoryAgent(); err != nil {
 		return jobView{}, err
 	}
-	return m.enqueue(pr, mine, m.cfg.HistoryChoice(), true)
+	return m.enqueue(pr, mine, m.cfg.HistoryChoice(), true, "")
 }
 
 // HistoryJob is the history job of a PR still queued or running, if any.
@@ -381,7 +391,7 @@ func (m *Manager) HistoryJob(key string) (jobView, bool) {
 	return jobView{}, false
 }
 
-func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history bool) (jobView, error) {
+func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history bool, since string) (jobView, error) {
 	if len(choice.Steps) == 0 {
 		choice = m.cfg.DefaultChoice()
 	}
@@ -412,6 +422,7 @@ func (m *Manager) enqueue(pr gh.PR, mine bool, choice config.Choice, history boo
 		}
 	}
 	job := m.newJobLocked(pr, mine, choice, history)
+	job.Since = since
 	m.trimLocked()
 	err := m.sendLocked(job)
 	m.mu.Unlock()
@@ -554,7 +565,11 @@ func (m *Manager) run(q queued) {
 		// copy again, and one per click would pile up in publish/.
 		in.discard()
 	default:
-		res, err = m.runner.Review(ctx, job.PR, job.Choice, onEvent)
+		if job.Since != "" {
+			res, err = m.runner.ReviewSince(ctx, job.PR, job.Choice, job.Since, onEvent)
+		} else {
+			res, err = m.runner.Review(ctx, job.PR, job.Choice, onEvent)
+		}
 	}
 	if err != nil {
 		// Publishing inside the review's card, what failed was the
