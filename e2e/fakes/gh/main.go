@@ -44,8 +44,11 @@ type fixturePR struct {
 	HeadRefName  string `json:"headRefName"`
 	// HeadRefOid is empty in a fixture: gh then answers the tip of the branch the
 	// clone gets. Moved adds that many commits to the branch (bazel.movePR).
-	HeadRefOid  string `json:"headRefOid,omitempty"`
-	Moved       int    `json:"moved,omitempty"`
+	HeadRefOid string `json:"headRefOid,omitempty"`
+	Moved      int    `json:"moved,omitempty"`
+	// Rewritten is how many times the branch was force-pushed: each one is a new
+	// first commit, so no head from before is in the branch any more.
+	Rewritten   int    `json:"rewritten,omitempty"`
 	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
 	BaseRefName string `json:"baseRefName"`
 	// What bazel-post-report surveys. The script reads them as GitHub answers.
@@ -683,7 +686,11 @@ func importStream(repo string) string {
 		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
 			continue
 		}
-		commit(p.HeadRefName, "", p.Title, "from :1\n", func() {
+		message := p.Title
+		if p.Rewritten > 0 {
+			message = fmt.Sprintf("%s (rewritten %d)", p.Title, p.Rewritten)
+		}
+		commit(p.HeadRefName, "", message, "from :1\n", func() {
 			files := p.Files
 			if len(files) == 0 {
 				files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}

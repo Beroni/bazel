@@ -384,6 +384,18 @@ export class Bazel {
     }
   }
 
+  /**
+   * A force push on the PR's branch: a new history, so no head from before is
+   * in it any more. gh lists the new head; Bazel notices on its next refresh.
+   */
+  rewritePR(key: string): void {
+    const file = path.join(this.fixturesDir, 'prs.json');
+    const pr = JSON.parse(fs.readFileSync(file, 'utf8')).find((p: any) => `${p.repo}#${p.number}` === key);
+    if (!pr) throw new Error(`no fixture PR ${key}`);
+    this.updatePR(key, { rewritten: (pr.rewritten ?? 0) + 1, moved: 0 });
+    this.dropOrigin(pr.repo);
+  }
+
   /** Whether that agent process is still there: what "killed" means. */
   agentAlive(pid: number): boolean {
     try {
