@@ -72,6 +72,8 @@ test.describe('P1 · needs you', () => {
 
     await app.getByTestId('needs-scope-all').click();
     await expect(row('elsewhere/lib#5').getByTestId('needs-reason')).toContainText('conflicts with main');
+    // The counter is about the watched repos, whatever the page shows.
+    await expect(app.getByTestId('needs-count')).toHaveText('3');
     // The page and the counter came from one read; the scope is the same read.
     expect(needsCalls(bazel)).toHaveLength(calls);
     expect(writes(bazel)).toEqual([]);
@@ -138,6 +140,7 @@ test.describe('P1 · needs you', () => {
     bazel.setGh({ fail: { needs: 'HTTP 502: Bad Gateway' } });
     await app.getByTestId('refresh').click();
     await expect(app.getByTestId('needs-stale')).toContainText('HTTP 502');
+    await expect(app.getByTestId('needs-stale')).toContainText('Next try at');
     await expect(rows).toHaveCount(4);
   });
 

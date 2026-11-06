@@ -268,6 +268,15 @@ type needsCache struct {
 	err       string    // what the last attempt said, when it failed
 }
 
+// retryAt is when GitHub will be read again after a failure, or nil.
+func (c needsCache) retryAt() *time.Time {
+	if c.failedAt.IsZero() {
+		return nil
+	}
+	at := c.failedAt.Add(c.backoff())
+	return &at
+}
+
 // backoff is how long after a failure the next read waits.
 func (c needsCache) backoff() time.Duration {
 	d := needsBackoff
@@ -286,7 +295,7 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	all := r.URL.Query().Get("all") == "1"
 	c := s.loadNeeds(r.Context(), force)
 	if c.at.IsZero() {
-		writeErr(w, http.StatusBadGateway, errors.New(c.err))
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": c.err, "retry_at": c.retryAt()})
 		return
 	}
 	s.cfgMu.Lock()
@@ -294,13 +303,18 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	s.cfgMu.Unlock()
 	now := timeNow()
 	items := []needsItem{}
-	hidden := 0
+	hidden, count := 0, 0
 	for _, p := range c.prs {
 		cat, reason, since := classifyNeeds(s.me, p)
 		if cat == "" {
 			continue
 		}
 		in := watched[strings.ToLower(p.Repo())]
+		// The tab's counter means one thing whatever scope the page shows: what
+		// asks something of you in the repos you watch.
+		if in && cat != needsWaiting {
+			count++
+		}
 		if !all && !in {
 			hidden++
 			continue
@@ -321,7 +335,7 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "fetched_at": c.at, "truncated": c.truncated, "elsewhere": hidden, "all": all,
-		"stale": c.err,
+		"stale": c.err, "count": count, "retry_at": c.retryAt(),
 	})
 }
 

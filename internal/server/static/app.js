@@ -145,8 +145,11 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(body.error || `${res.status} ${res.statusText}`);
+    // A refusal of many items (POST /api/reviews) says why in errors[].
+    const why = body.error || (Array.isArray(body.errors) && body.errors.length ? body.errors.join('\n') : '');
+    const err = new Error(why || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    err.body = body;
     // The server asks before doing it: the caller may send it again with a yes.
     err.confirm = !!body.confirm;
     // The page is from another server process: say so, and bring the queue,
@@ -3319,7 +3322,8 @@ const NEEDS_GROUPS = [
 ];
 
 // actionable is what asks something of you: waiting on the author does not.
-const needsActionable = () => (state.needs ? state.needs.items.filter((i) => i.category !== 'waiting').length : 0);
+// The server counts it over the watched repos, whatever scope the page shows.
+const needsActionable = () => (state.needs ? state.needs.count || 0 : 0);
 
 // setTitle is the tab's title for the page open: the queue counts on the
 // dashboard, Needs you counts its own, and neither writes over the other.
@@ -3334,6 +3338,10 @@ function setTitle() {
     document.title = active ? `(${active}) Bazel` : 'Bazel';
   }
 }
+
+// retryNote says when the server reads GitHub again after a failure: ↻ before
+// then shows the same list.
+const retryNote = (at) => (at ? `. Next try at ${new Date(at).toLocaleTimeString()}; ↻ before that reads nothing new.` : '');
 
 function needsTitle() {
   const n = needsActionable();
@@ -3351,14 +3359,14 @@ async function loadNeeds(force) {
     state.needsError = '';
     // Drawn only when it changed: a refresh that brings the same list leaves
     // the page as it is, without a flicker.
-    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all + data.stale;
+    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all + data.stale + data.retry_at;
     if (sig === state.needsSig) return;
     state.needsSig = sig;
     state.needs = data;
     for (const it of data.items) state.needsPRs[it.key] = it;
   } catch (err) {
     if (gen !== state.needsGen) return;
-    state.needsError = err.message;
+    state.needsError = err.message + retryNote(err.body && err.body.retry_at);
     state.needsSig = '';
   }
   renderNeeds();
@@ -3391,13 +3399,18 @@ function renderNeeds() {
   const nodes = [];
   // The last read failed: the list is the last good one, and says so.
   if (data.stale) {
-    nodes.push(tid(el('div', 'stale-box', `Could not read GitHub, so this list is from ${new Date(data.fetched_at).toLocaleTimeString()}: ${data.stale}`), 'needs-stale'));
+    nodes.push(tid(el('div', 'stale-box', `Could not read GitHub, so this list is from ${new Date(data.fetched_at).toLocaleTimeString()}: ${data.stale}`
+      + retryNote(data.retry_at)), 'needs-stale'));
   }
   for (const [cat, label] of NEEDS_GROUPS) {
     const items = data.items.filter((i) => i.category === cat);
     if (!items.length) continue;
     const group = tid(el('div', 'needs-group ' + cat), 'needs-group', { category: cat });
-    group.append(sectionLabel(label, String(items.length)));
+    // h3 under the page's h2: the levels do not skip.
+    const head = sectionLabel(label, String(items.length));
+    const h3 = el('h3', head.className);
+    h3.append(...head.childNodes);
+    group.append(h3);
     for (const it of items) group.append(needsRow(it));
     nodes.push(group);
   }
@@ -3450,7 +3463,14 @@ function needsRow(it) {
 // the watched list is read from GitHub on purpose, like any other opened one.
 function openNeeds(key) {
   location.hash = '#/';
+  // Shown now, not when hashchange gets to it: a hidden page takes no focus.
+  showPage('dashboard');
   openPR(key);
+  // The keyboard lands on what opened, not on <body>: the viewer stays the same
+  // element while the PR's page loads into it.
+  const viewer = $('#viewer');
+  if (!viewer.hasAttribute('tabindex')) viewer.tabIndex = -1;
+  viewer.focus({ preventScroll: true });
 }
 
 function route() {
