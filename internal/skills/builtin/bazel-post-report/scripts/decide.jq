@@ -48,6 +48,7 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
      elif $p.whole_diff | not then "the file does not say the diff was whole"
      else empty end),
     (if $p.scope_real | not then "the report names no scope" else empty end),
+    (if $p.since then "it reviewed only the changes since `\($p.since[0:7])`" else empty end),
     (if $p.lenses_real | not then "the report names no lens that ran" else empty end),
     (if any($p.skipped[] | split(",")[]; endswith("(single-lens run)") | not) then "a lens was skipped" else empty end)
    ]) as $unproven
@@ -56,7 +57,8 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
     + (if .start_line then {start_line, start_side: (.start_side // .side)} else {} end);
   def coverage:
     "**Scope:** `\($p.scope | map(code) | join("`, `"))` — \(plural($p.files; "file"))\n**Lenses:** \($p.lenses | map(plain) | join(", "))"
-    + (if $p.skipped == [] then "" else " (skipped: \($p.skipped | map(plain) | join(", ")))" end);
+    + (if $p.skipped == [] then "" else " (skipped: \($p.skipped | map(plain) | join(", ")))" end)
+    + (if $p.since then "\n**Changes since** `\($p.since[0:7])` only: what came before was reviewed then." else "" end);
   (if $moved then "\n\n> Reviewed at `\($sha[0:7])`; the PR has moved to `\($head[0:7])` since, so nothing here is line-anchored and this says nothing about the newer commits."
    elif ($p.sha_proven | not) then "\n\n> The reviewed commit could not be proven, so nothing here is line-anchored."
    else "" end) as $note

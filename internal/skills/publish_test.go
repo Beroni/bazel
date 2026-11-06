@@ -1298,3 +1298,38 @@ func TestTheSameReportIsNotPublishedTwice(t *testing.T) {
 		}
 	})
 }
+
+// An incremental review covers the changes since an earlier head: a clean one says
+// nothing of the rest of the PR, so it is never the all-clear.
+func TestIncrementalIsNoAllClear(t *testing.T) {
+	since := strings.Repeat("e", 40)
+	incremental := func(r string) string {
+		return strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff "+since+"..HEAD",
+			"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff "+since+"..HEAD`").Replace(r)
+	}
+	t.Run("clean", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental(header("approve", 3)))))
+		p := w.payload(0)
+		if strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "only the changes since `eeeeeee`") {
+			t.Errorf("an incremental clean review clears nothing:\n%s", p.Body)
+		}
+	})
+	t.Run("with a finding", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental(header("request_changes", 3))+"\n## Findings\n\n"+finding("One", "a.go", 2, "Bad."))))
+		p := w.payload(0)
+		if len(p.Comments) != 1 || !strings.Contains(p.Body, "**Changes since** `eeeeeee` only") {
+			t.Errorf("%+v", p)
+		}
+	})
+	t.Run("a scope that only looks like one", func(t *testing.T) {
+		w := newWorld(t)
+		r := strings.Replace(header("approve", 3), "scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff origin/main...HEAD --since "+since, 1)
+		r = strings.Replace(r, "**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff origin/main...HEAD --since "+since+"`", 1)
+		w.run("publish", w.prepare(bazelFile(r)))
+		if p := w.payload(0); strings.Contains(p.Body, "Changes since") {
+			t.Errorf("only the exact form is incremental:\n%s", p.Body)
+		}
+	})
+}

@@ -155,6 +155,8 @@ def line($l; $next; $steps):
    truncated: any($bazel[]; startswith("- Truncated: yes") or contains("The diff was truncated")),
    whole_diff: any($bazel[]; . == "- Truncated: no"),
    scope_real: all(.headers[]; .scope_cmd != "-"),
+   # Only the changes since an earlier head: clean says nothing of the rest.
+   since: ([.headers[].scope_cmd | capture("^git diff (?<s>[0-9a-f]{40})\\.\\.HEAD$")?.s] | first),
    lenses_real: all(.headers[]; .lenses_ran != "-"),
    verdict: (if any($v[]; . == "request_changes") then "request_changes"
              elif any($v[]; . == "comment") then "comment" else "approve" end),

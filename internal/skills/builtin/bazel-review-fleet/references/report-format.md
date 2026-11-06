@@ -91,7 +91,7 @@ not of the producer. Who produced it is in `lenses_ran`.
 | `pr` | a number | Must be the PR in Bazel's header line, or the publisher refuses. |
 | `base` | the base branch name | On the record; goes into the review body. |
 | `head_sha` | 40 hex, full | Compared against the PR's current HEAD. Different → no inline anchoring. |
-| `scope_cmd` | the command, one line | Goes into the review body, and proves the scope was resolved. |
+| `scope_cmd` | the command, one line | Goes into the review body, and proves the scope was resolved. `git diff <40-char sha>..HEAD` is an incremental review: only the changes since that commit, never an all-clear. |
 | `files` | integer | `0` is a resolution failure → **the publisher refuses to post**. |
 | `lenses_ran` | names separated by `, ` | Goes in the body. An all-clear with a lens missing claims coverage that never happened. |
 | `lenses_skipped` | `none`, or `<lens> (<reason>)` separated by `, ` | An honest record of what was not looked at. |

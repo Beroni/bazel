@@ -42,6 +42,36 @@ working directory is already the clone with the PR checked out. Use exactly that
 | The diff | `git diff origin/<base>...HEAD` |
 | Files | `git diff --name-only origin/<base>...HEAD` |
 
+### Only what changed since the last review
+
+The task can carry `--since=<sha>`: the head Bazel reviewed last time on this PR, when a person
+asked for the changes since then. With it, the scope is those changes and nothing else — but only
+if the sha proves itself in the clone:
+
+```bash
+S='<the sha from the task>'
+printf '%s' "$S" | grep -Eqx '[0-9a-f]{40}' &&
+  git cat-file -e "$S^{commit}" 2>/dev/null &&
+  git merge-base --is-ancestor "$S" HEAD && echo incremental
+```
+
+| What | With `incremental` |
+|---|---|
+| The diff | `git diff <sha>..HEAD` — two dots: the sha is an ancestor of HEAD |
+| Files | `git diff --name-only <sha>..HEAD` |
+| `scope_cmd` | `git diff <sha>..HEAD`, the full 40-char sha |
+
+The whole PR (`git diff origin/<base>...HEAD`) is still there to read for context, and a lens may
+look at it to understand a change, but a finding is about a line in the incremental diff.
+
+**Anything else falls back to the whole PR, with no other change:** no `--since`, `--since=` with
+nothing, a sha that is not 40 lowercase hex characters, not in the clone, or not an ancestor of
+HEAD (a force-push rewrote the branch). `scope_cmd` then says `git diff origin/<base>...HEAD`, and
+that line is how the reader knows. Never review a scope the sha cannot vouch for, and never ask.
+
+An incremental diff can be empty, if the new commits only reverted themselves: that is a failure
+report like any empty scope, never an `approve`.
+
 Rules that keep that honest:
 
 - **Do not clone anything.** The cwd is the clone. Never move to another directory to review.
