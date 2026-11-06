@@ -303,9 +303,17 @@ export class Bazel {
    * Writes needs.json: what the fake gh answers to the "Needs you" searches, in
    * the GraphQL answer's shape ({ requested, reviewed, authored } → nodes).
    */
-  setNeeds(searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] }): void {
-    const one = (nodes: unknown[] = []) => ({ issueCount: nodes.length, nodes });
-    const data = { requested: one(searches.requested), reviewed: one(searches.reviewed), authored: one(searches.authored) };
+  setNeeds(
+    searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] },
+    /** What GitHub says each search found, when it found more than it returned. */
+    totals: { requested?: number; reviewed?: number; authored?: number } = {},
+  ): void {
+    const one = (nodes: unknown[] = [], total?: number) => ({ issueCount: total ?? nodes.length, nodes });
+    const data = {
+      requested: one(searches.requested, totals.requested),
+      reviewed: one(searches.reviewed, totals.reviewed),
+      authored: one(searches.authored, totals.authored),
+    };
     fs.writeFileSync(path.join(this.fixturesDir, 'needs.json'), JSON.stringify({ data }, null, 2));
   }
 
