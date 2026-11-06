@@ -115,4 +115,29 @@ test.describe('P1 · needs you', () => {
     await expect(app.getByTestId('needs-empty')).toBeVisible();
     await expect(app.getByTestId('needs-count')).toBeHidden();
   });
+
+  test('a late answer for the scope you left is dropped, and a failed read shows the last list as stale', async ({ app, bazel }) => {
+    await setup(bazel);
+    await app.goto(app.url().replace(/#.*$/, '') + '#/needs');
+    await app.reload();
+    const rows = app.getByTestId('needs-row');
+    await expect(rows).toHaveCount(4);
+    // "all repos" answers late, after "watched repos" was chosen again.
+    let release!: () => void;
+    const held = new Promise<void>((r) => { release = r; });
+    await app.route('**/api/needs?*all=1*', async (route) => { await held; await route.continue(); });
+    await app.getByTestId('needs-scope-all').click();
+    await app.getByTestId('needs-scope-watched').click();
+    await expect(rows).toHaveCount(4);
+    release();
+    await app.waitForTimeout(500);
+    await expect(rows).toHaveCount(4);
+    await expect(app.locator('[data-testid=needs-row][data-pr-key="elsewhere/lib#5"]')).toHaveCount(0);
+    await app.unroute('**/api/needs?*all=1*');
+
+    bazel.setGh({ fail: { needs: 'HTTP 502: Bad Gateway' } });
+    await app.getByTestId('refresh').click();
+    await expect(app.getByTestId('needs-stale')).toContainText('HTTP 502');
+    await expect(rows).toHaveCount(4);
+  });
 });

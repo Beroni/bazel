@@ -34,6 +34,7 @@ const state = {
   needs: null,       // the last answer of /api/needs
   needsSig: '',      // what it looked like, to draw only on a change
   needsAll: false,   // all repos, or only the watched ones
+  needsGen: 0,       // the latest /api/needs request; older answers are dropped
   needsError: '',
   needsPRs: {},      // key -> PR from the needs page, for opening one outside the list
   savedShort: {},    // saved review name -> true when it is short with no findings
@@ -3291,18 +3292,23 @@ function needsTitle() {
 }
 
 async function loadNeeds(force) {
-  const all = state.needsAll ? '&all=1' : '';
+  // Only the latest request draws: an answer for the scope you just left, or an
+  // error of an older read, arriving late must not show.
+  const gen = ++state.needsGen;
+  const all = !!state.needsAll;
   try {
-    const data = await api('/api/needs?' + (force ? 'refresh=1' : '') + all);
+    const data = await api('/api/needs?' + (force ? 'refresh=1' : '') + (all ? '&all=1' : ''));
+    if (gen !== state.needsGen || !!data.all !== all) return;
     state.needsError = '';
     // Drawn only when it changed: a refresh that brings the same list leaves
     // the page as it is, without a flicker.
-    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all;
+    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all + data.stale;
     if (sig === state.needsSig) return;
     state.needsSig = sig;
     state.needs = data;
     for (const it of data.items) state.needsPRs[it.key] = it;
   } catch (err) {
+    if (gen !== state.needsGen) return;
     state.needsError = err.message;
     state.needsSig = '';
   }
@@ -3334,6 +3340,10 @@ function renderNeeds() {
     data.truncated ? 'GitHub has more than these: the oldest are not shown' : '',
   ].filter(Boolean).join(' · ');
   const nodes = [];
+  // The last read failed: the list is the last good one, and says so.
+  if (data.stale) {
+    nodes.push(tid(el('div', 'stale-box', `Could not read GitHub, so this list is from ${new Date(data.fetched_at).toLocaleTimeString()}: ${data.stale}`), 'needs-stale'));
+  }
   for (const [cat, label] of NEEDS_GROUPS) {
     const items = data.items.filter((i) => i.category === cat);
     if (!items.length) continue;

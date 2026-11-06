@@ -53,13 +53,19 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 		id, state string
 		at        time.Time
 	}
-	var mine *review
+	// opinion is my last review that takes a side: a COMMENTED one after asking
+	// for changes leaves the request standing; only approving, or its dismissal,
+	// ends it.
+	var mine, opinion *review
 	for _, r := range p.Reviews.Nodes {
 		if !is(r.Author) || r.State == "PENDING" || r.SubmittedAt.IsZero() {
 			continue
 		}
 		if mine == nil || r.SubmittedAt.After(mine.at) {
 			mine = &review{r.ID, r.State, r.SubmittedAt}
+		}
+		if r.State != "COMMENTED" && (opinion == nil || r.SubmittedAt.After(opinion.at)) {
+			opinion = &review{r.ID, r.State, r.SubmittedAt}
 		}
 	}
 
@@ -87,8 +93,8 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 	// started is still open. askedAt is the latest of those.
 	var askedAt time.Time
 	askReview := ""
-	if mine != nil && mine.state == "CHANGES_REQUESTED" {
-		askedAt, askReview = mine.at, mine.id
+	if opinion != nil && opinion.state == "CHANGES_REQUESTED" {
+		askedAt, askReview = opinion.at, opinion.id
 	}
 	openThreads := 0
 	for _, t := range p.ReviewThreads.Nodes {
@@ -235,15 +241,33 @@ func plural(n int) string {
 var needsRank = map[string]int{needsRequested: 0, needsReplied: 1, needsWaiting: 2, needsYours: 3}
 
 // needsFetchTTL is how long a read of the page serves before GitHub is asked
-// again; the refresh button asks sooner, under the list's budget.
-var needsFetchTTL = time.Minute
+// again; the refresh button asks sooner, under the list's budget. A failed
+// read waits needsBackoff before the next, doubling up to needsBackoffMax while
+// GitHub keeps failing, refresh or not.
+var (
+	needsFetchTTL   = time.Minute
+	needsBackoff    = 30 * time.Second
+	needsBackoffMax = 5 * time.Minute
+)
 
-// needsCache is the last read of the searches.
+// needsCache is the last good read of the searches and how the last attempts
+// went: a failure keeps the good list and says it is stale.
 type needsCache struct {
-	at        time.Time
+	at        time.Time // last good read; zero when there was none
 	prs       []gh.NeedsPR
 	truncated bool
-	err       string
+	failedAt  time.Time // last failed attempt, zero after a good one
+	failures  int       // failed attempts in a row
+	err       string    // what the last attempt said, when it failed
+}
+
+// backoff is how long after a failure the next read waits.
+func (c needsCache) backoff() time.Duration {
+	d := needsBackoff
+	for i := 1; i < c.failures && d < needsBackoffMax; i++ {
+		d *= 2
+	}
+	return min(d, needsBackoffMax)
 }
 
 func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
@@ -253,9 +277,9 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	}
 	force := r.URL.Query().Get("refresh") == "1"
 	all := r.URL.Query().Get("all") == "1"
-	c, err := s.loadNeeds(r.Context(), force)
-	if err != nil {
-		writeErr(w, http.StatusBadGateway, err)
+	c := s.loadNeeds(r.Context(), force)
+	if c.at.IsZero() {
+		writeErr(w, http.StatusBadGateway, errors.New(c.err))
 		return
 	}
 	s.cfgMu.Lock()
@@ -290,19 +314,25 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"items": items, "fetched_at": c.at, "truncated": c.truncated, "elsewhere": hidden, "all": all,
+		"stale": c.err,
 	})
 }
 
 // loadNeeds reads the searches, from the cache or from GitHub. One gh call,
-// charged to the same budgets as the PR list and the details.
-func (s *Server) loadNeeds(ctx context.Context, force bool) (needsCache, error) {
+// charged to the same budgets as the PR list and the details. What it returns
+// always holds the last good read, if any, and the last failure, if the last
+// attempt failed.
+func (s *Server) loadNeeds(ctx context.Context, force bool) needsCache {
 	now := timeNow()
 	s.needsMu.Lock()
 	defer s.needsMu.Unlock()
 	c := s.needs
-	fresh := !c.at.IsZero() && now.Sub(c.at) < needsFetchTTL
-	if fresh && (!force || c.err != "") {
-		return c, c.answer()
+	if !c.failedAt.IsZero() && now.Sub(c.failedAt) < c.backoff() {
+		return c
+	}
+	fresh := !c.at.IsZero() && now.Sub(c.at) < needsFetchTTL && c.failedAt.IsZero()
+	if fresh && !force {
+		return c
 	}
 	s.detMu.Lock()
 	allowed := true
@@ -314,35 +344,26 @@ func (s *Server) loadNeeds(ctx context.Context, force bool) (needsCache, error) 
 		budgetErr = s.ghReadLocked(now, false)
 	}
 	s.detMu.Unlock()
-	if !allowed || budgetErr != nil {
-		if !c.at.IsZero() {
-			return c, c.answer()
+	if !allowed {
+		return c
+	}
+	if budgetErr != nil {
+		if c.at.IsZero() {
+			c.err = budgetErr.Error()
 		}
-		if budgetErr == nil {
-			budgetErr = errors.New("too many refreshes; wait a minute")
-		}
-		return c, budgetErr
+		return c
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
 	defer cancel()
 	prs, truncated, err := gh.FetchNeeds(ctx, s.me)
 	if err != nil {
-		// A failed read keeps the last good one on the page.
-		if !c.at.IsZero() && c.err == "" {
-			return c, nil
-		}
-		s.needs = needsCache{at: timeNow(), err: err.Error()}
-		return s.needs, err
+		c.failedAt, c.err = timeNow(), err.Error()
+		c.failures++
+		s.needs = c
+		return c
 	}
 	s.needs = needsCache{at: timeNow(), prs: prs, truncated: truncated}
-	return s.needs, nil
-}
-
-func (c needsCache) answer() error {
-	if c.err != "" {
-		return errors.New(c.err)
-	}
-	return nil
+	return s.needs
 }
 
 // needsAsPR is the part of a needs-you PR the list's view knows how to draw.

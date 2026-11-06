@@ -144,6 +144,9 @@ func TestClassifyNeeds(t *testing.T) {
 		{"aprovei, mas minha thread segue aberta", np{author: "bob", reviewed: true, reviews: []string{"me APPROVED@20 rv1"}, pushed: 1, threads: []string{"me@19 rv1 open me@19"}}, needsWaiting, "1 open thread", 19},
 		{"thread aberta minha, autor fez push depois", np{author: "bob", reviewed: true, reviews: []string{"me COMMENTED@8 rv1"}, pushed: 12, threads: []string{"me@8 rv1 open me@8"}}, needsReplied, "pushed", 12},
 		{"minha última fala na thread é depois do push", np{author: "bob", reviewed: true, reviews: []string{"me COMMENTED@8 rv1"}, pushed: 12, threads: []string{"me@8 rv1 open me@13"}}, needsWaiting, "", 13},
+		{"comentário depois de pedir mudanças não encerra o pedido", np{author: "bob", reviewed: true, reviews: []string{"me CHANGES_REQUESTED@10", "me COMMENTED@11"}, pushed: 9}, needsWaiting, "you asked for changes", 10},
+		{"comentário depois do pedido, autor fez push depois", np{author: "bob", reviewed: true, reviews: []string{"me CHANGES_REQUESTED@10", "me COMMENTED@11"}, pushed: 12}, needsReplied, "@bob pushed", 12},
+		{"pedido dispensado encerra", np{author: "bob", reviewed: true, reviews: []string{"me CHANGES_REQUESTED@10", "me DISMISSED@11"}, pushed: 9}, "", "", -1},
 		{"só comentei: fora", np{author: "bob", reviewed: true, reviews: []string{"me COMMENTED@8"}, pushed: 12}, "", "", -1},
 
 		// 4. My own PRs.
@@ -247,5 +250,73 @@ func TestHandleNeeds(t *testing.T) {
 	calls, _ = os.ReadFile(log)
 	if strings.Count(string(calls), "\n") != 2 {
 		t.Errorf("refresh did not read again:\n%s", calls)
+	}
+}
+
+// A read that fails after a good one keeps the good list on the page, says it
+// is stale, and waits before trying GitHub again.
+func TestNeedsFalhaMantemListaEEspera(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	p := np{author: "bob", requested: true, requests: []string{"me@5"}}.pr(t)
+	b, _ := json.Marshal(map[string]any{"issueCount": 1, "nodes": []gh.NeedsPR{p}})
+	empty := `{"issueCount":0,"nodes":[]}`
+	answer := `{"data":{"requested":` + string(b) + `,"reviewed":` + empty + `,"authored":` + empty + `}}`
+	bin, dir := t.TempDir(), t.TempDir()
+	failFlag, log := filepath.Join(dir, "fail"), filepath.Join(dir, "calls")
+	_ = os.WriteFile(filepath.Join(dir, "answer.json"), []byte(answer), 0o600)
+	script := "#!/bin/sh\necho x >> " + log + "\nif [ -e " + failFlag + " ]; then echo 'HTTP 502' >&2; exit 1; fi\ncat " + filepath.Join(dir, "answer.json") + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	now := time.Now()
+	old := timeNow
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = old })
+	cfg := cfgFor(t, "echo")
+	cfg.Repos = []string{"acme/api"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	srv, err := New(ctx, cfg, "me", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func(q string) (int, map[string]any) {
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/needs"+q, nil))
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		return w.Code, body
+	}
+	calls := func() int { b, _ := os.ReadFile(log); return strings.Count(string(b), "x") }
+	if code, body := get(""); code != 200 || body["stale"] != "" {
+		t.Fatalf("first: %d %v", code, body)
+	}
+	_ = os.WriteFile(failFlag, nil, 0o600)
+	now = now.Add(2 * time.Minute)
+	for range 5 {
+		code, body := get("?refresh=1")
+		items, _ := body["items"].([]any)
+		if code != 200 || len(items) != 1 || !strings.Contains(fmt.Sprint(body["stale"]), "HTTP 502") {
+			t.Fatalf("after failure: %d %v", code, body)
+		}
+	}
+	if calls() != 2 {
+		t.Errorf("gh ran %d times; the failure should hold the next reads back", calls())
+	}
+	now = now.Add(needsBackoff + time.Second)
+	get("")
+	if calls() != 3 {
+		t.Errorf("after the backoff: %d calls", calls())
+	}
+	now = now.Add(needsBackoff + time.Second) // the second failure waits twice as long
+	get("")
+	if calls() != 3 {
+		t.Errorf("backoff did not grow: %d calls", calls())
+	}
+	_ = os.Remove(failFlag)
+	now = now.Add(needsBackoff)
+	if _, body := get(""); body["stale"] != "" || calls() != 4 {
+		t.Errorf("recovered: %v, %d calls", body, calls())
 	}
 }
