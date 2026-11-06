@@ -162,6 +162,26 @@ test.describe('P0 · the fakes fail closed', () => {
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
+  test('gh repo view tells where it is: named, GH_REPO, or the clone', ({}, testInfo) => {
+    const dir = state();
+    const env = safeEnv({ HOME: dir, GIT_CONFIG_NOSYSTEM: '1', FAKE_GH_FIXTURES: path.join(__dirname, '..', 'fixtures', 'default'), FAKE_GH_STATE: dir });
+    const gh = (args: string[], cwd?: string, extra: Record<string, string> = {}) => spawnSync(path.join(BIN, 'gh'), args, { env: { ...env, ...extra }, cwd, encoding: 'utf8' });
+    const name = ['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'];
+    expect(JSON.parse(gh(['repo', 'view', 'ACME/web-app', '--json', 'nameWithOwner']).stdout)).toEqual({ nameWithOwner: 'acme/web-app' });
+    expect(gh(name, undefined, { GH_REPO: 'acme/web-app' }).stdout).toBe('acme/web-app\n');
+    const clone = testInfo.outputPath('clone');
+    expect(gh(['repo', 'clone', 'acme/api-core', clone]).status).toBe(0);
+    expect(gh(name, clone).stdout).toBe('acme/api-core\n');
+    expect(gh(name, testInfo.outputDir).status).toBe(1); // not in a clone
+    expect(gh(['repo', 'view', 'evil/repo', '--json', 'nameWithOwner']).status).toBe(1);
+    for (const args of [['repo', 'view', '--json', 'description'], ['repo', 'view', 'acme/api-core', '--web'], ['repo', 'view']]) {
+      expect(gh(args, clone).status, args.join(' ')).toBe(1);
+    }
+    const calls = fs.readFileSync(path.join(dir, 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+    expect(calls.filter((c) => c.unsupported).map((c) => c.argv.slice(2).join(' '))).toEqual(['--json description', 'acme/api-core --web', '']);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   test('the agent replays a line of any size, to the end of the scenario', ({}, testInfo) => {
     fs.writeFileSync(testInfo.outputPath('long.txt'), `before\n${'x'.repeat(2 << 20)}\nafter\n#!exit 19\nnever\n`);
     const dir = state();

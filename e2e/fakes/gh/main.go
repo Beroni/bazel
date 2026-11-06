@@ -162,6 +162,8 @@ func dispatch(args []string) int {
 		return comment(args)
 	case is(args, "repo", "clone"):
 		return cloneRepo(args)
+	case is(args, "repo", "view"):
+		return repoView(args)
 	case is(args, "pr", "checkout"):
 		return checkoutPR(args)
 	}
@@ -824,4 +826,51 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// repoView answers `gh repo view [R] --json nameWithOwner [--jq .nameWithOwner]`,
+// which the built-in skills run to confirm where they are. With no R, gh asks
+// GH_REPO, then the clone's origin. Any other field or flag is not modelled.
+func repoView(args []string) int {
+	rest := args[2:]
+	repo := ""
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		repo, rest = rest[0], rest[1:]
+	}
+	jq := ""
+	switch {
+	case slices.Equal(rest, []string{"--json", "nameWithOwner"}):
+	case slices.Equal(rest, []string{"--json", "nameWithOwner", "--jq", ".nameWithOwner"}):
+		jq = ".nameWithOwner"
+	default:
+		return unsupported(args)
+	}
+	if failed("repo-view") {
+		return 1
+	}
+	if repo == "" {
+		repo = os.Getenv("GH_REPO")
+	}
+	if repo == "" {
+		url, err := exec.Command("git", "config", "remote.origin.url").Output()
+		m := originRe.FindStringSubmatch(strings.TrimSpace(string(url)))
+		if err != nil || m == nil {
+			fmt.Fprintln(os.Stderr, "failed to run git: not a git repository (or any of the parent directories): .git")
+			return 1
+		}
+		repo = m[1] + "/" + m[2]
+	}
+	i := slices.IndexFunc(loadPRs(), func(p fixturePR) bool { return strings.EqualFold(p.Repo, repo) })
+	if i < 0 {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a Repository with the name '%s'. (repository)\n", repo)
+		return 1
+	}
+	name := loadPRs()[i].Repo
+	if jq != "" {
+		fmt.Println(name)
+		return 0
+	}
+	b, _ := json.Marshal(map[string]string{"nameWithOwner": name})
+	fmt.Println(string(b))
+	return 0
 }
