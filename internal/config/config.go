@@ -270,7 +270,10 @@ type Agent struct {
 	Checkout bool `yaml:"checkout"`
 	// Prompt is the review template. Placeholders: {{repo}}, {{number}},
 	// {{title}}, {{author}}, {{url}}, {{branch}}, {{base}}, {{body}},
-	// {{workdir}}, {{diff}}. The diff is only downloaded if the template asks.
+	// {{workdir}}, {{diff}}, {{since}}. The diff is only downloaded if the template
+	// asks. {{since}} is the head of the last review in a "review changes since
+	// last review" job, when the clone shows the PR grew from it, and empty
+	// otherwise.
 	Prompt string `yaml:"prompt"`
 	// TimeoutSeconds caps how long a review takes. 0 = no limit.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
