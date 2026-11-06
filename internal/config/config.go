@@ -329,6 +329,57 @@ PR description:
 Write the final report to stdout in Markdown, and say at the end what was
 published on the PR.`
 
+// legacyPublishPrompts are publishPrompt as Bazel wrote it before, into the
+// configs it saved: with the PR's title, author and branch, which is the author's
+// text going to a model with write access.
+var legacyPublishPrompts = []string{`{{task}}
+
+The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
+#{{number}} already checked out on branch ` + "`{{branch}}`" + ` over base ` + "`{{base}}`" + `.
+This is a throwaway clone: read freely, but do not edit files and do not commit.
+
+The review is already done and has been read — it is in {{review_file}}. Publish
+it on PR #{{number}} of {{repo}}: a single review, with inline comments on the
+right lines, and do not open another if you already have one on the PR.
+
+**Do not redo the review and do not invent new findings**: publish what is in
+the file. If a finding does not fit on a diff line, leave it in the review body.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Write to stdout what was published, in Markdown.`, `{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos e
+não commite nada.
+
+O review já está pronto e já foi lido — está em {{review_file}}. Publique-o no
+PR #{{number}} de {{repo}}: um review só, com os comentários inline nas linhas
+certas, e não abra outro se já houver um seu no PR.
+
+**Não refaça o review e não invente achado novo**: publique o que está no
+arquivo. Se algum achado não couber numa linha do diff, deixe-o no corpo do
+review.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Devolva no stdout o que foi publicado, em markdown.`}
+
+// legacyPublishPrompt says whether a saved prompt is one of those, untouched:
+// spacing aside, word for word. One edited by hand is the user's.
+func legacyPublishPrompt(prompt string) bool {
+	flat := flatten(prompt)
+	for _, old := range legacyPublishPrompts {
+		if flat == flatten(old) {
+			return true
+		}
+	}
+	return false
+}
+
 // publishPrompt is the template for whoever publishes an already written
 // review. The instruction that matters is the last one: do not redo the review,
 // publish what is in the file — that is what you read on screen before sending.
@@ -387,17 +438,17 @@ func (c *Config) seedStarter() {
 	off := false
 	c.Agents = []AgentDef{
 		{Name: "bazel-review-fleet", Description: "three review lenses over one diff, deduplicated into one verdict",
-			Task: "/bazel-review-fleet {{number}}"},
+			Task: "/bazel:bazel-review-fleet {{number}}"},
 		{Name: "bazel-senior-code-reviewer", Description: "precision lens: a few findings it can defend",
-			Task: "/bazel-senior-code-reviewer {{number}}"},
+			Task: "/bazel:bazel-senior-code-reviewer {{number}}"},
 		{Name: "bazel-exploit-digger", Description: "adversarial recall lens, class by class",
-			Task: "/bazel-exploit-digger {{number}}"},
+			Task: "/bazel:bazel-exploit-digger {{number}}"},
 		{Name: "bazel-lazy-senior-dev", Description: "subtraction lens: code that should not exist",
-			Task: "/bazel-lazy-senior-dev {{number}}"},
+			Task: "/bazel:bazel-lazy-senior-dev {{number}}"},
 		// A PR's history is not a review: publishing it would tell the team the
 		// code was reviewed.
 		{Name: "bazel-history-pr", Description: "the PR's story: commits, reviews and the review→fix loop",
-			Task: "/bazel-history-pr {{number}}", Publishable: &off},
+			Task: "/bazel:bazel-history-pr {{number}}", Publishable: &off},
 	}
 	c.Pipelines = []Pipeline{
 		// The lenses in separate processes: what keeps them independent on an
@@ -773,7 +824,7 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	def := AgentDef{
 		Name:        skill,
 		Description: strings.TrimSpace(description),
-		Task:        "/" + skill + " {{number}}",
+		Task:        skills.QualifiedTask(skill, "{{number}}"),
 	}
 	// Added from the page or from the starter, a history is not a review.
 	if strings.EqualFold(skill, historySkill) {
@@ -1678,7 +1729,7 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 
 // defaultHistoryTask is the skill the History tab runs unless history_agent
 // names another one.
-const defaultHistoryTask = "/" + historySkill + " {{number}}"
+var defaultHistoryTask = skills.QualifiedTask(historySkill, "{{number}}")
 
 // historySkill is the built-in that writes a PR's story.
 const historySkill = "bazel-history-pr"
@@ -1719,9 +1770,11 @@ func (c *Config) PostChoice() Choice {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
-	// Here and not when the config loads: a config saved with the bare name works
-	// the same, and the file is never rewritten.
-	ra.Task = skills.PostTask(ra.Task)
+	// A prompt saved as an older default reads as the current one: those carried
+	// the PR's title and author, the author's text, to a model that can write.
+	if legacyPublishPrompt(ra.Prompt) {
+		ra.Prompt = publishPrompt
+	}
 	// Unless told otherwise, publishing clones: an inline comment needs the
 	// diff to find the line. Whoever wrote `checkout: false` in post_agent
 	// knows what they are doing — an agent that only calls the GitHub API does
@@ -1761,8 +1814,11 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 		Args:        def.Args,
 		Format:      def.Format,
 		Prompt:      def.Prompt,
-		Task:        def.Task,
-		Posts:       def.Posts,
+		// The plugin's copy of a built-in, whatever the file says: here and not when
+		// the config loads, so a saved bare name works the same and the file is
+		// never rewritten.
+		Task:  skills.Qualify(def.Task),
+		Posts: def.Posts,
 		// nil is publishable: every agent written before this field existed
 		// keeps going to the PR as it always has.
 		Publishable:    def.Publishable == nil || *def.Publishable,

@@ -270,16 +270,17 @@ subagents the fleet runs its lenses as sequential passes in one process, which
 keeps them less independent; `serial-fleet` keeps each lens in its own process
 on any CLI.
 
-**Your own skill of the same name may win.** The built-ins reach Claude Code as
-plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` may answer
-the bare `/bazel-<name>` instead. That is why they all carry the `bazel-`
-prefix: your `review-fleet` and Bazel's `bazel-review-fleet` live side by side,
-and you pick one by choosing the agent. The same goes for publishing: point
-`post_agent.task` at your own skill, or build an agent out of it in the panel. A
-`post_agent` you have edited is never rewritten — only the old untouched default
-is migrated to the built-in. Publishing is safe from this: the
-`post_agent` always runs `/bazel:bazel-post-report`, even from a config saved with
-the bare name, which is left as it is in the file.
+**Your own skill of the same name does not win.** The built-ins reach Claude Code
+as plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` or one in
+the PR's own `.claude/skills` would answer the bare `/bazel-<name>`. So every task
+that calls a built-in runs as `/bazel:<name>`, even from a config saved with the
+bare name, which is left as it is in the file; the starter agents are saved with
+the plugin's name. Your `review-fleet` and Bazel's `bazel-review-fleet` live side
+by side, and you pick one by choosing the agent. The same goes for publishing:
+point `post_agent.task` at your own skill, or build an agent out of it in the
+panel. A `post_agent` you have edited is never rewritten — only the old untouched
+default is migrated to the built-in, and a publishing prompt saved as an older
+default, with the PR's title and author in it, runs as the current one.
 
 Everything the page does is written to `config.yaml`, and you can edit it by
 hand for what the page doesn't offer — another model, another executable, your
@@ -593,7 +594,7 @@ post_agent:
   task: /bazel:bazel-post-report {{review_file}}
   posts: true
 
-# Who writes the History tab. Optional: the default runs /bazel-history-pr {{number}}
+# Who writes the History tab. Optional: the default runs /bazel:bazel-history-pr {{number}}
 # with the factory prompt, not your agent.prompt.
 # history_agent:
 #   task: /my-history {{number}}

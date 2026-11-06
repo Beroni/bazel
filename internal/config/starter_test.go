@@ -28,7 +28,7 @@ func TestLoadOrInitSeedsStarterAgents(t *testing.T) {
 		if !skills.IsBuiltin(skill) {
 			t.Errorf("starter agent %s calls %s, which does not ship inside Bazel", a.Name, skill)
 		}
-		if a.Name != skill {
+		if a.Name != skills.Bare(skill) {
 			t.Errorf("starter agent %s should be named after its skill %s, as the page names agents", a.Name, skill)
 		}
 		if a.Posts {

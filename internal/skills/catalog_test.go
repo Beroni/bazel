@@ -305,11 +305,20 @@ func TestPluginNames(t *testing.T) {
 	if !IsPost("/bazel:bazel-post-report /r.md") || !IsBuiltin("bazel:bazel-post-report") || IsPost("/other:bazel-post-report") {
 		t.Error("the plugin's name is the skill's name")
 	}
-	if got := PostTask("/bazel-post-report /r.md"); got != "/bazel:bazel-post-report /r.md" {
-		t.Errorf("PostTask = %q", got)
-	}
-	if got := PostTask("/post-report /r.md"); got != "/post-report /r.md" {
-		t.Errorf("PostTask must leave the user's own alone: %q", got)
+	for in, want := range map[string]string{
+		"/bazel-post-report /r.md":         "/bazel:bazel-post-report /r.md",
+		"/BAZEL-REVIEW-FLEET {{number}}":   "/bazel:bazel-review-fleet {{number}}",
+		"/bazel:bazel-history-pr 7":        "/bazel:bazel-history-pr 7",
+		"  /bazel-exploit-digger 7 --post": "/bazel:bazel-exploit-digger 7 --post",
+		"/bazel-lazy-senior-dev":           "/bazel:bazel-lazy-senior-dev",
+		"/post-report /r.md":               "/post-report /r.md",
+		"/review-fleet 7":                  "/review-fleet 7",
+		"Review this PR.":                  "Review this PR.",
+		"//bazel-review-fleet 7":           "//bazel-review-fleet 7",
+	} {
+		if got := Qualify(in); got != want {
+			t.Errorf("Qualify(%q) = %q, want %q", in, got, want)
+		}
 	}
 	got := Inline("/bazel:bazel-post-report /r.md", "/rt")
 	if !strings.Contains(got, "Arguments: /r.md") || !strings.Contains(got, "# Bazel Post Report") {
