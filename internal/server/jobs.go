@@ -798,6 +798,15 @@ func (m *Manager) applyEvent(job *Job, e agent.Event) {
 		m.mu.Unlock()
 		return
 	}
+	// What the review really starts from: after a force push the clone does not
+	// vouch for the old head, and the card, the view and queue.json say so.
+	if e.Kind == agent.EventSince {
+		m.mu.Lock()
+		job.Since = e.Text
+		m.mu.Unlock()
+		m.publish(job)
+		return
+	}
 
 	// The Claude quota is not the job's: it arrives through its stream, but
 	// holds for the whole machine and goes to the page through a notice of its

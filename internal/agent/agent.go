@@ -43,6 +43,9 @@ const (
 	// EventLimits is Claude's quota, which rides along in the stream of whoever
 	// is running.
 	EventLimits EventKind = "limits"
+	// EventSince is what a review of what changed starts from, once the clone
+	// has vouched for it: Text is the commit, or empty for a whole review.
+	EventSince EventKind = "since"
 )
 
 // Event is the progress of a review. It's what lets the TUI and the web
@@ -271,6 +274,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
 				Text: fmt.Sprintf("↻ %.12s, the last reviewed head, is not behind this one (a force push, or no clone): reviewing the whole PR", v)})
 		}
+	}
+	if _, asked := extra[sincePlaceholder]; asked {
+		emit(Event{Kind: EventSince, Total: total, Name: choice.Steps[0].Name, Text: since})
 	}
 	extra = maps.Clone(extra)
 	if extra == nil {

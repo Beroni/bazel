@@ -699,6 +699,10 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	status := http.StatusAccepted
 	if len(queued) == 0 {
 		status = http.StatusBadRequest
+		// Every PR asked for was already reviewed at its head: nothing to do.
+		if req.Since && allUnchanged(errs) {
+			status = http.StatusConflict
+		}
 	}
 	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
 }
@@ -747,7 +751,14 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 				continue
 			}
 		}
-		view, err := s.jobs.EnqueueSince(pr, strings.EqualFold(pr.Author.Login, s.me), choice, marks.ReviewedHead(key))
+		head := marks.ReviewedHead(key)
+		// The head was reviewed already: a review of what changed would read an
+		// empty range, and a whole one is not what was asked.
+		if since && head != "" && pr.HeadRefOid != "" && strings.EqualFold(head, pr.HeadRefOid) {
+			errs = append(errs, fmt.Sprintf("%s: %s", key, errUnchanged))
+			continue
+		}
+		view, err := s.jobs.EnqueueSince(pr, strings.EqualFold(pr.Author.Login, s.me), choice, head)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 			continue
@@ -755,6 +766,18 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// errUnchanged refuses a review of what changed when nothing did.
+const errUnchanged = "nothing changed since the last review"
+
+func allUnchanged(errs []string) bool {
+	for _, e := range errs {
+		if !strings.HasSuffix(e, errUnchanged) {
+			return false
+		}
+	}
+	return len(errs) > 0
 }
 
 // maxRefs bounds one request from the page. "Select all" over a busy list is a

@@ -3625,10 +3625,44 @@ func TestReviewSinceUsaAMarca(t *testing.T) {
 		}
 		return body.Jobs[0]
 	}
-	if got := post(testPR(482).Key()); got.Since != old.HeadRefOid {
+	got := post(testPR(482).Key())
+	if got.Since != old.HeadRefOid {
 		t.Errorf("since %q", got.Since)
+	}
+	// The clone could not vouch for it (no clone here): the review was a whole
+	// one, and the job says so instead of the head it was asked from.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, _ := srv.jobs.View(got.ID, false)
+		if v.State == StateDone || v.State == StateFailed {
+			if v.Since != "" {
+				t.Errorf("after the run, since %q", v.Since)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never ended: %+v", v)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	if got := post(testPR(483).Key()); got.Since != "" {
 		t.Errorf("never reviewed: since %q", got.Since)
+	}
+
+	// Reviewed at the head it is at now: nothing to review, and nothing queued.
+	now := testPR(484)
+	now.HeadRefOid = strings.Repeat("d", 40)
+	if err := store.MarkReviewed(srv.reviewsDir, agent.Result{Agent: "lens", PR: now}, path); err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.Lock()
+	srv.prs = append(srv.prs, now)
+	srv.prMu.Unlock()
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":["`+now.Key()+`"],"since":true}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "nothing changed since the last review") {
+		t.Errorf("unchanged: %d %s", w.Code, w.Body)
 	}
 }
