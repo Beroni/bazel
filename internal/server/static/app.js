@@ -538,15 +538,19 @@ function startReview() {
   return reviewRefs(markedPRs());
 }
 
+// confirmPublishing asks before running an agent that publishes on its own:
+// writing on someone else's PR is worth a question first, the same ceremony as
+// the "publish to the PR" button. Every way of starting a review goes through it.
+function confirmPublishing(agentName, refs, posts = false) {
+  const chosen = state.agents.find((a) => a.name === agentName);
+  if (!(chosen && chosen.posts) && !posts) return true;
+  const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
+  return confirm(`The agent "${agentName}" publishes the review straight to ${alvo}. Run it anyway?`);
+}
+
 async function reviewRefs(refs) {
   if (!refs.length) return;
-  // Picking an agent that publishes is writing on someone else's PR: it is worth
-  // a question first, the same ceremony as the "publish to the PR" button.
-  const chosen = state.agents.find((a) => a.name === state.agent);
-  if (chosen && chosen.posts) {
-    const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
-    if (!confirm(`The agent "${chosen.name}" publishes the review straight to ${alvo}. Run it anyway?`)) return;
-  }
+  if (!confirmPublishing(state.agent, refs)) return;
   $('#run').disabled = true;
   try {
     const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs, agent: state.agent }) });
@@ -841,6 +845,8 @@ function lockPublish(bar, why) {
 // runAgain queues the same agent over the same PR: what a review that came back
 // incomplete leaves to do.
 async function runAgain(job, btn) {
+  // The agent of this job, as the config has it now, or as the job ran.
+  if (!confirmPublishing(job.agent, [job.pr.key], job.posts)) return;
   btn.disabled = true;
   clearAlert();
   try {

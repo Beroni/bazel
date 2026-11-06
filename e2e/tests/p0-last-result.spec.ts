@@ -14,6 +14,7 @@ const AGENTS = [
   { name: 'background-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background' } },
   { name: 'narrating-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-narration' } },
   { name: 'doubtful-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background-doubt' } },
+  { name: 'unfinished-poster', task: '/review-fleet {{number}} --post', posts: true, env: { FAKE_AGENT_SCENARIO: 'claude-background-pending' } },
   { name: 'unfinished-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-background-pending' } },
 ];
 const PIPELINES = [
@@ -114,5 +115,21 @@ test.describe('P0 · the report is the last result', () => {
     const [saved] = (await bazel.api('GET', '/api/reviews')).json.reviews;
     expect((await bazel.api('GET', `/api/reviews/${saved.name}`)).json.doubt).toContain('background');
     expect(writes(bazel)).toEqual([]);
+  });
+
+  test('Run again of an agent that publishes asks first, and no answer runs nothing', async ({ app, bazel }) => {
+    const id = await bazel.enqueue('acme/api-core#101', 'unfinished-poster');
+    const job = await bazel.waitJob(id, (j) => j.state === 'done');
+    expect(job.incomplete).toContain('background agent');
+    await app.reload();
+    const viewer = await openJob(app, TITLE);
+    app.removeAllListeners('dialog');
+    let asked = '';
+    app.once('dialog', (d) => { asked = d.message(); void d.dismiss(); });
+    await viewer.getByTestId('run-again').click();
+    await expect.poll(() => asked).toContain('publishes the review straight to acme/api-core#101');
+    await app.waitForTimeout(500);
+    expect((await bazel.api('GET', '/api/jobs')).json.jobs).toHaveLength(1);
+    expect(bazel.agentCalls()).toHaveLength(1);
   });
 });
