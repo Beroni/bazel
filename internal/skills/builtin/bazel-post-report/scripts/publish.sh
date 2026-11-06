@@ -106,7 +106,7 @@ prepare() {
       | {root: .comments.nodes[0].databaseId, isResolved, resolvedBy: .resolvedBy.login}]' > "$work/threads.json" ||
     fail "cannot read the review threads"
 
-  jq -n -f "$HERE/plan.jq" --slurpfile report "$work/report.json" --slurpfile diff "$work/diff.json" \
+  jq -n -L "$HERE" -f "$HERE/plan.jq" --slurpfile report "$work/report.json" --slurpfile diff "$work/diff.json" \
     --slurpfile comments "$work/comments.json" --slurpfile threads "$work/threads.json" \
     --slurpfile issue "$work/issue.json" --slurpfile reviews "$work/reviews.json" \
     --slurpfile pr "$work/pr.json" --slurpfile me "$work/me.json" > "$work/plan.json" || fail "cannot build the plan"

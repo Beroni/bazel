@@ -36,7 +36,7 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
 # Everything in the report is already on the PR, in this account's own comments:
 # a review would say nothing, and a 👍 on your own comment means nothing.
 | (($all | length) > 0 and $p.human == "" and $p.extra == "" and $p.failed == []
-   and all($all[]; .destination == "duplicate" and .match.user == $p.me)) as $repeated
+   and all($all[]; .destination == "duplicate" and .match.user_key == $p.me)) as $repeated
 # An all-clear says the whole diff was looked at and nothing came out of it. Each
 # of these takes that away, and none of them shows as a finding.
 | ([(if $moved then "the PR moved after the review" else empty end),
@@ -87,7 +87,7 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
 | $what + {
     comments: ($inline | map(comment)),
     bodied: ($bodied | map({id, title, path, line})),
-    reactions: ($dups | map(select(.match.user != $p.me) | .match.comment_id)),
+    reactions: ($dups | map(select(.match.user_key != $p.me) | .match.comment_id)),
     counts: {inline: ($inline | length), body: ($bodied | length), duplicates: ($dups | length), settled: ($settled | length)},
     settled: ($settled | map({path, line, level: level, by: .match.settled_by})),
     duplicates: ($dups | map({path, line, user: .match.user}))}
