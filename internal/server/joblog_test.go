@@ -156,3 +156,28 @@ func TestPruneJobLogs(t *testing.T) {
 		t.Errorf("left %q, want %q", got, want)
 	}
 }
+
+// A job's file stops at maxJobLog, says where, and writes nothing more.
+func TestJobLogTemTeto(t *testing.T) {
+	old := maxJobLog
+	maxJobLog = 1 << 20
+	t.Cleanup(func() { maxJobLog = old })
+	dir := t.TempDir()
+	l, path := openJobLog(dir, "ab12-j1", "a/b#1")
+	line := strings.Repeat("x", 1000)
+	for range 3000 {
+		l.write(agent.Event{Kind: agent.EventLog, Agent: "lens", Text: line})
+	}
+	l.close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() > maxJobLog+200 {
+		t.Errorf("file has %d bytes", info.Size())
+	}
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), "log cut here") || strings.Count(string(data), "log cut here") != 1 {
+		t.Error("no single note where it was cut")
+	}
+}

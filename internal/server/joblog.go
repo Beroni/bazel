@@ -18,9 +18,15 @@ import (
 // finding out why an agent failed twenty minutes in. A disk that fails costs the
 // file, never the review.
 type jobLog struct {
-	mu sync.Mutex
-	f  *os.File
+	mu      sync.Mutex
+	f       *os.File
+	written int64
+	cut     bool
 }
+
+// maxJobLog is the most one job's file gets. An agent that floods its output
+// fills it, and the file says where it was cut: the rest is in the live log.
+var maxJobLog int64 = 50 << 20
 
 // logNameRe is the name Bazel gives a job's log. Retention only ever touches
 // these: the folder is the user's choice, and it may hold anything else.
@@ -42,7 +48,11 @@ func openJobLog(dir, jobID, prKey string) (*jobLog, string) {
 		fmt.Fprintf(os.Stderr, "bazel: job log: %v\n", err)
 		return nil, ""
 	}
-	return &jobLog{f: f}, path
+	l := &jobLog{f: f}
+	if info, err := f.Stat(); err == nil {
+		l.written = info.Size()
+	}
+	return l, path
 }
 
 // write appends one line of the agent's. Lines from stdout and stderr arrive
@@ -60,10 +70,17 @@ func (l *jobLog) write(e agent.Event) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.f == nil {
+	if l.f == nil || l.cut {
 		return
 	}
-	if _, err := fmt.Fprintf(l.f, "%s [%s] %s\n", time.Now().Format("15:04:05"), who, e.Text); err != nil {
+	line := fmt.Sprintf("%s [%s] %s\n", time.Now().Format("15:04:05"), who, e.Text)
+	if l.written+int64(len(line)) > maxJobLog {
+		l.cut = true
+		line = fmt.Sprintf("%s [bazel] log cut here: it reached %d MB; the rest is only in the live log\n", time.Now().Format("15:04:05"), maxJobLog>>20)
+	}
+	n, err := l.f.WriteString(line)
+	l.written += int64(n)
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "bazel: job log: %v\n", err)
 		l.f.Close()
 		l.f = nil
