@@ -550,7 +550,9 @@ function confirmPublishing(agentName, refs, posts = false) {
   return confirm(`The agent "${agentName}" publishes the review straight to ${alvo}. Run it anyway?`);
 }
 
-async function reviewRefs(refs) {
+// keep leaves the dashboard's ticks alone: a review started elsewhere (Needs
+// you) is not the run of what is ticked.
+async function reviewRefs(refs, keep = false) {
   if (!refs.length) return;
   if (!confirmPublishing(state.agent, refs)) return;
   $('#run').disabled = true;
@@ -564,7 +566,7 @@ async function reviewRefs(refs) {
       state.activeSaved = null;
       state.activePR = null;
     }
-    state.selected.clear();
+    if (!keep) state.selected.clear();
     renderPRs();
     renderTabs();
     keepFocus('#rail .card.on');
@@ -3436,7 +3438,7 @@ function needsRow(it) {
       e.stopPropagation();
       go.disabled = true;
       location.hash = '#/';
-      await reviewRefs([it.key]);
+      await reviewRefs([it.key], true);
       go.disabled = false;
     });
     row.append(go);

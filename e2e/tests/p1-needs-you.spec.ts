@@ -153,4 +153,14 @@ test.describe('P1 · needs you', () => {
     await expect(app).toHaveTitle('(1) Bazel');
     bazel.release('release-slow');
   });
+
+  test('Review from Needs you leaves the dashboard\'s ticks alone', async ({ app, bazel }) => {
+    await setup(bazel);
+    await app.reload();
+    await ui.prRow(app, 'Bump dependencies').getByTestId('pr-row-check').check();
+    await app.getByTestId('nav-needs').click();
+    await app.locator('[data-testid=needs-row][data-pr-key="acme/api-core#101"]').getByTestId('needs-review').click();
+    await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.length).toBe(1);
+    await expect(ui.prRow(app, 'Bump dependencies').getByTestId('pr-row-check')).toBeChecked();
+  });
 });
