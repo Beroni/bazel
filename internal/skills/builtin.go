@@ -25,6 +25,13 @@ var builtinFS embed.FS
 // builtinRoot is the folder inside the embed.
 const builtinRoot = "builtin"
 
+// ParseReportScript is the reader bazel-post-report publishes with: Bazel runs
+// the same one to say, before Publish, whether a report will be refused.
+func ParseReportScript() []byte {
+	b, _ := builtinFS.ReadFile(builtinRoot + "/" + postSkill + "/scripts/parse-report.jq")
+	return b
+}
+
 // PluginName is the Claude Code plugin the embedded skills are packaged as.
 // Claude Code also finds a plugin's skills by their bare name, so a task keeps
 // calling `/bazel-post-report`.

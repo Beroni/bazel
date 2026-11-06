@@ -1220,10 +1220,15 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]savedView, 0, len(entries))
-	for _, e := range entries {
+	for i, e := range entries {
 		v := savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)}
 		if p, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
 			v.Posted = &p
+		}
+		// The newest ones say whether they pass the inline publisher; the check
+		// is cached per file, and older ones say it when opened.
+		if v.Publishable && v.Posted == nil && i < savedChecked {
+			v.InlineIssue = s.jobs.inlineIssue(filepath.Join(s.reviewsDir, e.Name))
 		}
 		out = append(out, v)
 	}
@@ -1234,10 +1239,14 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 // whether what is in there can go to the PR.
 type savedView struct {
 	store.Entry
-	Publishable bool `json:"publishable"`
+	Publishable bool   `json:"publishable"`
+	InlineIssue string `json:"inline_issue,omitempty"`
 	// Posted is how and when this file went to the PR, from its own record.
 	Posted *store.Posted `json:"posted,omitempty"`
 }
+
+// savedChecked is how many of the newest saved reviews the list checks.
+const savedChecked = 50
 
 // agentPublishes says whether an agent's output can go to the PR. An agent no
 // longer in the list stays publishable: the review on disk outlives the
@@ -1281,6 +1290,11 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 	}
 	if why := store.DoubtOf(body); why != "" {
 		view["doubt"] = why
+	}
+	if s.agentPublishes(store.AgentOf(body)) {
+		if why := s.jobs.inlineIssue(filepath.Join(s.reviewsDir, r.PathValue("name"))); why != "" {
+			view["inline_issue"] = why
+		}
 	}
 	writeJSON(w, http.StatusOK, view)
 }

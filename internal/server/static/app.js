@@ -38,6 +38,7 @@ const state = {
   needsError: '',
   needsPRs: {},      // key -> PR from the needs page, for opening one outside the list
   savedShort: {},    // saved review name -> true when it is short with no findings
+  savedInline: {},   // saved review name -> why the inline publisher would refuse it
   savedDoubt: {},    // saved review name -> why its stream makes it worth a second look
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
@@ -665,7 +666,7 @@ async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const skip = skipList(pickKey('job', id));
-  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}${doubtNote(job.doubt)}`)) return;
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}${doubtNote(job.doubt)}${inlineConfirm(job.inline_issue)}`)) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
@@ -780,8 +781,10 @@ async function openSaved(name) {
     if (data.incomplete) v.append(incompleteNote(data.incomplete));
     else if (data.short) v.append(shortBox());
     if (!data.incomplete && data.doubt) v.append(doubtBox(data.doubt));
+    if (!data.incomplete && data.inline_issue) v.append(inlineNote(data.inline_issue));
     state.savedShort[name] = !!data.short;
     state.savedDoubt[name] = data.doubt || '';
+    state.savedInline[name] = data.inline_issue || '';
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
@@ -849,6 +852,16 @@ const doubtNote = (why) => (why ? `\n\nThe agent's stream says ${why}.` : '');
 
 // lockPublish turns off the ways to the PR of a review with no report, and says
 // why on each of them.
+// inlineNote says the inline publisher will refuse this report, and why. As a
+// comment it still goes: the check only speaks for the inline path.
+function inlineNote(why) {
+  return tid(el('div', 'stale-box', `This report is not in the format Publish (inline) accepts: ${why}. You can still paste it As comment.`), 'review-inline-issue');
+}
+
+// inlineConfirm is the line the Publish confirm adds for such a report: the
+// choice stays the user's, who may know the publisher was changed.
+const inlineConfirm = (why) => (why ? `\n\nThe inline publisher will likely refuse it: ${why}. "As comment" pastes it as it is.` : '');
+
 function lockPublish(bar, why) {
   for (const id of ['paste-comment', 'publish-inline', 'saved-comment', 'saved-publish']) {
     const b = bar.querySelector(`[data-testid=${id}]`);
@@ -886,7 +899,7 @@ async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}${doubtNote(state.savedDoubt[name])}`)) return;
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}${doubtNote(state.savedDoubt[name])}${inlineConfirm(state.savedInline[name])}`)) return;
   btn.disabled = true;
   clearAlert();
   try {
@@ -1985,7 +1998,9 @@ function setAttr(node, name, value) {
 
 // fillCard writes the job into its card, in place.
 function fillCard(card, job) {
-  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : '') + (state.activeJob === job.id ? ' on' : '');
+  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : '')
+    + (job.inline_issue && !job.incomplete ? ' inline-issue' : '') + (state.activeJob === job.id ? ' on' : '');
+  if (card.dataset.inlineIssue !== String(!!job.inline_issue)) card.dataset.inlineIssue = String(!!job.inline_issue);
   if (card.className !== cls) card.className = cls;
   if (card.dataset.state !== job.state) card.dataset.state = job.state;
   if (card.dataset.prKey !== job.pr.key) card.dataset.prKey = job.pr.key;
@@ -2016,6 +2031,7 @@ function fillCard(card, job) {
     `${job.pr.key} — ${job.pr.title}`,
     label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
     job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
+    job.inline_issue ? '⚠ not in the inline format: ' + job.inline_issue : '',
     custo,
   ].filter(Boolean).join('\n'));
   fillProgress(card.querySelector(':scope > .progress'), job);
@@ -2087,7 +2103,13 @@ function renderSaved() {
     const list = el('div', 'saved-list');
     for (const s of state.saved) {
       const row = tid(el('div', 'saved'), 'saved-row', { name: s.name });
-      row.append(el('div', 'saved-title', s.title || s.name),
+      const title = el('div', 'saved-title', s.title || s.name);
+      if (s.inline_issue) {
+        const t = tid(el('span', 'tag stale', 'not inline'), 'saved-inline-issue');
+        t.title = 'not in the format Publish (inline) accepts: ' + s.inline_issue;
+        title.append(' ', t);
+      }
+      row.append(title,
         el('div', 'name', [s.agent, s.ran, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
       operable(row, `open saved review ${s.title || s.name}`, () => openSaved(s.name));
@@ -2634,6 +2656,7 @@ function renderReportView(v, job) {
   if (job.incomplete) v.append(incompleteNote(job.incomplete));
   else if (job.short) v.append(shortBox());
   if (!job.incomplete && job.doubt) v.append(doubtBox(job.doubt));
+  if (!job.incomplete && job.inline_issue && job.publishable !== false) v.append(inlineNote(job.inline_issue));
   // It ended on a `publish`: the pipeline sent nothing, and this is where you
   // choose what goes. Saying so before the review is what makes you read it
   // as the one who decides, not as someone who only checks.
