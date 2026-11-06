@@ -1475,3 +1475,33 @@ func TestTimerNaoLeOParserDuranteUmaLinha(t *testing.T) {
 		t.Errorf("body %q", res.Body)
 	}
 }
+
+// A line still arriving is activity: the grace must not end the run while the
+// next event is half written.
+func TestGraceNaoCortaLinhaPelaMetade(t *testing.T) {
+	old := idleGrace
+	idleGrace = 100 * time.Millisecond
+	t.Cleanup(func() { idleGrace = old })
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agent.TimeoutSeconds = 30
+	first := `{"type":"system","subtype":"init","session_id":"s1"}` + "\n" +
+		`{"type":"result","subtype":"success","session_id":"s1","result":"FIRST"}`
+	script := "cat >/dev/null\ncat <<'A'\n" + first + "\nA\n" +
+		`printf '%s' '{"type":"system",'` + "\nsleep 0.4\n" +
+		`printf '%s\n' '"subtype":"init","session_id":"s1"}'` + "\n" +
+		`printf '%s\n' '{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nSECOND"}'` + "\n"
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "x", Command: "sh", Format: "claude-stream", Args: []string{"-c", script}}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Body != "# Verdict\n\nSECOND" {
+		t.Errorf("body %q", res.Body)
+	}
+}

@@ -1202,8 +1202,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		defer wg.Done()
 		visto := 0
 		var cota time.Time
-		eachLine(stdout, func(line string) {
-			touch()
+		// Any byte is activity: touch runs as bytes arrive, not as lines end, and
+		// the grace is armed only with no part of a next line already read.
+		eachLineRest(touchReader{stdout, touch}, func(line string, rest int) {
 			raw.write(line)
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
@@ -1218,7 +1219,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 				cota = limits.At
 				onLimits(limits)
 			}
-			if ender != nil && ender.finished() {
+			if rest == 0 && ender != nil && ender.finished() {
 				arm()
 			}
 		})
@@ -1298,6 +1299,35 @@ func agentFailure(step config.ResolvedAgent, message string) error {
 
 // eachLine calls fn for each line read, with no size limit — a stream-json
 // event with a large tool result overflows bufio.Scanner.
+// touchReader calls touch whenever bytes arrive.
+type touchReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (t touchReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.touch()
+	}
+	return n, err
+}
+
+// eachLineRest is eachLine that also says how many bytes of the next line it
+// already holds.
+func eachLineRest(r io.Reader, fn func(line string, rest int)) {
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := br.ReadString('\n')
+		if line = strings.TrimRight(line, "\r\n"); line != "" {
+			fn(line, br.Buffered())
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func eachLine(r io.Reader, fn func(string)) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	for {
