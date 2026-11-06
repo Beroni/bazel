@@ -1505,3 +1505,25 @@ func TestGraceNaoCortaLinhaPelaMetade(t *testing.T) {
 		t.Errorf("body %q", res.Body)
 	}
 }
+
+// A turn that never delivered its result is pending with or without lenses in
+// the background.
+func TestTurnoSemResultSemBackground(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nFIRST"}`,
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"assistant","session_id":"s1","message":{"content":[{"type":"text","text":"working"}]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || !strings.Contains(res.Steps[0].Pending, "1 of its 2 turns") {
+		t.Errorf("steps %+v", res.Steps)
+	}
+	ok, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nONE"}`)
+	if err != nil || len(ok.Steps) != 1 || ok.Steps[0].Pending != "" {
+		t.Errorf("one turn, one result: %+v %v", ok.Steps, err)
+	}
+}

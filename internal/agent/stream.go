@@ -601,11 +601,13 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// pendingWork is why the run's own stream proves its report never came, or "".
-// Only a run that sent work to the background can say so: some of it is still
-// out at the end, or a turn it started never delivered its result.
+// pendingWork is why the run's own stream proves its report never came, or "":
+// a turn it started never delivered its result, or work it sent to the
+// background is still out at the end.
 func (p *streamParser) pendingWork() string {
 	switch {
+	case p.results > 0 && p.results < len(p.turnsBusy):
+		return fmt.Sprintf("ended with %d of its %d turns still owing a result", len(p.turnsBusy)-p.results, len(p.turnsBusy))
 	case !p.backgrounded:
 		return ""
 	case p.background == 1:
