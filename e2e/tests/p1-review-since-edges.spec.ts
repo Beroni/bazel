@@ -1,4 +1,4 @@
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { ME, node, pushed, review } from '../harness/needs';
 import { ui } from '../harness/ui';
@@ -41,11 +41,10 @@ test.describe('P1 · review changes since the last review, edges', () => {
     expect((await bodies(bazel)).filter((b) => b.includes('- Since:'))).toEqual([]);
   });
 
-  // BUG-QA-35: after that fallback the job still carries the old head as `since`,
-  // and its card says "↻ changes since 32d24c4" over a review of the whole PR.
-  // Expected: what the agent reviewed — no since, as in the saved file.
+  // BUG-QA-35, fixed in feat/incremental-review: after that fallback the job kept
+  // the old head as `since`, and its card said "↻ changes since 32d24c4" over a
+  // review of the whole PR.
   test('after a force push the card does not say "changes since"', async ({ app, bazel }) => {
-    knownBug('BUG-QA-35', 'a whole review after a force push keeps the old since');
     await reviewed(bazel);
     bazel.rewritePR(K);
     await bazel.api('GET', '/api/prs?refresh=1');
@@ -53,6 +52,17 @@ test.describe('P1 · review changes since the last review, edges', () => {
     await app.reload();
     expect(await ui.jobCard(app, TITLE).first().getAttribute('title')).not.toContain('changes since');
     expect(job.since ?? '').toBe('');
+  });
+
+  test('nothing changed since the last review: 409, and no agent runs', async ({ bazel }) => {
+    await reviewed(bazel);
+    const calls = bazel.agentCalls().length;
+    const r = await bazel.api('POST', '/api/reviews', { refs: [K], agent: 'review-fleet', since: true });
+    expect(r.status).toBe(409);
+    expect(JSON.stringify(r.json)).toContain('nothing changed since the last review');
+    expect(bazel.agentCalls()).toHaveLength(calls);
+    // A whole review of the same head is still yours to ask for.
+    expect((await bazel.api('POST', '/api/reviews', { refs: [K], agent: 'review-fleet' })).status).toBe(202);
   });
 
   test('a restart keeps where the last review was', async ({ bazel }) => {
@@ -97,6 +107,8 @@ test.describe('P1 · review changes since the last review, edges', () => {
     await bazel.api('GET', '/api/prs?refresh=1');
     const job = await sinceJob(bazel, 'builtin');
     expect(lastPrompt(bazel)).toBe(`/bazel-review-fleet 101 --since=${job.since}`);
+    bazel.movePR(K); // the builtin review just marked the head it saw
+    await bazel.api('GET', '/api/prs?refresh=1');
     await sinceJob(bazel, 'plain');
     expect(lastPrompt(bazel)).toBe('review 101');
   });
