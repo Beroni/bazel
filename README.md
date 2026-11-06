@@ -171,14 +171,17 @@ once, under the first reason that applies:
    yours since the last request.
 2. **You asked for changes and the author answered**: your last review asked
    for changes, or a thread you started is still open, and the PR's author
-   pushed, commented, replied in a thread or resolved a thread of that review
-   since.
+   pushed, replied in a thread you started, or resolved a thread of that review
+   since. A reply in someone else's thread, or a comment on the conversation,
+   does not count; a thread you left open before approving does not reopen it.
 3. **You asked for changes, waiting for the author**: the same, with nothing
    from the author yet. It is shown quieter and does not count in the tab.
 4. **Your PRs** with changes requested, a thread or comment waiting for you,
    failing checks, a conflict with the base, or approved and ready to merge.
 
 Only the PR's author counts as an answer, and bots' comments are not news. A
+request to a team counts as yours, because the search found the PR for you and
+GitHub does not say which requested team you are in. A
 commit made before your review and pushed after it is not seen as a push, so
 such a PR stays in "waiting". The page reads GitHub with one `gh api graphql`
 call that runs three searches (50 PRs each), kept a minute and read again on ↻,

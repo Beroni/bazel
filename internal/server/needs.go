@@ -71,6 +71,10 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 
 	// 1. Asked to review. The search found it, so a request is pending for me
 	// or for a team of mine. A review of mine after the last request answers it.
+	// The query cannot tell which teams are mine (GitHub gives no membership on
+	// a requested team), so the time of the last request to any team counts:
+	// at worst a review of mine is taken as older than a request that was not
+	// to me, and the PR stays here.
 	if p.Requested {
 		var asked time.Time
 		for _, r := range p.Requests.Nodes {
@@ -101,7 +105,6 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 		if t.IsResolved || len(t.FirstComment.Nodes) == 0 || !is(t.FirstComment.Nodes[0].Author) {
 			continue
 		}
-		openThreads++
 		// When I last spoke in it: my last reply, or the thread itself.
 		at := t.FirstComment.Nodes[0].CreatedAt
 		for _, c := range t.LastComment.Nodes {
@@ -109,6 +112,12 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 				at = c.CreatedAt
 			}
 		}
+		// Approving after it says the thread no longer holds the PR back: a nit
+		// left open is not a request for changes.
+		if opinion != nil && opinion.state == "APPROVED" && opinion.at.After(at) {
+			continue
+		}
+		openThreads++
 		if at.After(askedAt) {
 			askedAt = at
 		}
@@ -117,8 +126,10 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 		return "", "", time.Time{}
 	}
 
-	// What the author did after that: a push, a comment, a reply in a thread,
-	// or resolving a thread of the review that asked.
+	// What the author did after that, toward what I asked: a push, a reply in a
+	// thread I started, or resolving a thread of the review that asked. A reply
+	// in someone else's thread, or a comment on the conversation, is not an
+	// answer to me.
 	var answered time.Time
 	what := ""
 	note := func(at time.Time, w string) {
@@ -127,15 +138,11 @@ func classifyNeeds(me string, p gh.NeedsPR) (category, reason string, since time
 		}
 	}
 	note(pushedAt, "pushed")
-	for _, c := range p.Comments.Nodes {
-		if byAuthor(c.Author) && !bot(c.Author) {
-			note(c.CreatedAt, "commented")
-		}
-	}
 	for _, t := range p.ReviewThreads.Nodes {
+		mine := len(t.FirstComment.Nodes) > 0 && is(t.FirstComment.Nodes[0].Author)
 		for _, c := range t.LastComment.Nodes {
-			if byAuthor(c.Author) {
-				note(c.CreatedAt, "replied in a thread")
+			if mine && byAuthor(c.Author) {
+				note(c.CreatedAt, "replied in your thread")
 			}
 		}
 		// A resolution has no time of its own: it counts only for a thread of
