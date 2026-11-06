@@ -22,6 +22,7 @@ var golden = []struct {
 	findings int    // parts SplitFindings marks as findings
 }{
 	{"fleet.md", "", 4},               // 2 findings, 1 cut, 1 needs-human item
+	{"incremental.md", "", 4},         // the same, over the changes since an earlier head
 	{"exploit-needs-human.md", "", 3}, // 1 finding, 2 needs-human items
 	// Cuts go by lines_saved alone: a major cut after a bigger minor one.
 	{"cuts-order.md", "", 5},
@@ -187,5 +188,71 @@ func TestGoldenHistoryParses(t *testing.T) {
 	}
 	if len(h.StillOpen) != 1 || !strings.Contains(h.Rest, "## Timeline") {
 		t.Errorf("still open = %v, rest = %.60q", h.StillOpen, h.Rest)
+	}
+}
+
+// The check headless.md tells a skill to run on --since, run as written, in a real
+// repository: only an ancestor of HEAD that is in the clone makes the review
+// incremental, and everything else is the whole PR.
+func TestSinceCheck(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	data, err := os.ReadFile(filepath.Join("builtin", "bazel-review-fleet", "references", "headless.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	i := strings.Index(text, "S='<the sha from the task>'")
+	if i < 0 {
+		t.Fatal("headless.md lost the --since check")
+	}
+	recipe := text[i : i+strings.Index(text[i:], "```")]
+
+	repo := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "one")
+	old := git("rev-parse", "HEAD")
+	git("checkout", "-q", "-b", "side")
+	git("commit", "-q", "--allow-empty", "-m", "elsewhere")
+	side := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+	git("commit", "-q", "--allow-empty", "-m", "two")
+
+	for name, c := range map[string]struct {
+		sha  string
+		want bool
+	}{
+		"an ancestor":       {old, true},
+		"not an ancestor":   {side, false},
+		"not in the clone":  {strings.Repeat("a", 40), false},
+		"short":             {old[:12], false},
+		"upper case":        {strings.ToUpper(old), false},
+		"empty":             {"", false},
+		"a ref, not a sha":  {"HEAD~1", false},
+		"text built to run": {"$(touch ran)", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			script := strings.Replace(recipe, "<the sha from the task>", strings.ReplaceAll(c.sha, "'", ""), 1)
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Dir = repo
+			out, _ := cmd.CombinedOutput()
+			if got := strings.Contains(string(out), "incremental"); got != c.want {
+				t.Errorf("incremental = %v, want %v: %s", got, c.want, out)
+			}
+			if _, err := os.Stat(filepath.Join(repo, "ran")); err == nil {
+				t.Error("the sha was executed")
+			}
+		})
 	}
 }

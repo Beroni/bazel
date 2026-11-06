@@ -1351,3 +1351,68 @@ func TestABotIsOneAccount(t *testing.T) {
 		}
 	})
 }
+
+// An incremental review covers the changes since an earlier head: a clean one says
+// nothing of the rest of the PR, so it is never the all-clear.
+func TestIncrementalIsNoAllClear(t *testing.T) {
+	since := strings.Repeat("e", 40)
+	incremental := func(r string) string {
+		return strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff "+since+"..HEAD",
+			"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff "+since+"..HEAD`").Replace(r)
+	}
+	t.Run("clean", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental(header("approve", 3)))))
+		p := w.payload(0)
+		if strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "only the changes since `eeeeeee`") {
+			t.Errorf("an incremental clean review clears nothing:\n%s", p.Body)
+		}
+	})
+	t.Run("with a finding", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental(header("request_changes", 3))+"\n## Findings\n\n"+finding("One", "a.go", 2, "Bad."))))
+		p := w.payload(0)
+		if len(p.Comments) != 1 || !strings.Contains(p.Body, "**Changes since** `eeeeeee` only") {
+			t.Errorf("%+v", p)
+		}
+	})
+	t.Run("a scope that only looks like one", func(t *testing.T) {
+		w := newWorld(t)
+		r := strings.Replace(header("approve", 3), "scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff origin/main...HEAD --since "+since, 1)
+		r = strings.Replace(r, "**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff origin/main...HEAD --since "+since+"`", 1)
+		w.run("publish", w.prepare(bazelFile(r)))
+		if p := w.payload(0); strings.Contains(p.Body, "Changes since") {
+			t.Errorf("only the exact form is incremental:\n%s", p.Body)
+		}
+	})
+}
+
+// The script runs on the user's jq, and macOS ships an older one than Homebrew: a
+// construct only the newer one parses refuses every report on the other.
+func TestScriptsParseOnEveryJq(t *testing.T) {
+	dir := t.TempDir()
+	if err := skills.Materialize(dir); err != nil {
+		t.Fatal(err)
+	}
+	parser := filepath.Join(dir, "skills", "bazel-post-report", "scripts", "parse-report.jq")
+	file := filepath.Join(t.TempDir(), "r.md")
+	if err := os.WriteFile(file, []byte(bazelFile(header("approve", 3))), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, jq := range []string{"/usr/bin/jq", "/opt/homebrew/bin/jq", "/usr/local/bin/jq", "jq"} {
+		path, err := exec.LookPath(jq)
+		if err != nil || seen[path] {
+			continue
+		}
+		seen[path] = true
+		out, err := exec.Command(path, "-Rs", "-f", parser, file).CombinedOutput()
+		if err != nil || !strings.Contains(string(out), `"deny": []`) {
+			v, _ := exec.Command(path, "--version").Output()
+			t.Errorf("%s (%s): %v\n%s", path, strings.TrimSpace(string(v)), err, out)
+		}
+	}
+	if len(seen) == 0 {
+		t.Skip("no jq")
+	}
+}

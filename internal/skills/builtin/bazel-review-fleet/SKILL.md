@@ -34,7 +34,8 @@ output, failures are reports too. Everything below assumes it.
 
 Follow section 2 of `headless.md`: repository, PR number, base, head sha, the
 `git diff origin/<base>...HEAD` command and its file list — every path in it, `.claude/` and
-other agent configuration included. Empty → failure report, stop.
+other agent configuration included. With `--since=<sha>` in the task, the same section says when
+the scope is `git diff <sha>..HEAD` instead. Empty → failure report, stop.
 
 **All three lenses read this exact scope.** If each lens resolved it on its own and one landed
 somewhere else, they would have reviewed different code, and deduplicating or comparing their
