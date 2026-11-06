@@ -2029,3 +2029,49 @@ func TestOldPublishPromptRunsAsTheCurrentOne(t *testing.T) {
 		t.Error("a prompt edited by hand is the user's")
 	}
 }
+
+// The first configs saved their templates in Portuguese. Left as they are, the
+// review one does not say the prohibition the gates look for, so the agent reads as
+// one that publishes; they run as today's.
+func TestPortugueseDefaultsRunAsToday(t *testing.T) {
+	var review, post string
+	for old, now := range legacyPrompts {
+		switch now {
+		case defaultPrompt:
+			review = old
+		case postPrompt:
+			post = old
+		}
+	}
+	if review == "" || post == "" {
+		t.Fatal("both old templates should be known")
+	}
+	c := Default()
+	c.Agent.Prompt = review
+	c.Agents = []AgentDef{{Name: "lens", Task: "/review-fleet {{number}}"}, {Name: "own", Task: "/review-fleet {{number}}", Prompt: post, Posts: true}}
+	ch, err := c.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Steps[0].Prompt != defaultPrompt || ch.PublishesBy() != "" {
+		t.Errorf("the inherited review template: publishes %q, prompt %.60q", ch.PublishesBy(), ch.Steps[0].Prompt)
+	}
+	if got := c.baseChoice().Steps[0].Prompt; got != defaultPrompt {
+		t.Errorf("the bare agent block: %.60q", got)
+	}
+	if ch, _ := c.ChoiceByName("own"); ch.Steps[0].Prompt != postPrompt {
+		t.Errorf("the posting template: %.60q", ch.Steps[0].Prompt)
+	}
+	if c.Agent.Prompt != review {
+		t.Error("the config itself changed: it would be saved")
+	}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}", Prompt: review}
+	if err := c.ValidateHistoryAgent(); err != nil {
+		t.Errorf("a history agent with the old review template: %v", err)
+	}
+	edited := strings.Replace(review, "Devolva no stdout", "Seja breve. Devolva no stdout", 1)
+	c.Agent.Prompt = edited
+	if got := c.baseChoice().Steps[0].Prompt; got != edited {
+		t.Error("a template edited by hand is the user's")
+	}
+}

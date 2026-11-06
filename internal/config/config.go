@@ -368,16 +368,63 @@ PR: {{title}} — @{{author}}
 
 Devolva no stdout o que foi publicado, em markdown.`}
 
-// legacyPublishPrompt says whether a saved prompt is one of those, untouched:
-// spacing aside, word for word. One edited by hand is the user's.
-func legacyPublishPrompt(prompt string) bool {
+// legacyPrompts are the other templates as the first configs saved them, in
+// Portuguese. Besides being in another language, the review one does not say
+// noPublishLine in the words the gates look for, so an agent left with it reads as
+// one that publishes.
+var legacyPrompts = map[string]string{`{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos,
+não commite e não publique nada no GitHub.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Descrição do PR:
+{{body}}
+
+Devolva no stdout só o relatório final, em markdown.`: defaultPrompt, `{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos e
+não commite nada.
+
+Você **tem** autorização para publicar o resultado no PR #{{number}} de
+{{repo}} — é para isso que este review foi disparado. Publique um review só,
+com os comentários inline nas linhas certas, e não abra outro se já houver um
+seu no PR.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Descrição do PR:
+{{body}}
+
+Devolva no stdout o relatório final em markdown, dizendo no fim o que foi
+publicado no PR.`: postPrompt}
+
+// currentPrompt is the template a prompt saved as an older default stands for, or
+// the prompt itself. The match is word for word, spacing aside: one edited by hand
+// is the user's and is kept.
+func currentPrompt(prompt string) string {
 	flat := flatten(prompt)
+	if flat == "" {
+		return prompt
+	}
 	for _, old := range legacyPublishPrompts {
 		if flat == flatten(old) {
-			return true
+			return publishPrompt
 		}
 	}
-	return false
+	for old, now := range legacyPrompts {
+		if flat == flatten(old) {
+			return now
+		}
+	}
+	return prompt
 }
 
 // publishPrompt is the template for whoever publishes an already written
@@ -1207,11 +1254,11 @@ func (c *Config) ValidateHistoryAgent() error {
 		return refuse("has a command or args that publish")
 	case strings.TrimSpace(def.Prompt) == "":
 		return nil
-	case promptAuthorizesPosting(def.Prompt):
+	case promptAuthorizesPosting(currentPrompt(def.Prompt)):
 		return refuse("has a prompt that authorizes publishing")
 	case mentionsPublishing(def.Prompt):
 		return refuse("has a prompt that tells it to publish")
-	case !promptForbidsPosting(def.Prompt):
+	case !promptForbidsPosting(currentPrompt(def.Prompt)):
 		return refuse(fmt.Sprintf("has a prompt that does not say %q", noPublishLine))
 	}
 	return nil
@@ -1770,11 +1817,6 @@ func (c *Config) PostChoice() Choice {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
-	// A prompt saved as an older default reads as the current one: those carried
-	// the PR's title and author, the author's text, to a model that can write.
-	if legacyPublishPrompt(ra.Prompt) {
-		ra.Prompt = publishPrompt
-	}
 	// Unless told otherwise, publishing clones: an inline comment needs the
 	// diff to find the line. Whoever wrote `checkout: false` in post_agent
 	// knows what they are doing — an agent that only calls the GitHub API does
@@ -1795,7 +1837,7 @@ func (c *Config) baseChoice() Choice {
 		Command:        c.Agent.Command,
 		Args:           c.Agent.Args,
 		Format:         c.Agent.Format,
-		Prompt:         c.Agent.Prompt,
+		Prompt:         currentPrompt(c.Agent.Prompt),
 		Publishable:    true,
 		Checkout:       c.Agent.Checkout,
 		TimeoutSeconds: c.Agent.TimeoutSeconds,
@@ -1840,6 +1882,10 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 	if strings.TrimSpace(ra.Prompt) == "" {
 		ra.Prompt = c.Agent.Prompt
 	}
+	// A prompt saved as an older default runs as the current one: the publishing
+	// ones carried the PR's title and author, the author's text, to a model that
+	// can write, and the first ones were in another language.
+	ra.Prompt = currentPrompt(ra.Prompt)
 	if def.Checkout != nil {
 		ra.Checkout = *def.Checkout
 	}
