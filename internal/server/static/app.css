@@ -385,6 +385,8 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 .state.awaits { color: var(--warn); }
 /* A review that came back without a report: an ending, but not a good one. */
 .card.incomplete .card-top .dot, .state.incomplete { color: var(--warn); }
+/* A report the inline publisher will refuse: still done, with a warning dot. */
+.card.inline-issue .card-top .dot { color: var(--warn); }
 .card.incomplete .progress > span { background: var(--warn); }
 .state-pill.done.incomplete { color: var(--warn); border-color: currentColor; }
 
