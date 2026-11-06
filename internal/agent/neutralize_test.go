@@ -231,6 +231,11 @@ func TestEmbeddedRepoConfigDoesNotRun(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(bin, "gitter"), []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
+			// With the PR's core.sshCommand out of the way, git falls back to ssh:
+			// an ssh that fails at once keeps the case from waiting on the network.
+			if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nexit 255\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
 
 			control := exec.Command("gitter")
 			control.Dir = t.TempDir()
