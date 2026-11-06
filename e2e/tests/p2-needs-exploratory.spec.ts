@@ -95,12 +95,10 @@ test.describe('P2 · needs you, a first read that fails', () => {
 test.describe('P3 · needs you, bugs', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS } } });
 
-  // BUG-QA-29: renderJobs writes the tab title every second while a job runs,
-  // whatever page is open, so on Needs you "(1) Bazel · needs you" becomes
-  // "(1) Bazel": the count of running jobs, not of what needs you. Expected: the
-  // page's own title stays.
+  // BUG-QA-29, fixed in 771e53d: renderJobs wrote the tab title every second
+  // while a job ran, whatever page was open, so "(1) Bazel · needs you" became
+  // "(1) Bazel".
   test('the tab title of Needs you survives a running job', async ({ app, bazel }) => {
-    knownBug('BUG-QA-29', 'renderJobs overwrites the page title');
     bazel.setNeeds(ONE);
     await open(app, bazel);
     await expect(app).toHaveTitle('(1) Bazel · needs you');
