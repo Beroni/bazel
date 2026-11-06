@@ -39,7 +39,7 @@ case "$1 $2" in
   *) cat "$d/pr" 2>/dev/null || printf '{"author":{"login":"pr-author"},"url":"https://github.invalid/o/r/pull/7"}\n' ;;
   esac ;;
 "pr diff") cat "$d/diff" ;;
-"api user") echo me ;;
+"api user") cat "$d/me" 2>/dev/null || echo me ;;
 "api -X")
   echo "$*" >> "$d/writes"
   case "$*" in
@@ -1295,6 +1295,59 @@ func TestTheSameReportIsNotPublishedTwice(t *testing.T) {
 		w.run("publish", w.prepare(bazelFile(store.DropFindings(two, []int{0}))))
 		if !w.wrote() {
 			t.Error("what a person kept this time was not published before as such")
+		}
+	})
+}
+
+// GitHub spells a bot three ways: app/x in gh's view of the PR, x[bot] in REST,
+// x in GraphQL. A PR opened by a bot is the bot's, whichever way it comes.
+func TestABotIsOneAccount(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	botPR := `{"author":{"login":"app/renovate","is_bot":true},"url":"https://github.invalid/o/r/pull/7"}` + "\n"
+	resolved := func(by string) string {
+		return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"` + by + `"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
+	}
+	t.Run("the bot author's comment absorbs nothing", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("pr", botPR)
+		w.write("comments", "["+comment(11, "renovate[bot]", "MEMBER", 2, "")+"]\n")
+		work := w.prepare(report)
+		if out, code := w.run("publish", work, "--same", "1=11"); code != 3 {
+			t.Errorf("the author's own comment is no candidate; exit %d\n%s", code, out)
+		}
+	})
+	t.Run("the bot author's resolution settles nothing", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("pr", botPR)
+		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+"]\n")
+		w.write("threads", resolved("renovate"))
+		w.run("publish", w.prepare(report), "--same", "1=11")
+		if p := w.payload(0); strings.Contains(p.Body, "settled by") {
+			t.Errorf("resolved by the PR's own bot:\n%s", p.Body)
+		}
+	})
+	t.Run("another account's resolution still settles", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("pr", botPR)
+		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+"]\n")
+		w.write("threads", resolved("bob"))
+		w.run("publish", w.prepare(report), "--same", "1=11")
+		if p := w.payload(0); !strings.Contains(p.Body, "settled by @bob") {
+			t.Errorf("%s", p.Body)
+		}
+	})
+	t.Run("this account as a bot, in another case", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("me", "Bazel-App[bot]\n")
+		w.write("comments", "["+comment(11, "bazel-app[bot]", "NONE", 2, "")+"]\n")
+		w.run("publish", w.prepare(report))
+		p := w.payload(0)
+		w.write("reviews", mustJSON(t, []map[string]any{{"user": map[string]string{"login": "BAZEL-APP[bot]"}, "body": p.Body}})+"\n")
+		os.Remove(filepath.Join(w.dir, "writes"))
+		os.Remove(filepath.Join(w.dir, "payload0.json"))
+		out, code := w.run("publish", w.prepare(report), "--same", "1=11")
+		if code != 0 || w.wrote() {
+			t.Errorf("its own review, however spelled, is already there: exit %d\n%s", code, out)
 		}
 	})
 }
