@@ -1527,3 +1527,17 @@ func TestTurnoSemResultSemBackground(t *testing.T) {
 		t.Errorf("one turn, one result: %+v %v", ok.Steps, err)
 	}
 }
+
+// A run that started and left without its final event is not a review, even with
+// text written before it went.
+func TestSemResultFinalEPendente(t *testing.T) {
+	res, err := streamReview(t, "claude-stream",
+		`{"type":"system","subtype":"init","session_id":"s1"}`,
+		`{"type":"assistant","session_id":"s1","message":{"content":[{"type":"text","text":"# Verdict\n\nhalf"}]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Steps) != 1 || !strings.Contains(res.Steps[0].Pending, "without its final result") {
+		t.Errorf("steps %+v", res.Steps)
+	}
+}

@@ -271,6 +271,9 @@ async function boot() {
     if (st.stray_command) {
       state.warning = `Your agent.prompt has no {{task}} and runs ${st.stray_command} on its own —`
         + ` every agent you pick runs two commands, the one you chose and that one. Fix it in "config".`;
+    } else if (st.queue_busy) {
+      state.warning = `Another Bazel is running on this folder and keeps the queue (${st.queue_busy}).`
+        + ' This one keeps its queue in memory: what is pending here does not come back after a restart.';
     } else if (!state.repos.length) {
       state.warning = 'No repositories watched — go to "config" and add one (owner/repo).';
     } else if (!selectableAgents().length) {

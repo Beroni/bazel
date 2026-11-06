@@ -290,9 +290,14 @@ type Manager struct {
 	logDir string
 	// queueFile keeps what is pending across restarts; empty is off. queueSaved
 	// is what it holds now, and queueMu keeps writes in order.
-	queueFile  string
-	queueSaved []byte
-	queueMu    sync.Mutex
+	queueFile string
+	// queueBusy is the queue file another server holds, when this one could not.
+	queueBusy string
+	// queueRelease lets go of the queue's lock; Wait calls it once the server
+	// is down, so a server started right after takes the queue over.
+	queueRelease func()
+	queueSaved   []byte
+	queueMu      sync.Mutex
 	// idPrefix makes job ids unique across restarts (the first characters of
 	// the server instance): the seq starts over on every boot, and "j3" from a
 	// page or an MCP client of the old process must not name the new j3.
@@ -492,6 +497,11 @@ func (m *Manager) trimLocked() {
 func (m *Manager) Wait(d time.Duration) {
 	for deadline := time.Now().Add(d); m.running.Load() > 0 && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
+	}
+	if m.ctx.Err() != nil && m.queueRelease != nil {
+		m.queueMu.Lock()
+		m.queueRelease()
+		m.queueMu.Unlock()
 	}
 }
 
