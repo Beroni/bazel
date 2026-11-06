@@ -140,4 +140,17 @@ test.describe('P1 · needs you', () => {
     await expect(app.getByTestId('needs-stale')).toContainText('HTTP 502');
     await expect(rows).toHaveCount(4);
   });
+
+  test('a running job does not write over the Needs you title', async ({ app, bazel }) => {
+    await setup(bazel);
+    await app.goto(app.url().replace(/#.*$/, '') + '#/needs');
+    await app.reload();
+    await expect(app).toHaveTitle('(3) Bazel · needs you');
+    await bazel.enqueue('acme/api-core#101', 'slow-lens');
+    await app.waitForTimeout(2500); // the queue ticks every second
+    await expect(app).toHaveTitle('(3) Bazel · needs you');
+    await app.getByTestId('nav-dashboard').click();
+    await expect(app).toHaveTitle('(1) Bazel');
+    bazel.release('release-slow');
+  });
 });

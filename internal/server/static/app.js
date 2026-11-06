@@ -1878,10 +1878,9 @@ function cardRepo(job) {
 }
 
 function renderJobs() {
-  const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
   $('#queue-count').textContent = String(state.jobs.length);
   renderSpend();
-  document.title = active ? `(${active}) Bazel` : 'Bazel';
+  setTitle();
   if (state.tab !== 'queue') return;
 
   // The rail updates every second while a job runs. The cards stay the same
@@ -3271,7 +3270,7 @@ async function showPage(nome) {
   for (const a of document.querySelectorAll('#nav a')) {
     a.classList.toggle('on', a.dataset.page === nome);
   }
-  document.title = nome === 'config' ? 'Bazel · config' : nome === 'needs' ? needsTitle() : 'Bazel';
+  setTitle();
   // The config is read from disk on every visit: it changes from outside —
   // another tab, an editor — and showing what was in memory would be lying.
   if (nome === 'config') await refreshConfig();
@@ -3291,6 +3290,20 @@ const NEEDS_GROUPS = [
 
 // actionable is what asks something of you: waiting on the author does not.
 const needsActionable = () => (state.needs ? state.needs.items.filter((i) => i.category !== 'waiting').length : 0);
+
+// setTitle is the tab's title for the page open: the queue counts on the
+// dashboard, Needs you counts its own, and neither writes over the other.
+function setTitle() {
+  const page = pageFromHash();
+  if (page === 'needs') {
+    document.title = needsTitle();
+  } else if (page === 'config') {
+    document.title = 'Bazel · config';
+  } else {
+    const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
+    document.title = active ? `(${active}) Bazel` : 'Bazel';
+  }
+}
 
 function needsTitle() {
   const n = needsActionable();
@@ -3326,7 +3339,7 @@ function renderNeeds() {
   const n = needsActionable();
   count.hidden = !n;
   count.textContent = String(n);
-  if (pageFromHash() === 'needs') document.title = needsTitle();
+  setTitle();
   $('#needs-watched').setAttribute('aria-pressed', String(!state.needsAll));
   $('#needs-all').setAttribute('aria-pressed', String(!!state.needsAll));
   const list = $('#needs-list');
