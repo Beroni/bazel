@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/config"
 )
@@ -227,6 +228,8 @@ func TestSegundaInstanciaNaoMexeNaFila(t *testing.T) {
 	t.Setenv("BAZEL_HOME", t.TempDir())
 	home := t.TempDir()
 	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; sleep 30")
+	// An agent that says it does not publish: a running one stays in the file.
+	cfg.Agent.Prompt = "review {{number}}: do not publish anything to GitHub"
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	first := queueServer(ctx, t, cfg, home)
@@ -234,9 +237,14 @@ func TestSegundaInstanciaNaoMexeNaFila(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(home, queueFileName)
-	before, _ := os.ReadFile(path)
-	if !strings.Contains(string(before), `"agent"`) {
-		t.Fatalf("first server's file: %s", before)
+	var before []byte
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if before, _ = os.ReadFile(path); strings.Contains(string(before), `"agent"`) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("first server's file: %s", before)
+		}
 	}
 	second := queueServer(ctx, t, cfg, home)
 	if len(second.jobViews()) != 0 || second.jobs.queueBusy == "" {
