@@ -102,6 +102,9 @@ type jobView struct {
 	// sent, no omitempty: the false is exactly what the page needs to read to
 	// hide the publish buttons.
 	Publishable bool `json:"publishable"`
+	// Since is the head this review started from, when it covers only what
+	// changed after an earlier one.
+	Since string `json:"since,omitempty"`
 	// AwaitsPublish marks the pipeline that ended in a `publish` step and
 	// waits for you to choose what goes to the PR.
 	AwaitsPublish bool `json:"awaits_publish,omitempty"`
@@ -163,6 +166,7 @@ type jobView struct {
 func (j *Job) view() jobView {
 	v := jobView{
 		Savable:     j.savable(),
+		Since:       j.Since,
 		Incomplete:  j.Incomplete,
 		Short:       j.Result.Short && j.publish == nil,
 		Doubt:       doubtOf(j),

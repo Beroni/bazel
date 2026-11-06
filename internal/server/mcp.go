@@ -430,7 +430,7 @@ func (s *Server) mcpEnqueue(ctx context.Context, raw json.RawMessage) (map[strin
 		return nil, fmt.Errorf("%q %s, and publishing over MCP is disabled "+
 			"(set mcp_allow_publish: true in the Bazel config to allow it)", choice.Name, how)
 	}
-	queued, errs := s.enqueueRefs(ctx, refs, choice)
+	queued, errs := s.enqueueRefs(ctx, refs, choice, false)
 	if len(queued) == 0 {
 		return nil, fmt.Errorf("nothing was queued: %s", strings.Join(errs, "; "))
 	}

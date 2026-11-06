@@ -83,6 +83,10 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
+	// A review of what changed since an earlier head says from where.
+	if res.Since != "" {
+		fmt.Fprintf(&b, "- Since: %s\n", res.Since)
+	}
 	// What the run's stream said: the report never came, and nothing of this
 	// file goes to the PR. Kept here so the Saved tab decides the same way.
 	if res.Pending != "" {

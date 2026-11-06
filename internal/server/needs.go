@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/store"
 )
 
 // The "Needs you" page: the open PRs where the user has something to do. Each
@@ -302,6 +303,7 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 	watched := lowerRepos(s.cfg.Repos)
 	s.cfgMu.Unlock()
 	now := timeNow()
+	marks := store.LoadMarks(s.reviewsDir)
 	items := []needsItem{}
 	hidden, count := 0, 0
 	for _, p := range c.prs {
@@ -323,7 +325,7 @@ func (s *Server) handleNeeds(w http.ResponseWriter, r *http.Request) {
 			since = p.UpdatedAt
 		}
 		items = append(items, needsItem{
-			prView:   newPRView(needsAsPR(p), strings.EqualFold(p.Author.Login, s.me), now),
+			prView:   newPRView(needsAsPR(p), strings.EqualFold(p.Author.Login, s.me), now).withStatus(marks.Status(needsAsPR(p)), now),
 			Category: cat, Reason: reason, Since: since, SinceAge: gh.PR{UpdatedAt: since}.Age(now), Watched: in,
 		})
 	}

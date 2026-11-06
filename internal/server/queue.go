@@ -33,6 +33,7 @@ type queuedJob struct {
 	Agent   string `json:"agent"`
 	History bool   `json:"history,omitempty"`
 	Mine    bool   `json:"mine,omitempty"`
+	Since   string `json:"since,omitempty"`
 }
 
 // pendingLocked is what the file must hold. An agent that may publish and has
@@ -46,7 +47,7 @@ func (m *Manager) pendingLocked() []queuedJob {
 		switch {
 		case j.publish != nil:
 		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && publishesOnItsOwn(j.Choice) == "":
-			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine})
+			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine, Since: j.Since})
 		}
 	}
 	return out
@@ -135,6 +136,7 @@ func (m *Manager) RestoreQueue(path string) {
 			continue
 		}
 		job := m.newJobLocked(q.PR, q.Mine, choice, q.History)
+		job.Since = q.Since
 		job.State = StatePaused
 	}
 	m.mu.Unlock()

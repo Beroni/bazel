@@ -43,6 +43,9 @@ const (
 	// EventLimits is Claude's quota, which rides along in the stream of whoever
 	// is running.
 	EventLimits EventKind = "limits"
+	// EventSince is what a review of what changed starts from, once the clone
+	// has vouched for it: Text is the commit, or empty for a whole review.
+	EventSince EventKind = "since"
 )
 
 // Event is the progress of a review. It's what lets the TUI and the web
@@ -93,6 +96,8 @@ type StepResult struct {
 // Result is the output of a review.
 type Result struct {
 	PR gh.PR
+	// Since is the commit a review of what changed started from, when it was one.
+	Since string
 	// Agent is the name of the agent or pipeline that ran.
 	Agent string
 	// Posts says whether this agent publishes to the PR on its own — whoever is
@@ -156,6 +161,33 @@ func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
 // the review's goroutine, so the listener must not block in it.
 func (r *Runner) Review(ctx context.Context, pr gh.PR, choice config.Choice, onEvent func(Event)) (Result, error) {
 	return r.run(ctx, pr, choice, nil, onEvent)
+}
+
+// ReviewSince reviews only what changed after since, the head of the last
+// review: {{since}} carries it, and the built-in review skills get it as
+// --since=<sha>. When the clone cannot vouch for it (a force push rewrote the
+// branch, or it is not there) the review is a whole one, and the log says why.
+func (r *Runner) ReviewSince(ctx context.Context, pr gh.PR, choice config.Choice, since string, onEvent func(Event)) (Result, error) {
+	return r.run(ctx, pr, choice, map[string]string{sincePlaceholder: since}, onEvent)
+}
+
+const sincePlaceholder = "{{since}}"
+
+// reviewSkills are the built-in skills that take --since.
+var reviewSkills = map[string]bool{
+	"bazel-review-fleet": true, "bazel-senior-code-reviewer": true,
+	"bazel-exploit-digger": true, "bazel-lazy-senior-dev": true,
+}
+
+// withSince hands since to a built-in review skill that was not told already.
+func withSince(task, since string) string {
+	if since == "" || strings.Contains(task, sincePlaceholder) || strings.Contains(task, "--since=") {
+		return task
+	}
+	if !reviewSkills[strings.ToLower(skills.Bare(skills.TaskSkill(task)))] {
+		return task
+	}
+	return strings.TrimRight(task, " \t\r\n") + " --since=" + since
 }
 
 // Publish runs the publishing agent over a review that is already done — what
@@ -229,6 +261,28 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			pr.HeadRefOid = ws.Head
 		}
 	}
+
+	// {{since}} is always there, empty unless this is a review of what changed,
+	// and then only with a commit the clone shows the head grew from.
+	since := ""
+	if v, ok := extra[sincePlaceholder]; ok && v != "" {
+		if workspace.IsAncestor(ctx, workdir, v) {
+			since = v
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+				Text: fmt.Sprintf("↻ reviewing what changed since %.12s", v)})
+		} else {
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+				Text: fmt.Sprintf("↻ %.12s, the last reviewed head, is not behind this one (a force push, or no clone): reviewing the whole PR", v)})
+		}
+	}
+	if _, asked := extra[sincePlaceholder]; asked {
+		emit(Event{Kind: EventSince, Total: total, Name: choice.Steps[0].Name, Text: since})
+	}
+	extra = maps.Clone(extra)
+	if extra == nil {
+		extra = map[string]string{}
+	}
+	extra[sincePlaceholder] = since
 
 	// Now that the clone has a path: a flag that reads a file from it hands the
 	// PR's content to the agent as configuration.
@@ -322,7 +376,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		// Claude Code finds the built-in skills in the plugin; the other CLIs
 		// get the skill inside the prompt, with the plugin's path.
-		task := skills.Canonical(step.Task)
+		task := withSince(skills.Canonical(step.Task), since)
 		if !runsClaude(step) {
 			task = skills.Inline(task, plugin)
 		}
@@ -409,6 +463,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		Duration:  time.Since(start),
 		Truncated: truncated,
 		Workdir:   workdir,
+		Since:     since,
 		StoppedAt: stopped,
 	}, nil
 }

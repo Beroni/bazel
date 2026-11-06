@@ -1541,3 +1541,53 @@ func TestSemResultFinalEPendente(t *testing.T) {
 		t.Errorf("steps %+v", res.Steps)
 	}
 }
+
+// The built-in review skills get --since=<sha>; a task that places {{since}}
+// itself, or a skill of the user's, is left alone, and so is a whole review.
+func TestWithSince(t *testing.T) {
+	sha := strings.Repeat("a", 40)
+	for task, want := range map[string]string{
+		"/bazel-review-fleet 12":                   "/bazel-review-fleet 12 --since=" + sha,
+		"/bazel:bazel-exploit-digger 12":           "/bazel:bazel-exploit-digger 12 --since=" + sha,
+		"/bazel-lazy-senior-dev 12  ":              "/bazel-lazy-senior-dev 12 --since=" + sha,
+		"/review-fleet 12":                         "/review-fleet 12",
+		"/bazel-review-fleet 12 --since={{since}}": "/bazel-review-fleet 12 --since={{since}}",
+		"/bazel-post-report x":                     "/bazel-post-report x",
+	} {
+		if got := withSince(task, sha); got != want {
+			t.Errorf("%q → %q, want %q", task, got, want)
+		}
+	}
+	if got := withSince("/bazel-review-fleet 12", ""); got != "/bazel-review-fleet 12" {
+		t.Errorf("whole review: %q", got)
+	}
+}
+
+// {{since}} is always replaced: empty in a whole review, and empty with a note
+// when the clone cannot vouch for the commit.
+func TestSinceNoPrompt(t *testing.T) {
+	cfg := config.Default()
+	cfg.Agent.Checkout = false
+	cfg.Agent.Prompt = "since=[{{since}}] {{task}}"
+	cfg.Agents = []config.AgentDef{{Name: "lens", Task: "/x", Command: "cat", Format: "plain"}}
+	choice, err := cfg.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := New(cfg).Review(context.Background(), testPR(), choice, nil)
+	if err != nil || !strings.Contains(res.Body, "since=[]") {
+		t.Fatalf("whole: %q %v", res.Body, err)
+	}
+	var notes []string
+	res, err = New(cfg).ReviewSince(context.Background(), testPR(), choice, strings.Repeat("b", 40), func(e Event) {
+		if e.Kind == EventLog {
+			notes = append(notes, e.Text)
+		}
+	})
+	if err != nil || !strings.Contains(res.Body, "since=[]") || res.Since != "" {
+		t.Fatalf("no clone: %q %q %v", res.Body, res.Since, err)
+	}
+	if !strings.Contains(strings.Join(notes, "\n"), "reviewing the whole PR") {
+		t.Errorf("no note: %v", notes)
+	}
+}

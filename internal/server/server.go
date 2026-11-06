@@ -672,6 +672,9 @@ type reviewRequest struct {
 	Refs []string `json:"refs"`
 	// Agent is the name of the chosen agent or pipeline. Empty = the default.
 	Agent string `json:"agent"`
+	// Since asks for a review of what changed since each PR's last review:
+	// the head it recorded goes to the agent as {{since}}.
+	Since bool `json:"since"`
 }
 
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
@@ -694,10 +697,14 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice)
+	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice, req.Since)
 	status := http.StatusAccepted
 	if len(queued) == 0 {
 		status = http.StatusBadRequest
+		// Every PR asked for was already reviewed at its head: nothing to do.
+		if req.Since && allUnchanged(errs) {
+			status = http.StatusConflict
+		}
 	}
 	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
 }
@@ -718,7 +725,11 @@ func (s *Server) resolveChoice(name string) (config.Choice, error) {
 
 // enqueueRefs queues one review per reference. What went wrong comes back
 // in errs, one per item — a bad ref does not take down the others.
-func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
+func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice, since bool) (queued []jobView, errs []string) {
+	var marks store.Marks
+	if since {
+		marks = store.LoadMarks(s.reviewsDir)
+	}
 	// Cached PRs avoid a `gh pr view` per item when they came from the list.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
@@ -742,7 +753,14 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 				continue
 			}
 		}
-		view, err := s.jobs.Enqueue(pr, strings.EqualFold(pr.Author.Login, s.me), choice)
+		head := marks.ReviewedHead(key)
+		// The head was reviewed already: a review of what changed would read an
+		// empty range, and a whole one is not what was asked.
+		if since && head != "" && pr.HeadRefOid != "" && strings.EqualFold(head, pr.HeadRefOid) {
+			errs = append(errs, fmt.Sprintf("%s: %s", key, errUnchanged))
+			continue
+		}
+		view, err := s.jobs.EnqueueSince(pr, strings.EqualFold(pr.Author.Login, s.me), choice, head)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 			continue
@@ -750,6 +768,18 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// errUnchanged refuses a review of what changed when nothing did.
+const errUnchanged = "nothing changed since the last review"
+
+func allUnchanged(errs []string) bool {
+	for _, e := range errs {
+		if !strings.HasSuffix(e, errUnchanged) {
+			return false
+		}
+	}
+	return len(errs) > 0
 }
 
 // maxRefs bounds one request from the page. "Select all" over a busy list is a

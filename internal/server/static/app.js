@@ -617,6 +617,8 @@ function openPR(key) {
   heading.dir = 'auto';
   grow.append(kicker, heading);
   head.append(grow);
+  // Changed since its last review: review only the new commits.
+  if (pr.changed_since_review) head.append(sinceButton(pr.key));
   v.append(head);
 
   // The same page the Overview of a job shows: description, timeline, files,
@@ -2032,6 +2034,7 @@ function fillCard(card, job) {
     label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
     job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
     job.inline_issue ? '⚠ not in the inline format: ' + job.inline_issue : '',
+    job.since ? '↻ changes since ' + job.since.slice(0, 7) : '',
     custo,
   ].filter(Boolean).join('\n'));
   fillProgress(card.querySelector(':scope > .progress'), job);
@@ -3469,6 +3472,7 @@ function needsRow(it) {
   row.title = `${it.key} — ${it.title}\n${it.reason}`;
   row.addEventListener('click', () => openNeeds(it.key));
   row.append(main);
+  if (it.category !== 'yours' && it.changed_since_review) row.append(sinceButton(it.key));
   // Your own PR has nothing for an agent to review on your behalf.
   if (it.category !== 'yours') {
     const go = tid(el('button', 'btn small', '▶ Review'), 'needs-review', { prKey: it.key });
@@ -3483,6 +3487,38 @@ function needsRow(it) {
     row.append(go);
   }
   return row;
+}
+
+// sinceButton reviews what changed in a PR since the head of its last review,
+// with the agent picked in the sidebar. The server finds that head; when the
+// branch was rewritten since, the agent reviews the whole PR and says so.
+function sinceButton(key) {
+  const b = tid(el('button', 'btn small', '↻ Review changes since last review'), 'review-since', { prKey: key });
+  b.title = `runs ${state.agent || 'the default agent'} over what ${key} got since it was last reviewed`;
+  b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirmPublishing(state.agent, [key])) return;
+    b.disabled = true;
+    clearAlert();
+    try {
+      const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs: [key], agent: state.agent, since: true }) });
+      (res.jobs || []).forEach(upsertJob);
+      if (res.errors && res.errors.length) banner(res.errors.join('\n'));
+      if (res.jobs && res.jobs.length) {
+        location.hash = '#/';
+        state.tab = 'queue';
+        state.activeJob = res.jobs[0].id;
+        state.activePR = null;
+        renderTabs();
+        renderJobs();
+      }
+    } catch (err) {
+      alertError('Could not start the review: ' + err.message);
+    } finally {
+      b.disabled = false;
+    }
+  });
+  return b;
 }
 
 // openNeeds opens the PR's page on the dashboard, in its Overview. A PR outside
