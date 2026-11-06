@@ -606,6 +606,10 @@ func truncateRunes(s string, n int) string {
 // background is still out at the end.
 func (p *streamParser) pendingWork() string {
 	switch {
+	// A claude run always ends with its result, the real stream shows: one that
+	// started and never sent it was cut short, whatever text it left.
+	case p.results == 0 && len(p.turnsBusy) > 0:
+		return "ended without its final result"
 	case p.results > 0 && p.results < len(p.turnsBusy):
 		return fmt.Sprintf("ended with %d of its %d turns still owing a result", len(p.turnsBusy)-p.results, len(p.turnsBusy))
 	case !p.backgrounded:
