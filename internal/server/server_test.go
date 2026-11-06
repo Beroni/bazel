@@ -3481,3 +3481,50 @@ func TestReviewPendenteNaoPublica(t *testing.T) {
 		}
 	}
 }
+
+// A review whose stream proves it incomplete is saved to read, but it is not a
+// review of the PR: it neither marks it nor takes the mark of a complete one.
+func TestPendenteNaoMarcaRevisado(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"type":"system","subtype":"init","session_id":"s1"}` + "\n" + `{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nGOOD"}`
+	cut := good + "\n" + `{"type":"system","subtype":"init","session_id":"s1"}`
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agents = []config.AgentDef{
+		{Name: "good", Task: "x", Command: "sh", Format: "claude-stream", Args: []string{"-c", "cat >/dev/null; cat <<'A'\n" + good + "\nA\n"}},
+		{Name: "cut", Task: "x", Command: "sh", Format: "claude-stream", Args: []string{"-c", "cat >/dev/null; cat <<'A'\n" + cut + "\nA\n"}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	run := func(name string) jobView {
+		choice, err := cfg.ChoiceByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := m.Enqueue(testPR(482), false, choice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waitFor(t, ch, v.ID, StateDone)
+	}
+	key := testPR(482).Key()
+	if v := run("cut"); v.Incomplete == "" || v.SavedTo == "" {
+		t.Fatalf("cut: %+v", v)
+	}
+	if _, ok := store.LoadMarks(dir)[key]; ok {
+		t.Fatal("an incomplete review marked the PR as reviewed")
+	}
+	run("good")
+	before := store.LoadMarks(dir)[key]
+	if before.Agent != "good" {
+		t.Fatalf("mark: %+v", before)
+	}
+	run("cut")
+	if after := store.LoadMarks(dir)[key]; after != before {
+		t.Errorf("the complete review's mark changed: %+v → %+v", before, after)
+	}
+}

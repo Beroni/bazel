@@ -613,7 +613,9 @@ func (m *Manager) run(q queued) {
 	switch {
 	// A review that did not reach the disk is not reviewed: with the mark, the
 	// list would say so long after the only copy, in memory, is gone.
-	case fresh && saveErr == nil:
+	// Nor is one whose stream proves it never got its report: it is on disk to
+	// read, and the mark of an earlier complete review stays.
+	case fresh && saveErr == nil && res.Pending == "":
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	case job.publish != nil:
 		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
@@ -705,7 +707,10 @@ func (m *Manager) SaveAgain(id string) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, err
 	}
-	markErr := store.MarkReviewed(m.reviewsDir, res, path)
+	var markErr error
+	if res.Pending == "" {
+		markErr = store.MarkReviewed(m.reviewsDir, res, path)
+	}
 
 	m.mu.Lock()
 	job.saving = false
