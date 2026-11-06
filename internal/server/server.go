@@ -474,6 +474,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"history_custom": s.historyCustom(),
 		// The Claude quota comes empty until the first review of this session.
 		"limits": s.jobs.Limits(),
+		// Another server keeps the queue file: this one's queue lives in memory.
+		"queue_busy": s.jobs.queueBusy,
 	})
 }
 

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -198,6 +199,9 @@ func TestFilaArquivoRuim(t *testing.T) {
 	if err := os.WriteFile(path, file, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	// A restart: the first server is down before the next one starts.
+	cancel()
+	srv.jobs.Wait(shutdownWait)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	t.Cleanup(cancel2)
 	again := queueServer(ctx2, t, cfg, home)
@@ -211,5 +215,43 @@ func TestFilaArquivoRuim(t *testing.T) {
 	}
 	if view.State == StatePaused || len(again.jobViews()) != 1 {
 		t.Errorf("asking again: %+v", view)
+	}
+}
+
+// A second server on the same folder does not take over the first one's queue:
+// it restores nothing, writes nothing, and the page says why.
+func TestSegundaInstanciaNaoMexeNaFila(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no lock on Windows")
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	home := t.TempDir()
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; sleep 30")
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	first := queueServer(ctx, t, cfg, home)
+	if _, err := first.jobs.Enqueue(testPR(1), false, cfg.DefaultChoice()); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(home, queueFileName)
+	before, _ := os.ReadFile(path)
+	if !strings.Contains(string(before), `"agent"`) {
+		t.Fatalf("first server's file: %s", before)
+	}
+	second := queueServer(ctx, t, cfg, home)
+	if len(second.jobViews()) != 0 || second.jobs.queueBusy == "" {
+		t.Fatalf("second server: %v busy=%q", second.jobViews(), second.jobs.queueBusy)
+	}
+	if _, err := second.jobs.Enqueue(testPR(2), false, cfg.DefaultChoice()); err != nil {
+		t.Fatal(err)
+	}
+	second.jobs.saveQueue()
+	if after, _ := os.ReadFile(path); string(after) != string(before) {
+		t.Errorf("the second server wrote the first one's queue:\n%s", after)
+	}
+	w := httptest.NewRecorder()
+	second.Handler().ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/state", nil))
+	if !strings.Contains(w.Body.String(), `"queue_busy":"`) {
+		t.Errorf("state: %.200s", w.Body)
 	}
 }

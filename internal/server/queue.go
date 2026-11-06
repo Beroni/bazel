@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/beroni/bazel/internal/config"
@@ -94,6 +95,24 @@ func writeQueue(path string, data []byte) error {
 // line on the terminal, and a file that cannot be read is left alone for
 // whoever wants to look at it.
 func (m *Manager) RestoreQueue(path string) {
+	// One server per queue: a second one on the same BAZEL_HOME would show as
+	// paused what the first is running, and write over its file. It keeps a
+	// queue of its own, in memory, and says so.
+	release, ok := holdQueue(path + ".lock")
+	if !ok {
+		m.queueBusy = path
+		fmt.Fprintf(os.Stderr, "bazel: another Bazel holds %s: this one keeps its queue in memory only\n", path)
+		return
+	}
+	// The lock goes with the server: once its context is done, it writes no more.
+	var once sync.Once
+	m.queueRelease = func() { once.Do(release) }
+	go func() {
+		<-m.ctx.Done()
+		m.queueMu.Lock()
+		m.queueRelease()
+		m.queueMu.Unlock()
+	}()
 	m.queueFile = path
 	data, err := os.ReadFile(path)
 	if err != nil {
