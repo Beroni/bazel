@@ -48,7 +48,7 @@ test.describe('P1 · built-in skills', () => {
     await expect(ui.publishInline(viewer)).toBeVisible();
 
     const call = bazel.agentCalls()[0];
-    expect(call.prompt.startsWith('/bazel-review-fleet 101')).toBe(true);
+    expect(call.prompt.startsWith('/bazel:bazel-review-fleet 101')).toBe(true);
     expect(call.prompt).toContain('do not publish anything to GitHub');
     expect([...call.skills].sort()).toEqual(BUILTIN);
     expect(call.builtin_skill_source).toBe('plugin');

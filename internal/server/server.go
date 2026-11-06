@@ -1561,7 +1561,7 @@ func (s *Server) agentViews() []map[string]any {
 func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher bool) map[string]any {
 	usadas := make([]map[string]any, 0, len(c.Steps))
 	for _, step := range c.Steps {
-		name := skills.TaskSkill(step.Task)
+		name := skills.Bare(skills.TaskSkill(step.Task))
 		if name == "" {
 			continue
 		}

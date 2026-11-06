@@ -129,7 +129,7 @@ func TestRunCanonicalizesTheTask(t *testing.T) {
 		t.Fatalf("Review: %v", err)
 	}
 	prompt, _ := os.ReadFile(filepath.Join(state, "prompt"))
-	if !strings.HasPrefix(string(prompt), "/bazel-review-fleet 482") {
+	if !strings.HasPrefix(string(prompt), "/bazel:bazel-review-fleet 482") {
 		t.Errorf("the slash command should carry the skill's exact name: %.60q", prompt)
 	}
 }

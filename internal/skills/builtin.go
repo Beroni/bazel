@@ -113,16 +113,23 @@ func Bare(name string) string {
 	return name
 }
 
-// PostTask points a task at the plugin's own publishing skill, whatever a saved
-// config calls it: a homonym would publish with none of the script's checks. Any
-// other task comes back as it was.
-func PostTask(task string) string {
-	if !IsPost(task) {
+// Qualify points a task that calls a built-in skill at the plugin's own copy,
+// `/bazel:<name>`, whatever a saved config calls it. The bare name goes to any
+// skill of that name in the user's or the project's folder: a homonym would run in
+// its place, with none of the built-in's rules. Any other task comes back as it was.
+func Qualify(task string) string {
+	name := TaskSkill(task)
+	s, ok := builtinNamed(name)
+	if !ok {
 		return task
 	}
-	name := TaskSkill(task)
 	trimmed := strings.TrimSpace(task)
-	return "/" + pluginPrefix + postSkill + trimmed[1+len(name):]
+	return "/" + pluginPrefix + s.Name + trimmed[1+len(name):]
+}
+
+// QualifiedTask is the task that calls a built-in skill by the plugin's name.
+func QualifiedTask(name, args string) string {
+	return Qualify("/" + name + " " + args)
 }
 
 // Materialize writes the embedded skills into dir as a Claude Code plugin —
