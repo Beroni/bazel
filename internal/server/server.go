@@ -1219,7 +1219,11 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]savedView, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)})
+		v := savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)}
+		if p, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
+			v.Posted = &p
+		}
+		out = append(out, v)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"dir": s.reviewsDir, "reviews": out})
 }
@@ -1229,6 +1233,8 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 type savedView struct {
 	store.Entry
 	Publishable bool `json:"publishable"`
+	// Posted is how and when this file went to the PR, from its own record.
+	Posted *store.Posted `json:"posted,omitempty"`
 }
 
 // agentPublishes says whether an agent's output can go to the PR. An agent no
@@ -1368,7 +1374,7 @@ func (s *Server) refusePublish(w http.ResponseWriter, sr savedReview) bool {
 
 // handleSavedPublish runs the publishing agent over a saved review.
 func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -1378,7 +1384,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
-	if s.refusePublish(w, sr) {
+	if s.refusePublish(w, sr) || s.refuseSent(w, sr, again) {
 		return
 	}
 	pr := sr.PR
@@ -1392,7 +1398,7 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 
 // handleSavedComment pastes a saved review onto the PR, with no agent.
 func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -1402,7 +1408,7 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
-	if s.refusePublish(w, sr) {
+	if s.refusePublish(w, sr) || s.refuseSent(w, sr, again) {
 		return
 	}
 	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
@@ -1424,19 +1430,60 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 // "publish everything": the four paths to the PR accept the list and none
 // requires it.
 func readSkip(w http.ResponseWriter, r *http.Request) ([]int, error) {
+	skip, _, err := readDoor(w, r)
+	return skip, err
+}
+
+// readDoor is readSkip plus again: the user said yes to sending a review whose
+// PR already shows as published, from before Bazel kept that per file.
+func readDoor(w http.ResponseWriter, r *http.Request) ([]int, bool, error) {
 	var req struct {
-		Skip []int `json:"skip"`
+		Skip  []int `json:"skip"`
+		Again bool  `json:"again"`
 	}
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("invalid body: %w", err)
+		return nil, false, fmt.Errorf("invalid body: %w", err)
 	}
 	for _, i := range req.Skip {
 		if i < 0 {
-			return nil, fmt.Errorf("invalid finding index %d", i)
+			return nil, false, fmt.Errorf("invalid finding index %d", i)
 		}
 	}
-	return req.Skip, nil
+	return req.Skip, req.Again, nil
+}
+
+// postedRecorded says some saved review of pr has its own record of going to
+// the PR: then the index's "posted" is that one, and not a guess about the rest.
+func (s *Server) postedRecorded(pr gh.PR) bool {
+	entries, _ := store.List(s.reviewsDir)
+	for _, e := range entries {
+		if strings.EqualFold(e.Repo, pr.Repo) && e.Number == pr.Number {
+			if _, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// refuseSent answers for a saved review that went to the PR: 409, and gh is
+// never called. When the index says the PR got a review and no saved file of it
+// records having been that one — files from before the record — it asks first;
+// again is the yes.
+func (s *Server) refuseSent(w http.ResponseWriter, sr savedReview, again bool) bool {
+	if p, ok := store.PostedOf(sr.Path); ok {
+		writeErr(w, http.StatusConflict, fmt.Errorf("already published: this review went to the PR as %s on %s", p.How, p.At.Format("2006-01-02 15:04")))
+		return true
+	}
+	if !again && store.LoadMarks(s.reviewsDir).Status(sr.PR).Posted && !s.postedRecorded(sr.PR) {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "a review of this PR already went to it, and this file does not say whether it was this one",
+			"confirm": true,
+		})
+		return true
+	}
+	return false
 }
 
 func (s *Server) jobViews() []jobView {

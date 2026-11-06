@@ -147,6 +147,8 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error(body.error || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    // The server asks before doing it: the caller may send it again with a yes.
+    err.confirm = !!body.confirm;
     // The page is from another server process: say so, and bring the queue,
     // the PRs and the saved list up to date before anything else is tried.
     if (res.status === 409 && body.stale) {
@@ -791,6 +793,13 @@ async function openSaved(name) {
       nota.style.marginTop = '28px';
       nota.textContent = `This is not a review — what "${entry.agent}" produces stays in Bazel.`;
       v.append(nota);
+    } else if (entry && entry.repo && entry.posted) {
+      // It went to the PR, as this file records: no second time, restart or not.
+      const bar = el('div', 'viewer-actions');
+      const when = new Date(entry.posted.at).toLocaleString();
+      const done = tid(el('span', 'state done', `✓ already on the PR (${entry.posted.how}, ${when})`), 'already-published');
+      bar.append(el('div', 'spacer'), done);
+      v.append(bar);
     } else if (entry && entry.repo) {
       const bar = el('div', 'viewer-actions');
       const pub = tid(el('button', 'btn primary', '↗ Publish'), 'saved-publish');
@@ -873,7 +882,8 @@ async function publishSaved(name, btn) {
   btn.disabled = true;
   clearAlert();
   try {
-    const job = await api('/api/reviews/' + encodeURIComponent(name) + '/publish', { method: 'POST', body: JSON.stringify({ skip }) });
+    const job = await savedDoor(name, 'publish', skip);
+    if (!job) { btn.disabled = false; return; }
     upsertJob(job);
     state.tab = 'queue';
     state.activeJob = job.id;
@@ -884,6 +894,20 @@ async function publishSaved(name, btn) {
   } catch (err) {
     alertError(err.message);
     btn.disabled = false;
+  }
+}
+
+// savedDoor posts to one of the Saved tab's doors. When the server cannot tell
+// whether this file is the review that already went to the PR, it asks, and
+// only a yes sends it; a no returns null.
+async function savedDoor(name, door, skip) {
+  const path = '/api/reviews/' + encodeURIComponent(name) + '/' + door;
+  try {
+    return await api(path, { method: 'POST', body: JSON.stringify({ skip }) });
+  } catch (err) {
+    if (!err.confirm) throw err;
+    if (!confirm(`${err.message}.\n\nSend it to the PR again?`)) return null;
+    return api(path, { method: 'POST', body: JSON.stringify({ skip, again: true }) });
   }
 }
 
@@ -898,7 +922,11 @@ async function commentSaved(name, btn) {
   btn.textContent = 'publishing…';
   clearAlert();
   try {
-    await api('/api/reviews/' + encodeURIComponent(name) + '/comment', { method: 'POST', body: JSON.stringify({ skip }) });
+    if (!(await savedDoor(name, 'comment', skip))) {
+      btn.disabled = false;
+      btn.textContent = antes;
+      return;
+    }
     btn.textContent = '✓ commented on ' + alvo;
     loadPRs(false);
   } catch (err) {

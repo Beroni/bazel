@@ -3528,3 +3528,68 @@ func TestPendenteNaoMarcaRevisado(t *testing.T) {
 		t.Errorf("the complete review's mark changed: %+v → %+v", before, after)
 	}
 }
+
+// A saved review that went to the PR keeps saying so after a restart: every
+// Saved door answers 409 and gh is never called. A file from before that record
+// whose PR shows as published asks first, and goes only with a yes.
+func TestSalvoPublicadoNaoVaiDeNovo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482,\"headRefOid\":\"abc\"}'; exit 0; fi\necho \"$1 $2\" >> " + log + "\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := cfgFor(t, "cat")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := func() *Server {
+		srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return srv
+	}
+	srv := start()
+	path, err := store.Save(srv.reviewsDir, agent.Result{Agent: cfg.DefaultChoice().Name, PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	door := func(srv *Server, which, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/"+which, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := door(srv, "comment", `{}`); w.Code != http.StatusOK {
+		t.Fatalf("first comment: %d %s", w.Code, w.Body)
+	}
+	calls := func() int { b, _ := os.ReadFile(log); return strings.Count(string(b), "pr comment") }
+	if calls() != 1 {
+		t.Fatalf("gh comments: %d", calls())
+	}
+	again := start() // a restart: a new manager, nothing in memory
+	for _, which := range []string{"comment", "publish"} {
+		if w := door(again, which, `{}`); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already published") {
+			t.Errorf("%s after restart: %d %s", which, w.Code, w.Body)
+		}
+	}
+	if calls() != 1 {
+		t.Errorf("gh ran again: %d comments", calls())
+	}
+
+	// From before the record: only the index says the PR got a review.
+	if err := os.Remove(path + ".posted"); err != nil {
+		t.Fatal(err)
+	}
+	w := door(again, "comment", `{}`)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"confirm":true`) || calls() != 1 {
+		t.Fatalf("legacy without a yes: %d %s, %d comments", w.Code, w.Body, calls())
+	}
+	if w := door(again, "comment", `{"again":true}`); w.Code != http.StatusOK || calls() != 2 {
+		t.Errorf("legacy with a yes: %d %s, %d comments", w.Code, w.Body, calls())
+	}
+}

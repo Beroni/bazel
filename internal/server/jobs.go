@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -619,6 +620,7 @@ func (m *Manager) run(q queued) {
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	case job.publish != nil:
 		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
+		m.notePosted(job.publish.Source, "inline", res.PR.HeadRefOid)
 	}
 
 	// The publish step only waits when there is something to choose: a
@@ -1178,6 +1180,7 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 	err := gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, pr.Key())
+		m.notePosted(path, "comment", pr.HeadRefOid)
 	}
 
 	m.mu.Lock()
@@ -1196,6 +1199,10 @@ func (m *Manager) claimedLocked(path string, self *Job) error {
 		return nil
 	}
 	if m.sent[path] {
+		return errAlreadyPosted
+	}
+	// What a restart forgot, the file next to the review remembers.
+	if _, ok := store.PostedOf(path); ok {
 		return errAlreadyPosted
 	}
 	if m.pasting[path] {
@@ -1269,6 +1276,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
+		m.notePosted(job.SavedTo, "comment", res.PR.HeadRefOid)
 	}
 
 	m.mu.Lock()
@@ -1388,4 +1396,16 @@ func (m *Manager) publish(job *Job) {
 	}
 	m.hub.Broadcast("job", view)
 	m.saveQueue()
+}
+
+// notePosted records next to the saved review that it went to the PR. It runs
+// before the door answers: a restart right after must not let it go again. A
+// disk that refuses only costs the memory of it, which the session keeps.
+func (m *Manager) notePosted(path, how, head string) {
+	if path == "" {
+		return
+	}
+	if err := store.MarkFilePosted(path, how, head); err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: could not record that %s was published: %v\n", filepath.Base(path), err)
+	}
 }
