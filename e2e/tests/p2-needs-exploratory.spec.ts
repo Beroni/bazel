@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { asked, ME, node, pushed, review } from '../harness/needs';
 import { ui } from '../harness/ui';
@@ -108,12 +108,11 @@ test.describe('P3 · needs you, bugs', () => {
     bazel.release('release-slow');
   });
 
-  // BUG-QA-30: the counter by "Needs you" counts the scope chosen last on the
+  // BUG-QA-30, fixed in 8dc4b0c: the counter by "Needs you" counts the scope chosen last on the
   // page: choose "all repos" and it grows, on every page, until a reload puts it
   // back on the watched ones. Expected: one meaning, the watched repos (or say
   // which).
   test('the counter does not change with the scope chosen on the page', async ({ app, bazel }) => {
-    knownBug('BUG-QA-30', 'the counter follows the last scope chosen');
     bazel.setNeeds({ requested: [asked('acme/api-core', 101, 'Watched one'), asked('elsewhere/lib', 5, 'Not watched')] });
     await open(app, bazel);
     await expect(app.getByTestId('needs-count')).toHaveText('1');
@@ -123,11 +122,10 @@ test.describe('P3 · needs you, bugs', () => {
     await expect(app.getByTestId('needs-count')).toHaveText('1');
   });
 
-  // BUG-QA-31: Enter on a row's title opens the PR on the dashboard and the
+  // BUG-QA-31, fixed in 8dc4b0c: Enter on a row's title opens the PR on the dashboard and the
   // focus falls to <body>: a keyboard user starts over from the top. Expected:
   // focus on the PR page that opened (or its heading).
   test('opening a PR from Needs you by keyboard keeps the focus on the page', async ({ app, bazel }) => {
-    knownBug('BUG-QA-31', 'focus lost after opening a PR from Needs you');
     bazel.setNeeds(ONE);
     await open(app, bazel);
     await app.getByRole('button', { name: /open acme\/api-core#101/ }).focus();
@@ -137,12 +135,11 @@ test.describe('P3 · needs you, bugs', () => {
     expect(await app.evaluate(() => document.activeElement !== document.body)).toBe(true);
   });
 
-  // BUG-QA-32: POST /api/reviews refuses with {"errors":[…]} and api() reads only
+  // BUG-QA-32, fixed in 8dc4b0c: POST /api/reviews refuses with {"errors":[…]} and api() reads only
   // body.error, so the banner says "400 Bad Request" and drops the reason (here
   // "Could not resolve to a PullRequest"). Same from the dashboard's Run.
   // Expected: the server's reason on screen.
   test('a refused review says why', async ({ app, bazel }) => {
-    knownBug('BUG-QA-32', 'the reason of a 400 from /api/reviews is dropped');
     bazel.setNeeds({ requested: [asked('elsewhere/lib', 5, 'A PR gh cannot read')] });
     await open(app, bazel);
     await app.getByTestId('needs-scope-all').click();
@@ -151,10 +148,9 @@ test.describe('P3 · needs you, bugs', () => {
     await expect(ui.banner(app)).toContainText('Could not resolve');
   });
 
-  // BUG-QA-33: the page has an h2 ("Needs you") and its groups are h4: axe
+  // BUG-QA-33, fixed in 8dc4b0c: the page has an h2 ("Needs you") and its groups are h4: axe
   // heading-order (moderate). Expected: h3, or the levels of the dashboard.
   test('axe is clean on Needs you', async ({ app, bazel }) => {
-    knownBug('BUG-QA-33', 'heading levels skip on Needs you');
     bazel.setNeeds({ ...ONE, reviewed: [node('acme/web-app', 7, 'Dark mode', 'carol', { reviews: { nodes: [review(ME, 'CHANGES_REQUESTED', 1)] }, commits: pushed(3) })] });
     await open(app, bazel);
     await app.addScriptTag({ content: fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8') });
