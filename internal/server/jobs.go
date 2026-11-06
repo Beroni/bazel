@@ -15,6 +15,7 @@ import (
 	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/config"
 	"github.com/beroni/bazel/internal/gh"
+	"github.com/beroni/bazel/internal/skills"
 	"github.com/beroni/bazel/internal/store"
 )
 
@@ -140,6 +141,9 @@ type Job struct {
 	SavedTo string
 	Posted  bool
 	PostErr string
+	// InlineIssue is why the inline publisher would refuse the saved review; it
+	// can still go as a comment.
+	InlineIssue string
 	// Incomplete says why what the review would publish is not a report: the
 	// stream of a step that publishes ended with work still in the background.
 	// Nothing of it goes to the PR.
@@ -266,6 +270,9 @@ func (j *Job) enqueueLocked() queued {
 
 // Manager is the review queue and the pool that consumes it.
 type Manager struct {
+	// inlines remembers whether each saved review would pass the inline publisher.
+	inlines inlineChecks
+
 	cfg        *config.Config
 	runner     *agent.Runner
 	reviewsDir string
@@ -635,6 +642,13 @@ func (m *Manager) run(q queued) {
 		awaits = bodyErr == nil
 	}
 
+	// The inline publisher's own reader, over the file it would publish: a
+	// report out of format is said now, not when Publish is clicked.
+	inlineIssue := ""
+	if fresh && saveErr == nil && job.Choice.Publishable {
+		inlineIssue = m.inlineIssue(path)
+	}
+
 	m.mu.Lock()
 	if job.publish != nil {
 		// The post agent's report does not take the review's place: the card
@@ -656,6 +670,7 @@ func (m *Manager) run(q queued) {
 		job.Result = res
 		job.SavedTo = path
 		job.Incomplete = incomplete
+		job.InlineIssue = inlineIssue
 	}
 	job.State = StateDone
 	switch {
@@ -714,9 +729,15 @@ func (m *Manager) SaveAgain(id string) (jobView, error) {
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	}
 
+	inlineIssue := ""
+	if choice.Publishable {
+		inlineIssue = m.inlineIssue(path)
+	}
+
 	m.mu.Lock()
 	job.saving = false
 	job.SavedTo = path
+	job.InlineIssue = inlineIssue
 	job.State = StateDone
 	job.Err = ""
 	if markErr != nil {
@@ -1408,4 +1429,23 @@ func (m *Manager) notePosted(path, how, head string) {
 	if err := store.MarkFilePosted(path, how, head); err != nil {
 		fmt.Fprintf(os.Stderr, "bazel: could not record that %s was published: %v\n", filepath.Base(path), err)
 	}
+}
+
+// inlineIssue is why the post agent would refuse the saved file at path, when the
+// post agent is the built-in publisher; another one has rules of its own.
+func (m *Manager) inlineIssue(path string) string {
+	if path == "" || !postIsBuiltin(m.cfg) {
+		return ""
+	}
+	issue, _ := m.inlines.get(m.ctx, path)
+	return issue
+}
+
+func postIsBuiltin(cfg *config.Config) bool {
+	for _, st := range cfg.PostChoice().Steps {
+		if skills.IsPost(st.Task) {
+			return true
+		}
+	}
+	return false
 }
