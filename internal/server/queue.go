@@ -45,7 +45,7 @@ func (m *Manager) pendingLocked() []queuedJob {
 		j := m.jobs[id]
 		switch {
 		case j.publish != nil:
-		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && j.Choice.PublishesBy() == "":
+		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && publishesOnItsOwn(j.Choice) == "":
 			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine})
 		}
 	}
@@ -139,6 +139,20 @@ func (m *Manager) RestoreQueue(path string) {
 	}
 	m.mu.Unlock()
 	m.saveQueue()
+}
+
+// publishesOnItsOwn is PublishesBy without the `publish` step: that one waits
+// for you to choose what goes, so a pipeline that ends in it publishes nothing
+// by running. review-then-publish comes back after a restart like a plain review.
+func publishesOnItsOwn(c config.Choice) string {
+	steps := make([]config.ResolvedAgent, 0, len(c.Steps))
+	for _, st := range c.Steps {
+		if st.Reserved != config.StepPublish {
+			steps = append(steps, st)
+		}
+	}
+	c.Steps = steps
+	return c.PublishesBy()
 }
 
 func (m *Manager) choiceFor(q queuedJob) (config.Choice, error) {

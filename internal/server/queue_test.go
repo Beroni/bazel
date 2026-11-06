@@ -255,3 +255,29 @@ func TestSegundaInstanciaNaoMexeNaFila(t *testing.T) {
 		t.Errorf("state: %.200s", w.Body)
 	}
 }
+
+// The factory review-then-publish ends in a step that waits for you: running
+// when Bazel stopped, it comes back paused, and Run asks nothing.
+func TestReviewThenPublishVolta(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	cfg, _, err := config.LoadOrInit()
+	if err != nil {
+		t.Fatal(err)
+	}
+	choice, err := cfg.ChoiceByName("review-then-publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(context.Background(), cfgFor(t, "echo"), t.TempDir(), 1, false, NewHub())
+	poeJob(m, &Job{ID: "a", State: StateRunning, PR: testPR(1), Choice: choice})
+	m.mu.Lock()
+	pending := m.pendingLocked()
+	view := (&Job{ID: "b", State: StatePaused, PR: testPR(1), Choice: choice}).view()
+	m.mu.Unlock()
+	if len(pending) != 1 {
+		t.Errorf("pending: %+v", pending)
+	}
+	if view.Publishes != "" {
+		t.Errorf("Run would ask: %q", view.Publishes)
+	}
+}

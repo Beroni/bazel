@@ -202,7 +202,7 @@ func (j *Job) view() jobView {
 		v.Publishing = true
 	}
 	if j.State == StatePaused {
-		v.Publishes = j.Choice.PublishesBy()
+		v.Publishes = publishesOnItsOwn(j.Choice)
 	}
 	v.AwaitsPublish = j.AwaitsPublish
 	v.History = j.History
