@@ -1526,3 +1526,25 @@ func TestBazelSaysIncremental(t *testing.T) {
 		}
 	})
 }
+
+// CL-2: once a write was tried in a job, a later refusal in the same job does
+// not say nothing went: Bazel must not take it as a send that never happened.
+func TestFalhaDeEscritaNaoViraRecusa(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	w := newWorld(t)
+	work := w.prepare(report)
+	w.write("fail", "reviews --input")
+	if out, code := w.run("publish", work); code != 1 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	w.write("bad.md", "not a review\n")
+	if out, code := w.run("prepare", filepath.Join(w.dir, "bad.md")); code != 3 {
+		t.Fatalf("the second prepare should refuse: exit %d\n%s", code, out)
+	}
+	if skills.PublishNotSent(w.plugin) {
+		t.Error("a refusal after a failed write reads as nothing sent")
+	}
+	if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "Publishing failed") {
+		t.Errorf("outcome: %q", msg)
+	}
+}

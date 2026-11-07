@@ -16,9 +16,14 @@ PLUGIN=$(cd "$HERE/../../.." && pwd)
 
 # What happened goes in a file Bazel reads, as well as to the agent: Bazel reports
 # this, not what a model says about it. "published" is never overwritten: a second
-# run that finds the review already there must not turn it into a failure.
+# run that finds the review already there must not turn it into a failure. Nor is
+# "failed" by a "refused" or "nothing": once a write was tried in this job, a
+# later run that writes nothing cannot say nothing went.
 outcome() {
-  [ "$(head -1 "$PLUGIN/publish-outcome" 2>/dev/null)" = published ] && return 0
+  local now
+  now=$(head -1 "$PLUGIN/publish-outcome" 2>/dev/null)
+  [ "$now" = published ] && return 0
+  case "$1" in refused | nothing) [ "$now" = failed ] && return 0 ;; esac
   printf '%s\n%s\n' "$1" "$2" > "$PLUGIN/publish-outcome"
 }
 
@@ -191,6 +196,9 @@ publish() {
     + (if ($sha | test("^[0-9a-f]{40}$")) then {commit_id: $sha} else {commit_id: $head} end)' \
     "$work/decided.json" > "$work/payload.json" || fail "cannot build the payload"
 
+  # From here a write is tried: until it says how it went, this job may have
+  # written, and no later refusal can say otherwise.
+  outcome failed "Publishing failed: the write to GitHub did not finish."
   local rejected=0
   if ! post_review "$work/payload.json" "$work/response.txt"; then
     # GitHub refuses the whole review over one line. Every finding still reaches
