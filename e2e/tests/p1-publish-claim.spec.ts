@@ -1,3 +1,6 @@
+import { spawn } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 
@@ -78,6 +81,48 @@ test.describe('P1 · the publish claim', () => {
       expect(okComments(bazel)).toBe(1);
     });
   }
+
+  // The claim on disk, as another Bazel would leave it: <file>.posting says how
+  // the last send went, and its lock says a send is under way. No pid in it.
+  for (const left of ['sending', 'unknown']) {
+    test(`a claim left as "${left}", with no lock on it, asks first; again sends once`, async ({ bazel }) => {
+      const { name } = await savedReview(bazel);
+      fs.writeFileSync(path.join(bazel.reviewsDir, `${name}.posting`), `${left} 2026-11-07T12:00:00Z\n`);
+      for (const door of ['publish', 'comment']) {
+        const r = await bazel.api('POST', `/api/reviews/${name}/${door}`, {});
+        expect(r.status, door).toBe(409);
+        expect(r.json.confirm, door).toBe(true);
+        expect(r.json.error, door).toContain('may already be on the PR');
+      }
+      expect((await bazel.api('POST', `/api/reviews/${name}/comment`, { again: true })).status).toBe(200);
+      expect(okComments(bazel) + reviewPosts(bazel)).toBe(1);
+    });
+  }
+
+  test('a claim locked by another process is busy: no confirm, again does not take it, and once let go it sends', async ({ bazel }) => {
+    const { name } = await savedReview(bazel);
+    const file = path.join(bazel.reviewsDir, `${name}.posting`);
+    fs.writeFileSync(file, '');
+    // Another process holds the lock, the way a Bazel in the middle of a send does.
+    const holder = spawn('/usr/bin/perl', ['-MFcntl=:flock', '-e', 'open(my $f, "+<", $ARGV[0]) or die; flock($f, LOCK_EX) or die; print "locked\n"; $| = 1; <STDIN>;', file], { stdio: ['pipe', 'pipe', 'inherit'] });
+    await new Promise<void>((r) => holder.stdout!.once('data', () => r()));
+    try {
+      for (const body of [{}, { again: true }]) {
+        for (const door of ['publish', 'comment']) {
+          const r = await bazel.api('POST', `/api/reviews/${name}/${door}`, body);
+          expect(r.status, `${door} ${JSON.stringify(body)}`).toBe(409);
+          expect(r.json.confirm ?? false).toBe(false);
+          expect(r.json.error).toContain('being published right now');
+        }
+      }
+      expect(okComments(bazel) + reviewPosts(bazel)).toBe(0);
+    } finally {
+      holder.stdin!.end();
+      await new Promise((r) => holder.once('exit', r));
+    }
+    expect((await bazel.api('POST', `/api/reviews/${name}/comment`, {})).status).toBe(200);
+    expect(okComments(bazel)).toBe(1);
+  });
 
   test('two Bazels on one BAZEL_HOME: while one sends, the other is told it is being published, and one write reaches GitHub', async ({ bazel }) => {
     const { name } = await savedReview(bazel);
