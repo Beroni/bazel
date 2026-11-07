@@ -203,7 +203,7 @@ func TestSinceCheck(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	i := strings.Index(text, "S='<the sha from the task>'")
+	i := strings.Index(text, "S=<the 40 characters>")
 	if i < 0 {
 		t.Fatal("headless.md lost the --since check")
 	}
@@ -241,11 +241,15 @@ func TestSinceCheck(t *testing.T) {
 		"empty":             {"", false},
 		"a ref, not a sha":  {"HEAD~1", false},
 		"text built to run": {"$(touch ran)", false},
+		"a quote":           {"x'; touch ran; '", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			script := strings.Replace(recipe, "<the sha from the task>", strings.ReplaceAll(c.sha, "'", ""), 1)
+			// The value comes in as data, through the environment: the check itself
+			// has to be safe on anything, and only a value that passes is ever typed.
+			script := strings.Replace(recipe, "<the 40 characters>", `"$CANDIDATE"`, 1)
 			cmd := exec.Command("bash", "-c", script)
 			cmd.Dir = repo
+			cmd.Env = append(os.Environ(), "CANDIDATE="+c.sha)
 			out, _ := cmd.CombinedOutput()
 			if got := strings.Contains(string(out), "incremental"); got != c.want {
 				t.Errorf("incremental = %v, want %v: %s", got, c.want, out)
@@ -254,5 +258,23 @@ func TestSinceCheck(t *testing.T) {
 				t.Error("the sha was executed")
 			}
 		})
+	}
+}
+
+// The value from the task is the one thing a person, or a PR, could make anything:
+// the skill is told to look at it before any command, and the recipe never quotes it.
+func TestSinceNeverGoesIntoTheShellUnchecked(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("builtin", "bazel-review-fleet", "references", "headless.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"Look at the value before it goes into any command", "never reaches the shell, not even quoted"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("headless.md lost %q", want)
+		}
+	}
+	if strings.Contains(text, "S='<") {
+		t.Error("the recipe puts the raw value in a shell literal again")
 	}
 }

@@ -46,11 +46,17 @@ working directory is already the clone with the PR checked out. Use exactly that
 
 The task can carry `--since=<sha>`: the head Bazel reviewed last time on this PR, when a person
 asked for the changes since then. With it, the scope is those changes and nothing else — but only
-if the sha proves itself in the clone:
+if the sha proves itself in the clone.
+
+**Look at the value before it goes into any command.** It must be exactly 40 characters, each of
+them `0-9` or `a-f`. Anything else — a quote, a space, a `$`, upper case, one character more or
+less — never reaches the shell, not even quoted: that is the whole-PR review, below, with no
+command run on it. A value that passes holds nothing the shell could read as code, and the check
+runs on it as data:
 
 ```bash
-S='<the sha from the task>'
-printf '%s' "$S" | grep -Eqx '[0-9a-f]{40}' &&
+S=<the 40 characters>
+case "$S" in *[!0-9a-f]* | '') false ;; *) [ "${#S}" -eq 40 ] ;; esac &&
   git cat-file -e "$S^{commit}" 2>/dev/null &&
   git merge-base --is-ancestor "$S" HEAD && echo incremental
 ```
