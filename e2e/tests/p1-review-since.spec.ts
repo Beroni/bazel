@@ -14,7 +14,9 @@ test.describe('P1 · review changes since the last review', () => {
   test('a changed PR offers it, and the agent gets the reviewed head', async ({ app, bazel }) => {
     const first = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     const done = await bazel.waitJob(first, (j) => j.state === 'done');
-    const reviewed = (await bazel.api('GET', '/api/prs')).json.prs.find((p: any) => p.key === 'acme/api-core#101');
+    // The head the first review recorded, from its saved file.
+    const [first0] = (await bazel.api('GET', '/api/reviews')).json.reviews;
+    const reviewedHead = /- Head sha: ([0-9a-f]{40})/.exec((await bazel.api('GET', `/api/reviews/${first0.name}`)).json.body)![1];
     expect(bazel.agentCalls()[0].prompt).toMatch(/--since=\s/);
     expect(done.since ?? '').toBe('');
 
@@ -32,7 +34,7 @@ test.describe('P1 · review changes since the last review', () => {
     const second = bazel.agentCalls()[1];
     expect(second.prompt).toMatch(/--since=[0-9a-f]{40}/);
     const since = /--since=([0-9a-f]{40})/.exec(second.prompt)![1];
-    expect(since).toBe(reviewed.head_sha ?? since);
+    expect(since).toBe(reviewedHead);
     const jobs = (await bazel.api('GET', '/api/jobs')).json.jobs;
     const job = jobs.find((j: any) => j.id !== first);
     expect(job.since).toBe(since);
