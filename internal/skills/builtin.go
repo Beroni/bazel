@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -208,22 +207,39 @@ func PublishTarget(plugin, repo string, number int) error {
 // it refused, or had nothing to send. A failure or no word at all may have
 // written something.
 func PublishNotSent(plugin string) bool {
-	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
-	status, _, _ := strings.Cut(string(data), "\n")
-	return err == nil && (status == "refused" || status == "nothing")
+	status, _ := publishOutcome(plugin)
+	return status == "refused" || status == "nothing"
 }
 
 func PublishFailure(plugin string) string {
-	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
-	status, msg, _ := strings.Cut(string(data), "\n")
-	msg = strings.TrimSpace(msg)
-	switch {
-	case err == nil && status == "published":
+	switch status, msg := publishOutcome(plugin); {
+	case status == "published":
 		return ""
-	case err == nil && msg != "" && slices.Contains([]string{"refused", "failed", "nothing"}, status):
+	case status != "" && msg != "":
 		return msg
 	}
 	return "Not published: the publishing script never finished, so nothing is known to have reached the PR. Check the PR, then publish again."
+}
+
+// outcomeRank orders what a run of the script can say: what reached the PR
+// outweighs a write that may have, which outweighs one that never began.
+var outcomeRank = map[string]int{"refused": 1, "nothing": 1, "failed": 2, "published": 3}
+
+// publishOutcome reads the lines the script added, one "<status>\t<message>" per
+// result, and returns the weightiest; among equals, the last. Runs of the script
+// in one job may overlap, so every line counts and none replaces another.
+func publishOutcome(plugin string) (status, msg string) {
+	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
+	if err != nil {
+		return "", ""
+	}
+	for line := range strings.Lines(string(data)) {
+		s, m, _ := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
+		if r := outcomeRank[s]; r > 0 && r >= outcomeRank[status] {
+			status, msg = s, strings.TrimSpace(m)
+		}
+	}
+	return status, msg
 }
 
 // writeFile writes data to path, creating the folders on the way.

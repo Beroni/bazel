@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/gh"
@@ -31,6 +32,7 @@ const reviewedSha = "a1b2c3d4e5f67890abcdef1234567890abcdef12"
 // fakeGH answers from files in $FAKE_DIR and records every write.
 const fakeGH = `#!/bin/sh
 d=$FAKE_DIR
+if [ -n "${FAKE_HOLD:-}" ] && echo "$*" | grep -qE "$FAKE_HOLD"; then : > "$d/held"; while [ ! -e "$d/go" ]; do sleep 0.02; done; fi
 if [ -f "$d/fail" ] && echo "$*" | grep -qE "$(cat "$d/fail")"; then echo 'HTTP 500: server error' >&2; exit 1; fi
 case "$1 $2" in
 "pr view")
@@ -1545,6 +1547,103 @@ func TestFalhaDeEscritaNaoViraRecusa(t *testing.T) {
 		t.Error("a refusal after a failed write reads as nothing sent")
 	}
 	if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "Publishing failed") {
+		t.Errorf("outcome: %q", msg)
+	}
+}
+
+// The model can run the script twice at once. A refusal that one run decided
+// before the other began its write must not leave the job saying nothing went,
+// while that write is under way or after it failed. head is wrapped so that a
+// script which reads the outcome before rewriting it stops between the two, as
+// a slow machine would.
+func TestChamadasEmParaleloNaoApagamAEscrita(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	w := newWorld(t)
+	work := w.prepare(report)
+	w.write("fail", "reviews --input")
+	w.write("bad.md", "not a review\n")
+	bad := filepath.Join(w.dir, "bad.md")
+
+	realHead, err := exec.LookPath("head")
+	if err != nil {
+		t.Skip("head not available")
+	}
+	slow := t.TempDir()
+	shim := "#!/bin/sh\ncase \"$*\" in\n*publish-outcome*)\n  out=$('" + realHead + "' \"$@\")\n" +
+		"  : > \"$FAKE_DIR/read\"\n  while [ ! -e \"$FAKE_DIR/go-read\" ]; do sleep 0.02; done\n" +
+		"  [ -n \"$out\" ] && printf '%s\\n' \"$out\"\n  exit 0 ;;\nesac\nexec '" + realHead + "' \"$@\"\n"
+	if err := os.WriteFile(filepath.Join(slow, "head"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	type proc struct {
+		done chan struct{}
+		code int
+		out  bytes.Buffer
+	}
+	start := func(env string, args ...string) *proc {
+		p := &proc{done: make(chan struct{})}
+		cmd := exec.Command("bash", append([]string{w.script}, args...)...)
+		cmd.Dir = w.clone
+		cmd.Env = append(os.Environ(), env)
+		cmd.Stdout, cmd.Stderr = &p.out, &p.out
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go func() {
+			cmd.Wait()
+			p.code = cmd.ProcessState.ExitCode()
+			close(p.done)
+		}()
+		t.Cleanup(func() { w.write("go", ""); w.write("go-read", ""); <-p.done })
+		return p
+	}
+	// waitFor returns once name is in the fake's folder or p has ended.
+	waitFor := func(name string, p *proc) {
+		t.Helper()
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if _, err := os.Stat(filepath.Join(w.dir, name)); err == nil {
+				return
+			}
+			select {
+			case <-p.done:
+				return
+			default:
+			}
+		}
+		t.Fatalf("timed out waiting for %s", name)
+	}
+
+	refusing := start("PATH="+slow+string(os.PathListSeparator)+os.Getenv("PATH"), "prepare", bad)
+	waitFor("read", refusing)
+	writing := start("FAKE_HOLD=reviews --input", "publish", work)
+	waitFor("held", writing)
+	select {
+	case <-writing.done:
+		t.Fatalf("the write should be held in gh: exit %d\n%s", writing.code, &writing.out)
+	default:
+	}
+	if out, code := w.run("prepare", bad); code != 3 { // a third run, while the write is on its way
+		t.Fatalf("the third run should refuse: exit %d\n%s", code, out)
+	}
+	w.write("go-read", "")
+	<-refusing.done
+	if refusing.code != 3 {
+		t.Fatalf("the first run should refuse: exit %d\n%s", refusing.code, &refusing.out)
+	}
+	if skills.PublishNotSent(w.plugin) {
+		t.Error("with a write under way, a refusal reads as nothing sent")
+	}
+
+	w.write("go", "")
+	<-writing.done
+	if writing.code != 1 {
+		t.Fatalf("the write should fail: exit %d\n%s", writing.code, &writing.out)
+	}
+	if skills.PublishNotSent(w.plugin) {
+		t.Error("after a failed write, a refusal reads as nothing sent")
+	}
+	if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "GitHub refused the review") {
 		t.Errorf("outcome: %q", msg)
 	}
 }

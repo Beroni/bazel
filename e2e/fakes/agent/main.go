@@ -384,7 +384,15 @@ func outcome(status, message string) {
 	if plugin == "" {
 		return
 	}
-	if err := os.WriteFile(filepath.Join(plugin, "publish-outcome"), []byte(status+"\n"+message+"\n"), 0o644); err != nil {
+	// One line added per result, as the skill's script does.
+	f, err := os.OpenFile(filepath.Join(plugin, "publish-outcome"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err == nil {
+		_, err = f.WriteString(status + "\t" + message + "\n")
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
 		fail(4, "fake-agent: writing the outcome: "+err.Error())
 	}
 }

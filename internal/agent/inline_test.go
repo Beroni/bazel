@@ -163,16 +163,16 @@ func TestRunCutsPreambleOnlyForBuiltins(t *testing.T) {
 // is not published: the job has to say so, in the script's words.
 func TestRefusedPublishIsNoSuccess(t *testing.T) {
 	for name, outcome := range map[string]string{
-		"refused":        "refused\nNot published: no header. To post it as it is, use paste.\n",
-		"nothing":        "nothing\nNothing published: already there.\n",
-		"no message":     "failed\n",
-		"unknown status": "whatever\nAll fine.\n",
+		"refused":        "refused\tNot published: no header. To post it as it is, use paste.\n",
+		"nothing":        "nothing\tNothing published: already there.\n",
+		"no message":     "failed\t\n",
+		"unknown status": "whatever\tAll fine.\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			hostileClone(t)
 			bin := t.TempDir()
 			script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --plugin-dir ] && dir=$2; shift; done\ncat >/dev/null\nprintf '" +
-				strings.ReplaceAll(outcome, "\n", "\\n") + "' > \"$dir/publish-outcome\"\necho 'All published, everything went fine.'\n"
+				strings.NewReplacer("\n", "\\n", "\t", "\\t").Replace(outcome) + "' > \"$dir/publish-outcome\"\necho 'All published, everything went fine.'\n"
 			if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
 				t.Fatal(err)
 			}
@@ -190,7 +190,7 @@ func TestRefusedPublishIsNoSuccess(t *testing.T) {
 			if err == nil {
 				t.Fatal("the review did not reach the PR, so Publish must not succeed")
 			}
-			want := strings.Split(outcome, "\n")[1]
+			_, want, _ := strings.Cut(strings.TrimSuffix(outcome, "\n"), "\t")
 			if want == "" || want == "All fine." {
 				want = "the publishing script never finished"
 			}

@@ -213,12 +213,13 @@ test.describe('P0 · the fakes fail closed', () => {
     });
     const fixtures = path.join(__dirname, '..', 'fixtures', 'default');
     expect(run(fixtures).status).toBe(0);
-    expect(fs.readFileSync(path.join(plugin, 'publish-outcome'), 'utf8').split('\n')[0]).toBe('published');
+    const last = () => fs.readFileSync(path.join(plugin, 'publish-outcome'), 'utf8').trimEnd().split('\n').at(-1)!.split('\t')[0];
+    expect(last()).toBe('published');
 
     fs.cpSync(fixtures, path.join(dir, 'fx'), { recursive: true });
     fs.writeFileSync(path.join(dir, 'fx', 'gh.json'), JSON.stringify({ fail: { api: 'HTTP 502' } }));
     expect(run(path.join(dir, 'fx')).status).toBe(5);
-    expect(fs.readFileSync(path.join(plugin, 'publish-outcome'), 'utf8').split('\n')[0]).toBe('failed');
+    expect(last()).toBe('failed');
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

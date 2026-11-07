@@ -15,16 +15,15 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLUGIN=$(cd "$HERE/../../.." && pwd)
 
 # What happened goes in a file Bazel reads, as well as to the agent: Bazel reports
-# this, not what a model says about it. "published" is never overwritten: a second
-# run that finds the review already there must not turn it into a failure. Nor is
-# "failed" by a "refused" or "nothing": once a write was tried in this job, a
-# later run that writes nothing cannot say nothing went.
+# this, not what a model says about it. The model can run this script more than
+# once in a job, at the same time too, so no run rewrites what another left: each
+# result is one short line added at the end, in one write. Bazel weighs them all:
+# "published" beats "failed", which beats "refused" and "nothing", so a run that
+# writes nothing cannot hide one that tried to write.
 outcome() {
-  local now
-  now=$(head -1 "$PLUGIN/publish-outcome" 2>/dev/null)
-  [ "$now" = published ] && return 0
-  case "$1" in refused | nothing) [ "$now" = failed ] && return 0 ;; esac
-  printf '%s\n%s\n' "$1" "$2" > "$PLUGIN/publish-outcome"
+  local msg
+  msg=$(printf '%s' "$2" | tr '\t\n' '  ')
+  printf '%s\t%s\n' "$1" "$msg" >> "$PLUGIN/publish-outcome"
 }
 
 refuse() {
