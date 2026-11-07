@@ -100,10 +100,10 @@ prepare() {
       repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
         reviewThreads(first:100, after:$endCursor) {
           pageInfo { hasNextPage endCursor }
-          nodes { isResolved resolvedBy { login } comments(first:1) { nodes { databaseId } } }
+          nodes { isResolved resolvedBy { login __typename } comments(first:1) { nodes { databaseId } } }
     } } } }' |
     jq -s '[.[] | .data.repository.pullRequest.reviewThreads.nodes[]?
-      | {root: .comments.nodes[0].databaseId, isResolved, resolvedBy: .resolvedBy.login}]' > "$work/threads.json" ||
+      | {root: .comments.nodes[0].databaseId, isResolved, resolvedBy: .resolvedBy.login, resolvedByType: .resolvedBy.__typename}]' > "$work/threads.json" ||
     fail "cannot read the review threads"
 
   jq -n -L "$HERE" -f "$HERE/plan.jq" --slurpfile report "$work/report.json" --slurpfile diff "$work/diff.json" \

@@ -1305,7 +1305,11 @@ func TestABotIsOneAccount(t *testing.T) {
 	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
 	botPR := `{"author":{"login":"app/renovate","is_bot":true},"url":"https://github.invalid/o/r/pull/7"}` + "\n"
 	resolved := func(by string) string {
-		return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"` + by + `"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
+		kind := "User"
+		if by == "renovate" {
+			kind = "Bot" // GraphQL names a bot with no suffix, and says what it is
+		}
+		return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"` + by + `","__typename":"` + kind + `"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
 	}
 	t.Run("the bot author's comment absorbs nothing", func(t *testing.T) {
 		w := newWorld(t)
@@ -1416,3 +1420,42 @@ func TestScriptsParseOnEveryJq(t *testing.T) {
 		t.Skip("no jq")
 	}
 }
+
+// A bot and a person can carry the same name. publisher[bot] is not the person
+// called publisher, whichever of the two publishes: one never stands for the other.
+func TestABotIsNotThePersonOfItsName(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	botComment := `{"id":11,"user":{"login":"publisher[bot]","type":"Bot"},"author_association":"NONE","path":"a.go","line":2,"body":"same bug","html_url":"https://github.invalid/c11"}`
+	t.Run("the bot's comment is not the person's own", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("me", "publisher\n")
+		w.write("comments", "["+botComment+"]\n")
+		work := w.prepare(report)
+		if out, code := w.run("publish", work, "--same", "1=11"); code != 3 {
+			t.Errorf("a passer-by bot is no candidate; exit %d\n%s", code, out)
+		}
+	})
+	t.Run("the person's review is not the bot's", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("me", "publisher[bot]\n")
+		w.run("publish", w.prepare(report))
+		p := w.payload(0)
+		w.write("reviews", mustJSON(t, []map[string]any{{"user": map[string]string{"login": "publisher", "type": "User"}, "body": p.Body}})+"\n")
+		os.Remove(filepath.Join(w.dir, "payload0.json"))
+		w.run("publish", w.prepare(report))
+		if !w.wrote() {
+			t.Error("a person's review is not this bot's own: it posts")
+		}
+	})
+	t.Run("the PR's bot author resolving is not a person resolving", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("pr", `{"author":{"login":"alice","is_bot":false},"url":"u"}`+"\n")
+		w.write("comments", "["+comment(11, "bob", "MEMBER", 2, "")+"]\n")
+		w.write("threads", `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"alice","__typename":"Bot"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}`+"\n")
+		w.run("publish", w.prepare(report), "--same", "1=11")
+		if p := w.payload(0); !strings.Contains(p.Body, "settled by @alice") {
+			t.Errorf("a bot named alice is not the PR's author alice:\n%s", p.Body)
+		}
+	})
+}
+
