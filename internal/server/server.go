@@ -1246,18 +1246,14 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := make([]savedView, 0, len(entries))
-	for i, e := range entries {
+	for _, e := range entries {
 		v := savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)}
 		if p, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
 			v.Posted = &p
 		}
-		// The newest ones say whether they pass the inline publisher; the check
-		// is cached per file, and older ones say it when opened.
-		if v.Publishable && v.Posted == nil && i < savedChecked {
-			v.InlineIssue = s.jobs.inlineIssue(filepath.Join(s.reviewsDir, e.Name))
-		}
 		out = append(out, v)
 	}
+	s.checkInline(r.Context(), out)
 	writeJSON(w, http.StatusOK, map[string]any{"dir": s.reviewsDir, "reviews": out})
 }
 
@@ -1267,12 +1263,62 @@ type savedView struct {
 	store.Entry
 	Publishable bool   `json:"publishable"`
 	InlineIssue string `json:"inline_issue,omitempty"`
+	// InlineUnchecked is a review the list had no time to check: opening it does.
+	InlineUnchecked bool `json:"inline_unchecked,omitempty"`
 	// Posted is how and when this file went to the PR, from its own record.
 	Posted *store.Posted `json:"posted,omitempty"`
 }
 
-// savedChecked is how many of the newest saved reviews the list checks.
-const savedChecked = 50
+// savedChecked is how many of the newest saved reviews the list checks, a few
+// at a time, within savedCheckBudget for the whole request: what is left says
+// it was not checked, and is checked when opened.
+var (
+	savedChecked     = 50
+	savedCheckers    = 4
+	savedCheckBudget = 3 * time.Second
+)
+
+// checkInline fills InlineIssue for the newest publishable reviews not yet on
+// the PR, under the list's time budget.
+func (s *Server) checkInline(ctx context.Context, out []savedView) {
+	ctx, cancel := context.WithTimeout(ctx, savedCheckBudget)
+	defer cancel()
+	sem := make(chan struct{}, savedCheckers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i := range out {
+		v := &out[i]
+		if !v.Publishable || v.Posted != nil {
+			continue
+		}
+		if i >= savedChecked {
+			v.InlineUnchecked = true
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				v.InlineUnchecked = true
+				mu.Unlock()
+				return
+			}
+			defer func() { <-sem }()
+			issue := s.jobs.inlineIssueCtx(ctx, filepath.Join(s.reviewsDir, v.Name))
+			mu.Lock()
+			if ctx.Err() != nil {
+				v.InlineUnchecked = true
+			} else {
+				v.InlineIssue = issue
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+}
 
 // agentPublishes says whether an agent's output can go to the PR. An agent no
 // longer in the list stays publishable: the review on disk outlives the

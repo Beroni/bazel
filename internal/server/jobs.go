@@ -1511,10 +1511,15 @@ func (m *Manager) notePosted(path, how, head string) {
 // inlineIssue is why the post agent would refuse the saved file at path, when the
 // post agent is the built-in publisher; another one has rules of its own.
 func (m *Manager) inlineIssue(path string) string {
+	return m.inlineIssueCtx(m.ctx, path)
+}
+
+// inlineIssueCtx is inlineIssue under ctx's deadline.
+func (m *Manager) inlineIssueCtx(ctx context.Context, path string) string {
 	if path == "" || !postIsBuiltin(m.cfg) {
 		return ""
 	}
-	issue, _ := m.inlines.get(m.ctx, path)
+	issue, _ := m.inlines.get(ctx, path)
 	return issue
 }
 

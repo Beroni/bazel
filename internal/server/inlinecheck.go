@@ -86,6 +86,10 @@ func (c *inlineChecks) get(ctx context.Context, path string) (string, error) {
 	}
 	c.mu.Unlock()
 	issue := inlineCheck(ctx, path)
+	// A check cut short by the caller's deadline says nothing about the file.
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	c.mu.Lock()
 	if c.seen == nil {
 		c.seen = map[string]inlineSeen{}
