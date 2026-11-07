@@ -99,6 +99,11 @@ export interface BazelOptions {
   skills?: Record<string, string>;
   /** Written as gh.json in this test's copy of the fixtures. */
   gh?: GhSettings;
+  /**
+   * A second server over the same BAZEL_HOME, HOME, gh fixtures and logs as
+   * this one: two Bazels on one machine. It has its own port, process and log.
+   */
+  share?: Bazel;
 }
 
 /** The skills every default Bazel has installed in its fake skills_dir. */
@@ -183,14 +188,16 @@ export class Bazel {
   constructor(private readonly opts: BazelOptions = {}) {
     fs.mkdirSync(path.join(OUT, 'runs'), { recursive: true });
     this.root = fs.mkdtempSync(path.join(OUT, 'runs', 'bz-'));
-    this.home = path.join(this.root, 'home');
-    this.bazelHome = path.join(this.root, 'bazel-home');
+    const owner = opts.share ?? this;
+    const of = (name: string) => path.join(opts.share ? opts.share.root : this.root, name);
+    this.home = of('home');
+    this.bazelHome = of('bazel-home');
     this.tmp = path.join(this.root, 'tmp');
-    this.ghState = path.join(this.root, 'gh');
-    this.agentState = path.join(this.root, 'agent');
+    this.ghState = of('gh');
+    this.agentState = of('agent');
     this.logFile = path.join(this.root, 'server.log');
-    this.fixturesDir = path.join(this.root, 'fixtures');
-    fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
+    this.fixturesDir = of('fixtures');
+    if (owner === this) fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
     if (opts.gh) this.setGh(opts.gh);
     for (const d of [this.home, this.bazelHome, this.tmp, this.ghState, this.agentState]) fs.mkdirSync(d, { recursive: true });
   }
