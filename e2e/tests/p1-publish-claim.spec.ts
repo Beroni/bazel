@@ -37,6 +37,7 @@ test.describe('P1 · the publish claim', () => {
       const r = await bazel.api('POST', `/api/reviews/${name}/${door}`, {});
       expect(r.status, door).toBe(409);
       expect(r.json.confirm, door).toBe(true);
+      expect(r.json.error, door).toContain('may already be on the PR');
     }
     expect(okComments(bazel) + reviewPosts(bazel)).toBe(0);
     expect((await bazel.api('POST', `/api/reviews/${name}/comment`, { again: true })).status).toBe(200);
@@ -46,15 +47,37 @@ test.describe('P1 · the publish claim', () => {
     expect(okComments(bazel) + reviewPosts(bazel)).toBe(1);
   });
 
-  test('a send that fails asks nothing the next time', async ({ bazel }) => {
-    const { name } = await savedReview(bazel);
-    bazel.setGh({ fail: { comment: 'HTTP 502: Bad Gateway' } });
-    expect((await bazel.api('POST', `/api/reviews/${name}/comment`, {})).status).toBeGreaterThanOrEqual(400);
-    bazel.setGh({});
-    const r = await bazel.api('POST', `/api/reviews/${name}/comment`, {});
-    expect(r.status, JSON.stringify(r.json)).toBe(200);
-    expect(okComments(bazel)).toBe(1);
-  });
+  // A clear no from GitHub (gh's own "HTTP 4xx" line) is nothing sent: the next
+  // try goes without a question.
+  for (const no of ['HTTP 422: Validation Failed (https://api.github.com/repos/acme/api-core/issues/101/comments)', 'GraphQL: Could not resolve to a node (HTTP 404)']) {
+    test(`GitHub refusing (${no.slice(0, 40)}) frees it: the next try asks nothing`, async ({ bazel }) => {
+      const { name } = await savedReview(bazel);
+      bazel.setGh({ fail: { comment: no } });
+      expect((await bazel.api('POST', `/api/reviews/${name}/comment`, {})).status).toBeGreaterThanOrEqual(400);
+      bazel.setGh({});
+      const r = await bazel.api('POST', `/api/reviews/${name}/comment`, {});
+      expect(r.status, JSON.stringify(r.json)).toBe(200);
+      expect(okComments(bazel)).toBe(1);
+    });
+  }
+
+  // Anything else may have written: a 5xx, a 404 quoted inside one, an error with
+  // no status at all (a dropped connection, a timeout). The next try asks.
+  for (const maybe of ['HTTP 502: Bad Gateway', 'HTTP 502: Bad Gateway (HTTP 404)', 'HTTP 500: upstream referred to HTTP 404 on the way', 'read tcp 127.0.0.1:443: connection reset by peer']) {
+    test(`a failure that may have written (${maybe}) asks before the next try`, async ({ bazel }) => {
+      const { name } = await savedReview(bazel);
+      bazel.setGh({ fail: { comment: maybe } });
+      await bazel.api('POST', `/api/reviews/${name}/comment`, {});
+      bazel.setGh({});
+      const r = await bazel.api('POST', `/api/reviews/${name}/comment`, {});
+      expect(r.status).toBe(409);
+      expect(r.json.confirm).toBe(true);
+      expect(r.json.error).toContain('may already be on the PR');
+      expect(okComments(bazel)).toBe(0);
+      expect((await bazel.api('POST', `/api/reviews/${name}/comment`, { again: true })).status).toBe(200);
+      expect(okComments(bazel)).toBe(1);
+    });
+  }
 
   test('two Bazels on one BAZEL_HOME: while one sends, the other is told it is being published, and one write reaches GitHub', async ({ bazel }) => {
     const { name } = await savedReview(bazel);
@@ -68,7 +91,7 @@ test.describe('P1 · the publish claim', () => {
         const r = await other.api('POST', `/api/reviews/${name}/${door}`, { again: true });
         expect(r.status, door).toBe(409);
         expect(r.json.confirm ?? false, door).toBe(false);
-        expect(r.json.error, door).toMatch(/publish/i);
+        expect(r.json.error, door).toContain('being published right now');
       }
       bazel.releaseGh('gate');
       expect((await first).status).toBe(200);
