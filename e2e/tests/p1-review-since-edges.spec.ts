@@ -106,7 +106,7 @@ test.describe('P1 · review changes since the last review, edges', () => {
     bazel.movePR(K);
     await bazel.api('GET', '/api/prs?refresh=1');
     const job = await sinceJob(bazel, 'builtin');
-    expect(lastPrompt(bazel)).toBe(`/bazel-review-fleet 101 --since=${job.since}`);
+    expect(lastPrompt(bazel)).toBe(`/bazel:bazel-review-fleet 101 --since=${job.since}`);
     bazel.movePR(K); // the builtin review just marked the head it saw
     await bazel.api('GET', '/api/prs?refresh=1');
     await sinceJob(bazel, 'plain');

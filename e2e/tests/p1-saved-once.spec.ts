@@ -55,11 +55,16 @@ test.describe('P1 · a saved review goes to the PR once, restart or not', () => 
 test.describe('P1 · a saved review from before the record', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS, pipelines: PIPELINES } } });
 
-  // A file written before d2b1421 has no .posted. When the index says the PR got
-  // a review, Bazel cannot tell whether it was this one: it asks.
+  // A file written before Bazel kept the record has neither the header line
+  // "- Publish record: kept" nor a .posted. When the index says the PR got a
+  // review, Bazel cannot tell whether it was this one: it asks.
   async function legacy(bazel: Bazel) {
     const name = await published(bazel, 'inline');
-    fs.rmSync(path.join(bazel.reviewsDir, `${name}.posted`));
+    const file = path.join(bazel.reviewsDir, name);
+    fs.rmSync(`${file}.posted`);
+    const body = fs.readFileSync(file, 'utf8');
+    expect(body).toContain('- Publish record: kept\n');
+    fs.writeFileSync(file, body.replace('- Publish record: kept\n', ''));
     await bazel.restart();
     return name;
   }
