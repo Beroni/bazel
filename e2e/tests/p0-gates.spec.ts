@@ -164,7 +164,12 @@ test.describe('P0 · post agent failures', () => {
     expect(failed.html).toContain('E2E-FINDING-ONE'); // the review is still on the card
     expect(failed.steps.map((s: any) => s.name)).toEqual(['review-fleet', 'bazel-post-report']);
 
-    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] })).status).toBe(202);
+    // A post agent that failed may have written something: the retry asks first,
+    // and goes with the yes.
+    const asked = await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] });
+    expect(asked.status).toBe(409);
+    expect(asked.json.confirm).toBe(true);
+    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [], again: true })).status).toBe(202);
     const again = await bazel.waitJob(id, (j) => j.state === 'done' && !!j.post_error && bazel.agentCalls().length === 3, 20_000);
     expect(again.steps.map((s: any) => s.name)).toEqual(['review-fleet', 'bazel-post-report']);
     expect(reviewCalls(bazel)).toEqual([]);

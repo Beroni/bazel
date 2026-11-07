@@ -204,6 +204,15 @@ func PublishTarget(plugin, repo string, number int) error {
 // and its words say nothing about that: the script refusing is a successful run
 // for the model, and a model can stop before it ever calls the script. Anything
 // but a proof of publishing is a failure.
+// PublishNotSent says the publishing script stopped before it wrote anything:
+// it refused, or had nothing to send. A failure or no word at all may have
+// written something.
+func PublishNotSent(plugin string) bool {
+	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
+	status, _, _ := strings.Cut(string(data), "\n")
+	return err == nil && (status == "refused" || status == "nothing")
+}
+
 func PublishFailure(plugin string) string {
 	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
 	status, msg, _ := strings.Cut(string(data), "\n")

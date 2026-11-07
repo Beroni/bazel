@@ -1704,7 +1704,8 @@ func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
 		}
 	})
 	t.Run("comentário falha", func(t *testing.T) {
-		log := ghFalso(t, "exit 1")
+		// GitHub's clear refusal: nothing went, and the next try may go.
+		log := ghFalso(t, "echo 'HTTP 422: Validation Failed' >&2; exit 1")
 		m, _, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota, config.AgentDef{Name: "post", Command: "echo"})
 		for i := range 2 {
 			_, err := m.Post(context.Background(), fim.ID, nil, false)
@@ -3649,7 +3650,7 @@ func TestClaimEntreInstancias(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(other+".posting", []byte(`{"pid":999999,"instance":"gone","at":"2026-01-01T00:00:00Z"}`), 0o600); err != nil {
+	if err := os.WriteFile(other+".posting", []byte("sending 2026-01-01T00:00:00Z\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := a.CommentSaved(ctx, testPR(482), other, "Body.", nil, false); !errors.Is(err, errMaybePosted) {
@@ -3658,8 +3659,8 @@ func TestClaimEntreInstancias(t *testing.T) {
 	if err := a.CommentSaved(ctx, testPR(482), other, "Body.", nil, true); err != nil {
 		t.Errorf("orphan with a yes: %v", err)
 	}
-	if _, err := os.Stat(other + ".posting"); !os.IsNotExist(err) {
-		t.Error("the claim stayed after the send")
+	if b, err := os.ReadFile(other + ".posting"); err != nil || len(b) != 0 {
+		t.Errorf("the claim still says something after the send: %q %v", b, err)
 	}
 }
 
@@ -3766,5 +3767,70 @@ func TestPostSobreviveAoFimDaRequisicao(t *testing.T) {
 	}
 	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("second click: %v", err)
+	}
+}
+
+// ND-3: gh failing after GitHub may have taken the comment (no clear refusal) is
+// an unknown outcome: the next try does not send on its own, it asks.
+func TestFalhaIncertaDoGhPergunta(t *testing.T) {
+	log := ghFalso(t, "cat >/dev/null; echo accepted >> "+filepath.Join(t.TempDir(), "x")+"; echo 'connection reset' >&2; exit 1")
+	dir := t.TempDir()
+	m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); err == nil {
+		t.Fatal("gh failed, the door said nothing")
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errMaybePosted) {
+		t.Errorf("second try: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("gh ran %d times", n)
+	}
+	// A person's yes sends it.
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, true); err == nil || errors.Is(err, errMaybePosted) {
+		t.Errorf("with a yes, gh runs: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 2 {
+		t.Errorf("gh ran %d times", n)
+	}
+}
+
+// C2: a publication still in the queue claims nothing: canceled there, or left
+// by a shutdown, it asks nobody anything next time.
+func TestPublicacaoNaFilaNaoTomaClaim(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; sleep 30")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: "cat", Checkout: &semClone, Prompt: "{{task}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	busy, err := m.Enqueue(testPR(1), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, busy.ID, StateRunning)
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.State != StateQueued {
+		t.Fatalf("not queued: %s", pub.State)
+	}
+	if err := m.Cancel(pub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckPosting(path, false); err != nil {
+		t.Errorf("a canceled publication left: %v", err)
 	}
 }

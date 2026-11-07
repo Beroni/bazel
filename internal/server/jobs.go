@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -202,8 +203,12 @@ type publishInput struct {
 	// Source is the saved review this input came from. Path is a copy in
 	// publish/ whenever findings were dropped, so dedup compares Source.
 	Source string
-	// claim is the durable claim on Source for this publication.
+	// claim is the durable claim on Source, taken when the post agent is about to
+	// run, not when the publication is queued: one still waiting at a shutdown
+	// sent nothing. again is the person's yes to sending a review whose earlier
+	// send did not say how it ended.
 	claim *store.Claim
+	again bool
 }
 
 // discard removes the copy written in publish/ for this publication. The post
@@ -211,9 +216,6 @@ type publishInput struct {
 // the file is dead weight; the saved review at Source is never touched.
 func (in *publishInput) discard() {
 	in.dropCopy()
-	if in != nil {
-		in.claim.Release()
-	}
 }
 
 // dropCopy removes the trimmed copy and keeps the claim: the publication's
@@ -588,14 +590,28 @@ func (m *Manager) run(q queued) {
 	)
 	switch {
 	case in != nil:
-		res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onEvent)
+		in.claim, err = m.claimFile(in.Source, in.again)
+		if err == nil {
+			if err = in.claim.Sending(); err != nil {
+				in.claim.Release()
+			}
+		}
+		if err == nil {
+			res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onEvent)
+			// Refused by the script, nothing went; any other failure may have
+			// written something, and the next attempt asks.
+			switch {
+			case err == nil:
+			case errors.Is(err, agent.ErrNotSent):
+				in.claim.Release()
+			default:
+				in.claim.Unknown(err.Error())
+			}
+		}
 		// The post agent has stopped, whatever the outcome: nothing reads the
 		// copy again, and one per click would pile up in publish/. The claim
-		// waits for the outcome: done below, or let go here.
+		// waits for the outcome: done below.
 		in.dropCopy()
-		if err != nil {
-			in.claim.Release()
-		}
 	default:
 		if job.Since != "" {
 			res, err = m.runner.ReviewSince(ctx, job.PR, job.Choice, job.Since, onEvent)
@@ -1129,18 +1145,16 @@ func (m *Manager) PublishWithAgent(id string, skip []int, again bool) (jobView, 
 		m.mu.Unlock()
 		return jobView{}, err
 	}
-	claim, err := m.claimFile(job.SavedTo, again)
-	if err != nil {
+	if err := m.checkFile(job.SavedTo, again); err != nil {
 		m.mu.Unlock()
 		return jobView{}, err
 	}
 	in, err := m.publishInputFor(job.SavedTo, body, skip, trimmed)
 	if err != nil {
-		claim.Release()
 		m.mu.Unlock()
 		return jobView{}, err
 	}
-	in.claim = claim
+	in.again = again
 
 	// A previous publication that failed left its steps on the card; the new
 	// attempt redoes them, it does not stack them.
@@ -1213,13 +1227,12 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 		in.discard()
 		return jobView{}, err
 	}
-	claim, err := m.claimFile(path, again)
-	if err != nil {
+	if err := m.checkFile(path, again); err != nil {
 		m.mu.Unlock()
 		in.discard()
 		return jobView{}, err
 	}
-	in.claim = claim
+	in.again = again
 
 	choice := m.cfg.PostChoice()
 	job := &Job{
@@ -1259,7 +1272,11 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 		return err
 	}
 	claim, err := m.claimFile(path, again)
+	if err == nil {
+		err = claim.Sending()
+	}
 	if err != nil {
+		claim.Release()
 		m.mu.Unlock()
 		return err
 	}
@@ -1274,7 +1291,7 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 		_ = store.MarkPosted(m.reviewsDir, pr.Key())
 		m.settle(claim, path, "comment", pr.HeadRefOid)
 	} else {
-		claim.Release()
+		unsent(claim, err)
 	}
 
 	m.mu.Lock()
@@ -1362,7 +1379,11 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int, again bool) (
 	}
 	res.Body = store.DropFindings(body, skip)
 	claim, err := m.claimFile(job.SavedTo, again)
+	if err == nil {
+		err = claim.Sending()
+	}
 	if err != nil {
+		claim.Release()
 		m.mu.Unlock()
 		return jobView{}, err
 	}
@@ -1378,7 +1399,7 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int, again bool) (
 		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
 		m.settle(claim, job.SavedTo, "comment", res.PR.HeadRefOid)
 	} else {
-		claim.Release()
+		unsent(claim, err)
 	}
 
 	m.mu.Lock()
@@ -1547,13 +1568,41 @@ func (m *Manager) claimFile(path string, again bool) (*store.Claim, error) {
 		return nil, nil
 	}
 	claim, err := store.ClaimPosting(path, again)
+	return claim, doorErr(err)
+}
+
+// checkFile is claimFile that takes nothing: for a door that queues the send.
+// Call with m.mu held.
+func (m *Manager) checkFile(path string, again bool) error {
+	if path == "" {
+		return nil
+	}
+	return doorErr(store.CheckPosting(path, again))
+}
+
+// doorErr says a claim's refusal in the words the doors already answer with.
+func doorErr(err error) error {
 	switch {
 	case errors.Is(err, store.ErrPosted):
-		return nil, errAlreadyPosted
+		return errAlreadyPosted
 	case errors.Is(err, store.ErrClaimBusy):
-		return nil, errPublishBusy
+		return errPublishBusy
 	}
-	return claim, err
+	return err
+}
+
+// ghRefusedRe is a clear "no" from GitHub to the request: nothing was written.
+var ghRefusedRe = regexp.MustCompile(`HTTP 4\d\d`)
+
+// unsent clears the claim of a comment gh did not post: only GitHub's clear
+// refusal says nothing went; a timeout, a signal or a broken connection may
+// have come after GitHub took it, and the next attempt asks.
+func unsent(claim *store.Claim, err error) {
+	if ghRefusedRe.MatchString(err.Error()) {
+		claim.Release()
+		return
+	}
+	claim.Unknown(err.Error())
 }
 
 // settle turns the claim into the record that the review went. Without a claim

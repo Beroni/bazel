@@ -412,6 +412,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if err == nil && skills.IsPost(step.Task) {
 			if msg := skills.PublishFailure(plugin); msg != "" {
 				err = refusal(msg)
+				if skills.PublishNotSent(plugin) {
+					err = notSent{refusal(msg)}
+				}
 			}
 		}
 		// A refused step ends the job: it must not turn into one failed section
@@ -588,6 +591,15 @@ func (r refusal) Is(target error) bool { return target == errRefused }
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
 var errRefused = errors.New("refused")
+
+// ErrNotSent is a publication that stopped before writing anything to the PR,
+// by the publishing script's own word. Any other failure of a publication may
+// have written something.
+var ErrNotSent = errors.New("nothing was sent")
+
+type notSent struct{ refusal }
+
+func (n notSent) Is(target error) bool { return target == ErrNotSent || n.refusal.Is(target) }
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,
