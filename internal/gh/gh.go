@@ -224,10 +224,21 @@ func Comment(ctx context.Context, repo string, number int, body string) error {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh pr comment: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return &CommandError{Op: "gh pr comment", Err: err, Stderr: strings.TrimSpace(stderr.String())}
 	}
 	return nil
 }
+
+// CommandError is a gh command that failed, with what it said on stderr: the
+// caller may need gh's own words, apart from Go's.
+type CommandError struct {
+	Op     string
+	Err    error
+	Stderr string
+}
+
+func (e *CommandError) Error() string { return fmt.Sprintf("%s: %v: %s", e.Op, e.Err, e.Stderr) }
+func (e *CommandError) Unwrap() error { return e.Err }
 
 // ParseRef understands "owner/repo#12", "owner/repo 12" or the PR URL.
 func ParseRef(ref string) (repo string, number int, err error) {

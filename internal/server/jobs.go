@@ -1591,14 +1591,22 @@ func doorErr(err error) error {
 	return err
 }
 
-// ghRefusedRe is a clear "no" from GitHub to the request: nothing was written.
-var ghRefusedRe = regexp.MustCompile(`HTTP 4\d\d`)
+// ghRefusedRe is a clear "no" from GitHub to the request, in the two places gh
+// puts the status: "HTTP 4xx: …" opening an error line, or "(HTTP 4xx)" closing
+// one. Anywhere else it may be text the response quoted.
+var (
+	ghRefusedRe = regexp.MustCompile(`(?m)^HTTP 4\d\d:|\(HTTP 4\d\d\)\s*$`)
+	ghServerRe  = regexp.MustCompile(`HTTP 5\d\d`)
+)
 
 // unsent clears the claim of a comment gh did not post: only GitHub's clear
 // refusal says nothing went; a timeout, a signal or a broken connection may
 // have come after GitHub took it, and the next attempt asks.
 func unsent(claim *store.Claim, err error) {
-	if ghRefusedRe.MatchString(err.Error()) {
+	// gh's own words, and nothing else: a timeout or a signal has none. A 5xx
+	// anywhere is GitHub failing in the middle: it may have written.
+	var ce *gh.CommandError
+	if errors.As(err, &ce) && ghRefusedRe.MatchString(ce.Stderr) && !ghServerRe.MatchString(ce.Stderr) {
 		claim.Release()
 		return
 	}

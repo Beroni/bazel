@@ -3834,3 +3834,28 @@ func TestPublicacaoNaFilaNaoTomaClaim(t *testing.T) {
 		t.Errorf("a canceled publication left: %v", err)
 	}
 }
+
+// CL-3: only gh's own status line says GitHub refused; a 4xx quoted inside a
+// 5xx, or anywhere else, leaves the outcome unknown.
+func TestSoORecusaDoGhLiberaOClaim(t *testing.T) {
+	for msg, free := range map[string]bool{
+		"HTTP 422: Validation Failed (https://api.github.com/repos/o/r/issues/1/comments)": true,
+		"failed to create comment: GraphQL: Could not resolve to a node (HTTP 404)":        true,
+		"HTTP 500: upstream referred to HTTP 404 on the way":                               false,
+		"HTTP 502: Bad Gateway (HTTP 404)":                                                 false,
+		"the body said HTTP 404 somewhere":                                                 false,
+		"context deadline exceeded":                                                        false,
+	} {
+		file := filepath.Join(t.TempDir(), "r.md")
+		c, err := store.ClaimPosting(file, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Sending()
+		unsent(c, &gh.CommandError{Op: "gh pr comment", Err: errors.New("exit status 1"), Stderr: msg})
+		err = store.CheckPosting(file, false)
+		if free && err != nil || !free && !errors.Is(err, store.ErrClaimOrphan) {
+			t.Errorf("%q: %v", msg, err)
+		}
+	}
+}
