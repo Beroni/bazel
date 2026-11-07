@@ -31,7 +31,7 @@ test.describe('P1 · a saved review goes to the PR once, restart or not', () => 
 
   for (const how of ['pipeline', 'inline', 'comment'] as const) {
     test(`published by ${how}, then a restart: neither Saved door sends it again`, async ({ bazel }) => {
-      
+
       const name = await published(bazel, how);
       await bazel.restart();
       for (const door of ['publish', 'comment']) {
@@ -44,7 +44,7 @@ test.describe('P1 · a saved review goes to the PR once, restart or not', () => 
   }
 
   test('the Saved tab says it is on the PR and offers no Publish', async ({ app, bazel }) => {
-    
+
     await published(bazel, 'pipeline');
     await app.reload();
     await ui.savedTab(app).click();
