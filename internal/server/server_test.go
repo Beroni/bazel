@@ -3735,3 +3735,36 @@ func TestReviewSinceUsaAMarca(t *testing.T) {
 		t.Errorf("unchanged: %d %s", w.Code, w.Body)
 	}
 }
+
+// Closing the tab while gh posts does not stop gh: the comment goes, and its
+// record is written, so the next click does not post it again.
+func TestPostSobreviveAoFimDaRequisicao(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncat >/dev/null\nsleep 0.5\necho \"$1 $2\" >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel) // the tab closes mid-post
+	if err := m.CommentSaved(req, testPR(482), path, "Body.", nil, false); err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "pr comment") {
+		t.Error("gh was cut short")
+	}
+	if _, ok := store.PostedOf(path); !ok {
+		t.Error("no record")
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("second click: %v", err)
+	}
+}

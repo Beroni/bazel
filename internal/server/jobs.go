@@ -1266,7 +1266,10 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 	m.pasting[path] = true
 	m.mu.Unlock()
 
-	err = gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
+	// Not the request's context: a tab closed while gh posts must not kill gh
+	// after GitHub may have taken the comment, before the record is written.
+	// gh has its own timeout.
+	err = gh.Comment(context.WithoutCancel(ctx), pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, pr.Key())
 		m.settle(claim, path, "comment", pr.HeadRefOid)
@@ -1368,7 +1371,8 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int, again bool) (
 	job.posting = true
 	m.mu.Unlock()
 
-	err = gh.Comment(ctx, res.PR.Repo, res.PR.Number, store.CommentBody(res))
+	// Not the request's context, as in CommentSaved.
+	err = gh.Comment(context.WithoutCancel(ctx), res.PR.Repo, res.PR.Number, store.CommentBody(res))
 
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
