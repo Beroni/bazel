@@ -116,6 +116,18 @@ def line($l; $next; $steps):
 | flush
 | endstep
 | if .mode == "header" then .deny += ["a report header is not closed"] else . end
+| ([$bazel[] | select(startswith("- Since: ")) | sub("^- Since: "; "") | strip] | first) as $bazel_since_line
+| (if $bazel_since_line != null and ($bazel_since_line | test("^[0-9a-f]{40}$") | not)
+   then .deny += ["Bazel's Since line is not a commit"] else . end)
+| (if $bazel_since_line != null and ($bazel_since_line | test("^[0-9a-f]{40}$")) then $bazel_since_line else null end) as $bazel_since
+# Any commit named in the scope makes it a part of the PR, however it is spelled
+# (`..HEAD`, `...HEAD`, a pathspec after it): only `origin/<base>...HEAD` is all of it.
+| ([.headers[].scope_cmd | select(test("[0-9a-f]{40}")) | match("[0-9a-f]{40}").string] | unique) as $scope_sinces
+| ($scope_sinces | first) as $scope_since
+# A report that reviewed from another commit than the one Bazel gave it covered a
+# range nobody asked for: it proves nothing about the one that was.
+| (if $bazel_since != null and any($scope_sinces[]; . != $bazel_since)
+   then .deny += ["the report reviewed the changes since another commit than Bazel asked for"] else . end)
 | .deny += [($steps // [])[] as $name | select(.covered | index($name) | not) | "the step \"\($name)\" has no report"]
 | ($target.repo // "") as $repo
 | ($target.n // "") as $n
@@ -155,8 +167,10 @@ def line($l; $next; $steps):
    truncated: any($bazel[]; startswith("- Truncated: yes") or contains("The diff was truncated")),
    whole_diff: any($bazel[]; . == "- Truncated: no"),
    scope_real: all(.headers[]; .scope_cmd != "-"),
-   # Only the changes since an earlier head: clean says nothing of the rest.
-   since: ([.headers[].scope_cmd | select(test("^git diff [0-9a-f]{40}\\.\\.HEAD$")) | .[9:49]] | first),
+   # Only the changes since an earlier head: clean says nothing of the rest. Bazel's
+   # own line says so first, whatever scope the model wrote; files from before the
+   # line have only the report's word.
+   since: ($bazel_since // $scope_since),
    lenses_real: all(.headers[]; .lenses_ran != "-"),
    verdict: (if any($v[]; . == "request_changes") then "request_changes"
              elif any($v[]; . == "comment") then "comment" else "approve" end),

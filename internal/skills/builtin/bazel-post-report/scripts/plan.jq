@@ -4,14 +4,14 @@
 
 include "names";
 
-($pr[0].author.login // "" | login) as $author
-| ($me[0] | login) as $me
+account($pr[0].author.login; $pr[0].author.is_bot) as $author
+| account($me[0]; null) as $me
 | ($report[0]) as $r
 # A comment or a reply counts against a finding only if it comes from someone who
 # can speak for the repository, or from an earlier run of this same account: never
 # from the PR's author or a passer-by, who could use it to make a finding disappear.
 | def speaks:
-    (.user.login // "" | login) as $who
+    account(.user.login; .user.type) as $who
     | $who == $me or
       ((.author_association // "NONE" | IN("OWNER", "MEMBER", "COLLABORATOR")) and $who != $author);
   ($comments[0] | map(select(.in_reply_to_id != null and speaks)) | group_by(.in_reply_to_id)
@@ -29,10 +29,10 @@ include "names";
        # Who resolved it comes as a login with no standing, so it counts unless it
        # is the author's own: resolving takes write access otherwise.
        | ($thread[$id] // {}) as $t
-       | ($t.resolvedBy // "" | login) as $by
+       | account($t.resolvedBy; $t.resolvedByType) as $by
        | (($t.isResolved // false) and $by != "" and ($by != $author or $by == $me)) as $resolved
        | ($replies[$id] // []) as $rs
-       | {comment_id: .id, user: .user.login, user_key: (.user.login // "" | login), url: .html_url, excerpt: (.body // "")[0:400],
+       | {comment_id: .id, user: .user.login, user_key: account(.user.login; .user.type), url: .html_url, excerpt: (.body // "")[0:400],
           settled: ($resolved or ($rs != [])),
           settled_by: (if $resolved then $t.resolvedBy
                        elif $rs != [] then $rs[-1].user.login else null end)}]
@@ -40,5 +40,5 @@ include "names";
   $r + {
     pr_url: ($pr[0].url // ""),
     me: $me,
-    own_bodies: ([$issue[0][], $reviews[0][] | select((.user.login // "" | login) == $me) | .body // ""]),
+    own_bodies: ([$issue[0][], $reviews[0][] | select(account(.user.login; .user.type) == $me) | .body // ""]),
     findings: [$r.findings[] | . + {commentable: commentable(.), candidates: candidates(.)}]}

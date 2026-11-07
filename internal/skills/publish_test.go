@@ -1305,7 +1305,11 @@ func TestABotIsOneAccount(t *testing.T) {
 	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
 	botPR := `{"author":{"login":"app/renovate","is_bot":true},"url":"https://github.invalid/o/r/pull/7"}` + "\n"
 	resolved := func(by string) string {
-		return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"` + by + `"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
+		kind := "User"
+		if by == "renovate" {
+			kind = "Bot" // GraphQL names a bot with no suffix, and says what it is
+		}
+		return `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"` + by + `","__typename":"` + kind + `"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}` + "\n"
 	}
 	t.Run("the bot author's comment absorbs nothing", func(t *testing.T) {
 		w := newWorld(t)
@@ -1376,13 +1380,15 @@ func TestIncrementalIsNoAllClear(t *testing.T) {
 			t.Errorf("%+v", p)
 		}
 	})
-	t.Run("a scope that only looks like one", func(t *testing.T) {
+	// A scope that names a commit in any form is not the whole PR, and no clean
+	// result over it clears the PR.
+	t.Run("a commit anywhere in the scope", func(t *testing.T) {
 		w := newWorld(t)
 		r := strings.Replace(header("approve", 3), "scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff origin/main...HEAD --since "+since, 1)
 		r = strings.Replace(r, "**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff origin/main...HEAD --since "+since+"`", 1)
 		w.run("publish", w.prepare(bazelFile(r)))
-		if p := w.payload(0); strings.Contains(p.Body, "Changes since") {
-			t.Errorf("only the exact form is incremental:\n%s", p.Body)
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("no all-clear over part of the PR:\n%s", p.Body)
 		}
 	})
 }
@@ -1415,4 +1421,108 @@ func TestScriptsParseOnEveryJq(t *testing.T) {
 	if len(seen) == 0 {
 		t.Skip("no jq")
 	}
+}
+
+// A bot and a person can carry the same name. publisher[bot] is not the person
+// called publisher, whichever of the two publishes: one never stands for the other.
+func TestABotIsNotThePersonOfItsName(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad."))
+	botComment := `{"id":11,"user":{"login":"publisher[bot]","type":"Bot"},"author_association":"NONE","path":"a.go","line":2,"body":"same bug","html_url":"https://github.invalid/c11"}`
+	t.Run("the bot's comment is not the person's own", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("me", "publisher\n")
+		w.write("comments", "["+botComment+"]\n")
+		work := w.prepare(report)
+		if out, code := w.run("publish", work, "--same", "1=11"); code != 3 {
+			t.Errorf("a passer-by bot is no candidate; exit %d\n%s", code, out)
+		}
+	})
+	t.Run("the person's review is not the bot's", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("me", "publisher[bot]\n")
+		w.run("publish", w.prepare(report))
+		p := w.payload(0)
+		w.write("reviews", mustJSON(t, []map[string]any{{"user": map[string]string{"login": "publisher", "type": "User"}, "body": p.Body}})+"\n")
+		os.Remove(filepath.Join(w.dir, "payload0.json"))
+		w.run("publish", w.prepare(report))
+		if !w.wrote() {
+			t.Error("a person's review is not this bot's own: it posts")
+		}
+	})
+	t.Run("the PR's bot author resolving is not a person resolving", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("pr", `{"author":{"login":"alice","is_bot":false},"url":"u"}`+"\n")
+		w.write("comments", "["+comment(11, "bob", "MEMBER", 2, "")+"]\n")
+		w.write("threads", `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"alice","__typename":"Bot"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}`+"\n")
+		w.run("publish", w.prepare(report), "--same", "1=11")
+		if p := w.payload(0); !strings.Contains(p.Body, "settled by @alice") {
+			t.Errorf("a bot named alice is not the PR's author alice:\n%s", p.Body)
+		}
+	})
+}
+
+// Bazel's own word that a review was incremental counts, whatever scope the model
+// wrote: it was asked for the changes since a commit, and those are all it proves.
+func TestBazelSaysIncremental(t *testing.T) {
+	since := strings.Repeat("e", 40)
+	withSince := func(file, line string) string {
+		return strings.Replace(file, "- Truncated: no\n", "- Truncated: no\n"+line+"\n", 1)
+	}
+	clean := header("approve", 3)
+	t.Run("a whole scope under Bazel's Since", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(withSince(bazelFile(clean), "- Since: "+since)))
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "eeeeeee") {
+			t.Errorf("no all-clear on an incremental run:\n%s", p.Body)
+		}
+	})
+	incremental := strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff "+strings.Repeat("d", 40)+"..HEAD",
+		"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff "+strings.Repeat("d", 40)+"..HEAD`").Replace(clean)
+	for name, file := range map[string]string{
+		"another commit than Bazel's": withSince(bazelFile(incremental), "- Since: "+since),
+		"a Since that is no commit":   withSince(bazelFile(clean), "- Since: HEAD~1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.write("review.md", file)
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if code != 3 || w.wrote() {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+		})
+	}
+	t.Run("a file from before the line", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental)))
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("the report's word still counts:\n%s", p.Body)
+		}
+	})
+	// Other spellings of the same range: three dots, a pathspec after it. Without
+	// Bazel's line they still name a commit, and with it they must name Bazel's.
+	for _, scope := range []string{"git diff " + since + "...HEAD", "git diff " + since + "..HEAD -- ."} {
+		spelled := strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: "+scope,
+			"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `"+scope+"`").Replace(clean)
+		t.Run("spelled "+scope[len("git diff ")+40:], func(t *testing.T) {
+			for _, file := range []string{bazelFile(spelled), withSince(bazelFile(spelled), "- Since: "+since)} {
+				w := newWorld(t)
+				w.run("publish", w.prepare(file))
+				if p := w.payload(0); strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "eeeeeee") {
+					t.Errorf("no all-clear on part of the PR:\n%s", p.Body)
+				}
+			}
+			w := newWorld(t)
+			w.write("review.md", withSince(bazelFile(spelled), "- Since: "+strings.Repeat("d", 40)))
+			if out, code := w.run("prepare", filepath.Join(w.dir, "review.md")); code != 3 {
+				t.Errorf("another commit than Bazel's, spelled otherwise: exit %d\n%s", code, out)
+			}
+		})
+	}
+	t.Run("no Since, a whole scope", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(clean)))
+		if p := w.payload(0); !strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("a whole, clean review still clears:\n%s", p.Body)
+		}
+	})
 }
