@@ -109,7 +109,15 @@ export async function settled(page: Page): Promise<void> {
 
 /** Opens one of the tabs of a job's detail. */
 export async function jobTab(page: Page, name: 'Overview' | 'History' | 'Live log' | 'Report'): Promise<void> {
-  await page.getByRole('tab', { name }).click();
+  // BUG-QA-36: a click whose press and release straddle a redraw of the job's
+  // detail (the Overview's details arriving) is lost. The bug has its own test
+  // (p2-exploratory-bugs); here a lost click is clicked again until the tab is
+  // the selected one. Drop the retry with the fix.
+  const tab = page.getByRole('tab', { name, exact: true });
+  await expect(async () => {
+    if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 2_000 });
+  }).toPass({ timeout: BUDGET });
 }
 
 /** Clicks Run and returns the jobs it queued, from the server's own answer. */
