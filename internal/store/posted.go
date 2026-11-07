@@ -3,7 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -66,91 +66,128 @@ func PostedOf(file string) (Posted, bool) {
 	return p, true
 }
 
-// The claim: <file>.posting, made with O_EXCL before any door calls gh, so two
-// doors, or two Bazels on the same folder, cannot both send the same review.
-// It becomes <file>.posted when the review went, and goes away when gh failed.
-// One left by a process that is gone is an unknown outcome: the review may be
-// on the PR or not, and only a person can say.
+// The claim: <file>.posting, held with an exclusive lock for the whole of one
+// send, by whichever door and whichever Bazel. The lock is what says someone is
+// sending now; a process that dies lets go of it, so no pid is trusted. What
+// the file says is how the last send went, read and changed only under the
+// lock: empty is nothing pending, "sending" is a send that never said how it
+// ended, "unknown" is one that failed after gh may have reached GitHub. Either
+// of those asks a person before sending again. The file is truncated, never
+// removed: another process may hold it open.
 var (
 	// ErrPosted is a review that went to the PR.
 	ErrPosted = errors.New("already published")
-	// ErrClaimBusy is a review another live process is sending now.
-	ErrClaimBusy = errors.New("another Bazel is publishing this review right now")
-	// ErrClaimOrphan is a send that started and never said how it ended.
-	ErrClaimOrphan = errors.New("this review may already be on the PR: a publication of it started and never finished")
+	// ErrClaimBusy is a review another door is sending now.
+	ErrClaimBusy = errors.New("this review is being published right now")
+	// ErrClaimOrphan is a send whose outcome is not known.
+	ErrClaimOrphan = errors.New("this review may already be on the PR: an earlier publication of it did not say how it ended, and sending again may post it twice")
 )
 
-// instance tells this process's claims from those of a Bazel that ran before
-// with the same pid.
-var instance = fmt.Sprintf("%d-%d", os.Getpid(), time.Now().UnixNano())
-
-type claimRecord struct {
-	PID      int       `json:"pid"`
-	Instance string    `json:"instance"`
-	At       time.Time `json:"at"`
+// Claim is the right to send one saved review to the PR, held until Done,
+// Release or Unknown.
+type Claim struct {
+	path string
+	f    *os.File
 }
-
-// Claim is the right to send one saved review to the PR.
-type Claim struct{ path string }
 
 func postingPath(file string) string { return file + ".posting" }
 
 // ClaimPosting takes the claim on file. again is a person's yes to sending it
-// although a send of it may have happened: it clears an orphan claim, never a
-// live one. A claim of this very process with no door holding it is a leftover
-// and counts as an orphan too.
+// although an earlier send of it may have reached the PR; it never overrides a
+// send in progress or a recorded one.
 func ClaimPosting(file string, again bool) (*Claim, error) {
+	f, err := os.OpenFile(postingPath(file), os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if !tryLock(f) {
+		f.Close()
+		return nil, ErrClaimBusy
+	}
+	c := &Claim{path: file, f: f}
+	// Under the lock: what an earlier holder finished is there to see.
 	if _, ok := PostedOf(file); ok {
+		c.close()
 		return nil, ErrPosted
 	}
-	for try := 0; try < 2; try++ {
-		f, err := os.OpenFile(postingPath(file), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-		if err == nil {
-			data, _ := json.Marshal(claimRecord{PID: os.Getpid(), Instance: instance, At: time.Now()})
-			_, werr := f.Write(data)
-			if cerr := f.Close(); werr == nil {
-				werr = cerr
-			}
-			if werr != nil {
-				_ = os.Remove(postingPath(file))
-				return nil, werr
-			}
-			return &Claim{path: file}, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return nil, err
-		}
-		var rec claimRecord
-		if data, rerr := os.ReadFile(postingPath(file)); rerr == nil {
-			_ = json.Unmarshal(data, &rec)
-		}
-		if rec.Instance != instance && rec.PID > 0 && processAlive(rec.PID) {
-			return nil, ErrClaimBusy
-		}
-		if !again {
-			return nil, ErrClaimOrphan
-		}
-		_ = os.Remove(postingPath(file))
+	state, err := io.ReadAll(io.NewSectionReader(f, 0, 1<<10))
+	if err != nil {
+		c.close()
+		return nil, err
 	}
-	return nil, ErrClaimOrphan
+	if strings.TrimSpace(string(state)) != "" && !again {
+		c.close()
+		return nil, ErrClaimOrphan
+	}
+	return c, nil
 }
 
-// Done records that the review went, then lets go of the claim.
+// CheckPosting says what ClaimPosting would, and takes nothing: for a door that
+// queues the send for later.
+func CheckPosting(file string, again bool) error {
+	c, err := ClaimPosting(file, again)
+	if err != nil {
+		return err
+	}
+	c.close()
+	return nil
+}
+
+// Sending marks, before gh runs, that a send is out: a process that dies now
+// leaves it, and the next attempt asks.
+func (c *Claim) Sending() error {
+	return c.write("sending " + time.Now().Format(time.RFC3339) + "\n")
+}
+
+// Done records that the review went, then clears the claim.
 func (c *Claim) Done(how, head string) error {
 	if c == nil {
 		return nil
 	}
-	err := MarkFilePosted(c.path, how, head)
-	if err == nil {
-		_ = os.Remove(postingPath(c.path))
+	defer c.close()
+	if err := MarkFilePosted(c.path, how, head); err != nil {
+		return err
 	}
-	return err
+	return c.write("")
 }
 
-// Release lets go of the claim of a send that did not happen.
+// Release clears the claim of a send that did not reach GitHub.
 func (c *Claim) Release() {
-	if c != nil {
-		_ = os.Remove(postingPath(c.path))
+	if c == nil {
+		return
+	}
+	_ = c.write("")
+	c.close()
+}
+
+// Unknown leaves word that the send failed in a way that may have reached
+// GitHub all the same: the next attempt asks.
+func (c *Claim) Unknown(why string) {
+	if c == nil {
+		return
+	}
+	_ = c.write("unknown " + time.Now().Format(time.RFC3339) + " " + strings.Join(strings.Fields(why), " ") + "\n")
+	c.close()
+}
+
+func (c *Claim) write(state string) error {
+	if c == nil || c.f == nil {
+		return nil
+	}
+	if err := c.f.Truncate(0); err != nil {
+		return err
+	}
+	if _, err := c.f.WriteAt([]byte(state), 0); err != nil {
+		return err
+	}
+	return c.f.Sync()
+}
+
+func (c *Claim) close() {
+	if c != nil && c.f != nil {
+		unlock(c.f)
+		c.f.Close()
+		c.f = nil
 	}
 }
 

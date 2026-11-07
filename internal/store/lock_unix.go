@@ -20,3 +20,10 @@ func lockFile(path string) (func(), error) {
 	}
 	return func() { f.Close() }, nil
 }
+
+// tryLock takes an exclusive lock on f without waiting.
+func tryLock(f *os.File) bool {
+	return syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) == nil
+}
+
+func unlock(f *os.File) { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) }
