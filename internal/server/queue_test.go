@@ -289,3 +289,24 @@ func TestReviewThenPublishVolta(t *testing.T) {
 		t.Errorf("Run would ask: %q", view.Publishes)
 	}
 }
+
+// A lock file that cannot be opened is no lock: the queue stays in memory.
+func TestFilaSemLockFicaEmMemoria(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no lock on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root opens anything")
+	}
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	home := t.TempDir()
+	if err := os.WriteFile(filepath.Join(home, queueFileName+".lock"), nil, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	srv := queueServer(ctx, t, cfgFor(t, "echo"), home)
+	if srv.jobs.queueBusy == "" || srv.jobs.queueFile != "" {
+		t.Errorf("busy=%q file=%q", srv.jobs.queueBusy, srv.jobs.queueFile)
+	}
+}
