@@ -88,6 +88,11 @@ type settings struct {
 	// loaded machine does, on purpose, so a test that confuses a running job with
 	// a running agent fails every time instead of now and then.
 	SlowClone int `json:"slow_clone_ms"`
+	// Hold maps a call key ("comment", "api") to a gate: the call announces
+	// itself in <state>/<gate>.entered and waits for <state>/<gate>, whose text
+	// "fail" makes it fail and anything else lets it through. A write held open,
+	// for a test that kills Bazel in the middle of it.
+	Hold map[string]string `json:"hold"`
 }
 
 var (
@@ -195,6 +200,20 @@ func flag(args []string, name string) string {
 }
 
 func failed(key string) bool {
+	if gate, ok := cfg.Hold[key]; ok {
+		_ = os.WriteFile(filepath.Join(state, gate+".entered"), nil, 0o644)
+		deadline := time.Now().Add(120 * time.Second)
+		for time.Now().Before(deadline) {
+			if b, err := os.ReadFile(filepath.Join(state, gate)); err == nil {
+				if strings.TrimSpace(string(b)) == "fail" {
+					fmt.Fprintln(os.Stderr, "fake gh: held call failed on purpose")
+					return true
+				}
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	if msg, ok := cfg.Fail[key]; ok {
 		fmt.Fprintln(os.Stderr, msg)
 		return true

@@ -86,6 +86,8 @@ export interface GhSettings {
   forks?: Record<string, string>;
   /** Extra milliseconds for every gh repo clone: a loaded machine, on purpose. */
   slow_clone_ms?: number;
+  /** Call key ("comment", "api") → gate: see holdingGh / releaseGh. */
+  hold?: Record<string, string>;
 }
 
 export interface BazelOptions {
@@ -290,6 +292,23 @@ export class Bazel {
     this.proc.kill('SIGTERM');
     const timeout = new Promise((r) => setTimeout(r, 7_000, 'timeout'));
     if ((await Promise.race([this.exited, timeout])) === 'timeout') this.proc.kill('SIGKILL');
+  }
+
+  /** Kills the server at once, as a crash would: nothing of it runs after. */
+  async kill(): Promise<void> {
+    if (!this.proc || this.proc.exitCode !== null) return;
+    this.proc.kill('SIGKILL');
+    await this.exited;
+  }
+
+  /** Whether a gh call held on gate has started (gh: { hold }). */
+  holdingGh(gate: string): boolean {
+    return fs.existsSync(path.join(this.ghState, `${gate}.entered`));
+  }
+
+  /** Lets a held gh call go through, or fail with how = 'fail'. */
+  releaseGh(gate: string, how: 'go' | 'fail' = 'go'): void {
+    fs.writeFileSync(path.join(this.ghState, gate), how);
   }
 
   /** Removes the temp root. Called only when the test passed. */
