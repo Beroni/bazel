@@ -1380,13 +1380,15 @@ func TestIncrementalIsNoAllClear(t *testing.T) {
 			t.Errorf("%+v", p)
 		}
 	})
-	t.Run("a scope that only looks like one", func(t *testing.T) {
+	// A scope that names a commit in any form is not the whole PR, and no clean
+	// result over it clears the PR.
+	t.Run("a commit anywhere in the scope", func(t *testing.T) {
 		w := newWorld(t)
 		r := strings.Replace(header("approve", 3), "scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff origin/main...HEAD --since "+since, 1)
 		r = strings.Replace(r, "**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff origin/main...HEAD --since "+since+"`", 1)
 		w.run("publish", w.prepare(bazelFile(r)))
-		if p := w.payload(0); strings.Contains(p.Body, "Changes since") {
-			t.Errorf("only the exact form is incremental:\n%s", p.Body)
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("no all-clear over part of the PR:\n%s", p.Body)
 		}
 	})
 }
@@ -1459,3 +1461,68 @@ func TestABotIsNotThePersonOfItsName(t *testing.T) {
 	})
 }
 
+// Bazel's own word that a review was incremental counts, whatever scope the model
+// wrote: it was asked for the changes since a commit, and those are all it proves.
+func TestBazelSaysIncremental(t *testing.T) {
+	since := strings.Repeat("e", 40)
+	withSince := func(file, line string) string {
+		return strings.Replace(file, "- Truncated: no\n", "- Truncated: no\n"+line+"\n", 1)
+	}
+	clean := header("approve", 3)
+	t.Run("a whole scope under Bazel's Since", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(withSince(bazelFile(clean), "- Since: "+since)))
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "eeeeeee") {
+			t.Errorf("no all-clear on an incremental run:\n%s", p.Body)
+		}
+	})
+	incremental := strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: git diff "+strings.Repeat("d", 40)+"..HEAD",
+		"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `git diff "+strings.Repeat("d", 40)+"..HEAD`").Replace(clean)
+	for name, file := range map[string]string{
+		"another commit than Bazel's": withSince(bazelFile(incremental), "- Since: "+since),
+		"a Since that is no commit":   withSince(bazelFile(clean), "- Since: HEAD~1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := newWorld(t)
+			w.write("review.md", file)
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if code != 3 || w.wrote() {
+				t.Errorf("exit %d\n%s", code, out)
+			}
+		})
+	}
+	t.Run("a file from before the line", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(incremental)))
+		if p := w.payload(0); strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("the report's word still counts:\n%s", p.Body)
+		}
+	})
+	// Other spellings of the same range: three dots, a pathspec after it. Without
+	// Bazel's line they still name a commit, and with it they must name Bazel's.
+	for _, scope := range []string{"git diff " + since + "...HEAD", "git diff " + since + "..HEAD -- ."} {
+		spelled := strings.NewReplacer("scope_cmd: git diff origin/main...HEAD", "scope_cmd: "+scope,
+			"**Scope:** `git diff origin/main...HEAD`", "**Scope:** `"+scope+"`").Replace(clean)
+		t.Run("spelled "+scope[len("git diff ")+40:], func(t *testing.T) {
+			for _, file := range []string{bazelFile(spelled), withSince(bazelFile(spelled), "- Since: "+since)} {
+				w := newWorld(t)
+				w.run("publish", w.prepare(file))
+				if p := w.payload(0); strings.Contains(p.Body, "all-clear @") || !strings.Contains(p.Body, "eeeeeee") {
+					t.Errorf("no all-clear on part of the PR:\n%s", p.Body)
+				}
+			}
+			w := newWorld(t)
+			w.write("review.md", withSince(bazelFile(spelled), "- Since: "+strings.Repeat("d", 40)))
+			if out, code := w.run("prepare", filepath.Join(w.dir, "review.md")); code != 3 {
+				t.Errorf("another commit than Bazel's, spelled otherwise: exit %d\n%s", code, out)
+			}
+		})
+	}
+	t.Run("no Since, a whole scope", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(clean)))
+		if p := w.payload(0); !strings.Contains(p.Body, "all-clear @") {
+			t.Errorf("a whole, clean review still clears:\n%s", p.Body)
+		}
+	})
+}
