@@ -170,18 +170,33 @@ func (c *Claim) Unknown(why string) {
 	c.close()
 }
 
+// write replaces the state without ever leaving the file empty halfway: an
+// empty file means nothing pending, so a crash between a truncate and the new
+// state would let the next send go without asking. The new state is written
+// over the old from the start and made durable, and only then cut to its own
+// length. A write that fails leaves the old state, which asks too. Clearing,
+// to "", is the one state reached by truncating.
 func (c *Claim) write(state string) error {
 	if c == nil || c.f == nil {
 		return nil
 	}
-	if err := c.f.Truncate(0); err != nil {
-		return err
+	if state != "" {
+		if _, err := c.f.WriteAt([]byte(state), 0); err != nil {
+			return err
+		}
+		if err := c.f.Sync(); err != nil {
+			return err
+		}
+		claimMidWrite()
 	}
-	if _, err := c.f.WriteAt([]byte(state), 0); err != nil {
+	if err := c.f.Truncate(int64(len(state))); err != nil {
 		return err
 	}
 	return c.f.Sync()
 }
+
+// claimMidWrite runs between the new state and the cut; tests stop there.
+var claimMidWrite = func() {}
 
 func (c *Claim) close() {
 	if c != nil && c.f != nil {

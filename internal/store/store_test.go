@@ -298,3 +298,31 @@ func TestUnknownFicaNoArquivo(t *testing.T) {
 		t.Errorf("check: %v", err)
 	}
 }
+
+// CL-1: a send left "sending" becomes "unknown" without the file ever being
+// empty on the way: a crash between the two would let the next send go.
+func TestUnknownNuncaPassaPorVazio(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	c, err := ClaimPosting(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Sending(); err != nil {
+		t.Fatal(err)
+	}
+	var mid string
+	old := claimMidWrite
+	claimMidWrite = func() {
+		b, _ := os.ReadFile(file + ".posting")
+		mid = string(b)
+	}
+	t.Cleanup(func() { claimMidWrite = old })
+	c.Unknown("gh timed out")
+	if !strings.HasPrefix(mid, "unknown") {
+		t.Errorf("halfway the file said %q", mid)
+	}
+	b, _ := os.ReadFile(file + ".posting")
+	if !strings.HasPrefix(string(b), "unknown") || strings.Contains(string(b), "sending") {
+		t.Errorf("at the end: %q", b)
+	}
+}
