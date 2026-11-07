@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -3893,4 +3894,176 @@ func TestFalhaAntesDoAgenteNaoPergunta(t *testing.T) {
 	if err := store.CheckPosting(path, false); err != nil {
 		t.Errorf("nothing was sent, yet: %v", err)
 	}
+}
+
+// B1: a send whose "sending" mark cannot reach the disk (EFBIG, a full disk)
+// does not happen, through any of the four doors: neither gh nor the post agent
+// runs, the claim is let go, and the door says why. With the disk back, the
+// next try goes without a question.
+func TestSemRegistroNadaSai(t *testing.T) {
+	broken := func(*store.Claim) error { return fmt.Errorf("write: %w", syscall.EFBIG) }
+	saved := func(t *testing.T, dir string) string {
+		path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	released := func(t *testing.T, path string) {
+		t.Helper()
+		if err := store.CheckPosting(path, false); err != nil {
+			t.Errorf("the claim was kept: %v", err)
+		}
+	}
+	// postAgent leaves a mark each time it runs.
+	postAgent := func(t *testing.T, cfg *config.Config) string {
+		bin := t.TempDir()
+		ran := filepath.Join(bin, "ran")
+		script := filepath.Join(bin, "post")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho x >> "+ran+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		semClone := false
+		cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: script, Checkout: &semClone, Prompt: "{{task}}"}
+		return ran
+	}
+	runs := func(path string) int {
+		data, _ := os.ReadFile(path)
+		return strings.Count(string(data), "x")
+	}
+	// ended waits for the publication on id to stop; one on the review's
+	// card goes back to the review when it does.
+	ended := func(t *testing.T, m *Manager, id string, inPlace bool) jobView {
+		t.Helper()
+		var v jobView
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if v, _ = m.View(id, false); (v.State == StateDone || v.State == StateFailed) && !(inPlace && v.Publishing) {
+				return v
+			}
+		}
+		t.Fatalf("the publication never ended: %+v", v)
+		return jobView{}
+	}
+
+	t.Run("CommentSaved", func(t *testing.T) {
+		log := ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+		path := saved(t, dir)
+		m.sending = broken
+		if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errNotRecorded) || !errors.Is(err, syscall.EFBIG) {
+			t.Fatalf("err = %v", err)
+		}
+		if n := contaNoLog(log, "start"); n != 0 {
+			t.Errorf("gh ran %d times", n)
+		}
+		released(t, path)
+		m.sending = (*store.Claim).Sending
+		if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); err != nil {
+			t.Errorf("with the disk back: %v", err)
+		}
+	})
+
+	t.Run("Post", func(t *testing.T) {
+		log := ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hub := NewHub()
+		ch := hub.Subscribe()
+		defer hub.Unsubscribe(ch)
+		cfg := cfgFor(t, "cat")
+		cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
+		m := NewManager(ctx, cfg, dir, 1, false, hub)
+		review, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitFor(t, ch, review.ID, StateDone)
+		before := contaNoLog(log, "start")
+		m.sending = broken
+		if _, err := m.Post(context.Background(), review.ID, nil, false); !errors.Is(err, errNotRecorded) {
+			t.Fatalf("err = %v", err)
+		}
+		if n := contaNoLog(log, "start"); n != before {
+			t.Errorf("gh ran %d times", n-before)
+		}
+		released(t, done.SavedTo)
+		m.sending = (*store.Claim).Sending
+		if _, err := m.Post(context.Background(), review.ID, nil, false); err != nil {
+			t.Errorf("with the disk back: %v", err)
+		}
+	})
+
+	t.Run("PublishSaved", func(t *testing.T) {
+		ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		cfg := cfgFor(t, "cat")
+		ran := postAgent(t, cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		m := NewManager(ctx, cfg, dir, 1, false, NewHub())
+		path := saved(t, dir)
+		m.sending = broken
+		v, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := ended(t, m, v.ID, false)
+		if !strings.Contains(end.Err+end.PostErr, errNotRecorded.Error()) {
+			t.Errorf("the job does not say why: %+v", end)
+		}
+		if n := runs(ran); n != 0 {
+			t.Errorf("the post agent ran %d times", n)
+		}
+		released(t, path)
+		m.sending = (*store.Claim).Sending
+		v, err = m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+		if err != nil {
+			t.Fatalf("with the disk back: %v", err)
+		}
+		ended(t, m, v.ID, false)
+		if n := runs(ran); n != 1 {
+			t.Errorf("with the disk back, the post agent ran %d times", n)
+		}
+	})
+
+	t.Run("PublishWithAgent", func(t *testing.T) {
+		ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		cfg := cfgFor(t, "cat")
+		cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
+		ran := postAgent(t, cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hub := NewHub()
+		ch := hub.Subscribe()
+		defer hub.Unsubscribe(ch)
+		m := NewManager(ctx, cfg, dir, 1, false, hub)
+		review, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitFor(t, ch, review.ID, StateDone)
+		m.sending = broken
+		if _, err := m.PublishWithAgent(review.ID, nil, false); err != nil {
+			t.Fatal(err)
+		}
+		end := ended(t, m, review.ID, true)
+		if !strings.Contains(end.Err+end.PostErr, errNotRecorded.Error()) {
+			t.Errorf("the card does not say why: %+v", end)
+		}
+		if n := runs(ran); n != 0 {
+			t.Errorf("the post agent ran %d times", n)
+		}
+		released(t, done.SavedTo)
+		m.sending = (*store.Claim).Sending
+		if _, err := m.PublishWithAgent(review.ID, nil, false); err != nil {
+			t.Fatalf("with the disk back: %v", err)
+		}
+		ended(t, m, review.ID, true)
+		if n := runs(ran); n != 1 {
+			t.Errorf("with the disk back, the post agent ran %d times", n)
+		}
+	})
 }

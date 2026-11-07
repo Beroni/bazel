@@ -58,6 +58,9 @@ var (
 	errPublishBusy = errors.New("that review is being published right now")
 	// errAlreadyPosted refuses publishing a review that already went to the PR.
 	errAlreadyPosted = errors.New("that review was already published")
+	// errNotRecorded stops a send whose "sending" mark did not reach the disk:
+	// a crash during it could not be told from a send that never began.
+	errNotRecorded = errors.New("could not record the send; nothing was sent")
 )
 
 // maxJobs caps the in-memory history. The reviews that matter are already
@@ -295,6 +298,10 @@ type Manager struct {
 	hub        *Hub
 	ctx        context.Context
 
+	// sending marks a claim as sending, right before the write to the PR;
+	// tests make it fail.
+	sending func(*store.Claim) error
+
 	queue chan queued
 
 	// running counts the jobs inside run, for Wait.
@@ -363,6 +370,7 @@ func NewManager(ctx context.Context, cfg *config.Config, reviewsDir string, conc
 		cfg:        cfg,
 		runner:     runner,
 		reviewsDir: reviewsDir,
+		sending:    (*store.Claim).Sending,
 		hub:        hub,
 		ctx:        ctx,
 		queue:      make(chan queued, 256),
@@ -593,18 +601,27 @@ func (m *Manager) run(q queued) {
 		in.claim, err = m.claimFile(in.Source, in.again)
 		if err == nil {
 			// "sending" is written when the post agent starts, not before the
-			// clone: a clone or network failure sent nothing.
-			var started atomic.Bool
+			// clone: a clone or network failure sent nothing. If it cannot be
+			// written, the agent does not start: the step's event comes right
+			// before exec, and exec starts nothing on a canceled context.
+			pctx, stop := context.WithCancelCause(ctx)
+			var started, unrecorded atomic.Bool
 			onPublish := func(e agent.Event) {
-				if e.Kind == agent.EventStep && !started.Load() {
-					if serr := in.claim.Sending(); serr != nil {
-						fmt.Fprintf(os.Stderr, "bazel: could not mark the send of %s: %v\n", filepath.Base(in.Source), serr)
+				if e.Kind == agent.EventStep && !started.Load() && !unrecorded.Load() {
+					if serr := m.sending(in.claim); serr != nil {
+						unrecorded.Store(true)
+						stop(fmt.Errorf("%w: %w", errNotRecorded, serr))
+					} else {
+						started.Store(true)
 					}
-					started.Store(true)
 				}
 				onEvent(e)
 			}
-			res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onPublish)
+			res, err = m.runner.Publish(pctx, job.PR, job.pubChoice, in.Path, in.Body, onPublish)
+			if unrecorded.Load() {
+				res, err = agent.Result{}, context.Cause(pctx)
+			}
+			stop(nil)
 			// Refused by the script, or failed before the agent ran, nothing
 			// went; any other failure may have written something, and the next
 			// attempt asks.
@@ -1281,7 +1298,9 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 	}
 	claim, err := m.claimFile(path, again)
 	if err == nil {
-		err = claim.Sending()
+		if err = m.sending(claim); err != nil {
+			err = fmt.Errorf("%w: %w", errNotRecorded, err)
+		}
 	}
 	if err != nil {
 		claim.Release()
@@ -1388,7 +1407,9 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int, again bool) (
 	res.Body = store.DropFindings(body, skip)
 	claim, err := m.claimFile(job.SavedTo, again)
 	if err == nil {
-		err = claim.Sending()
+		if err = m.sending(claim); err != nil {
+			err = fmt.Errorf("%w: %w", errNotRecorded, err)
+		}
 	}
 	if err != nil {
 		claim.Release()
