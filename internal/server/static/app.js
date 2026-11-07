@@ -673,7 +673,8 @@ async function publishJob(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
   try {
-    const view = await api(`/api/jobs/${encodeURIComponent(id)}/publish`, { method: 'POST', body: JSON.stringify({ skip }) });
+    const view = await askedDoor(`/api/jobs/${encodeURIComponent(id)}/publish`, skip);
+    if (!view) { if (btn) { btn.disabled = false; btn.textContent = label; } return; }
     upsertJob(view);
     state.activeJob = view.id;
     state.tab = 'queue';
@@ -734,7 +735,9 @@ async function postJob(id, btn) {
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
   try {
-    upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
+    const view = await askedDoor(`/api/jobs/${encodeURIComponent(id)}/post`, skip);
+    if (!view) { if (btn) { btn.disabled = false; btn.textContent = label; } return; }
+    upsertJob(view);
     keepFocus('#viewer .vtab.on');
   } catch (err) {
     // 409 and 404 are Bazel turning the request down (busy, already posted,
@@ -924,7 +927,13 @@ async function publishSaved(name, btn) {
 // whether this file is the review that already went to the PR, it asks, and
 // only a yes sends it; a no returns null.
 async function savedDoor(name, door, skip) {
-  const path = '/api/reviews/' + encodeURIComponent(name) + '/' + door;
+  return askedDoor('/api/reviews/' + encodeURIComponent(name) + '/' + door, skip);
+}
+
+// askedDoor posts to a door to the PR; when the server cannot tell whether the
+// review already went (a send that never said how it ended, or a file from
+// before the record), it asks, and only a yes sends. A no returns null.
+async function askedDoor(path, skip) {
   try {
     return await api(path, { method: 'POST', body: JSON.stringify({ skip }) });
   } catch (err) {

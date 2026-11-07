@@ -571,7 +571,7 @@ func (s *Server) mcpPublish(_ context.Context, raw json.RawMessage) (map[string]
 			return nil, fmt.Errorf("invalid finding index %d", i)
 		}
 	}
-	view, err := s.jobs.PublishWithAgent(a.ID, a.Skip)
+	view, err := s.jobs.PublishWithAgent(a.ID, a.Skip, false)
 	if err != nil {
 		return nil, err
 	}

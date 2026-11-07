@@ -852,21 +852,17 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
+	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip, again)
 	if err != nil {
 		// 502 is only for gh failing to post. A request Bazel turns down —
 		// unknown job, not finished, not publishable, busy, already posted — is
 		// the client's (BUG-QA-05).
-		status := refusalStatus(err, http.StatusBadGateway)
-		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
-			status = http.StatusConflict
-		}
-		writeErr(w, status, err)
+		writeDoorErr(w, err, http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -909,15 +905,15 @@ func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 // another agent running — and not in a separate job: publishing is the end of
 // the review, not a loose job in the queue.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
+	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip, again)
 	if err != nil {
 		// Unknown job is 404, like /post; every other refusal is 409.
-		writeErr(w, refusalStatus(err, http.StatusConflict), err)
+		writeDoorErr(w, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -1434,9 +1430,9 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pr := sr.PR
-	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed)
+	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed, again)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeDoorErr(w, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -1457,12 +1453,8 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 	if s.refusePublish(w, sr) || s.refuseSent(w, sr, again) {
 		return
 	}
-	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
-		code := http.StatusBadGateway
-		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
-			code = http.StatusConflict
-		}
-		writeErr(w, code, err)
+	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip, again); err != nil {
+		writeDoorErr(w, err, http.StatusBadGateway)
 		return
 	}
 	s.invalidatePRs()
@@ -1499,30 +1491,33 @@ func readDoor(w http.ResponseWriter, r *http.Request) ([]int, bool, error) {
 	return req.Skip, req.Again, nil
 }
 
-// postedRecorded says some saved review of pr has its own record of going to
-// the PR: then the index's "posted" is that one, and not a guess about the rest.
-func (s *Server) postedRecorded(pr gh.PR) bool {
-	entries, _ := store.List(s.reviewsDir)
-	for _, e := range entries {
-		if strings.EqualFold(e.Repo, pr.Repo) && e.Number == pr.Number {
-			if _, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // refuseSent answers for a saved review that went to the PR: 409, and gh is
 // never called. When the index says the PR got a review and no saved file of it
 // records having been that one — files from before the record — it asks first;
 // again is the yes.
+// writeDoorErr answers a door that did not send: a publication that may have
+// happened asks a person (409 with confirm), the refusals are 409, and def is
+// for gh failing.
+func writeDoorErr(w http.ResponseWriter, err error, def int) {
+	switch {
+	case errors.Is(err, errMaybePosted):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "confirm": true})
+	case errors.Is(err, errPublishBusy), errors.Is(err, errAlreadyPosted):
+		writeErr(w, http.StatusConflict, err)
+	default:
+		writeErr(w, refusalStatus(err, def), err)
+	}
+}
+
 func (s *Server) refuseSent(w http.ResponseWriter, sr savedReview, again bool) bool {
 	if p, ok := store.PostedOf(sr.Path); ok {
 		writeErr(w, http.StatusConflict, fmt.Errorf("already published: this review went to the PR as %s on %s", p.How, p.At.Format("2006-01-02 15:04")))
 		return true
 	}
-	if !again && store.LoadMarks(s.reviewsDir).Status(sr.PR).Posted && !s.postedRecorded(sr.PR) {
+	// A file from before Bazel kept the record says nothing of its own trip:
+	// with the PR shown as published, it asks until someone says yes. What a
+	// sibling recorded says nothing about this file.
+	if !again && !store.KeepsPostRecord(sr.Path) && store.LoadMarks(s.reviewsDir).Status(sr.PR).Posted {
 		writeJSON(w, http.StatusConflict, map[string]any{
 			"error":   "a review of this PR already went to it, and this file does not say whether it was this one",
 			"confirm": true,

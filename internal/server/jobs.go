@@ -202,12 +202,23 @@ type publishInput struct {
 	// Source is the saved review this input came from. Path is a copy in
 	// publish/ whenever findings were dropped, so dedup compares Source.
 	Source string
+	// claim is the durable claim on Source for this publication.
+	claim *store.Claim
 }
 
 // discard removes the copy written in publish/ for this publication. The post
 // agent is the only reader of Path, so once it has stopped (or never started)
 // the file is dead weight; the saved review at Source is never touched.
 func (in *publishInput) discard() {
+	in.dropCopy()
+	if in != nil {
+		in.claim.Release()
+	}
+}
+
+// dropCopy removes the trimmed copy and keeps the claim: the publication's
+// outcome decides what becomes of that.
+func (in *publishInput) dropCopy() {
 	if in != nil && in.Path != "" && in.Path != in.Source {
 		_ = os.Remove(in.Path)
 	}
@@ -579,8 +590,12 @@ func (m *Manager) run(q queued) {
 	case in != nil:
 		res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onEvent)
 		// The post agent has stopped, whatever the outcome: nothing reads the
-		// copy again, and one per click would pile up in publish/.
-		in.discard()
+		// copy again, and one per click would pile up in publish/. The claim
+		// waits for the outcome: done below, or let go here.
+		in.dropCopy()
+		if err != nil {
+			in.claim.Release()
+		}
 	default:
 		if job.Since != "" {
 			res, err = m.runner.ReviewSince(ctx, job.PR, job.Choice, job.Since, onEvent)
@@ -652,7 +667,7 @@ func (m *Manager) run(q queued) {
 		markErr = store.MarkReviewed(m.reviewsDir, res, path)
 	case job.publish != nil:
 		markErr = store.MarkPosted(m.reviewsDir, res.PR.Key())
-		m.notePosted(job.publish.Source, "inline", res.PR.HeadRefOid)
+		m.settle(job.publish.claim, job.publish.Source, "inline", res.PR.HeadRefOid)
 	}
 
 	// The publish step only waits when there is something to choose: a
@@ -1059,7 +1074,7 @@ func (m *Manager) Cancel(id string) error {
 // skip are the findings the user unticked on screen: they drop out of what
 // goes to the PR, and the agent gets a copy of the review without them — the
 // saved file stays whole.
-func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
+func (m *Manager) PublishWithAgent(id string, skip []int, again bool) (jobView, error) {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
 	if !ok {
@@ -1114,11 +1129,18 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 		m.mu.Unlock()
 		return jobView{}, err
 	}
-	in, err := m.publishInputFor(job.SavedTo, body, skip, trimmed)
+	claim, err := m.claimFile(job.SavedTo, again)
 	if err != nil {
 		m.mu.Unlock()
 		return jobView{}, err
 	}
+	in, err := m.publishInputFor(job.SavedTo, body, skip, trimmed)
+	if err != nil {
+		claim.Release()
+		m.mu.Unlock()
+		return jobView{}, err
+	}
+	in.claim = claim
 
 	// A previous publication that failed left its steps on the card; the new
 	// attempt redoes them, it does not stack them.
@@ -1163,7 +1185,7 @@ func (m *Manager) PublishWithAgent(id string, skip []int) (jobView, error) {
 // previous session, opened in the saved tab. It is the same path as
 // PublishWithAgent, but starting from the file: a review outlives the server,
 // and the chance to publish it has to outlive it too.
-func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []int, trimmed bool) (jobView, error) {
+func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []int, trimmed bool, again bool) (jobView, error) {
 	if strings.TrimSpace(path) == "" {
 		return jobView{}, errors.New("no review file to publish")
 	}
@@ -1191,6 +1213,13 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 		in.discard()
 		return jobView{}, err
 	}
+	claim, err := m.claimFile(path, again)
+	if err != nil {
+		m.mu.Unlock()
+		in.discard()
+		return jobView{}, err
+	}
+	in.claim = claim
 
 	choice := m.cfg.PostChoice()
 	job := &Job{
@@ -1219,7 +1248,7 @@ func (m *Manager) PublishSaved(pr gh.PR, mine bool, path, body string, skip []in
 
 // CommentSaved pastes onto the PR a review that is on disk, with no agent at
 // all. It is the cheap path from the file to GitHub.
-func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string, skip []int) error {
+func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string, skip []int, again bool) error {
 	body = store.DropFindings(body, skip)
 	if strings.TrimSpace(body) == "" {
 		return errors.New("that review has no body to publish")
@@ -1229,13 +1258,20 @@ func (m *Manager) CommentSaved(ctx context.Context, pr gh.PR, path, body string,
 		m.mu.Unlock()
 		return err
 	}
+	claim, err := m.claimFile(path, again)
+	if err != nil {
+		m.mu.Unlock()
+		return err
+	}
 	m.pasting[path] = true
 	m.mu.Unlock()
 
-	err := gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
+	err = gh.Comment(ctx, pr.Repo, pr.Number, store.CommentBody(agent.Result{PR: pr, Body: body}))
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, pr.Key())
-		m.notePosted(path, "comment", pr.HeadRefOid)
+		m.settle(claim, path, "comment", pr.HeadRefOid)
+	} else {
+		claim.Release()
 	}
 
 	m.mu.Lock()
@@ -1282,7 +1318,7 @@ func (m *Manager) claimedLocked(path string, self *Job) error {
 
 // Post publishes the review as a comment on the PR, without the findings in
 // skip.
-func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, error) {
+func (m *Manager) Post(ctx context.Context, id string, skip []int, again bool) (jobView, error) {
 	m.mu.Lock()
 	job, ok := m.jobs[id]
 	if !ok {
@@ -1322,6 +1358,11 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 		return jobView{}, refuse(http.StatusConflict, err)
 	}
 	res.Body = store.DropFindings(body, skip)
+	claim, err := m.claimFile(job.SavedTo, again)
+	if err != nil {
+		m.mu.Unlock()
+		return jobView{}, err
+	}
 	// The lock is released around gh.Comment; posting keeps a second click
 	// (here or in PublishWithAgent) out until this one is settled.
 	job.posting = true
@@ -1331,7 +1372,9 @@ func (m *Manager) Post(ctx context.Context, id string, skip []int) (jobView, err
 
 	if err == nil {
 		_ = store.MarkPosted(m.reviewsDir, res.PR.Key())
-		m.notePosted(job.SavedTo, "comment", res.PR.HeadRefOid)
+		m.settle(claim, job.SavedTo, "comment", res.PR.HeadRefOid)
+	} else {
+		claim.Release()
 	}
 
 	m.mu.Lock()
@@ -1482,4 +1525,36 @@ func postIsBuiltin(cfg *config.Config) bool {
 		}
 	}
 	return false
+}
+
+// errMaybePosted is a review whose earlier publication never said how it
+// ended: the door asks a person before sending it (409 with confirm).
+var errMaybePosted = store.ErrClaimOrphan
+
+// claimFile takes the durable claim on a saved review before a door calls gh,
+// in words the doors already answer with. Call with m.mu held.
+func (m *Manager) claimFile(path string, again bool) (*store.Claim, error) {
+	if path == "" {
+		return nil, nil
+	}
+	claim, err := store.ClaimPosting(path, again)
+	switch {
+	case errors.Is(err, store.ErrPosted):
+		return nil, errAlreadyPosted
+	case errors.Is(err, store.ErrClaimBusy):
+		return nil, errPublishBusy
+	}
+	return claim, err
+}
+
+// settle turns the claim into the record that the review went. Without a claim
+// (a review never saved) there is nothing to record.
+func (m *Manager) settle(claim *store.Claim, path, how, head string) {
+	if claim == nil {
+		m.notePosted(path, how, head)
+		return
+	}
+	if err := claim.Done(how, head); err != nil {
+		fmt.Fprintf(os.Stderr, "bazel: could not record that %s was published: %v\n", filepath.Base(path), err)
+	}
 }

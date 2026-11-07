@@ -83,6 +83,9 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
+	// The file keeps its own record of going to the PR (<file>.posted): one
+	// without this line is from before, and its history is unknown.
+	b.WriteString(postRecordLine + "\n")
 	// A review of what changed since an earlier head says from where.
 	if res.Since != "" {
 		fmt.Fprintf(&b, "- Since: %s\n", res.Since)

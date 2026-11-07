@@ -187,3 +187,19 @@ func TestSaveDizOQueRodou(t *testing.T) {
 		}
 	}
 }
+
+// Only a record that is not there means not published: one that cannot be
+// read counts as published.
+func TestPostedOfSoAusenteENaoPublicado(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "r.md")
+	if _, ok := PostedOf(file); ok {
+		t.Error("no record, yet published")
+	}
+	if err := os.Mkdir(file+".posted", 0o700); err != nil { // reading a folder fails
+		t.Fatal(err)
+	}
+	if p, ok := PostedOf(file); !ok || p.How != "unknown" {
+		t.Errorf("unreadable record: %+v %v", p, ok)
+	}
+}
