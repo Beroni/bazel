@@ -124,6 +124,36 @@ test.describe('P1 · the publish claim', () => {
     expect(okComments(bazel)).toBe(1);
   });
 
+  // L1: a publish that fails before the post agent starts (the clone it needs)
+  // sent nothing: the next try asks no question. Once the agent ran, it may have.
+  test('Publish failing at the clone, before the post agent runs, asks nothing the next time', async ({ bazel }) => {
+    const { name } = await savedReview(bazel);
+    bazel.setGh({ fail: { 'clone:acme/api-core': 'fatal: unable to access the repository' } });
+    const first = await bazel.api('POST', `/api/reviews/${name}/publish`, {});
+    expect(first.status).toBe(202);
+    const failed = await bazel.waitJob(first.json.id, (j) => j.state !== 'queued' && j.state !== 'running');
+    expect(failed.post_error || failed.error).toBeTruthy();
+    expect(bazel.agentCalls().filter((c) => c.scenario === 'post-claude')).toEqual([]);
+    bazel.setGh({});
+    const again = await bazel.api('POST', `/api/reviews/${name}/publish`, {});
+    expect(again.status, JSON.stringify(again.json)).toBe(202);
+    await bazel.waitJob(again.json.id, (j) => j.state !== 'queued' && j.state !== 'running');
+    expect(reviewPosts(bazel)).toBe(1);
+  });
+
+  test('Publish whose post agent ran and failed asks before the next try', async ({ bazel }) => {
+    const { name } = await savedReview(bazel);
+    bazel.setGh({ fail: { api: 'HTTP 502: Bad Gateway' } });
+    const first = await bazel.api('POST', `/api/reviews/${name}/publish`, {});
+    await bazel.waitJob(first.json.id, (j) => j.state !== 'queued' && j.state !== 'running');
+    expect(bazel.agentCalls().filter((c) => c.scenario === 'post-claude')).toHaveLength(1);
+    bazel.setGh({});
+    const r = await bazel.api('POST', `/api/reviews/${name}/publish`, {});
+    expect(r.status).toBe(409);
+    expect(r.json.confirm).toBe(true);
+    expect(r.json.error).toContain('may already be on the PR');
+  });
+
   test('two Bazels on one BAZEL_HOME: while one sends, the other is told it is being published, and one write reaches GitHub', async ({ bazel }) => {
     const { name } = await savedReview(bazel);
     const other = new Bazel({ share: bazel });
