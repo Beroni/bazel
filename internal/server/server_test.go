@@ -3859,3 +3859,38 @@ func TestSoORecusaDoGhLiberaOClaim(t *testing.T) {
 		}
 	}
 }
+
+// L1: a publication that fails before its post agent runs (the clone, the
+// network) sent nothing: the next one goes without a question.
+func TestFalhaAntesDoAgenteNaoPergunta(t *testing.T) {
+	ghFalso(t, "exit 1") // the clone fails
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: "cat", Prompt: "{{task}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		end, _ := m.View(v.ID, false)
+		if end.State == StateDone || end.State == StateFailed {
+			if end.Posted {
+				t.Fatalf("posted: %+v", end)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the publication never ended")
+		}
+	}
+	if err := store.CheckPosting(path, false); err != nil {
+		t.Errorf("nothing was sent, yet: %v", err)
+	}
+}

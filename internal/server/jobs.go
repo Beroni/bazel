@@ -592,17 +592,25 @@ func (m *Manager) run(q queued) {
 	case in != nil:
 		in.claim, err = m.claimFile(in.Source, in.again)
 		if err == nil {
-			if err = in.claim.Sending(); err != nil {
-				in.claim.Release()
+			// "sending" is written when the post agent starts, not before the
+			// clone: a clone or network failure sent nothing.
+			var started atomic.Bool
+			onPublish := func(e agent.Event) {
+				if e.Kind == agent.EventStep && !started.Load() {
+					if serr := in.claim.Sending(); serr != nil {
+						fmt.Fprintf(os.Stderr, "bazel: could not mark the send of %s: %v\n", filepath.Base(in.Source), serr)
+					}
+					started.Store(true)
+				}
+				onEvent(e)
 			}
-		}
-		if err == nil {
-			res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onEvent)
-			// Refused by the script, nothing went; any other failure may have
-			// written something, and the next attempt asks.
+			res, err = m.runner.Publish(ctx, job.PR, job.pubChoice, in.Path, in.Body, onPublish)
+			// Refused by the script, or failed before the agent ran, nothing
+			// went; any other failure may have written something, and the next
+			// attempt asks.
 			switch {
 			case err == nil:
-			case errors.Is(err, agent.ErrNotSent):
+			case !started.Load(), errors.Is(err, agent.ErrNotSent):
 				in.claim.Release()
 			default:
 				in.claim.Unknown(err.Error())
