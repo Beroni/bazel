@@ -135,6 +135,8 @@ test.describe('P2 · a lot of everything', () => {
     for (let i = 0; i < 30; i++) bazel.addPR({ repo: 'acme/api-core', number: 300 + i, title: `PR ${i}`, headRefName: `p${i}`, headRefOid: `q${i}`, author: { login: 'x' } });
     await bazel.api('GET', '/api/prs?refresh=1');
     await app.reload();
+    // The list comes after the page: ticked before it, "select all" ticks nothing.
+    await expect(ui.prCount(app)).toHaveText('35 PRs');
     await ui.selectAll(app).check();
     await ui.runButton(app).click();
     await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.filter((j: any) => j.state === 'done').length, { timeout: 2 * BUDGET }).toBe(35);
