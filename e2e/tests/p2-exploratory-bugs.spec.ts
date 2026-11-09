@@ -1,6 +1,6 @@
 import { Page } from '@playwright/test';
 import { BUDGET } from '../harness/budget';
-import { test, expect } from '../harness/fixtures';
+import { test, expect, knownBug } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { jobTab, openJob, ui } from '../harness/ui';
 
@@ -196,6 +196,44 @@ test.describe('P2 · a card under a running job', () => {
       await app.mouse.up();
       await expect(ui.viewer(app)).toHaveAttribute('data-job-id', done);
       bazel.release('release-slow');
+    });
+  }
+});
+
+// BUG-QA-36: the same as BUG-QA-28, in the job's detail. Opening the Overview
+// fetches the PR's details, and their answer redraws the detail, its tabs too:
+// a click on Report pressed before that answer and released after it is no
+// click, and the Overview stays. It is a 1-in-12 failure of the full suite
+// (p1-exploratory "ticks survive"). Expected: the click selects its tab.
+test.describe('P2 · the tabs of a job under a redraw', () => {
+  test.use({ bazelOptions: { config: { agents: [{ name: 'review-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings' } }] } } });
+
+  for (const across of [false, true]) {
+    test(`a click selects Report${across ? ', with the detail redrawn in between' : ''}`, async ({ app, bazel }) => {
+      if (across) knownBug('BUG-QA-36', 'a click across a redraw of the detail is lost');
+      const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
+      await bazel.waitJob(id, (j) => j.state === 'done');
+      await app.reload();
+      await openJob(app, 'Add rate limiter to the public API');
+      let release!: () => void;
+      const held = new Promise<void>((r) => { release = r; });
+      await app.route('**/details*', async (r) => { await held; await r.continue(); });
+      await app.getByRole('tab', { name: 'Overview', exact: true }).click();
+      const tab = app.getByRole('tab', { name: 'Report', exact: true });
+      const box = (await tab.boundingBox())!;
+      await app.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      const redrawn = app.evaluate(() => new Promise<void>((r) => {
+        const o = new MutationObserver(() => { o.disconnect(); r(); });
+        o.observe(document.querySelector('[data-testid=review-viewer]')!, { childList: true, subtree: true });
+      }));
+      await app.mouse.down();
+      if (across) {
+        release();
+        await redrawn;
+      }
+      await app.mouse.up();
+      release();
+      await expect(app.getByRole('tab', { name: 'Report', exact: true })).toHaveAttribute('aria-selected', 'true');
     });
   }
 });

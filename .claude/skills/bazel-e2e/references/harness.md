@@ -68,6 +68,10 @@ Nothing else from the developer's shell is inherited.
 | `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, at }]` |
 | `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` and `FAKE_AGENT_GATE=<name>` |
 | `agentAlive(pid)` | whether an agent process (`agentCalls()[n].pid`) is still there |
+| `kill()` | SIGKILL, as a crash: nothing of the server runs after |
+| `holdingGh(gate)` / `releaseGh(gate, 'go' \| 'fail')` | with `gh: { hold: { comment: 'gate' } }`, a gh write that waits until released: kill Bazel in the middle of a send |
+| `new Bazel({ share: bz })` | a second server over the same BAZEL_HOME, HOME and gh fixtures and log: two Bazels on one machine |
+| `rewritePR(key)` | a force push: a new history on the PR's branch, so no head from before is in it |
 | `movePR(key)` | a new commit on the PR's branch: gh lists it, a clone gets it, Bazel notices on its next refresh |
 | `tool(name, args)` | MCP `tools/call` → `{ isError, text, out }` |
 | `events()` | opens `/api/events`: `{ list, next(pred), close() }` (first event is `hello`) |

@@ -16,6 +16,7 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh pr view N --repo R --json …` | one object; unknown PR → GraphQL-style error |
 | `gh pr diff N --repo R` | `diff` from the fixture, or one generated from `files` |
 | `gh pr comment N --repo R --body-file -` | prints a fake comment URL; stdin recorded; unknown PR or empty body fails |
+| `gh repo view [R] --json nameWithOwner [--jq .nameWithOwner]` | R, else `GH_REPO`, else the clone's origin; a repo with no PR in the fixture → GraphQL error; other fields or flags unsupported |
 | `gh repo clone R DIR -- ARGS` | `git clone ARGS file://<state>/repos/R.git DIR` |
 | `gh pr checkout N [--repo R]` (in a clone) | the PR's branch; a PR of another repo comes by fetch |
 | anything else, any other `gh api` included | exit 1, `fake gh: unsupported: gh …` |

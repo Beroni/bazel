@@ -119,7 +119,8 @@ test.describe('P2 · a lot of everything', () => {
   test.use({ bazelOptions: { flags: ['--jobs', '6'], config: { agents: AGENTS } } });
 
   test('3000 findings open, tick and all/none in time a person would accept', async ({ app, bazel }) => {
-    test.setTimeout(90_000);
+    // 35 whole jobs, two at a time: they took ~85s with the load average at 119.
+    test.setTimeout(3 * BUDGET);
     const { v } = await report(app, bazel, 'huge');
     await expect(ui.findingPicks(v)).toHaveCount(3000, { timeout: BUDGET });
     await ui.findingPicks(v).nth(5).uncheck();
@@ -129,13 +130,16 @@ test.describe('P2 · a lot of everything', () => {
   });
 
   test('dozens of jobs: the queue keeps its place when one more arrives', async ({ app, bazel }) => {
-    test.setTimeout(90_000);
+    // 35 whole jobs, two at a time: they took ~85s with the load average at 119.
+    test.setTimeout(3 * BUDGET);
     for (let i = 0; i < 30; i++) bazel.addPR({ repo: 'acme/api-core', number: 300 + i, title: `PR ${i}`, headRefName: `p${i}`, headRefOid: `q${i}`, author: { login: 'x' } });
     await bazel.api('GET', '/api/prs?refresh=1');
     await app.reload();
+    // The list comes after the page: ticked before it, "select all" ticks nothing.
+    await expect(ui.prCount(app)).toHaveText('35 PRs');
     await ui.selectAll(app).check();
     await ui.runButton(app).click();
-    await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.filter((j: any) => j.state === 'done').length, { timeout: 60_000 }).toBe(35);
+    await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.filter((j: any) => j.state === 'done').length, { timeout: 2 * BUDGET }).toBe(35);
     const rail = app.locator('#rail');
     await rail.evaluate((r) => { r.scrollLeft = 1500; });
     await bazel.enqueue('acme/api-core#330', 'review-fleet').catch(() => {});

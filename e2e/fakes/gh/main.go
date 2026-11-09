@@ -44,8 +44,11 @@ type fixturePR struct {
 	HeadRefName  string `json:"headRefName"`
 	// HeadRefOid is empty in a fixture: gh then answers the tip of the branch the
 	// clone gets. Moved adds that many commits to the branch (bazel.movePR).
-	HeadRefOid  string `json:"headRefOid,omitempty"`
-	Moved       int    `json:"moved,omitempty"`
+	HeadRefOid string `json:"headRefOid,omitempty"`
+	Moved      int    `json:"moved,omitempty"`
+	// Rewritten is how many times the branch was force-pushed: each one is a new
+	// first commit, so no head from before is in the branch any more.
+	Rewritten   int    `json:"rewritten,omitempty"`
 	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
 	BaseRefName string `json:"baseRefName"`
 	// What bazel-post-report surveys. The script reads them as GitHub answers.
@@ -85,6 +88,11 @@ type settings struct {
 	// loaded machine does, on purpose, so a test that confuses a running job with
 	// a running agent fails every time instead of now and then.
 	SlowClone int `json:"slow_clone_ms"`
+	// Hold maps a call key ("comment", "api") to a gate: the call announces
+	// itself in <state>/<gate>.entered and waits for <state>/<gate>, whose text
+	// "fail" makes it fail and anything else lets it through. A write held open,
+	// for a test that kills Bazel in the middle of it.
+	Hold map[string]string `json:"hold"`
 }
 
 var (
@@ -162,6 +170,8 @@ func dispatch(args []string) int {
 		return comment(args)
 	case is(args, "repo", "clone"):
 		return cloneRepo(args)
+	case is(args, "repo", "view"):
+		return repoView(args)
 	case is(args, "pr", "checkout"):
 		return checkoutPR(args)
 	}
@@ -190,6 +200,20 @@ func flag(args []string, name string) string {
 }
 
 func failed(key string) bool {
+	if gate, ok := cfg.Hold[key]; ok {
+		_ = os.WriteFile(filepath.Join(state, gate+".entered"), nil, 0o644)
+		deadline := time.Now().Add(120 * time.Second)
+		for time.Now().Before(deadline) {
+			if b, err := os.ReadFile(filepath.Join(state, gate)); err == nil {
+				if strings.TrimSpace(string(b)) == "fail" {
+					fmt.Fprintln(os.Stderr, "fake gh: held call failed on purpose")
+					return true
+				}
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	if msg, ok := cfg.Fail[key]; ok {
 		fmt.Fprintln(os.Stderr, msg)
 		return true
@@ -681,7 +705,11 @@ func importStream(repo string) string {
 		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
 			continue
 		}
-		commit(p.HeadRefName, "", p.Title, "from :1\n", func() {
+		message := p.Title
+		if p.Rewritten > 0 {
+			message = fmt.Sprintf("%s (rewritten %d)", p.Title, p.Rewritten)
+		}
+		commit(p.HeadRefName, "", message, "from :1\n", func() {
 			files := p.Files
 			if len(files) == 0 {
 				files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}
@@ -824,4 +852,51 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// repoView answers `gh repo view [R] --json nameWithOwner [--jq .nameWithOwner]`,
+// which the built-in skills run to confirm where they are. With no R, gh asks
+// GH_REPO, then the clone's origin. Any other field or flag is not modelled.
+func repoView(args []string) int {
+	rest := args[2:]
+	repo := ""
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		repo, rest = rest[0], rest[1:]
+	}
+	jq := ""
+	switch {
+	case slices.Equal(rest, []string{"--json", "nameWithOwner"}):
+	case slices.Equal(rest, []string{"--json", "nameWithOwner", "--jq", ".nameWithOwner"}):
+		jq = ".nameWithOwner"
+	default:
+		return unsupported(args)
+	}
+	if failed("repo-view") {
+		return 1
+	}
+	if repo == "" {
+		repo = os.Getenv("GH_REPO")
+	}
+	if repo == "" {
+		url, err := exec.Command("git", "config", "remote.origin.url").Output()
+		m := originRe.FindStringSubmatch(strings.TrimSpace(string(url)))
+		if err != nil || m == nil {
+			fmt.Fprintln(os.Stderr, "failed to run git: not a git repository (or any of the parent directories): .git")
+			return 1
+		}
+		repo = m[1] + "/" + m[2]
+	}
+	i := slices.IndexFunc(loadPRs(), func(p fixturePR) bool { return strings.EqualFold(p.Repo, repo) })
+	if i < 0 {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a Repository with the name '%s'. (repository)\n", repo)
+		return 1
+	}
+	name := loadPRs()[i].Repo
+	if jq != "" {
+		fmt.Println(name)
+		return 0
+	}
+	b, _ := json.Marshal(map[string]string{"nameWithOwner": name})
+	fmt.Println(string(b))
+	return 0
 }

@@ -1,7 +1,7 @@
 import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel, isNeedsRead } from '../harness/bazel';
-import { openJob, ui } from '../harness/ui';
+import { jobTab, openJob, ui } from '../harness/ui';
 
 // The PR's own page (Overview) and its History.
 const DETAILS = '/api/prs/acme/api-core/101/details';
@@ -134,7 +134,7 @@ test.describe('P1 · History', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     const box = app.getByTestId('history');
     await expect(box).toContainText('Written at an older head of this PR');
     await expect(app.getByTestId('history-generate')).toHaveCount(0);
@@ -150,7 +150,7 @@ test.describe('P1 · History', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     await app.getByTestId('history-generate').click();
     await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.found, { timeout: BUDGET }).toBe(true);
     await expect(app.getByTestId('history-decision')).toHaveCount(2);
@@ -172,7 +172,7 @@ test.describe('P1 · History escapes what the agent wrote', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     await app.getByTestId('history-generate').click();
     await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.found, { timeout: BUDGET }).toBe(true);
     const decision = app.getByTestId('history-decision');

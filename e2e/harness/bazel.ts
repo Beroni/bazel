@@ -86,6 +86,8 @@ export interface GhSettings {
   forks?: Record<string, string>;
   /** Extra milliseconds for every gh repo clone: a loaded machine, on purpose. */
   slow_clone_ms?: number;
+  /** Call key ("comment", "api") → gate: see holdingGh / releaseGh. */
+  hold?: Record<string, string>;
 }
 
 export interface BazelOptions {
@@ -99,6 +101,11 @@ export interface BazelOptions {
   skills?: Record<string, string>;
   /** Written as gh.json in this test's copy of the fixtures. */
   gh?: GhSettings;
+  /**
+   * A second server over the same BAZEL_HOME, HOME, gh fixtures and logs as
+   * this one: two Bazels on one machine. It has its own port, process and log.
+   */
+  share?: Bazel;
 }
 
 /** The skills every default Bazel has installed in its fake skills_dir. */
@@ -183,14 +190,16 @@ export class Bazel {
   constructor(private readonly opts: BazelOptions = {}) {
     fs.mkdirSync(path.join(OUT, 'runs'), { recursive: true });
     this.root = fs.mkdtempSync(path.join(OUT, 'runs', 'bz-'));
-    this.home = path.join(this.root, 'home');
-    this.bazelHome = path.join(this.root, 'bazel-home');
+    const owner = opts.share ?? this;
+    const of = (name: string) => path.join(opts.share ? opts.share.root : this.root, name);
+    this.home = of('home');
+    this.bazelHome = of('bazel-home');
     this.tmp = path.join(this.root, 'tmp');
-    this.ghState = path.join(this.root, 'gh');
-    this.agentState = path.join(this.root, 'agent');
+    this.ghState = of('gh');
+    this.agentState = of('agent');
     this.logFile = path.join(this.root, 'server.log');
-    this.fixturesDir = path.join(this.root, 'fixtures');
-    fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
+    this.fixturesDir = of('fixtures');
+    if (owner === this) fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
     if (opts.gh) this.setGh(opts.gh);
     for (const d of [this.home, this.bazelHome, this.tmp, this.ghState, this.agentState]) fs.mkdirSync(d, { recursive: true });
   }
@@ -285,6 +294,23 @@ export class Bazel {
     if ((await Promise.race([this.exited, timeout])) === 'timeout') this.proc.kill('SIGKILL');
   }
 
+  /** Kills the server at once, as a crash would: nothing of it runs after. */
+  async kill(): Promise<void> {
+    if (!this.proc || this.proc.exitCode !== null) return;
+    this.proc.kill('SIGKILL');
+    await this.exited;
+  }
+
+  /** Whether a gh call held on gate has started (gh: { hold }). */
+  holdingGh(gate: string): boolean {
+    return fs.existsSync(path.join(this.ghState, `${gate}.entered`));
+  }
+
+  /** Lets a held gh call go through, or fail with how = 'fail'. */
+  releaseGh(gate: string, how: 'go' | 'fail' = 'go'): void {
+    fs.writeFileSync(path.join(this.ghState, gate), how);
+  }
+
   /** Removes the temp root. Called only when the test passed. */
   cleanup(): void {
     // Jobs still in flight at stop time (a clone being written) can race the
@@ -303,9 +329,17 @@ export class Bazel {
    * Writes needs.json: what the fake gh answers to the "Needs you" searches, in
    * the GraphQL answer's shape ({ requested, reviewed, authored } → nodes).
    */
-  setNeeds(searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] }): void {
-    const one = (nodes: unknown[] = []) => ({ issueCount: nodes.length, nodes });
-    const data = { requested: one(searches.requested), reviewed: one(searches.reviewed), authored: one(searches.authored) };
+  setNeeds(
+    searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] },
+    /** What GitHub says each search found, when it found more than it returned. */
+    totals: { requested?: number; reviewed?: number; authored?: number } = {},
+  ): void {
+    const one = (nodes: unknown[] = [], total?: number) => ({ issueCount: total ?? nodes.length, nodes });
+    const data = {
+      requested: one(searches.requested, totals.requested),
+      reviewed: one(searches.reviewed, totals.reviewed),
+      authored: one(searches.authored, totals.authored),
+    };
     fs.writeFileSync(path.join(this.fixturesDir, 'needs.json'), JSON.stringify({ data }, null, 2));
   }
 
@@ -374,6 +408,18 @@ export class Bazel {
       if (Date.now() > deadline) throw new Error(`${calls.length} of ${n} agent calls after ${timeoutMs}ms: ${calls.map((c) => c.scenario).join(', ')}`);
       await new Promise((r) => setTimeout(r, 100));
     }
+  }
+
+  /**
+   * A force push on the PR's branch: a new history, so no head from before is
+   * in it any more. gh lists the new head; Bazel notices on its next refresh.
+   */
+  rewritePR(key: string): void {
+    const file = path.join(this.fixturesDir, 'prs.json');
+    const pr = JSON.parse(fs.readFileSync(file, 'utf8')).find((p: any) => `${p.repo}#${p.number}` === key);
+    if (!pr) throw new Error(`no fixture PR ${key}`);
+    this.updatePR(key, { rewritten: (pr.rewritten ?? 0) + 1, moved: 0 });
+    this.dropOrigin(pr.repo);
   }
 
   /** Whether that agent process is still there: what "killed" means. */
