@@ -185,6 +185,9 @@ def line($l; $next; $steps):
    findings: (.findings | to_entries | map(.key as $i | .value as $f | ($f.meta // {}) as $m | {
      id: ($i + 1), title: $f.title, cut: $f.cut,
      severity: ($m.severity // "unknown"), class: ($m.class // "unknown"),
+     # Only for the body's line under the title; nothing here decides what a finding is.
+     lenses: ($m.lenses // "" | split("+") | map(select(. != ""))),
+     lines_saved: (if ($m.lines_saved // "" | test("^[0-9]+$")) then $m.lines_saved else null end),
      path: (if ($m.path // "-") == "-" then null else $m.path end),
      line: (if ($m.line // "" | test("^[1-9][0-9]*$")) then ($m.line | tonumber) else null end),
      side: (if $m.side == "LEFT" then "LEFT" else "RIGHT" end),

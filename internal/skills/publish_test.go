@@ -227,8 +227,10 @@ func TestHostileReportStaysData(t *testing.T) {
 		t.Fatalf("publish: exit %d\n%s", code, out)
 	}
 	p := w.payload(0)
-	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, prose) {
-		t.Errorf("the path and the prose should arrive verbatim: %+v", p.Comments)
+	// The prose arrives as written, with its `<` escaped: the one change markdown
+	// needs so that no tag in it is live.
+	if len(p.Comments) != 1 || p.Comments[0].Path != bad || !strings.Contains(p.Comments[0].Body, strings.NewReplacer("<", "&lt;", "#9", "#\u200b9").Replace(prose)) {
+		t.Errorf("the path and the prose should arrive as written: %+v", p.Comments)
 	}
 	if !strings.Contains(p.Body, "`rm -rf ~`") {
 		t.Errorf("the unanchored finding should be in the body, verbatim:\n%s", p.Body)
@@ -505,13 +507,20 @@ func TestExistingComments(t *testing.T) {
 		if code != 0 {
 			t.Fatalf("exit %d\n%s", code, out)
 		}
-		p := w.payload(0)
-		if len(p.Comments) != 0 || !strings.Contains(p.Body, "Already on the PR") {
-			t.Errorf("%+v", p)
+		// Someone else made the finding already: a 👍 says so, and a review would
+		// only repeat it. With nothing else in the report, no review at all.
+		if _, err := os.Stat(filepath.Join(w.dir, "payload0.json")); err == nil {
+			t.Errorf("no review over findings already on the PR: %+v", w.payload(0))
 		}
 		writes, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
 		if !strings.Contains(string(writes), "pulls/comments/11/reactions") {
 			t.Errorf("a 👍 on the comment: %s", writes)
+		}
+		if !strings.Contains(out, "1 already on the PR (👍), no review posted") {
+			t.Errorf("the summary says what happened:\n%s", out)
+		}
+		if msg := skills.PublishFailure(w.plugin); msg != "" {
+			t.Errorf("a 👍 reached the PR: it is published, %q", msg)
 		}
 	})
 	t.Run("the PR's author and passers-by absorb nothing", func(t *testing.T) {
@@ -548,7 +557,7 @@ func TestExistingComments(t *testing.T) {
 		if len(p.Comments) != 0 || !strings.Contains(p.Body, "settled by @bob") || !strings.Contains(p.Body, "request_changes") {
 			t.Errorf("%+v", p)
 		}
-		if !strings.Contains(p.Body, "#### One") || !strings.Contains(p.Body, "```text\n**major · logic** (x)\n\nBad.") {
+		if !strings.Contains(p.Body, "#### One") || !strings.Contains(p.Body, "\n\nBad.") || strings.Contains(p.Body, "```") {
 			t.Errorf("what was approved is still there, in case the thread goes away:\n%s", p.Body)
 		}
 		if !strings.Contains(out, "already settled on the PR (by @bob)") && !strings.Contains(out, "Already settled on the PR (by @bob)") {
@@ -585,9 +594,10 @@ func TestExistingComments(t *testing.T) {
 				if c.threads != "" {
 					w.write("threads", c.threads)
 				}
-				w.run("publish", w.prepare(report), "--same", "1=11")
-				if p := w.payload(0); strings.Contains(p.Body, "settled by") || !strings.Contains(p.Body, "#### One") {
-					t.Errorf("it stays a live finding, with its title:\n%s", p.Body)
+				// Not settled: alice's comment stands for it, and it gets the 👍.
+				out, _ := w.run("publish", w.prepare(report), "--same", "1=11")
+				if !strings.Contains(out, "already on the PR (👍), no review posted") || strings.Contains(out, "settled") {
+					t.Errorf("it stays a live finding, on alice's comment:\n%s", out)
 				}
 			})
 		}
@@ -842,13 +852,17 @@ func standsAlone(t *testing.T, body string, parts map[string]string) {
 				t.Errorf("a comment came from the report: %q", n.Data)
 			}
 		case html.ElementNode:
-			if !slices.Contains([]string{"html", "head", "body", "h2", "h3", "h4", "p", "pre", "code", "strong", "em", "a", "ul", "li", "br"}, n.Data) {
+			if !slices.Contains([]string{"html", "head", "body", "h2", "h3", "h4", "p", "pre", "code", "strong", "em", "a", "ul", "li", "br", "blockquote"}, n.Data) {
 				t.Errorf("<%s> came from the report", n.Data)
 			}
 			if want, ok := parts[strings.TrimSpace(textOf(n))]; ok && want == n.Data {
 				found[textOf(n)] = true
-				if n.Parent == nil || n.Parent.Data != "body" {
-					t.Errorf("%q is inside <%s>", textOf(n), n.Parent.Data)
+				block := n
+				if n.Data == "strong" && n.Parent != nil {
+					block = n.Parent // a bold title is a paragraph's
+				}
+				if block.Parent == nil || block.Parent.Data != "body" {
+					t.Errorf("%q is inside <%s>", textOf(n), block.Parent.Data)
 				}
 			}
 		}
@@ -859,6 +873,31 @@ func standsAlone(t *testing.T, body string, parts map[string]string) {
 	for text := range parts {
 		if !found[text] {
 			t.Errorf("%q did not survive:\n%s", text, body)
+		}
+	}
+}
+
+// nothingLive checks that no element or comment of the report is live in the body,
+// and that each of want reads in it, as text.
+func nothingLive(t *testing.T, body string, want ...string) {
+	t.Helper()
+	doc := rendered(t, body)
+	walk(doc, func(n *html.Node) {
+		switch n.Type {
+		case html.CommentNode:
+			if !strings.HasPrefix(n.Data, " bazel-review: ") {
+				t.Errorf("a comment came from the report: %q", n.Data)
+			}
+		case html.ElementNode:
+			if !slices.Contains([]string{"html", "head", "body", "h2", "h3", "h4", "p", "pre", "code", "strong", "em", "a", "ul", "li", "br", "blockquote"}, n.Data) {
+				t.Errorf("<%s> came from the report", n.Data)
+			}
+		}
+	})
+	text := textOf(doc)
+	for _, w := range want {
+		if !strings.Contains(text, w) {
+			t.Errorf("%q is gone:\n%s", w, body)
 		}
 	}
 }
@@ -886,6 +925,37 @@ func TestOnePartCannotHideTheNext(t *testing.T) {
 		"fence open":       {"```go\nnever closed", last},
 		"long fence open":  {"``````\nnever closed", last},
 		"tilde fence open": {"~~~\nnever closed", last},
+		// From the reviews of 1e361f1: what a partial reading of markdown let through.
+		"an escaped backtick":    {"see \\`<details><summary>approved</summary>` and more", prose},
+		"a backtick in the info": {"```x`y\n<details>", prose},
+		"a code span as a fence": {"```x```\n<details><summary>x</summary>", prose},
+		// Markdown does not close a fence on a no-break space, and does on a tab: a
+		// reading that disagrees adds a closer of its own, which opens a fence instead.
+		"a close with a nbsp": {"```\nx\n```\u00a0\n<details>\n```", prose},
+		"a close with a tab":  {"```\nx\n```\t\n<details>", prose},
+		// Real fences now, left open: they take the rest on screen too.
+		"an info with braces":       {"``` {.go}\n<details>", last},
+		"a tilde info with braces":  {"~~~{x}\nnever closed", last},
+		"details at the line start": {"<details open>hidden", prose},
+		"details after text":        {"text <details>", prose},
+		"details in a list":         {"- item <details>\n  - <details><summary>x</summary>", prose},
+		// From the reviews of 8cd6138: a fence a list item owns, which the next line
+		// at column 0 ends, with the item and its code.
+		"a fence in a list item":       {"- item\n  ```\n<details><summary>approved</summary>", prose},
+		"a tilde fence in a list item": {"- item\n  ~~~\n<details><summary>approved</summary>", prose},
+		// As the reviewers wrote it: the closer at column 0 opens a fence of its own,
+		// left open, which takes the rest on screen too.
+		"a list fence, closed at column 0": {"- item\n  ```\n<details><summary>approved</summary>\n```", last},
+		"a comment after a list fence":     {"- item\n  ```\n<!-- swallow the rest", prose},
+		"a fence in a quote":               {"> ```\n<details>", prose},
+		"an indented fence in the open":    {"   ```\n<details>", prose},
+	}
+	// The cases where the parser in production (parse-report.jq, unchanged here)
+	// reads a fence markdown does not: the parts after it join First's text.
+	mergedByTheParser := map[string]bool{
+		"a code span as a fence": true, "a backtick in the info": true, "a close with a nbsp": true,
+		"a fence in a list item": true, "a tilde fence in a list item": true,
+		"a comment after a list fence": true, "an indented fence in the open": true,
 	}
 	parts := map[string]string{
 		"First": "h4", "Second": "h4", "Findings that could not be anchored": "h3", "Open questions": "h3",
@@ -898,14 +968,21 @@ func TestOnePartCannotHideTheNext(t *testing.T) {
 				first = c.text
 			}
 			report := header("request_changes", 3) + "\n## Findings\n\n" + finding("First", "gone.go", 2, first) + "\n" + finding("Second", "gone.go", 3, second) +
-				"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n  **To settle:** " + c.text + "\n"
+				"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — is this safe?\n  **To settle:** " + c.text + "\n"
 			narration := c.text + "\n\n"
 
 			w := newWorld(t)
 			w.run("publish", w.prepare(bazelFile(narration+report)))
 			body := w.payload(0).Body
-			standsAlone(t, body, parts)
-			if !strings.Contains(body, c.text) {
+			if mergedByTheParser[name] {
+				// The report's parser takes any line that starts with a fence marker for a
+				// fence, and these lines are none on GitHub: what follows joins First's
+				// text. It all still goes, all of it inert.
+				nothingLive(t, body, "Second", "is this safe?")
+			} else {
+				standsAlone(t, body, parts)
+			}
+			if !strings.Contains(body, strings.TrimSpace(c.text)) {
 				t.Errorf("the text itself stays, as text:\n%s", body)
 			}
 		})
@@ -925,8 +1002,9 @@ func TestOnePartCannotHideTheNext(t *testing.T) {
 		report := strings.NewReplacer("lenses_ran: exploit-digger", "lenses_ran: "+tag, "lenses_skipped: none", "lenses_skipped: "+tag).Replace(header("request_changes", 3))
 		f := strings.NewReplacer("severity=major", "severity="+tag, "class=logic", "class="+tag).Replace(finding("One "+tag+" title", "gone.go", 2, "Bad."))
 		w.write("comments", "["+`{"id":11,"path":"gone.go","line":2,"body":"x","user":{"login":"alice"},"author_association":"MEMBER","html_url":"https://github.invalid/c"}`+"]\n")
+		w.write("threads", `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"resolvedBy":{"login":"bob","__typename":"User"},"comments":{"nodes":[{"databaseId":11}]}}]}}}}}`+"\n")
 		w.run("publish", w.prepare(bazelFile(report+"\n## Findings\n\n"+f)), "--same", "1=11")
-		standsAlone(t, w.payload(0).Body, map[string]string{"Already on the PR": "h3", "One <details> title": "h4"})
+		standsAlone(t, w.payload(0).Body, map[string]string{"Already settled on the PR": "h3", "One <details> title": "h4"})
 	})
 
 	t.Run("narration cannot pass for the script", func(t *testing.T) {
@@ -1189,17 +1267,21 @@ func TestInlineCommentHidesNothing(t *testing.T) {
 					seen = true
 				}
 			})
-			if !seen || !strings.Contains(textOf(doc), "**Fix:**") {
+			// Rendered now: the label is bold, and the words are there.
+			if !seen || !strings.Contains(textOf(doc), "Fix:") {
 				t.Errorf("the text must stay, the fix with it:\n%s", body)
 			}
 		})
 	}
 
-	t.Run("a tag in code is not broken", func(t *testing.T) {
+	// Inline code is not told apart from prose: a `<` there is escaped too, and
+	// reads as `&lt;`. Ugly, and never live; a code block of its own stays exact.
+	t.Run("a tag in code is escaped, a block is not", func(t *testing.T) {
 		w := newWorld(t)
-		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, "Use `Vec<u8>` here."))))
-		if text := textOf(rendered(t, w.payload(0).Comments[0].Body)); !strings.Contains(text, "Vec<u8>") || strings.Contains(text, "&lt;") {
-			t.Errorf("the code changed: %q", text)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, "Use `Vec<u8>` here.\n\n```rust\nlet v: Vec<u8> = x;\n```"))))
+		text := textOf(rendered(t, w.payload(0).Comments[0].Body))
+		if !strings.Contains(text, "Vec&lt;u8>") || !strings.Contains(text, "let v: Vec<u8> = x;") {
+			t.Errorf("the code: %q", text)
 		}
 	})
 	t.Run("no tag, no change", func(t *testing.T) {
@@ -1248,7 +1330,7 @@ func TestTheSameReportIsNotPublishedTwice(t *testing.T) {
 	})
 	t.Run("the same report, with a question nobody has answered", func(t *testing.T) {
 		asked := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") +
-			"\n## Needs human verification\n\n- `a.go:1` — is this safe?\n")
+			"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — is this safe?\n")
 		w := newWorld(t)
 		w.run("publish", w.prepare(asked))
 		own(w)
@@ -1327,9 +1409,10 @@ func TestABotIsOneAccount(t *testing.T) {
 		w.write("pr", botPR)
 		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+"]\n")
 		w.write("threads", resolved("renovate"))
-		w.run("publish", w.prepare(report), "--same", "1=11")
-		if p := w.payload(0); strings.Contains(p.Body, "settled by") {
-			t.Errorf("resolved by the PR's own bot:\n%s", p.Body)
+		// Not settled, so alice's comment stands for it: a 👍, no review.
+		out, _ := w.run("publish", w.prepare(report), "--same", "1=11")
+		if strings.Contains(out, "settled") || !strings.Contains(out, "no review posted") {
+			t.Errorf("resolved by the PR's own bot:\n%s", out)
 		}
 	})
 	t.Run("another account's resolution still settles", func(t *testing.T) {
@@ -1646,4 +1729,415 @@ func TestChamadasEmParaleloNaoApagamAEscrita(t *testing.T) {
 	if msg := skills.PublishFailure(w.plugin); !strings.Contains(msg, "GitHub refused the review") {
 		t.Errorf("outcome: %q", msg)
 	}
+}
+
+// A finding that cannot be anchored reads in the body as it reads on screen: a
+// bold title, where it is and what kind, then its text and its fix as markdown,
+// wrapped like any paragraph. Only a code block of its own stays a code block.
+func TestABodiedFindingReadsAsMarkdown(t *testing.T) {
+	prose := "`baseTxProcessor.ClaimBalance` has no caller, and a long line that has to wrap on the page instead of scrolling sideways in a box.\n\n" +
+		"**Trigger:** a Claim with two assets.\n\n```go\nfor k := range gains {\n```"
+	f := strings.NewReplacer("lenses=x", "lenses=exploit-digger+senior-code-reviewer", "**major · logic** (x)", "**major · logic** (exploit-digger + senior-code-reviewer)").Replace(finding("The fix lands on dead code", "core/a.go", 593, prose))
+	w := newWorld(t)
+	w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+f+"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — is the gains loop tracked elsewhere?\n  **To settle:** confirm a ticket covers it.\n")))
+	body := w.payload(0).Body
+	for _, want := range []string{
+		"#### The fix lands on dead code",
+		"`core/a.go`:593 · major · logic · exploit-digger + senior-code-reviewer",
+		"senior-code-reviewer\n\n`baseTxProcessor.ClaimBalance` has no caller",
+		"\n\n**Fix:**",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("no %q in:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "**major · logic** (x)") {
+		t.Errorf("the kind is said once, on the line under the title:\n%s", body)
+	}
+	doc := rendered(t, body)
+	pres := 0
+	walk(doc, func(n *html.Node) {
+		if n.Type != html.ElementNode || n.Data != "pre" {
+			return
+		}
+		pres++
+		if text := textOf(n); strings.Contains(text, "has no caller") || strings.Contains(text, "Fix:") || strings.Contains(text, "To settle") {
+			t.Errorf("the text of a finding is in a code block:\n%s", text)
+		}
+	})
+	if pres != 1 {
+		t.Errorf("%d code blocks, and only the finding's own is one:\n%s", pres, body)
+	}
+	strong := map[string]bool{}
+	walk(doc, func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "strong" {
+			strong[textOf(n)] = true
+		}
+	})
+	for _, want := range []string{"Fix:", "Trigger:", "To settle:"} {
+		if !strong[want] {
+			t.Errorf("%q is not rendered bold:\n%s", want, body)
+		}
+	}
+}
+
+// Findings someone else already made get a 👍 each, and nothing more: with only
+// those, no review goes up, and the publish still counts as done.
+func TestOnlyFindingsAlreadyOnThePR(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n" + finding("Two", "a.go", 3, "Worse."))
+	w := newWorld(t)
+	w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+","+comment(12, "bob", "COLLABORATOR", 3, "")+"]\n")
+	out, code := w.run("publish", w.prepare(report), "--same", "1=11", "--same", "2=12")
+	if code != 0 {
+		t.Fatalf("exit %d\n%s", code, out)
+	}
+	if _, err := os.Stat(filepath.Join(w.dir, "payload0.json")); err == nil {
+		t.Errorf("no review POST: %+v", w.payload(0))
+	}
+	writes, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
+	if n := strings.Count(string(writes), "/reactions"); n != 2 || strings.Contains(string(writes), "/reviews") {
+		t.Errorf("%d 👍, and no review:\n%s", n, writes)
+	}
+	if !strings.Contains(out, "Published: 0 inline, 0 in the review body, 2 already on the PR (👍), no review posted.") {
+		t.Errorf("the summary:\n%s", out)
+	}
+	if msg := skills.PublishFailure(w.plugin); msg != "" {
+		t.Errorf("published, for Bazel: %q", msg)
+	}
+
+	t.Run("every 👍 refused", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+"]\n")
+		w.write("fail", "/reactions")
+		out, code := w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("One", "a.go", 2, "Bad."))), "--same", "1=11")
+		if code != 1 || !strings.Contains(skills.PublishFailure(w.plugin), "Publishing failed") {
+			t.Errorf("nothing reached the PR: exit %d\n%s", code, out)
+		}
+	})
+}
+
+// With something new besides, the review says only what is new: no section for
+// what is already on the PR, and its count is of what this review carries.
+func TestAMixedReviewSaysOnlyWhatIsNew(t *testing.T) {
+	report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n" + finding("Two", "gone.go", 9, "New."))
+	w := newWorld(t)
+	w.write("comments", "["+comment(11, "alice", "MEMBER", 2, "")+"]\n")
+	out, _ := w.run("publish", w.prepare(report), "--same", "1=11")
+	body := w.payload(0).Body
+	if strings.Contains(body, "Already on the PR") || strings.Contains(body, "#### One") || strings.Contains(body, "Bad.") {
+		t.Errorf("what is already on the PR stays out of the body:\n%s", body)
+	}
+	if !strings.Contains(body, "1 finding in this review, 1 more already on the PR (👍)") || !strings.Contains(body, "#### Two") {
+		t.Errorf("the count is of what this review carries:\n%s", body)
+	}
+	writes, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
+	if !strings.Contains(string(writes), "comments/11/reactions") {
+		t.Errorf("the 👍 still goes: %s", writes)
+	}
+	if !strings.Contains(out, "1 in the review body, 1 already on the PR (👍)") {
+		t.Errorf("the summary:\n%s", out)
+	}
+}
+
+// Rendered, a report's text would notify whoever it names and link what it
+// numbers, in the user's name: a team, a person, an issue. None of that fires.
+func TestNoMentionsFromTheReport(t *testing.T) {
+	prose := "Ping @org/security-team and @alice, see #123 and o/r#45.\n\n```go\n// @kept #7\n```"
+	report := header("request_changes", 3) + "\n## Findings\n\n" + finding("For @bob #9", "gone.go", 2, prose) + "\n" + finding("Inline @carol", "a.go", 2, "cc @dave #10") +
+		"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — ask @erin about #11\n  **To settle:** check it.\n"
+	w := newWorld(t)
+	w.run("publish", w.prepare(bazelFile(report)))
+	p := w.payload(0)
+	text := p.Body
+	for _, c := range p.Comments {
+		text += "\n" + c.Body
+	}
+	for _, live := range []string{"@org/", "@alice", "@bob", "@carol", "@dave", "@erin", "#123", "#45", "#9", "#10", "#11"} {
+		if strings.Contains(text, live) {
+			t.Errorf("%q is live:\n%s", live, text)
+		}
+	}
+	if !strings.Contains(text, "@\u200balice") || !strings.Contains(text, "// @kept #7") {
+		t.Errorf("the words stay, and a code block is exact:\n%s", text)
+	}
+}
+
+// What the 👍 count and the body's first lines owe the facts.
+func TestTheSmallPrints(t *testing.T) {
+	t.Run("a 👍 skipped on purpose did not fail", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("comments", "["+comment(11, "me", "OWNER", 2, "")+","+comment(12, "bob", "MEMBER", 3, "")+"]\n")
+		report := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + finding("One", "a.go", 2, "Bad.") + "\n" + finding("Two", "a.go", 3, "Worse."))
+		out, code := w.run("publish", w.prepare(report), "--same", "1=11", "--same", "2=12")
+		writes, _ := os.ReadFile(filepath.Join(w.dir, "writes"))
+		if code != 0 || strings.Count(string(writes), "/reactions") != 1 || strings.Contains(out, "could not be added") {
+			t.Errorf("exit %d, writes %s\n%s", code, writes, out)
+		}
+	})
+	t.Run("a warning in bold opens the finding", func(t *testing.T) {
+		w := newWorld(t)
+		f := strings.Replace(finding("Leak", "gone.go", 2, "Explained."), "**major · logic** (x)\n\n", "**DO_NOT_MERGE_CREDENTIAL_LEAK**\n\n", 1)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+f)))
+		if body := w.payload(0).Body; !strings.Contains(body, "DO_NOT_MERGE_CREDENTIAL_LEAK") || !strings.Contains(body, "Explained.") {
+			t.Errorf("a bold first line that is no label is the finding's:\n%s", body)
+		}
+	})
+	t.Run("a warning that starts like the label", func(t *testing.T) {
+		w := newWorld(t)
+		f := strings.Replace(finding("Leak", "gone.go", 2, "Explained."), "**major · logic** (x)\n\n", "**major · logic: DO_NOT_MERGE_SECRET_LEAK**\n\n", 1)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+f)))
+		if body := w.payload(0).Body; !strings.Contains(body, "DO_NOT_MERGE_SECRET_LEAK") {
+			t.Errorf("only the exact label line goes:\n%s", body)
+		}
+	})
+	t.Run("a label for other lenses stays", func(t *testing.T) {
+		w := newWorld(t)
+		f := strings.Replace(finding("Other", "gone.go", 2, "Explained."), "**major · logic** (x)", "**major · logic** (someone-else)", 1)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+f)))
+		if body := w.payload(0).Body; !strings.Contains(body, "(someone-else)") {
+			t.Errorf("not this finding's label:\n%s", body)
+		}
+	})
+	t.Run("a cut says the lines it saves", func(t *testing.T) {
+		w := newWorld(t)
+		cut := "### Smaller\n<!-- finding severity=minor class=reuse lenses=lazy-senior-dev path=gone.go line=2 side=RIGHT lines_saved=27 -->\n\n**minor · reuse · −27 lines** (lazy-senior-dev)\n\nUse the helper.\n"
+		w.run("publish", w.prepare(bazelFile(header("comment", 3)+"\n## Cuts\n\n"+cut)))
+		if body := w.payload(0).Body; !strings.Contains(body, "`gone.go`:2 · minor · reuse · −27 lines · lazy-senior-dev") {
+			t.Errorf("%s", body)
+		}
+	})
+	t.Run("a cut's label goes too", func(t *testing.T) {
+		w := newWorld(t)
+		cut := "### Smaller\n<!-- finding severity=minor class=reuse lenses=lazy-senior-dev path=gone.go line=2 side=RIGHT lines_saved=27 -->\n\n**minor · reuse · −27 lines** (lazy-senior-dev)\n\nUse the helper.\n"
+		w.run("publish", w.prepare(bazelFile(header("comment", 3)+"\n## Cuts\n\n"+cut)))
+		if body := w.payload(0).Body; strings.Contains(body, "**minor · reuse · −27 lines**") || !strings.Contains(body, "Use the helper.") {
+			t.Errorf("%s", body)
+		}
+	})
+	t.Run("the label line goes, said once above", func(t *testing.T) {
+		w := newWorld(t)
+		w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("Gone", "gone.go", 2, "Explained."))))
+		if body := w.payload(0).Body; strings.Contains(body, "**major · logic** (x)") || !strings.Contains(body, "· major · logic") {
+			t.Errorf("%s", body)
+		}
+	})
+}
+
+// An entity is HTML too: `&#x40;alice` reads `@alice` once decoded, and a mention of
+// it would notify. Every `&` outside a fence is escaped, so none decodes.
+func TestNoEntityFromTheReport(t *testing.T) {
+	w := newWorld(t)
+	w.run("publish", w.prepare(bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+
+		finding("Body &#x40;bob", "gone.go", 2, "ask &#x40;alice and &#64;carol, see &#35;12 &lt;details>")+"\n"+finding("Inline", "a.go", 2, "cc &#x40;dave"))))
+	p := w.payload(0)
+	doc := rendered(t, p.Body+"\n\n"+p.Comments[0].Body)
+	text := textOf(doc)
+	for _, live := range []string{"@alice", "@bob", "@carol", "@dave", "#12", "<details>"} {
+		if strings.Contains(text, live) {
+			t.Errorf("%q decodes:\n%s", live, text)
+		}
+	}
+	walk(doc, func(n *html.Node) {
+		if n.Type == html.ElementNode && n.Data == "details" {
+			t.Error("a <details> is live")
+		}
+	})
+}
+
+// A report the fleet may write, with a fence that names its language after a space
+// or carries attributes, and a `###` in its code: one finding, not two.
+func TestAFenceWithAnInfoStringIsCode(t *testing.T) {
+	for _, open := range []string{"``` go", "```go title=main.go", "~~~ {.go}", "```go"} {
+		t.Run(open, func(t *testing.T) {
+			close := "```"
+			if strings.HasPrefix(open, "~") {
+				close = "~~~"
+			}
+			prose := "The fix:\n\n" + open + "\n### not a finding\n## Needs human verification\nfunc f() {}\n" + close + "\n\nThat is all."
+			report := header("request_changes", 3) + "\n## Findings\n\n" + finding("Only one", "gone.go", 2, prose)
+			w := newWorld(t)
+			w.write("review.md", bazelFile(report))
+			out, code := w.run("prepare", filepath.Join(w.dir, "review.md"))
+			if code != 0 {
+				t.Fatalf("exit %d\n%s", code, out)
+			}
+			var plan struct {
+				Work     string            `json:"work_folder"`
+				Findings []json.RawMessage `json:"findings"`
+			}
+			if err := json.Unmarshal([]byte(out), &plan); err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Findings) != 1 {
+				t.Errorf("%d findings, want 1", len(plan.Findings))
+			}
+			w.run("publish", plan.Work)
+			body := w.payload(0).Body
+			if !strings.Contains(body, "That is all.") || strings.Contains(body, "Open questions") {
+				t.Errorf("the code stays in its finding:\n%s", body)
+			}
+		})
+	}
+}
+
+// The two fields this branch adds to each finding feed only the body's line under
+// the title. The parser with them reads every report into the same findings, in
+// the same order, with the same refusals, as the parser without them.
+func TestTheLensFieldsChangeNoFinding(t *testing.T) {
+	dir := t.TempDir()
+	if err := skills.Materialize(dir); err != nil {
+		t.Fatal(err)
+	}
+	now := filepath.Join(dir, "skills", "bazel-post-report", "scripts", "parse-report.jq")
+	data, err := os.ReadFile(now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var kept []string
+	for _, l := range strings.Split(string(data), "\n") {
+		if t := strings.TrimSpace(l); strings.HasPrefix(t, "lenses: ($m.lenses") || strings.HasPrefix(t, "lines_saved: (") {
+			continue
+		}
+		kept = append(kept, l)
+	}
+	before := filepath.Join(dir, "before.jq")
+	if err := os.WriteFile(before, []byte(strings.Join(kept, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if len(kept) != len(strings.Split(string(data), "\n"))-2 {
+		t.Fatal("the two fields are not where this test looks for them")
+	}
+
+	corpus := []string{}
+	for _, g := range golden {
+		corpus = append(corpus, bazelFile(readGolden(t, g.file)))
+	}
+	for _, text := range []string{"```x`y\n<details>", "- item\n  ```\n<details>", "   ```go\n## Needs human verification\nx\n   ```",
+		"### X\n<!-- finding severity=minor class=logic lenses=x path=a.go line=2 side=RIGHT -->\nquoted", "``` go\n### not a finding\n```"} {
+		corpus = append(corpus, bazelFile(header("request_changes", 3)+"\n## Findings\n\n"+finding("First", "gone.go", 2, text)+"\n"+finding("Second", "a.go", 2, "Plain.")))
+	}
+	shape := `{deny, findings: [.findings[] | {id, title, cut, severity, class, path, line, side, prose}], human, extra}`
+	for i, report := range corpus {
+		file := filepath.Join(dir, fmt.Sprintf("r%d.md", i))
+		if err := os.WriteFile(file, []byte(report), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		read := func(parser string) string {
+			out, err := exec.Command("bash", "-c", `jq -Rs -f "$1" "$2" | jq -c "$3"`, "_", parser, file, shape).CombinedOutput()
+			if err != nil {
+				t.Fatalf("%v: %s", err, out)
+			}
+			return string(out)
+		}
+		if a, b := read(before), read(now); a != b {
+			t.Errorf("report %d reads otherwise:\nbefore %s\nnow    %s", i, a, b)
+		}
+	}
+}
+
+// The shape of a review that moved before it was published: nothing anchors, and
+// every finding goes in the body. Each one reads as markdown, with no code block
+// around its text, and its labels open paragraphs of their own.
+func TestTenFindingsInTheBody(t *testing.T) {
+	var fs strings.Builder
+	for i := 1; i <= 10; i++ {
+		f := finding(fmt.Sprintf("Finding number %d", i), fmt.Sprintf("pkg/f%d.go", i), 10+i,
+			fmt.Sprintf("`Thing%d` is read before it is set, so a caller sees the zero value.\n**Trigger:** call `Run` twice.", i))
+		fs.WriteString(f + "\n")
+	}
+	w := newWorld(t)
+	work := w.prepare(bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + fs.String()))
+	w.write("head", strings.Repeat("b", 40)+"\n")
+	w.run("publish", work)
+	p := w.payload(0)
+	if len(p.Comments) != 0 {
+		t.Fatalf("the PR moved: nothing anchors, %d inline", len(p.Comments))
+	}
+	doc := rendered(t, p.Body)
+	titles, labels := 0, map[string]int{}
+	walk(doc, func(n *html.Node) {
+		if n.Type != html.ElementNode {
+			return
+		}
+		switch n.Data {
+		case "pre":
+			t.Errorf("a code block in the body: %q", textOf(n))
+		case "h4":
+			if strings.HasPrefix(textOf(n), "Finding number ") {
+				titles++
+			}
+		case "strong":
+			if n.Parent != nil && n.Parent.Data == "p" && n.Parent.FirstChild == n {
+				labels[textOf(n)]++
+			}
+		}
+	})
+	if titles != 10 || labels["Trigger:"] != 10 || labels["Fix:"] != 10 {
+		t.Errorf("titles %d, Trigger %d, Fix %d, want 10 each:\n%s", titles, labels["Trigger:"], labels["Fix:"], p.Body)
+	}
+	if !strings.Contains(p.Body, "`pkg/f3.go`:13 · major · logic · x") {
+		t.Errorf("the line under each title:\n%s", p.Body)
+	}
+}
+
+// A report with CRLF or CR line ends reads as the same document: markdown ends a
+// line at each, and a fence that closes on one closes in the body too.
+func TestLineEndsChangeNothing(t *testing.T) {
+	var fs strings.Builder
+	for i := 1; i <= 10; i++ {
+		fs.WriteString(finding(fmt.Sprintf("Finding number %d", i), fmt.Sprintf("pkg/f%d.go", i), 10+i,
+			fmt.Sprintf("`Thing%d` is read early.\n\n```go\nx := %d\n```\nAFTER_CODE\n**Trigger:** call `Run` twice.", i, i)) + "\n")
+	}
+	lf := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + fs.String() +
+		"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — is this safe?\n  **To settle:** ```\nx\n```\n<details>\n")
+	dom := func(file string) string {
+		w := newWorld(t)
+		work := w.prepare(file)
+		w.write("head", strings.Repeat("b", 40)+"\n")
+		w.run("publish", work)
+		var b strings.Builder
+		walk(rendered(t, w.payload(0).Body), func(n *html.Node) {
+			switch n.Type {
+			case html.ElementNode:
+				b.WriteString("<" + n.Data + ">")
+			case html.TextNode:
+				b.WriteString(strings.TrimSpace(n.Data))
+			}
+		})
+		return b.String()
+	}
+	want := dom(lf)
+	if strings.Count(want, "<h4>Finding number") != 10 {
+		t.Fatalf("the LF control: %s", want)
+	}
+	// Bazel's own header keeps LF: it is Bazel's, and the report is the model's.
+	head, report, _ := strings.Cut(lf, "\n---\n")
+	t.Run("CRLF", func(t *testing.T) {
+		if got := dom(head + "\n---\n" + strings.ReplaceAll(report, "\n", "\r\n")); got != want {
+			t.Errorf("another document:\n got %s\nwant %s", got, want)
+		}
+	})
+	// The report's parser, the one in production, reads lines at LF: with CR alone
+	// it finds no header and refuses, before anything is written. The renderer
+	// reads CR as a line end all the same, for the inline comments too.
+	t.Run("CR", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("review.md", head+"\n---\n"+strings.ReplaceAll(report, "\n", "\r"))
+		if out, code := w.run("prepare", filepath.Join(w.dir, "review.md")); code != 3 || w.wrote() {
+			t.Errorf("exit %d\n%s", code, out)
+		}
+	})
+	t.Run("hostile, CRLF", func(t *testing.T) {
+		for _, text := range []string{"```go\nx\n```\nAFTER\n<details>", "- item\n  ```\n<details>", "```x`y\n<details>", "see \\`<details>` and @alice #12"} {
+			file := func(eol string) string {
+				r := header("request_changes", 3) + "\n## Findings\n\n" + finding("First", "gone.go", 2, text) + "\n" + finding("Second", "gone.go", 3, "Plain.")
+				return bazelFile(strings.ReplaceAll(r, "\n", eol))
+			}
+			lfDom := dom(file("\n"))
+			h, r, _ := strings.Cut(file("\n"), "\n---\n")
+			if got := dom(h + "\n---\n" + strings.ReplaceAll(r, "\n", "\r\n")); got != lfDom {
+				t.Errorf("%q reads otherwise with CRLF:\n got %s\nwant %s", text, got, lfDom)
+			}
+		}
+	})
 }

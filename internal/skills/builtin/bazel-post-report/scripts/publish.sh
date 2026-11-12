@@ -177,6 +177,21 @@ publish() {
         nothing "this account already posted an all-clear for this commit."
         return 0
       fi ;;
+    reactions)
+      # Every finding is someone else's comment already: a 👍 on each, and no
+      # review. That reached the PR, so it is published.
+      local done=0 id
+      outcome failed "Publishing failed: the 👍 on the PR did not finish."
+      for id in $(jq -r '.reactions[]' "$work/decided.json"); do
+        gh api -X POST "repos/$REPO/pulls/comments/$id/reactions" -f content=+1 >/dev/null 2>&1 && done=$((done + 1))
+      done
+      [ "$done" -gt 0 ] || fail "GitHub refused every 👍"
+      : > "$work/published"
+      outcome published "Published: the findings were already on the PR; no review posted."
+      jq -r --argjson done "$done" '
+        "Published: 0 inline, 0 in the review body, \(.counts.duplicates) already on the PR (👍), no review posted.",
+        (if $done < (.reactions | length) then "\((.reactions | length) - $done) 👍 could not be added." else empty end)' "$work/decided.json"
+      return 0 ;;
   esac
 
   # The same review on the same commit is not published twice. The print is of the
