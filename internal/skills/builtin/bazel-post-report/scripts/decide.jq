@@ -11,9 +11,23 @@ def level: "\(.severity | plain) · \(.class | plain)";
 def told: if .prose == "" then .title else .prose end;
 def plural($n; $w): "\($n) \($w)\(if $n == 1 then "" else "s" end)";
 def section($t; $items): if $items == [] then [] else ["### \($t)", ($items | join("\n\n"))] end;
-# A finding that is not a comment of its own is still all there, in case what
-# stands for it on the PR goes away.
-def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .ref then "\n\n\(.ref | code)" else "" end)";
+# A finding in the body reads as one: its title in bold, where it is and what kind,
+# then its own text as markdown. The prose's first line says the kind again, in the
+# report's form: the line above has it already.
+def prose_only:
+  # Only the label line the fleet writes for this very finding, word for word from
+  # its metadata: `**<severity> · <class>[ · −N lines]** (<lens> + <lens>)`. Any
+  # other first line is the finding's, a warning in bold above all, and stays.
+  ("**\(.severity) · \(.class)\(if .cut and .lines_saved then " · −\(.lines_saved) lines" else "" end)**"
+   + (if (.lenses // []) == [] then "" else " (\(.lenses | join(" + ")))" end)) as $label
+  | .prose
+  | (split("\n") | first // "" | gsub("^\\s+|\\s+$"; "")) as $first
+  | if $first == $label then sub("^\\s*[^\n]*\n*"; "") else . end;
+def lens_list: if (.lenses // []) == [] then "" else " · \(.lenses | map(plain) | join(" + "))" end;
+def entry($line):
+  "#### \(.title | plain | gsub("\\*"; "\\*"))\n\($line)"
+  + (prose_only | if . == "" then "" else "\n\n" + readable end)
+  + (if .ref then "\n\n\(.ref | code)" else "" end);
 
 . as $p
 | ($moved == "yes") as $moved
@@ -62,8 +76,14 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
   (if $moved then "\n\n> Reviewed at `\($sha[0:7])`; the PR has moved to `\($head[0:7])` since, so nothing here is line-anchored and this says nothing about the newer commits."
    elif ($p.sha_proven | not) then "\n\n> The reviewed commit could not be proven, so nothing here is line-anchored."
    else "" end) as $note
+# A finding someone else already made gets its 👍 and nothing more: saying it again
+# in a body repeats it. With only those, there is no review to post.
+| (($dups != []) and $inline == [] and $bodied == [] and $settled == []
+   and $p.human == "" and $p.extra == "" and $p.failed == []) as $only_dups
 | ( if $repeated then
       {kind: "nothing", why: "every finding is already on the PR, in this account's own comments"}
+    elif $only_dups then
+      {kind: "reactions"}
     elif $clean and $p.verdict == "approve" and ($p.trimmed | not) and $unproven == [] then
       {kind: "all-clear",
        body: "## Automated review — Bazel · no findings\n\n\(coverage)\n\nReviewed at `\($sha[0:7])`.\n\n<!-- review-fleet: all-clear @ \($sha) -->"}
@@ -74,13 +94,13 @@ def entry($line): "#### \(.title | plain)\n\($line)\n\n\(told | verbatim)\(if .r
     else
       {kind: "review", body: (
         (["## Automated review — Bazel\(if $note != "" then $note else "" end)",
-          "**Verdict in the report:** \($p.verdict) · \(plural($all | length; "finding")) in this review",
+          "**Verdict in the report:** \($p.verdict) · \(plural(($inline + $bodied + $settled) | length; "finding")) in this review"
+          + (if $dups == [] then "" else ", \(plural($dups | length; "more")) already on the PR (👍)" end),
           coverage]
          + section("Findings that could not be anchored";
-             $bodied | map(entry("_Location in the report: \(where)_")))
-         + section("Already on the PR"; $dups | map(entry("\(where) (\(level)) — [comment](\(.match.url)) by @\(.match.user | plain)")))
-         + section("Already settled on the PR"; $settled | map(entry("\(where) (\(level)) — settled by @\(.match.settled_by | plain), [thread](\(.match.url))")))
-         + section("Open questions"; if $p.human == "" then [] else [$p.human | verbatim] end)
+             $bodied | map(entry("\(where) · \(level)\(lens_list)")))
+         + section("Already settled on the PR"; $settled | map(entry("\(where) · \(level)\(lens_list) — settled by @\(.match.settled_by | plain), [thread](\(.match.url))")))
+         + section("Open questions"; if $p.human == "" then [] else [$p.human | readable] end)
          + section("Steps that failed"; $p.failed | map("- \(. | plain)"))
          + section("Unverified text that came with the report"; if $p.extra == "" then [] else ["_Outside the report's format: Bazel does not vouch for it._", ($p.extra | verbatim)] end)
          + (if $sha == "" then [] else ["Reviewed at `\($sha[0:7] | code)`."] end))
