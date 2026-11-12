@@ -1898,6 +1898,14 @@ func TestTheSmallPrints(t *testing.T) {
 			t.Errorf("not this finding's label:\n%s", body)
 		}
 	})
+	t.Run("a cut says the lines it saves", func(t *testing.T) {
+		w := newWorld(t)
+		cut := "### Smaller\n<!-- finding severity=minor class=reuse lenses=lazy-senior-dev path=gone.go line=2 side=RIGHT lines_saved=27 -->\n\n**minor · reuse · −27 lines** (lazy-senior-dev)\n\nUse the helper.\n"
+		w.run("publish", w.prepare(bazelFile(header("comment", 3)+"\n## Cuts\n\n"+cut)))
+		if body := w.payload(0).Body; !strings.Contains(body, "`gone.go`:2 · minor · reuse · −27 lines · lazy-senior-dev") {
+			t.Errorf("%s", body)
+		}
+	})
 	t.Run("a cut's label goes too", func(t *testing.T) {
 		w := newWorld(t)
 		cut := "### Smaller\n<!-- finding severity=minor class=reuse lenses=lazy-senior-dev path=gone.go line=2 side=RIGHT lines_saved=27 -->\n\n**minor · reuse · −27 lines** (lazy-senior-dev)\n\nUse the helper.\n"
@@ -2070,4 +2078,66 @@ func TestTenFindingsInTheBody(t *testing.T) {
 	if !strings.Contains(p.Body, "`pkg/f3.go`:13 · major · logic · x") {
 		t.Errorf("the line under each title:\n%s", p.Body)
 	}
+}
+
+// A report with CRLF or CR line ends reads as the same document: markdown ends a
+// line at each, and a fence that closes on one closes in the body too.
+func TestLineEndsChangeNothing(t *testing.T) {
+	var fs strings.Builder
+	for i := 1; i <= 10; i++ {
+		fs.WriteString(finding(fmt.Sprintf("Finding number %d", i), fmt.Sprintf("pkg/f%d.go", i), 10+i,
+			fmt.Sprintf("`Thing%d` is read early.\n\n```go\nx := %d\n```\nAFTER_CODE\n**Trigger:** call `Run` twice.", i, i)) + "\n")
+	}
+	lf := bazelFile(header("request_changes", 3) + "\n## Findings\n\n" + fs.String() +
+		"\n## Needs human verification\n<!-- needs-human -->\n\n- `a.go:1` — is this safe?\n  **To settle:** ```\nx\n```\n<details>\n")
+	dom := func(file string) string {
+		w := newWorld(t)
+		work := w.prepare(file)
+		w.write("head", strings.Repeat("b", 40)+"\n")
+		w.run("publish", work)
+		var b strings.Builder
+		walk(rendered(t, w.payload(0).Body), func(n *html.Node) {
+			switch n.Type {
+			case html.ElementNode:
+				b.WriteString("<" + n.Data + ">")
+			case html.TextNode:
+				b.WriteString(strings.TrimSpace(n.Data))
+			}
+		})
+		return b.String()
+	}
+	want := dom(lf)
+	if strings.Count(want, "<h4>Finding number") != 10 {
+		t.Fatalf("the LF control: %s", want)
+	}
+	// Bazel's own header keeps LF: it is Bazel's, and the report is the model's.
+	head, report, _ := strings.Cut(lf, "\n---\n")
+	t.Run("CRLF", func(t *testing.T) {
+		if got := dom(head + "\n---\n" + strings.ReplaceAll(report, "\n", "\r\n")); got != want {
+			t.Errorf("another document:\n got %s\nwant %s", got, want)
+		}
+	})
+	// The report's parser, the one in production, reads lines at LF: with CR alone
+	// it finds no header and refuses, before anything is written. The renderer
+	// reads CR as a line end all the same, for the inline comments too.
+	t.Run("CR", func(t *testing.T) {
+		w := newWorld(t)
+		w.write("review.md", head+"\n---\n"+strings.ReplaceAll(report, "\n", "\r"))
+		if out, code := w.run("prepare", filepath.Join(w.dir, "review.md")); code != 3 || w.wrote() {
+			t.Errorf("exit %d\n%s", code, out)
+		}
+	})
+	t.Run("hostile, CRLF", func(t *testing.T) {
+		for _, text := range []string{"```go\nx\n```\nAFTER\n<details>", "- item\n  ```\n<details>", "```x`y\n<details>", "see \\`<details>` and @alice #12"} {
+			file := func(eol string) string {
+				r := header("request_changes", 3) + "\n## Findings\n\n" + finding("First", "gone.go", 2, text) + "\n" + finding("Second", "gone.go", 3, "Plain.")
+				return bazelFile(strings.ReplaceAll(r, "\n", eol))
+			}
+			lfDom := dom(file("\n"))
+			h, r, _ := strings.Cut(file("\n"), "\n---\n")
+			if got := dom(h + "\n---\n" + strings.ReplaceAll(r, "\n", "\r\n")); got != lfDom {
+				t.Errorf("%q reads otherwise with CRLF:\n got %s\nwant %s", text, got, lfDom)
+			}
+		}
+	})
 }

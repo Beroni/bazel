@@ -38,7 +38,9 @@ def loose_fence: test("^[ \t]*(`{3,}|~{3,})");
 # not. It closes on the same marker, as long or longer, then only spaces or tabs:
 # exactly where markdown closes it, so the two never disagree on what is code.
 def readable:
-  reduce (split("\n")[]) as $l ({out: [], fence: null};
+  # Lines end at LF, as markdown ends them at CRLF and CR too: a CR left on a line
+  # would keep a fence from closing here where it closes on GitHub.
+  reduce (gsub("\r\n?"; "\n") | split("\n")[]) as $l ({out: [], fence: null};
     ([$l | strict_fence] | first) as $open
     | if .fence then
         ("^ {0,3}" + (if .fence.run[0:1] == "`" then "`" else "~" end)

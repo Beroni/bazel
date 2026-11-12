@@ -23,7 +23,9 @@ def prose_only:
   | .prose
   | (split("\n") | first // "" | gsub("^\\s+|\\s+$"; "")) as $first
   | if $first == $label then sub("^\\s*[^\n]*\n*"; "") else . end;
-def lens_list: if (.lenses // []) == [] then "" else " · \(.lenses | map(plain) | join(" + "))" end;
+def lens_list:
+  (if .cut and .lines_saved then " · −\(.lines_saved) lines" else "" end)
+  + (if (.lenses // []) == [] then "" else " · \(.lenses | map(plain) | join(" + "))" end);
 def entry($line):
   "#### \(.title | plain | gsub("\\*"; "\\*"))\n\($line)"
   + (prose_only | if . == "" then "" else "\n\n" + readable end)
