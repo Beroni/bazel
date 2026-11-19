@@ -89,7 +89,9 @@ test.describe('P1 · your decision on a PR', () => {
     // BUG-QA-38: in the Summary it is no approval: out of the text, listed apart.
     await ui.summaryButton(app).click();
     await expect(ui.summaryText(app)).toHaveValue('');
-    await expect(ui.summaryMoved(app)).toHaveText('moved since your decision: #101');
+    await expect(ui.summaryMoved(app)).toContainText('moved since your decision:');
+    await expect(app.getByTestId('summary-moved-item')).toHaveAttribute('data-key', 'acme/api-core#101');
+    await expect(app.getByTestId('summary-moved-item')).toContainText('#101');
     expect((await bazel.api('GET', '/api/summary')).json.moved.map((p: any) => p.key)).toEqual(['acme/api-core#101']);
   });
 
@@ -210,5 +212,73 @@ test.describe('P1 · your decision on a PR', () => {
     await app.reload();
     await ui.summaryButton(app).click();
     await expect(ui.summaryMissing(app)).toHaveText('no decision yet: acme/api-core#101, #7, globex/api-core#101');
+  });
+
+  // A push after the decision: decide again by hand, on the head the list read,
+  // with no new review. "keep" repeats the decision, "change" picks another;
+  // either way the PR is back in the text.
+  for (const how of ['keep', 'change'] as const) {
+    test(`after a push, "${how}" in the Summary decides on the current head`, async ({ app, bazel }) => {
+      const a = await reviewed(bazel, 'acme/api-core#101');
+      expect((await bazel.api('POST', `/api/jobs/${a.id}/verdict`, { verdict: 'approve' })).status).toBe(200);
+      bazel.movePR('acme/api-core#101');
+      await app.reload();
+      await app.getByTestId('refresh').click();
+      await expect.poll(async () => (await bazel.api('GET', '/api/verdicts')).json.verdicts['acme/api-core#101'].moved).toBe(true);
+      const current = (await bazel.api('GET', '/api/verdicts')).json.verdicts['acme/api-core#101'].current as string;
+
+      await ui.summaryButton(app).click();
+      await expect(ui.summaryText(app)).toHaveValue('');
+      const item = app.getByTestId('summary-moved-item');
+      if (how === 'keep') {
+        await item.getByTestId('summary-keep').click();
+        await expect(ui.summaryText(app)).toHaveValue(`alice\n${a.url} :white_check_mark: — bob, carol`);
+      } else {
+        await item.getByTestId('summary-change').click();
+        await item.getByTestId('summary-change-request_changes').click();
+        await expect(ui.summaryText(app)).toHaveValue(`alice\n${a.url} :git_change_request: — bob, carol`);
+      }
+      await expect(ui.summaryMoved(app)).toBeHidden();
+      const v = (await bazel.api('GET', '/api/verdicts')).json.verdicts['acme/api-core#101'];
+      expect([v.source, v.head, v.moved ?? false]).toEqual(['manual', current, false]);
+      await expect(ui.jobVerdict(ui.jobCard(app, RATE))).toHaveAttribute('title', /\(manual\)/);
+      expect(writes(bazel)).toEqual([]);
+    });
+  }
+
+  test('the Report of a moved PR decides on the current head too', async ({ app, bazel }) => {
+    await reviewed(bazel, 'acme/api-core#101');
+    await app.reload();
+    const viewer = await openJob(app, RATE);
+    await ui.verdict(viewer, 'approve').click();
+    await expect(viewer.getByTestId('verdict-current-approve')).toBeHidden();
+    bazel.movePR('acme/api-core#101');
+    await app.getByTestId('refresh').click();
+    await expect(ui.verdictMoved(viewer)).toBeVisible();
+    const current = (await bazel.api('GET', '/api/verdicts')).json.verdicts['acme/api-core#101'].current as string;
+    await expect(viewer.getByTestId('verdict-current-label')).toHaveText(`decide on the current head ${current.slice(0, 7)}:`);
+    await viewer.getByTestId('verdict-current-approve_with_comments').click();
+    await expect(ui.verdictMoved(viewer)).toBeHidden();
+    await expect(ui.verdict(viewer, 'approve_with_comments')).toHaveAttribute('aria-pressed', 'true');
+    await expect(ui.jobVerdict(ui.jobCard(app, RATE))).toHaveText('📝✅');
+  });
+
+  test('a PR Bazel never reviewed can be decided on its page, on the current head', async ({ app, bazel }) => {
+    await ui.prRow(app, 'Fix nil pointer on empty config').click();
+    const bar = app.getByTestId('pr-verdict');
+    await expect(bar).toBeVisible();
+    await expect(bar.getByTestId('pr-verdict-label')).toHaveText(/^decide on the current head [0-9a-f]{7}:$/);
+    await bar.getByTestId('pr-verdict-approve').click();
+    await expect(bar.getByTestId('pr-verdict-approve')).toHaveAttribute('aria-pressed', 'true');
+    const v = (await bazel.api('GET', '/api/verdicts')).json.verdicts['acme/api-core#102'];
+    expect(v.source).toBe('manual');
+    expect(v.head).toMatch(/^[0-9a-f]{40}$/);
+    await expect(bar.getByTestId('pr-verdict-label')).toHaveText(`decide on the current head ${v.head.slice(0, 7)}:`);
+    // With no card in the queue, it is in no summary; a click again takes it back.
+    expect((await bazel.api('GET', '/api/summary')).json.text).toBe('');
+    await bar.getByTestId('pr-verdict-approve').click();
+    await expect(bar.getByTestId('pr-verdict-approve')).toHaveAttribute('aria-pressed', 'false');
+    expect((await bazel.api('GET', '/api/verdicts')).json.verdicts).toEqual({});
+    expect(writes(bazel)).toEqual([]);
   });
 });

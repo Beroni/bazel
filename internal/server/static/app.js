@@ -2384,6 +2384,13 @@ function renderPRPage(body, pr, job, redraw) {
   merge.append(el('b', null, pr.author), document.createTextNode(` wants to merge ${d ? commits.length + ' commit' + (commits.length === 1 ? '' : 's') : 'its commits'} into `),
     el('code', null, pr.base || listed.base || ''), document.createTextNode(' from '), el('code', null, pr.branch || listed.branch || ''));
   main.append(merge);
+  // Deciding by hand, on the head the list read: on a PR Bazel never reviewed,
+  // one that moved since the decision, or one already decided by hand.
+  const v = verdictOf(pr.key);
+  const reviewedHere = listed.reviewed || state.jobs.some((j) => j.pr.key === pr.key && !j.history && j.has_body);
+  if (listed.head_oid && ((v && (v.moved || v.source === 'manual')) || (!v && !reviewedHere))) {
+    main.append(prVerdictBar(pr.key, listed.head_oid));
+  }
   if (listed.changed_since_review) {
     main.append(el('div', 'stale-box', `This PR changed after the review from ${ago(listed.reviewed_at)}`
       + (listed.review_agent ? ` (${listed.review_agent})` : '') + ' — what is here is no longer what the agent read.'));
@@ -3672,47 +3679,93 @@ const VERDICTS = [
 ];
 const verdictOf = (key) => state.verdicts[(key || '').toLowerCase()] || null;
 
+// prDoor is where a decision by hand goes: the server puts it on the head its
+// list says the PR is at, whatever head this page last saw.
+function prDoor(key) {
+  const [repo, number] = key.split('#');
+  return `/api/prs/${repo.split('/').map(encodeURIComponent).join('/')}/${number}/verdict`;
+}
+
+// verdictRow is three decision buttons. mode "review" decides on the head the
+// review read, through its door; "current" decides by hand on the PR's
+// current head. prefix names their testids.
+function verdictRow(key, door, mode, prefix, label) {
+  const row = el('div', 'verdict-row');
+  Object.assign(row.dataset, { prKey: key, door, mode });
+  row.setAttribute('role', 'group');
+  row.setAttribute('aria-label', (mode === 'current' ? 'decide on the current head of ' : 'your decision on ') + key);
+  row.append(tid(el('span', 'dim', label), prefix + 'label'));
+  for (const it of VERDICTS) {
+    const b = tid(el('button', 'btn small', it.label), prefix + it.id);
+    b.dataset.verdict = it.id;
+    b.addEventListener('click', () => pickVerdict(row, it.id));
+    row.append(b);
+  }
+  return row;
+}
+
 // verdictBar is the three buttons under a report. door is where the click goes:
-// the job's, or the saved file's, which knows the head that review read.
+// the job's, or the saved file's, which knows the head that review read. Once
+// the PR moved past the decision, a second row decides on its current head,
+// with no new review.
 function verdictBar(key, door) {
   const bar = tid(el('div', 'verdict-bar'), 'verdict-bar', { prKey: key });
   bar.dataset.door = door;
-  bar.setAttribute('role', 'group');
-  bar.setAttribute('aria-label', 'your decision on ' + key);
-  bar.append(el('span', 'dim', 'Your decision:'));
-  for (const it of VERDICTS) {
-    const b = tid(el('button', 'btn small', it.label), 'verdict-' + it.id);
-    b.dataset.verdict = it.id;
-    b.addEventListener('click', () => pickVerdict(bar, it.id));
-    bar.append(b);
-  }
-  bar.append(tid(el('span', 'verdict-moved'), 'verdict-moved'));
+  bar.append(verdictRow(key, door, 'review', 'verdict-', 'Your decision:'),
+    tid(el('span', 'verdict-moved'), 'verdict-moved'),
+    verdictRow(key, prDoor(key), 'current', 'verdict-current-', ''));
+  fillVerdictBar(bar);
+  return bar;
+}
+
+// prVerdictBar is the decision on the PR's page, on its current head: for a PR
+// Bazel never reviewed (you may have read it yourself), one that moved since
+// the decision, or one decided by hand.
+function prVerdictBar(key, head) {
+  const bar = tid(el('div', 'verdict-bar'), 'pr-verdict', { prKey: key });
+  bar.dataset.always = '1';
+  bar.dataset.head = head;
+  bar.append(verdictRow(key, prDoor(key), 'current', 'pr-verdict-', ''));
   fillVerdictBar(bar);
   return bar;
 }
 
 function fillVerdictBar(bar) {
   const v = verdictOf(bar.dataset.prKey);
-  for (const b of bar.querySelectorAll('button[data-verdict]')) {
-    const on = !!v && v.verdict === b.dataset.verdict;
-    setAttr(b, 'aria-pressed', String(on));
-    b.title = on ? 'click again to take it back' : 'only in Bazel: nothing goes to the PR';
+  const always = !!bar.dataset.always;
+  for (const row of bar.querySelectorAll('.verdict-row')) {
+    const current = row.dataset.mode === 'current';
+    if (current) {
+      row.hidden = !always && !(v && v.moved);
+      const head = (v && v.current) || bar.dataset.head || '';
+      setText(row.firstElementChild, head ? `decide on the current head ${head.slice(0, 7)}:` : 'decide on the current head:');
+    }
+    for (const b of row.querySelectorAll('button[data-verdict]')) {
+      // By hand, the one taken is the one on the current head; under a
+      // review, the one taken whatever its head.
+      const on = !!v && v.verdict === b.dataset.verdict && (!current || (always && !v.moved));
+      setAttr(b, 'aria-pressed', String(on));
+      b.title = on ? 'click again to take it back' : 'only in Bazel: nothing goes to the PR';
+    }
   }
   const moved = bar.querySelector('.verdict-moved');
-  const text = v && v.moved && v.head ? `decided on ${v.head.slice(0, 7)}, PR moved` : '';
-  setText(moved, text);
-  moved.hidden = !text;
+  if (moved) {
+    const text = v && v.moved && v.head ? `decided on ${v.head.slice(0, 7)}, PR moved` : '';
+    setText(moved, text);
+    moved.hidden = !text;
+  }
 }
 
-async function pickVerdict(bar, id) {
-  const v = verdictOf(bar.dataset.prKey);
-  const verdict = v && v.verdict === id ? '' : id; // the one on, again: takes it back
-  const buttons = bar.querySelectorAll('button');
+async function pickVerdict(row, id) {
+  const pressed = row.querySelector(`button[data-verdict="${id}"]`).getAttribute('aria-pressed') === 'true';
+  const verdict = pressed ? '' : id; // the one on, again: takes it back
+  const buttons = row.querySelectorAll('button');
   buttons.forEach((b) => { b.disabled = true; });
   clearAlert();
   try {
-    const out = await api(bar.dataset.door, { method: 'POST', body: JSON.stringify({ verdict }) });
+    const out = await api(row.dataset.door, { method: 'POST', body: JSON.stringify({ verdict }) });
     adoptVerdicts(out.verdicts || {});
+    if (row.onDecided) row.onDecided();
   } catch (err) {
     alertError('Could not record the decision: ' + err.message);
   } finally {
@@ -3735,7 +3788,8 @@ function fillVerdictBadge(badge, job) {
   const v = job.history ? null : verdictOf(job.pr.key);
   const it = v && VERDICTS.find((x) => x.id === v.verdict);
   setText(badge, it ? it.badge : '');
-  setAttr(badge, 'title', it ? 'your decision: ' + it.label.replace(/^\S+ /, '') + (v.moved ? ' (PR moved since)' : '') : '');
+  setAttr(badge, 'title', it ? 'your decision: ' + it.label.replace(/^\S+ /, '')
+    + (v.source === 'manual' ? ' (manual)' : '') + (v.moved ? ' (PR moved since)' : '') : '');
   if (it) badge.dataset.verdict = it.id; else delete badge.dataset.verdict;
   badge.hidden = !it;
 }
@@ -3769,11 +3823,37 @@ async function openSummary() {
   missing.title = left.map((p) => p.key).join('\n');
   missing.hidden = !left.length;
   // Decided before the PR moved: a line would approve commits nobody read, so
-  // they stay out of the text until you decide on the new review.
+  // they stay out of the text until you decide again: keep the decision on the
+  // current head, or change it.
   const movedLine = $('#summary-moved');
   const moved = data.moved || [];
-  movedLine.textContent = moved.length ? 'moved since your decision: ' + moved.map(ref).join(', ') : '';
-  movedLine.title = moved.map((p) => p.key).join('\n');
+  movedLine.replaceChildren();
+  if (moved.length) movedLine.append(el('span', null, 'moved since your decision:'));
+  for (const p of moved) {
+    const item = tid(el('span', 'summary-moved-item'), 'summary-moved-item', { key: p.key });
+    item.title = p.key;
+    const keep = tid(el('button', 'btn small ghost', 'keep'), 'summary-keep');
+    keep.title = 'the same decision, on the head the PR is at now';
+    const change = tid(el('button', 'btn small ghost', 'change'), 'summary-change');
+    change.title = 'decide again, on the head the PR is at now';
+    const row = verdictRow(p.key, prDoor(p.key), 'current', 'summary-change-', '');
+    row.hidden = true;
+    row.onDecided = openSummary;
+    keep.addEventListener('click', async () => {
+      keep.disabled = true;
+      clearAlert();
+      try {
+        adoptVerdicts((await api(prDoor(p.key), { method: 'POST', body: JSON.stringify({ verdict: p.verdict }) })).verdicts);
+        await openSummary();
+      } catch (err) {
+        alertError('Could not record the decision: ' + err.message);
+        keep.disabled = false;
+      }
+    });
+    change.addEventListener('click', () => { row.hidden = !row.hidden; });
+    item.append(el('b', null, ref(p)), keep, change, row);
+    movedLine.append(item);
+  }
   movedLine.hidden = !moved.length;
   // The names come from GitHub; without them the lines still go, and say so.
   const warn = $('#summary-warning');

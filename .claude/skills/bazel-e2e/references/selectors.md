@@ -110,6 +110,7 @@ What the helpers take care of:
 | `job-published` | ✓ published | | |
 | `job-verdict` | your decision's badge (✅, 📝✅, 🔄), hidden with none | `data-verdict` | |
 | `queue-summary` | Summary button (queue tab) | | |
+| `summary-moved-item` (`data-key`), `summary-keep`, `summary-change`, `summary-change-<id>` | a moved PR in the Summary and its quick decisions | | |
 | `summary-dialog`, `summary-text`, `summary-missing`, `summary-moved`, `summary-warning`, `summary-copy`, `summary-close`, `summary-note` | the Summary dialog | | |
 
 ### Review pane
@@ -129,6 +130,8 @@ What the helpers take care of:
 | `verdict-bar` | your decision, under the report (Report and Saved) | `data-pr-key`, `data-door` | |
 | `verdict-approve`, `verdict-approve_with_comments`, `verdict-request_changes` | the three buttons | `aria-pressed` | |
 | `verdict-moved` | decided on <sha7>, PR moved | | |
+| `verdict-current-label`, `verdict-current-<id>` | the row that decides on the current head, shown once the PR moved | `aria-pressed` | |
+| `pr-verdict`, `pr-verdict-label`, `pr-verdict-<id>` | on the PR's page: deciding by hand on the current head (no review in Bazel, moved, or manual) | `data-pr-key` | |
 | `review-footer` | saved to … · clone kept at … | | |
 | `live-log` | log panel | | |
 | `log-pane` | one terminal | `data-agent` | |

@@ -893,6 +893,10 @@ main.no-prs .burger span { background: var(--accent); }
 .verdict-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 24px 0 4px; }
 .verdict-bar .btn[aria-pressed="true"] { color: var(--text); background: var(--accent-soft-2); border-color: var(--accent); }
 .verdict-bar .verdict-moved { color: var(--warn); font-size: 12px; }
+.verdict-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.verdict-row[data-mode="current"] { flex-basis: 100%; }
+.summary-moved { display: flex; flex-direction: column; gap: 6px; color: var(--warn); font-size: 12px; }
+.summary-moved-item { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .card-verdict { flex: none; font-size: 12px; line-height: 1; }
 
 .summary-dialog {
