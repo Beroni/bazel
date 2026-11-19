@@ -85,6 +85,12 @@ test.describe('P1 · your decision on a PR', () => {
     await expect(ui.verdictMoved(viewer)).toHaveText(`decided on ${decided.slice(0, 7)}, PR moved`);
     await expect(ui.verdict(viewer, 'approve')).toHaveAttribute('aria-pressed', 'true');
     await expect(ui.jobVerdict(ui.jobCard(app, RATE))).toHaveText('✅');
+
+    // BUG-QA-38: in the Summary it is no approval: out of the text, listed apart.
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryText(app)).toHaveValue('');
+    await expect(ui.summaryMoved(app)).toHaveText('moved since your decision: #101');
+    expect((await bazel.api('GET', '/api/summary')).json.moved.map((p: any) => p.key)).toEqual(['acme/api-core#101']);
   });
 
   test('Summary: one Slack line per decided PR in card order, each once; the rest listed apart; edit and copy', async ({ app, bazel }) => {

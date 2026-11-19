@@ -3765,6 +3765,13 @@ async function openSummary() {
   missing.textContent = left.length ? 'no decision yet: ' + left.map((p) => '#' + p.number).join(', ') : '';
   missing.title = left.map((p) => p.key).join('\n');
   missing.hidden = !left.length;
+  // Decided before the PR moved: a line would approve commits nobody read, so
+  // they stay out of the text until you decide on the new review.
+  const movedLine = $('#summary-moved');
+  const moved = data.moved || [];
+  movedLine.textContent = moved.length ? 'moved since your decision: ' + moved.map((p) => '#' + p.number).join(', ') : '';
+  movedLine.title = moved.map((p) => p.key).join('\n');
+  movedLine.hidden = !moved.length;
   // The names come from GitHub; without them the lines still go, and say so.
   const warn = $('#summary-warning');
   setText(warn, data.reviewers_error ? 'Reviewers could not be read, so the lines go without them.' : '');

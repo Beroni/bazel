@@ -304,3 +304,44 @@ func TestResumoComGhFalhando(t *testing.T) {
 		t.Errorf("reviewers_error: %q", e)
 	}
 }
+
+// BUG-QA-38: a PR that moved after the decision is not approved in the text:
+// pasted into Slack, the line would vouch for commits nobody read. It goes in
+// a list of its own; deciding again on the new review brings it back.
+func TestResumoDeixaForaOPRQueAndou(t *testing.T) {
+	pr := prAt("acme/api-core", 7, headOne)
+	other := prAt("acme/api-core", 8, headOne)
+	srv, ids := verdictServer(t, other, pr) // cards: pr, other
+	call(t, srv, "POST", "/api/jobs/"+ids[1]+"/verdict", `{"verdict":"approve"}`)
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
+	moved := pr
+	moved.HeadRefOid = headTwo
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{moved, other}
+	srv.prMu.Unlock()
+
+	s := srv.summary(context.Background())
+	if s.Text != other.URL+" :white_check_mark:" {
+		t.Errorf("text: %q", s.Text)
+	}
+	if len(s.Moved) != 1 || s.Moved[0].Key != pr.Key() || !s.Moved[0].Moved {
+		t.Errorf("moved: %+v", s.Moved)
+	}
+	if len(s.Decided) != 2 || !s.Decided[0].Moved {
+		t.Errorf("decided: %+v", s.Decided)
+	}
+
+	// A new review reads the new head; deciding on it puts the line back.
+	ch := srv.hub.Subscribe()
+	defer srv.hub.Unsubscribe(ch)
+	v, err := srv.jobs.Enqueue(moved, false, srv.cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, v.ID, StateDone)
+	call(t, srv, "POST", "/api/jobs/"+v.ID+"/verdict", `{"verdict":"request_changes"}`)
+	s = srv.summary(context.Background())
+	if want := pr.URL + " :git_change_request:\n" + other.URL + " :white_check_mark:"; s.Text != want || len(s.Moved) != 0 {
+		t.Errorf("after deciding again: %q %+v", s.Text, s.Moved)
+	}
+}

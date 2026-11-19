@@ -110,7 +110,7 @@ What the helpers take care of:
 | `job-published` | ✓ published | | |
 | `job-verdict` | your decision's badge (✅, 📝✅, 🔄), hidden with none | `data-verdict` | |
 | `queue-summary` | Summary button (queue tab) | | |
-| `summary-dialog`, `summary-text`, `summary-missing`, `summary-warning`, `summary-copy`, `summary-close`, `summary-note` | the Summary dialog | | |
+| `summary-dialog`, `summary-text`, `summary-missing`, `summary-moved`, `summary-warning`, `summary-copy`, `summary-close`, `summary-note` | the Summary dialog | | |
 
 ### Review pane
 

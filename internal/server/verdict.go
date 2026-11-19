@@ -159,19 +159,22 @@ type summaryPR struct {
 }
 
 // summary is what goes to Slack: one line per PR of the queue with a decision,
-// in the order of the cards, each PR once, with who reviews it; Undecided are
-// the queue's PRs with none, which the text leaves out. ReviewersError says
-// the names could not be read: the lines go without them.
+// in the order of the cards, each PR once, with who reviews it. Undecided are
+// the queue's PRs with none, and Moved the decided ones that moved past the
+// head of the decision: the text leaves both out, since a line there would
+// vouch for commits nobody read. ReviewersError says the names could not be
+// read: the lines go without them.
 type summary struct {
 	Text           string      `json:"text"`
 	Decided        []summaryPR `json:"decided"`
 	Undecided      []summaryPR `json:"undecided"`
+	Moved          []summaryPR `json:"moved"`
 	ReviewersError string      `json:"reviewers_error,omitempty"`
 }
 
 func (s *Server) summary(ctx context.Context) summary {
 	verdicts := s.verdictViews()
-	out := summary{Decided: []summaryPR{}, Undecided: []summaryPR{}}
+	out := summary{Decided: []summaryPR{}, Undecided: []summaryPR{}, Moved: []summaryPR{}}
 	seen := map[string]bool{}
 	var keys []string
 	// Snapshot is the rail's order, newest card first. A history is not a
@@ -204,6 +207,10 @@ func (s *Server) summary(ctx context.Context) summary {
 		}
 	}
 	for _, p := range out.Decided {
+		if p.Moved {
+			out.Moved = append(out.Moved, p)
+			continue
+		}
 		line := store.SlackLine(p.URL, p.Verdict)
 		// Logins with no @: pasted on GitHub, the text mentions nobody.
 		if len(p.Reviewers) > 0 {
