@@ -124,7 +124,8 @@ test.describe('P1 · your decision, edges', () => {
     await app.reload();
     await ui.summaryButton(app).click();
     await expect(ui.summaryText(app)).toHaveValue(group('carol', line('acme/web-app#7', ':git_change_request:')));
-    await expect(app.getByTestId('summary-moved')).toContainText('moved since your decision: #101');
+    await expect(app.getByTestId('summary-moved')).toContainText('moved since your decision');
+    await expect(app.locator(`[data-testid=summary-moved-item][data-key="${K}"]`)).toBeVisible();
     await app.keyboard.press('Escape');
 
     const b = await done(bazel, K);
@@ -379,3 +380,81 @@ test.describe('P1 · a decision by hand on a PR', () => {
     expect(await verdicts(bazel)).toEqual({});
   });
 });
+
+// b0d7f65: deciding again on the current head after a push, from the Summary,
+// the Report and the PR's page.
+test.describe('P1 · deciding again on the current head', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+  test.afterEach(async ({ bazel }) => { expect(writes(bazel)).toEqual([]); });
+
+  async function movedAfterDecision(bazel: Bazel, verdict = 'approve') {
+    await decide(bazel, await done(bazel, K), verdict);
+    bazel.movePR(K);
+    return (await bazel.api('GET', '/api/prs?refresh=1')).json.prs.find((p: any) => p.key === K).head_oid as string;
+  }
+  const item = (app: any) => app.locator(`[data-testid=summary-moved-item][data-key="${K}"]`);
+
+  test('Summary keep: the same decision on the new head, back in the text, manual', async ({ app, bazel }) => {
+    const head = await movedAfterDecision(bazel, 'request_changes');
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryText(app)).toHaveValue('');
+    await item(app).getByTestId('summary-keep').click();
+    await expect(ui.summaryText(app)).toHaveValue(group('alice', line(K, ':git_change_request:')));
+    await expect(item(app)).toHaveCount(0);
+    expect((await verdicts(bazel))[K]).toMatchObject({ verdict: 'request_changes', head, source: 'manual' });
+    expect((await verdicts(bazel))[K].moved ?? false).toBe(false);
+  });
+
+  test('Summary change: another decision on the new head, and the text follows', async ({ app, bazel }) => {
+    const head = await movedAfterDecision(bazel);
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await item(app).getByTestId('summary-change').click();
+    await item(app).getByTestId('summary-change-approve_with_comments').click();
+    await expect(ui.summaryText(app)).toHaveValue(group('alice', line(K, ':memo::white_check_mark:')));
+    expect((await verdicts(bazel))[K]).toMatchObject({ verdict: 'approve_with_comments', head });
+  });
+
+  test('the Report offers the current head only once the PR moved, and its buttons decide there', async ({ app, bazel }) => {
+    await decide(bazel, await done(bazel, K), 'approve');
+    await app.reload();
+    let v = await openJob(app, RATE);
+    await expect(v.getByTestId('verdict-current-label')).toBeHidden();
+    bazel.movePR(K);
+    const head = (await bazel.api('GET', '/api/prs?refresh=1')).json.prs.find((p: any) => p.key === K).head_oid;
+    await app.reload();
+    v = await openJob(app, RATE);
+    await expect(v.getByTestId('verdict-current-label')).toContainText(head.slice(0, 7));
+    await v.getByTestId('verdict-current-request_changes').click();
+    await expect.poll(async () => (await verdicts(bazel))[K]?.verdict).toBe('request_changes');
+    expect((await verdicts(bazel))[K]).toMatchObject({ head, source: 'manual' });
+    await expect(v.getByTestId('verdict-current-label')).toBeHidden();
+    await expect(ui.jobVerdict(ui.jobCard(app, RATE))).toHaveAttribute('title', /manual/);
+  });
+
+  test('the PR page decides on a PR Bazel never reviewed, and hides the bar on one decided by its review', async ({ app, bazel }) => {
+    await ui.prRow(app, 'Dark mode toggle in settings').getByText('Dark mode toggle in settings').click();
+    const bar = app.getByTestId('pr-verdict');
+    await expect(bar).toBeVisible();
+    await bar.getByTestId('pr-verdict-approve').click();
+    await expect.poll(async () => (await verdicts(bazel))['acme/web-app#7']?.source).toBe('manual');
+    await expect(bar.getByTestId('pr-verdict-approve')).toHaveAttribute('aria-pressed', 'true');
+
+    await decide(bazel, await done(bazel, K), 'approve');
+    await app.reload();
+    await ui.prRow(app, RATE).getByText(RATE).click();
+    await expect(app.getByTestId('pr-page')).toHaveAttribute('data-pr-key', K);
+    await expect(app.getByTestId('pr-verdict')).toHaveCount(0);
+  });
+
+  test('the client\'s head is never used, and a PR the list does not know cannot be decided by hand', async ({ bazel }) => {
+    await bazel.api('GET', '/api/prs');
+    const door = (key: string) => `/api/prs/${key.replace('#', '/')}/verdict`;
+    expect((await bazel.api('POST', door('acme/api-core#abc'), { verdict: 'approve' })).status).toBe(400);
+    const cross = await bazel.rawRequest('POST', door(K), { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'cross-site' }, JSON.stringify({ verdict: 'approve' }));
+    expect(cross.status).toBe(403);
+    expect(await verdicts(bazel)).toEqual({});
+  });
+});
+
