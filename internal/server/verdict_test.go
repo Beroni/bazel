@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -160,18 +161,27 @@ func TestDecisaoDePRQueAndou(t *testing.T) {
 	}
 }
 
-// The summary: one line per PR of the queue with a decision, in the order of the
-// cards (newest first), each PR once however many jobs it has; the PRs with no
-// decision are listed apart and stay out of the text.
+// The summary's text goes by the PR's author, A to Z without regard to case and
+// "unknown" last, a header line each and a blank line between groups; within a
+// group by repository, then number. Each PR comes once however many jobs it
+// has, and the PRs with no decision are listed apart, by repository and number.
+func by(pr gh.PR, author string) gh.PR {
+	pr.Author.Login = author
+	return pr
+}
+
 func TestResumo(t *testing.T) {
-	a := prAt("klever-io/klever-go", 195, headOne)
-	b := prAt("klever-io/klever-go-security", 215, headOne)
-	c := prAt("klever-io/klever-go", 206, headOne)
-	d := prAt("klever-io/klever-go", 300, headOne)
-	// Cards, newest first: d, c, a (again), b, a.
-	srv, ids := verdictServer(t, a, b, a, c, d)
-	for id, v := range map[string]string{ids[3]: "approve", ids[1]: "request_changes", ids[0]: "approve_with_comments"} {
-		if code, out := call(t, srv, "POST", "/api/jobs/"+id+"/verdict", `{"verdict":"`+v+`"}`); code != http.StatusOK {
+	sec213 := by(prAt("klever-io/klever-go-security", 213, headOne), "fbsobreira")
+	go206 := by(prAt("klever-io/klever-go", 206, headOne), "RomuloSiebra")
+	go203 := by(prAt("klever-io/klever-go", 203, headOne), "fbsobreira")
+	go195 := by(prAt("klever-io/klever-go", 195, headOne), "FBSobreira")
+	lost := by(prAt("acme/zeta", 1, headOne), "")
+	none2 := by(prAt("klever-io/klever-go", 300, headOne), "zed")
+	none1 := by(prAt("acme/api-core", 9, headOne), "zed")
+	// Cards, newest first: none1, none2, lost, go195, go203, go195 (again), go206, sec213.
+	srv, ids := verdictServer(t, sec213, go206, go195, go203, go195, lost, none2, none1)
+	for i, v := range map[int]string{0: "approve", 1: "approve", 3: "request_changes", 4: "request_changes", 5: "approve_with_comments"} {
+		if code, out := call(t, srv, "POST", "/api/jobs/"+ids[i]+"/verdict", `{"verdict":"`+v+`"}`); code != http.StatusOK {
 			t.Fatalf("%s: %d %v", v, code, out)
 		}
 	}
@@ -179,18 +189,31 @@ func TestResumo(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("%d %v", code, out)
 	}
-	want := "https://github.com/klever-io/klever-go/pull/206 :white_check_mark:\n" +
-		"https://github.com/klever-io/klever-go/pull/195 :memo::white_check_mark:\n" +
-		"https://github.com/klever-io/klever-go-security/pull/215 :git_change_request:"
+	want := "FBSobreira\n" +
+		"https://github.com/klever-io/klever-go/pull/195 :git_change_request:\n" +
+		"https://github.com/klever-io/klever-go/pull/203 :git_change_request:\n" +
+		"https://github.com/klever-io/klever-go-security/pull/213 :white_check_mark:\n" +
+		"\n" +
+		"RomuloSiebra\n" +
+		"https://github.com/klever-io/klever-go/pull/206 :white_check_mark:\n" +
+		"\n" +
+		"unknown\n" +
+		"https://github.com/acme/zeta/pull/1 :memo::white_check_mark:"
 	if out["text"] != want {
 		t.Errorf("text:\n%v\nwant:\n%s", out["text"], want)
 	}
-	undecided, _ := out["undecided"].([]any)
-	if len(undecided) != 1 || undecided[0].(map[string]any)["number"] != float64(300) {
-		t.Errorf("undecided: %v", out["undecided"])
+	keys := func(field string) []string {
+		var ks []string
+		for _, p := range out[field].([]any) {
+			ks = append(ks, p.(map[string]any)["key"].(string))
+		}
+		return ks
 	}
-	if decided, _ := out["decided"].([]any); len(decided) != 3 {
-		t.Errorf("decided: %v", out["decided"])
+	if got, want := keys("decided"), []string{go195.Key(), go203.Key(), sec213.Key(), go206.Key(), lost.Key()}; !slices.Equal(got, want) {
+		t.Errorf("decided: %v, want %v", got, want)
+	}
+	if got, want := keys("undecided"), []string{none1.Key(), none2.Key()}; !slices.Equal(got, want) {
+		t.Errorf("undecided: %v, want %v", got, want)
 	}
 }
 
@@ -262,7 +285,7 @@ func TestResumoComReviewers(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("%d %v", code, out)
 	}
-	want := a.URL + " :white_check_mark: — fbsobreira, klever-io/core, RomuloSiebra\n" + b.URL + " :git_change_request:"
+	want := "maria\n" + b.URL + " :git_change_request:\n" + a.URL + " :white_check_mark: — fbsobreira, klever-io/core, RomuloSiebra"
 	if out["text"] != want {
 		t.Errorf("text:\n%v\nwant:\n%s", out["text"], want)
 	}
@@ -270,7 +293,7 @@ func TestResumoComReviewers(t *testing.T) {
 		t.Error("a login with @ would mention someone")
 	}
 	decided := out["decided"].([]any)
-	if r := decided[0].(map[string]any)["reviewers"]; len(r.([]any)) != 3 {
+	if r := decided[1].(map[string]any)["reviewers"]; len(r.([]any)) != 3 {
 		t.Errorf("reviewers in the API: %v", r)
 	}
 	if out["reviewers_error"] != nil {
@@ -297,7 +320,7 @@ func TestResumoComGhFalhando(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("%d %v", code, out)
 	}
-	if out["text"] != pr.URL+" :white_check_mark:" {
+	if out["text"] != "maria\n"+pr.URL+" :white_check_mark:" {
 		t.Errorf("text: %v", out["text"])
 	}
 	if e, _ := out["reviewers_error"].(string); !strings.HasPrefix(e, "reviewers could not be read") {
@@ -321,7 +344,7 @@ func TestResumoDeixaForaOPRQueAndou(t *testing.T) {
 	srv.prMu.Unlock()
 
 	s := srv.summary(context.Background())
-	if s.Text != other.URL+" :white_check_mark:" {
+	if s.Text != "maria\n"+other.URL+" :white_check_mark:" {
 		t.Errorf("text: %q", s.Text)
 	}
 	if len(s.Moved) != 1 || s.Moved[0].Key != pr.Key() || !s.Moved[0].Moved {
@@ -341,7 +364,7 @@ func TestResumoDeixaForaOPRQueAndou(t *testing.T) {
 	waitFor(t, ch, v.ID, StateDone)
 	call(t, srv, "POST", "/api/jobs/"+v.ID+"/verdict", `{"verdict":"request_changes"}`)
 	s = srv.summary(context.Background())
-	if want := pr.URL + " :git_change_request:\n" + other.URL + " :white_check_mark:"; s.Text != want || len(s.Moved) != 0 {
+	if want := "maria\n" + pr.URL + " :git_change_request:\n" + other.URL + " :white_check_mark:"; s.Text != want || len(s.Moved) != 0 {
 		t.Errorf("after deciding again: %q %+v", s.Text, s.Moved)
 	}
 }

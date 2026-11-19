@@ -1,12 +1,14 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -151,7 +153,9 @@ func readVerdict(w http.ResponseWriter, r *http.Request) (string, error) {
 // summaryPR is a PR of the queue in the summary.
 type summaryPR struct {
 	Key       string   `json:"key"`
+	Repo      string   `json:"repo"`
 	Number    int      `json:"number"`
+	Author    string   `json:"author,omitempty"`
 	URL       string   `json:"url"`
 	Verdict   string   `json:"verdict,omitempty"`
 	Moved     bool     `json:"moved,omitempty"`
@@ -159,7 +163,7 @@ type summaryPR struct {
 }
 
 // summary is what goes to Slack: one line per PR of the queue with a decision,
-// in the order of the cards, each PR once, with who reviews it. Undecided are
+// each PR once, with who reviews it, grouped under its author. Undecided are
 // the queue's PRs with none, and Moved the decided ones that moved past the
 // head of the decision: the text leaves both out, since a line there would
 // vouch for commits nobody read. ReviewersError says the names could not be
@@ -186,7 +190,7 @@ func (s *Server) summary(ctx context.Context) summary {
 		}
 		seen[k] = true
 		keys = append(keys, j.PR.Key)
-		p := summaryPR{Key: j.PR.Key, Number: j.PR.Number, URL: prURL(j.PR), Reviewers: []string{}}
+		p := summaryPR{Key: j.PR.Key, Repo: j.PR.Repo, Number: j.PR.Number, Author: j.PR.Author, URL: prURL(j.PR), Reviewers: []string{}}
 		if v, ok := verdicts[k]; ok {
 			p.Verdict, p.Moved = v.Verdict, v.Moved
 			out.Decided = append(out.Decided, p)
@@ -206,6 +210,12 @@ func (s *Server) summary(ctx context.Context) summary {
 			}
 		}
 	}
+	// The text goes by the PR's author, A to Z with "unknown" last, and within
+	// an author by repository and number; the lists apart by repository and
+	// number. The API answers in the same order.
+	sortPRs(out.Decided, true)
+	sortPRs(out.Undecided, false)
+	var groups []string
 	for _, p := range out.Decided {
 		if p.Moved {
 			out.Moved = append(out.Moved, p)
@@ -216,10 +226,52 @@ func (s *Server) summary(ctx context.Context) summary {
 		if len(p.Reviewers) > 0 {
 			line += " — " + strings.Join(p.Reviewers, ", ")
 		}
+		// A login is one person whatever its case: one group, headed by the
+		// spelling of its first PR.
+		if author := authorOf(p); len(groups) == 0 || !strings.EqualFold(groups[len(groups)-1], author) {
+			if len(lines) > 0 {
+				lines = append(lines, "")
+			}
+			groups = append(groups, author)
+			lines = append(lines, author)
+		}
 		lines = append(lines, line)
 	}
+	sortPRs(out.Moved, false)
 	out.Text = strings.Join(lines, "\n")
 	return out
+}
+
+// unknownAuthor heads the group of PRs whose author Bazel does not know.
+const unknownAuthor = "unknown"
+
+func authorOf(p summaryPR) string {
+	if p.Author == "" {
+		return unknownAuthor
+	}
+	return p.Author
+}
+
+// sortPRs orders the summary's PRs by repository, then number; byAuthor puts
+// the author first, case aside, with the unknown ones last.
+func sortPRs(list []summaryPR, byAuthor bool) {
+	slices.SortStableFunc(list, func(a, b summaryPR) int {
+		if byAuthor {
+			if ua, ub := a.Author == "", b.Author == ""; ua != ub {
+				if ua {
+					return 1
+				}
+				return -1
+			}
+			if c := strings.Compare(strings.ToLower(a.Author), strings.ToLower(b.Author)); c != 0 {
+				return c
+			}
+		}
+		if c := strings.Compare(strings.ToLower(a.Repo), strings.ToLower(b.Repo)); c != 0 {
+			return c
+		}
+		return cmp.Compare(a.Number, b.Number)
+	})
 }
 
 // reviewersTTL is how long a read of who reviews a PR serves, as the Needs

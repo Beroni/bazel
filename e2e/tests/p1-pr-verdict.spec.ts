@@ -93,7 +93,7 @@ test.describe('P1 · your decision on a PR', () => {
     expect((await bazel.api('GET', '/api/summary')).json.moved.map((p: any) => p.key)).toEqual(['acme/api-core#101']);
   });
 
-  test('Summary: one Slack line per decided PR in card order, each once; the rest listed apart; edit and copy', async ({ app, bazel }) => {
+  test('Summary: one Slack line per decided PR, grouped by author, each once; the rest listed apart; edit and copy', async ({ app, bazel }) => {
     const a = await reviewed(bazel, 'acme/api-core#101');
     const b = await reviewed(bazel, 'acme/api-core#102');
     const c = await reviewed(bazel, 'acme/web-app#7');
@@ -104,9 +104,9 @@ test.describe('P1 · your decision on a PR', () => {
     await decide(c.id, 'approve_with_comments');
     await decide(a2.id, 'request_changes'); // the PR's decision, from either card
 
-    // Cards, newest first: 101 (again), web-app#7, 102, 101.
-    // #101's fixture asks bob and has carol's approval.
-    const text = `${a.url} :git_change_request: — bob, carol\n${c.url} :memo::white_check_mark:`;
+    // By the PR's author (alice opened #101, carol web-app#7), then repo and
+    // number; #101's fixture asks bob and has carol's approval.
+    const text = `alice\n${a.url} :git_change_request: — bob, carol\n\ncarol\n${c.url} :memo::white_check_mark:`;
     const summary = (await bazel.api('GET', '/api/summary')).json;
     expect(summary.text).toBe(text);
     expect(summary.undecided.map((p: any) => p.key)).toEqual(['acme/api-core#102']);
@@ -169,13 +169,13 @@ test.describe('P1 · your decision on a PR', () => {
     for (const [id, verdict] of [[a.id, 'approve'], [c.id, 'request_changes']]) {
       expect((await bazel.api('POST', `/api/jobs/${id}/verdict`, { verdict })).status).toBe(200);
     }
-    const text = `${c.url} :git_change_request:\n${a.url} :white_check_mark: — bob, acme/core, carol`;
+    const text = `alice\n${a.url} :white_check_mark: — bob, acme/core, carol\n\ncarol\n${c.url} :git_change_request:`;
     await app.reload();
     await ui.summaryButton(app).click();
     await expect(ui.summaryText(app)).toHaveValue(text);
     await expect(ui.summaryWarning(app)).toBeHidden();
     const summary = (await bazel.api('GET', '/api/summary')).json;
-    expect(summary.decided.map((p: any) => p.reviewers)).toEqual([[], ['bob', 'acme/core', 'carol']]);
+    expect(summary.decided.map((p: any) => p.reviewers)).toEqual([['bob', 'acme/core', 'carol'], []]);
     expect(summary.text).not.toContain('@');
 
     // A gh that fails, for a PR not read in the last minute: the lines go
@@ -184,7 +184,7 @@ test.describe('P1 · your decision on a PR', () => {
     bazel.setGh({ fail: { reviewers: 'HTTP 502: Bad Gateway' } });
     await reviewed(bazel, 'acme/web-app#8');
     await ui.summaryButton(app).click();
-    await expect(ui.summaryText(app)).toHaveValue(`${c.url} :git_change_request:\n${a.url} :white_check_mark:`);
+    await expect(ui.summaryText(app)).toHaveValue(`alice\n${a.url} :white_check_mark:\n\ncarol\n${c.url} :git_change_request:`);
     await expect(ui.summaryWarning(app)).toHaveText('Reviewers could not be read, so the lines go without them.');
     expect(writes(bazel)).toEqual([]);
   });
@@ -209,6 +209,6 @@ test.describe('P1 · your decision on a PR', () => {
     await reviewed(bazel, 'acme/web-app#7');
     await app.reload();
     await ui.summaryButton(app).click();
-    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: #7, globex/api-core#101, acme/api-core#101');
+    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: acme/api-core#101, #7, globex/api-core#101');
   });
 });
