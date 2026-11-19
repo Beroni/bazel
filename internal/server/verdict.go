@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,27 +150,30 @@ func readVerdict(w http.ResponseWriter, r *http.Request) (string, error) {
 
 // summaryPR is a PR of the queue in the summary.
 type summaryPR struct {
-	Key     string `json:"key"`
-	Number  int    `json:"number"`
-	URL     string `json:"url"`
-	Verdict string `json:"verdict,omitempty"`
-	Moved   bool   `json:"moved,omitempty"`
+	Key       string   `json:"key"`
+	Number    int      `json:"number"`
+	URL       string   `json:"url"`
+	Verdict   string   `json:"verdict,omitempty"`
+	Moved     bool     `json:"moved,omitempty"`
+	Reviewers []string `json:"reviewers"`
 }
 
 // summary is what goes to Slack: one line per PR of the queue with a decision,
-// in the order of the cards, each PR once; Undecided are the queue's PRs with
-// none, which the text leaves out.
+// in the order of the cards, each PR once, with who reviews it; Undecided are
+// the queue's PRs with none, which the text leaves out. ReviewersError says
+// the names could not be read: the lines go without them.
 type summary struct {
-	Text      string      `json:"text"`
-	Decided   []summaryPR `json:"decided"`
-	Undecided []summaryPR `json:"undecided"`
+	Text           string      `json:"text"`
+	Decided        []summaryPR `json:"decided"`
+	Undecided      []summaryPR `json:"undecided"`
+	ReviewersError string      `json:"reviewers_error,omitempty"`
 }
 
-func (s *Server) summary() summary {
+func (s *Server) summary(ctx context.Context) summary {
 	verdicts := s.verdictViews()
 	out := summary{Decided: []summaryPR{}, Undecided: []summaryPR{}}
 	seen := map[string]bool{}
-	var lines []string
+	var keys []string
 	// Snapshot is the rail's order, newest card first. A history is not a
 	// review: nobody decides on it.
 	for _, j := range s.jobs.Snapshot() {
@@ -178,18 +182,85 @@ func (s *Server) summary() summary {
 			continue
 		}
 		seen[k] = true
-		p := summaryPR{Key: j.PR.Key, Number: j.PR.Number, URL: prURL(j.PR)}
-		v, ok := verdicts[k]
-		if !ok {
+		keys = append(keys, j.PR.Key)
+		p := summaryPR{Key: j.PR.Key, Number: j.PR.Number, URL: prURL(j.PR), Reviewers: []string{}}
+		if v, ok := verdicts[k]; ok {
+			p.Verdict, p.Moved = v.Verdict, v.Moved
+			out.Decided = append(out.Decided, p)
+		} else {
 			out.Undecided = append(out.Undecided, p)
-			continue
 		}
-		p.Verdict, p.Moved = v.Verdict, v.Moved
-		out.Decided = append(out.Decided, p)
-		lines = append(lines, store.SlackLine(p.URL, v.Verdict))
+	}
+	names, err := s.reviewersOf(ctx, keys)
+	if err != nil {
+		out.ReviewersError = "reviewers could not be read: " + err.Error()
+	}
+	lines := make([]string, 0, len(out.Decided))
+	for _, list := range [][]summaryPR{out.Decided, out.Undecided} {
+		for i := range list {
+			if n := names[strings.ToLower(list[i].Key)]; n != nil {
+				list[i].Reviewers = n
+			}
+		}
+	}
+	for _, p := range out.Decided {
+		line := store.SlackLine(p.URL, p.Verdict)
+		// Logins with no @: pasted on GitHub, the text mentions nobody.
+		if len(p.Reviewers) > 0 {
+			line += " — " + strings.Join(p.Reviewers, ", ")
+		}
+		lines = append(lines, line)
 	}
 	out.Text = strings.Join(lines, "\n")
 	return out
+}
+
+// reviewersTTL is how long a read of who reviews a PR serves, as the Needs
+// you page does: the summary is opened, edited, opened again.
+const reviewersTTL = time.Minute
+
+type reviewersEntry struct {
+	names []string
+	at    time.Time
+}
+
+// reviewersOf is who reviews each PR, by lower-case key: what was read in the
+// last minute, and one gh read for the rest. A failed read gives no names.
+func (s *Server) reviewersOf(ctx context.Context, keys []string) (map[string][]string, error) {
+	out := map[string][]string{}
+	var missing []string
+	s.revMu.Lock()
+	for _, key := range keys {
+		k := strings.ToLower(key)
+		if e, ok := s.reviewers[k]; ok && time.Since(e.at) < reviewersTTL {
+			out[k] = e.names
+		} else {
+			missing = append(missing, key)
+		}
+	}
+	s.revMu.Unlock()
+	if len(missing) == 0 {
+		return out, nil
+	}
+	got, err := s.fetchReviewers(ctx, missing, s.me)
+	if err != nil {
+		return map[string][]string{}, err
+	}
+	now := time.Now()
+	s.revMu.Lock()
+	for key, names := range got {
+		k := strings.ToLower(key)
+		s.reviewers[k] = reviewersEntry{names: names, at: now}
+		out[k] = names
+	}
+	// The cache only keeps what a summary may still ask for.
+	for k, e := range s.reviewers {
+		if time.Since(e.at) >= reviewersTTL {
+			delete(s.reviewers, k)
+		}
+	}
+	s.revMu.Unlock()
+	return out, nil
 }
 
 // prURL is the PR's page, from gh or, without one, from its key.
@@ -201,5 +272,5 @@ func prURL(pr prView) string {
 }
 
 func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, s.summary())
+	writeJSON(w, http.StatusOK, s.summary(r.Context()))
 }

@@ -902,3 +902,4 @@ main.no-prs .burger span { background: var(--accent); }
   font: 12.5px/1.5 var(--mono); color: var(--text); background: var(--panel-2);
   border: 1px solid var(--line); border-radius: var(--radius-md);
 }
+.summary-dialog .summary-warning { color: var(--warn); font-size: 12px; }

@@ -349,6 +349,8 @@ func apiCall(args []string) int {
 		return apiList(args)
 	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelNeedsYou") }):
 		return apiNeeds(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelReviewers(") }):
+		return apiReviewers(args)
 	case len(args) > 2 && args[1] == "graphql":
 		return apiThreads(args)
 	case len(args) == 6 && reactionsRe.MatchString(args[3]):
@@ -447,6 +449,84 @@ func apiNeeds(args []string) int {
 	}
 	os.Stdout.Write(b)
 	return 0
+}
+
+// apiReviewers answers the summary's read of who reviews each PR: aliases
+// p0…pN, each by its variables o<i>, n<i> and p<i>, from the PRs' fixtures.
+// A PR not in them is null, as GitHub answers one it cannot resolve.
+func apiReviewers(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	if failed("reviewers") {
+		return 1
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		number, err := strconv.Atoi(vars[fmt.Sprintf("p%d", i)])
+		if err != nil {
+			return unsupported(args)
+		}
+		alias := fmt.Sprintf("p%d", i)
+		pr, found := find(owner+"/"+vars[fmt.Sprintf("n%d", i)], number)
+		if !found {
+			data[alias] = map[string]any{"pullRequest": nil}
+			continue
+		}
+		data[alias] = map[string]any{"pullRequest": map[string]any{
+			"author":         map[string]string{"login": pr.Author.Login},
+			"reviewRequests": map[string]any{"nodes": requestNodes(pr.ReviewRequests)},
+			"latestReviews":  map[string]any{"nodes": reviewNodes(pr.LatestReviews)},
+		}}
+	}
+	out, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Println(string(out))
+	return 0
+}
+
+// requestNodes turns the fixture's reviewRequests (gh pr view's shape: a
+// login, or a team's slug with its organization) into GraphQL's nodes.
+func requestNodes(list []any) []any {
+	nodes := []any{}
+	for _, it := range list {
+		r, _ := it.(map[string]any)
+		who := map[string]any{"__typename": "User", "login": r["login"]}
+		if t, ok := r["__typename"].(string); ok {
+			who["__typename"] = t
+		}
+		if slug, ok := r["slug"]; ok {
+			who = map[string]any{"__typename": "Team", "slug": slug, "organization": r["organization"]}
+		}
+		nodes = append(nodes, map[string]any{"requestedReviewer": who})
+	}
+	return nodes
+}
+
+// reviewNodes does the same for latestReviews: a login with no type is a User.
+func reviewNodes(list []any) []any {
+	nodes := []any{}
+	for _, it := range list {
+		r, _ := it.(map[string]any)
+		author, _ := r["author"].(map[string]any)
+		who := map[string]any{"__typename": "User", "login": author["login"]}
+		if t, ok := author["__typename"].(string); ok {
+			who["__typename"] = t
+		}
+		nodes = append(nodes, map[string]any{"state": r["state"], "author": who})
+	}
+	return nodes
 }
 
 func apiThreads(args []string) int {

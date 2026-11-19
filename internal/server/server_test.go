@@ -425,6 +425,11 @@ func newTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// The summary reads who reviews each PR: never from the real gh. A test
+	// that wants the names sets its own, over a fake gh.
+	srv.fetchReviewers = func(context.Context, []string, string) (map[string][]string, error) {
+		return map[string][]string{}, nil
+	}
 	return srv
 }
 

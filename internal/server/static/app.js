@@ -3765,6 +3765,11 @@ async function openSummary() {
   missing.textContent = left.length ? 'no decision yet: ' + left.map((p) => '#' + p.number).join(', ') : '';
   missing.title = left.map((p) => p.key).join('\n');
   missing.hidden = !left.length;
+  // The names come from GitHub; without them the lines still go, and say so.
+  const warn = $('#summary-warning');
+  setText(warn, data.reviewers_error ? 'Reviewers could not be read, so the lines go without them.' : '');
+  warn.title = data.reviewers_error || '';
+  warn.hidden = !data.reviewers_error;
   if (!dlg.open) dlg.showModal();
   text.focus();
 }

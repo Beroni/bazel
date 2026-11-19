@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -154,7 +155,7 @@ func TestDecisaoDePRQueAndou(t *testing.T) {
 	if !v.Moved || v.Verdict != store.VerdictApprove || v.Head != headOne {
 		t.Errorf("the PR moved: %+v", v)
 	}
-	if s := srv.summary(); len(s.Decided) != 1 || !s.Decided[0].Moved {
+	if s := srv.summary(context.Background()); len(s.Decided) != 1 || !s.Decided[0].Moved {
 		t.Errorf("summary: %+v", s)
 	}
 }
@@ -196,7 +197,7 @@ func TestResumo(t *testing.T) {
 // With nothing decided, the text is empty and every PR waits.
 func TestResumoSemDecisao(t *testing.T) {
 	srv, _ := verdictServer(t, prAt("acme/api-core", 7, headOne))
-	s := srv.summary()
+	s := srv.summary(context.Background())
 	if s.Text != "" || len(s.Decided) != 0 || len(s.Undecided) != 1 {
 		t.Errorf("%+v", s)
 	}
@@ -226,5 +227,80 @@ func TestDecisaoNoHeadRevisadoNaoNoListado(t *testing.T) {
 	srv.prMu.Unlock()
 	if v := srv.verdictViews()[strings.ToLower(listed.Key())]; v.Moved {
 		t.Errorf("the PR is where the review read it, yet: %+v", v)
+	}
+}
+
+// The summary names who reviews each decided PR, from one read over a fake gh:
+// requests pending and reviews, each once, without the author, the user, bots
+// or a dismissed review, and a team by org/slug. No @: pasted on GitHub, the
+// text mentions nobody. A PR with nobody keeps its line as it was.
+func TestResumoComReviewers(t *testing.T) {
+	answer := filepath.Join(t.TempDir(), "answer.json")
+	if err := os.WriteFile(answer, []byte(`{"data":{
+ "p0":{"pullRequest":{"author":{"login":"maria"},
+  "reviewRequests":{"nodes":[{"requestedReviewer":{"__typename":"User","login":"fbsobreira"}},
+   {"requestedReviewer":{"__typename":"Team","slug":"core","organization":{"login":"klever-io"}}},
+   {"requestedReviewer":{"__typename":"User","login":"beroni"}}]},
+  "latestReviews":{"nodes":[{"state":"APPROVED","author":{"__typename":"User","login":"RomuloSiebra"}},
+   {"state":"COMMENTED","author":{"__typename":"User","login":"FBSOBREIRA"}},
+   {"state":"COMMENTED","author":{"__typename":"User","login":"maria"}},
+   {"state":"COMMENTED","author":{"__typename":"Bot","login":"coderabbitai"}},
+   {"state":"DISMISSED","author":{"__typename":"User","login":"gone"}}]}}},
+ "p1":{"pullRequest":{"author":{"login":"maria"},"reviewRequests":{"nodes":[]},"latestReviews":{"nodes":[]}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	log := ghFalso(t, "cat "+answer)
+	a := prAt("klever-io/klever-go", 206, headOne)
+	b := prAt("klever-io/klever-go", 195, headOne)
+	srv, ids := verdictServer(t, b, a) // cards: a, b
+	srv.fetchReviewers = gh.FetchReviewers
+	call(t, srv, "POST", "/api/jobs/"+ids[1]+"/verdict", `{"verdict":"approve"}`)
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"request_changes"}`)
+	before := contaNoLog(log, "start")
+
+	code, out := call(t, srv, "GET", "/api/summary", "")
+	if code != http.StatusOK {
+		t.Fatalf("%d %v", code, out)
+	}
+	want := a.URL + " :white_check_mark: — fbsobreira, klever-io/core, RomuloSiebra\n" + b.URL + " :git_change_request:"
+	if out["text"] != want {
+		t.Errorf("text:\n%v\nwant:\n%s", out["text"], want)
+	}
+	if strings.Contains(out["text"].(string), "@") {
+		t.Error("a login with @ would mention someone")
+	}
+	decided := out["decided"].([]any)
+	if r := decided[0].(map[string]any)["reviewers"]; len(r.([]any)) != 3 {
+		t.Errorf("reviewers in the API: %v", r)
+	}
+	if out["reviewers_error"] != nil {
+		t.Errorf("error: %v", out["reviewers_error"])
+	}
+	if n := contaNoLog(log, "start") - before; n != 1 {
+		t.Errorf("%d gh reads for the summary, want one", n)
+	}
+	// Opened again within the minute: no new read.
+	call(t, srv, "GET", "/api/summary", "")
+	if n := contaNoLog(log, "start") - before; n != 1 {
+		t.Errorf("the second summary read gh again (%d)", n)
+	}
+}
+
+// gh failing leaves the names out and says so; the summary still comes.
+func TestResumoComGhFalhando(t *testing.T) {
+	ghFalso(t, "echo 'HTTP 502: Bad Gateway' >&2; exit 1")
+	pr := prAt("acme/api-core", 7, headOne)
+	srv, ids := verdictServer(t, pr)
+	srv.fetchReviewers = gh.FetchReviewers
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
+	code, out := call(t, srv, "GET", "/api/summary", "")
+	if code != http.StatusOK {
+		t.Fatalf("%d %v", code, out)
+	}
+	if out["text"] != pr.URL+" :white_check_mark:" {
+		t.Errorf("text: %v", out["text"])
+	}
+	if e, _ := out["reviewers_error"].(string); !strings.HasPrefix(e, "reviewers could not be read") {
+		t.Errorf("reviewers_error: %q", e)
 	}
 }

@@ -110,6 +110,12 @@ type Server struct {
 	// second read from starting while one is out.
 	needsMu sync.Mutex
 	needs   needsCache
+
+	// reviewers caches who reviews each PR of the summary, briefly;
+	// fetchReviewers is gh's, or a test's.
+	revMu          sync.Mutex
+	reviewers      map[string]reviewersEntry
+	fetchReviewers func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -135,20 +141,22 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
 	}
 	return &Server{
-		instance:     instance,
-		details:      map[string]detailsEntry{},
-		reading:      map[string]*detailsRead{},
-		fetchSlot:    make(chan struct{}, 1),
-		retried:      map[string]time.Time{},
-		fetchDetails: gh.GetDetails,
-		cfg:          cfg,
-		me:           me,
-		reviewsDir:   reviewsDir,
-		configPath:   configPath,
-		opts:         opts,
-		hub:          hub,
-		jobs:         jobs,
-		done:         make(chan struct{}),
+		instance:       instance,
+		details:        map[string]detailsEntry{},
+		reading:        map[string]*detailsRead{},
+		fetchSlot:      make(chan struct{}, 1),
+		retried:        map[string]time.Time{},
+		fetchDetails:   gh.GetDetails,
+		reviewers:      map[string]reviewersEntry{},
+		fetchReviewers: gh.FetchReviewers,
+		cfg:            cfg,
+		me:             me,
+		reviewsDir:     reviewsDir,
+		configPath:     configPath,
+		opts:           opts,
+		hub:            hub,
+		jobs:           jobs,
+		done:           make(chan struct{}),
 	}, nil
 }
 

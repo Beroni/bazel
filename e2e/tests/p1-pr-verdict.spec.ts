@@ -99,7 +99,8 @@ test.describe('P1 · your decision on a PR', () => {
     await decide(a2.id, 'request_changes'); // the PR's decision, from either card
 
     // Cards, newest first: 101 (again), web-app#7, 102, 101.
-    const text = `${a.url} :git_change_request:\n${c.url} :memo::white_check_mark:`;
+    // #101's fixture asks bob and has carol's approval.
+    const text = `${a.url} :git_change_request: — bob, carol\n${c.url} :memo::white_check_mark:`;
     const summary = (await bazel.api('GET', '/api/summary')).json;
     expect(summary.text).toBe(text);
     expect(summary.undecided.map((p: any) => p.key)).toEqual(['acme/api-core#102']);
@@ -141,5 +142,44 @@ test.describe('P1 · your decision on a PR', () => {
     await app.locator('body').click({ position: { x: 1, y: 1 } });
     await app.keyboard.press('/');
     await expect(ui.filter(app)).toBeFocused();
+  });
+
+  // Who reviews each PR goes after its emoji, from one read-only GraphQL call:
+  // requests pending and reviews, each once, with no author, no you, no bot and
+  // no dismissed review; a team as org/slug; no @, so nothing mentions anyone.
+  test('Summary names the reviewers; when gh cannot read them, the lines go without', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', {
+      reviewRequests: [{ login: 'bob' }, { slug: 'core', organization: { login: 'acme' } }, { login: 'e2e-user' }, { __typename: 'Bot', login: 'copilot' }],
+      latestReviews: [
+        { author: { login: 'carol' }, state: 'APPROVED' },
+        { author: { login: 'BOB' }, state: 'COMMENTED' },
+        { author: { login: 'alice' }, state: 'COMMENTED' },
+        { author: { login: 'renovate[bot]' }, state: 'COMMENTED' },
+        { author: { login: 'dan' }, state: 'DISMISSED' },
+      ],
+    });
+    const a = await reviewed(bazel, 'acme/api-core#101');
+    const c = await reviewed(bazel, 'acme/web-app#7');
+    for (const [id, verdict] of [[a.id, 'approve'], [c.id, 'request_changes']]) {
+      expect((await bazel.api('POST', `/api/jobs/${id}/verdict`, { verdict })).status).toBe(200);
+    }
+    const text = `${c.url} :git_change_request:\n${a.url} :white_check_mark: — bob, acme/core, carol`;
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryText(app)).toHaveValue(text);
+    await expect(ui.summaryWarning(app)).toBeHidden();
+    const summary = (await bazel.api('GET', '/api/summary')).json;
+    expect(summary.decided.map((p: any) => p.reviewers)).toEqual([[], ['bob', 'acme/core', 'carol']]);
+    expect(summary.text).not.toContain('@');
+
+    // A gh that fails, for a PR not read in the last minute: the lines go
+    // without names, and the dialog says why.
+    await ui.summaryDialog(app).getByTestId('summary-close').click();
+    bazel.setGh({ fail: { reviewers: 'HTTP 502: Bad Gateway' } });
+    await reviewed(bazel, 'acme/web-app#8');
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryText(app)).toHaveValue(`${c.url} :git_change_request:\n${a.url} :white_check_mark:`);
+    await expect(ui.summaryWarning(app)).toHaveText('Reviewers could not be read, so the lines go without them.');
+    expect(writes(bazel)).toEqual([]);
   });
 });

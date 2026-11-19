@@ -54,6 +54,13 @@ the redesign's Overview) take gh's shape in the fixture: `createdAt`, `commits`
 asked with `--json files` it comes back as gh's list (`path`, `additions`,
 `deletions`).
 
+The same `reviewRequests` and `latestReviews` answer the Summary's read of who
+reviews each PR (`gh api graphql` with `query bazelReviewers(…)`, aliases
+`p0…pN` by the variables `o<i>`, `n<i>`, `p<i>`). There a request may also be a
+team, `{ "slug": "core", "organization": { "login": "acme" } }`, and an entry
+may carry `__typename` (`Bot`, …); without one it is a `User`. A PR not in the
+fixtures answers null. `gh.json` `fail.reviewers` makes that read fail.
+
 `symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
 
 `url` defaults to `https://github.com/<repo>/pull/<n>`; `updatedAt` (ISO) or

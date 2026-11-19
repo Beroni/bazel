@@ -50,6 +50,8 @@ export const ui = {
   summaryDialog: (p: Page) => p.getByTestId('summary-dialog'),
   summaryText: (p: Page) => p.getByTestId('summary-text'),
   summaryMissing: (p: Page) => p.getByTestId('summary-missing'),
+  /** "Reviewers could not be read…", when the read of the names failed. */
+  summaryWarning: (p: Page) => p.getByTestId('summary-warning'),
   summaryCopy: (p: Page) => p.getByTestId('summary-copy'),
   summaryNote: (p: Page) => p.getByTestId('summary-note'),
 
