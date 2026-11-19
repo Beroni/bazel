@@ -201,3 +201,30 @@ func TestResumoSemDecisao(t *testing.T) {
 		t.Errorf("%+v", s)
 	}
 }
+
+// V1: the clone may find the PR past the head it was listed at (a force push in
+// between), and the review is of what the clone read. The job's door decides on
+// that head, as the saved file's does: a list that then shows the PR there
+// says nothing moved.
+func TestDecisaoNoHeadRevisadoNaoNoListado(t *testing.T) {
+	listed := prAt("acme/api-core", 7, headOne)
+	srv, ids := verdictServer(t, listed)
+	srv.jobs.mu.Lock()
+	srv.jobs.jobs[ids[0]].Result.PR.HeadRefOid = headTwo // what the clone read
+	srv.jobs.mu.Unlock()
+
+	if code, out := call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`); code != http.StatusOK {
+		t.Fatalf("%d %v", code, out)
+	}
+	if got, _ := store.LoadMarks(srv.reviewsDir).VerdictOf(listed.Key()); got.Head != headTwo {
+		t.Errorf("decided on %s, the review read %s", got.Head, headTwo)
+	}
+	now := listed
+	now.HeadRefOid = headTwo
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{now}
+	srv.prMu.Unlock()
+	if v := srv.verdictViews()[strings.ToLower(listed.Key())]; v.Moved {
+		t.Errorf("the PR is where the review read it, yet: %+v", v)
+	}
+}

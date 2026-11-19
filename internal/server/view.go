@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"time"
 
 	"github.com/beroni/bazel/internal/agent"
@@ -207,6 +208,12 @@ func (j *Job) view() jobView {
 		v.Tokens, v.Cost = fechado.Total(), fechado.CostUSD
 	case !j.Live.Empty():
 		v.Tokens, v.Cost, v.Partial = j.Live.Total(), j.Live.CostUSD, true
+	}
+	// The clone may find the PR past the head it was listed at, and the review
+	// is of what it read: a decision on this job is on that head, the one its
+	// saved file records.
+	if h := j.Result.PR.HeadRefOid; h != "" && strings.EqualFold(j.Result.PR.Key(), j.PR.Key()) {
+		v.PR.Head = h
 	}
 	if j.publish != nil {
 		v.Publishing = true
