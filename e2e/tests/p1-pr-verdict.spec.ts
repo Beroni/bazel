@@ -182,4 +182,15 @@ test.describe('P1 · your decision on a PR', () => {
     await expect(ui.summaryWarning(app)).toHaveText('Reviewers could not be read, so the lines go without them.');
     expect(writes(bazel)).toEqual([]);
   });
+
+  // BUG-QA-37: `.btn { display: … }` beat the hidden attribute, so Summary
+  // showed with an empty queue and on the Saved tab.
+  test('Summary only shows on a queue with a review in it', async ({ app, bazel }) => {
+    await expect(ui.summaryButton(app)).toBeHidden();
+    await reviewed(bazel, 'acme/api-core#101');
+    await app.reload();
+    await expect(ui.summaryButton(app)).toBeVisible();
+    await ui.savedTab(app).click();
+    await expect(ui.summaryButton(app)).toBeHidden();
+  });
 });

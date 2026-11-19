@@ -1,5 +1,9 @@
 /* Inter, embedded (SIL OFL 1.1, see fonts/OFL.txt). One variable file covers
    every weight; only the latin subset ships, which is all the UI writes. */
+/* hidden means hidden: a rule that sets display (.btn, .row…) must not bring
+   back what the page took off the screen. */
+[hidden] { display: none !important; }
+
 @font-face {
   font-family: "Inter";
   font-style: normal;
