@@ -3762,14 +3762,17 @@ async function openSummary() {
   text.placeholder = 'no decision on the queue\'s PRs yet';
   const missing = $('#summary-missing');
   const left = data.undecided || [];
-  missing.textContent = left.length ? 'no decision yet: ' + left.map((p) => '#' + p.number).join(', ') : '';
+  // A number alone, unless two PRs of the summary share it: then repo#N.
+  const all = [...(data.decided || []), ...left];
+  const ref = (p) => (all.some((q) => q.number === p.number && q.key.toLowerCase() !== p.key.toLowerCase()) ? p.key : '#' + p.number);
+  missing.textContent = left.length ? 'no decision yet: ' + left.map(ref).join(', ') : '';
   missing.title = left.map((p) => p.key).join('\n');
   missing.hidden = !left.length;
   // Decided before the PR moved: a line would approve commits nobody read, so
   // they stay out of the text until you decide on the new review.
   const movedLine = $('#summary-moved');
   const moved = data.moved || [];
-  movedLine.textContent = moved.length ? 'moved since your decision: ' + moved.map((p) => '#' + p.number).join(', ') : '';
+  movedLine.textContent = moved.length ? 'moved since your decision: ' + moved.map(ref).join(', ') : '';
   movedLine.title = moved.map((p) => p.key).join('\n');
   movedLine.hidden = !moved.length;
   // The names come from GitHub; without them the lines still go, and say so.

@@ -199,4 +199,16 @@ test.describe('P1 · your decision on a PR', () => {
     await ui.savedTab(app).click();
     await expect(ui.summaryButton(app)).toBeHidden();
   });
+
+  // BUG-QA-39: two PRs of the summary with one number read the same as "#101";
+  // then each goes by repo#N, and a number alone is enough otherwise.
+  test('the lists apart name the repo when two PRs share a number', async ({ app, bazel }) => {
+    bazel.addPR({ repo: 'globex/api-core', number: 101, title: 'Other owner, same name', headRefName: 'g', author: { login: 'zoe' } });
+    await reviewed(bazel, 'acme/api-core#101');
+    await reviewed(bazel, 'globex/api-core#101');
+    await reviewed(bazel, 'acme/web-app#7');
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: #7, globex/api-core#101, acme/api-core#101');
+  });
 });
