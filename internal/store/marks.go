@@ -34,6 +34,9 @@ type Mark struct {
 	HeadOid string `json:"head_oid"`
 	File    string `json:"file,omitempty"`
 	Posted  bool   `json:"posted,omitempty"`
+	// Verdict is the person's decision on the PR, which a later review of it
+	// keeps: deciding again is theirs to do.
+	Verdict *Verdict `json:"verdict,omitempty"`
 }
 
 // Marks is the index of reviews by PR key ("owner/repo#123").
@@ -136,7 +139,8 @@ func MarkReviewed(dir string, res agent.Result, file string) error {
 			File:    file,
 			// An agent that publishes on its own has already left the review on the
 			// PR. An older publication is of an older review: this one has not gone.
-			Posted: res.Posts,
+			Posted:  res.Posts,
+			Verdict: m.Verdict,
 		}
 	})
 }
