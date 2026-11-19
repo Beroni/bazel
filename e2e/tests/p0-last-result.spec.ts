@@ -93,7 +93,7 @@ test.describe('P0 · the report is the last result', () => {
     expect((await bazel.api('POST', `/api/reviews/${saved.name}/publish`, { skip: [] })).status).toBe(409);
     expect(writes(bazel)).toEqual([]);
     await viewer.getByTestId('run-again').click();
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
   });
 
   test('the last turn began with a lens out: a warning, and it can still go', async ({ app, bazel }) => {

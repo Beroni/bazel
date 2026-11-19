@@ -30,7 +30,7 @@ test.describe('P1 · review changes since the last review', () => {
     await expect(app.getByTestId('review-since')).toHaveCount(0); // never reviewed
     await ui.prRow(app, 'Add rate limiter to the public API').getByText('Add rate limiter to the public API').click();
     await app.getByTestId('review-since').click();
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
     const second = bazel.agentCalls()[1];
     expect(second.prompt).toMatch(/--since=[0-9a-f]{40}/);
     const since = /--since=([0-9a-f]{40})/.exec(second.prompt)![1];

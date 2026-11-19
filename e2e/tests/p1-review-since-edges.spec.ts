@@ -140,7 +140,7 @@ test.describe('P1 · review changes since the last review, edges', () => {
     await expect(row(K).getByTestId('review-since')).toBeVisible();
     await expect(row('acme/api-core#102').getByTestId('review-since')).toHaveCount(0);
     await row(K).getByTestId('review-since').click();
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
     expect(sinceOf(lastPrompt(bazel))).toMatch(/^[0-9a-f]{40}$/);
   });
 });
