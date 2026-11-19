@@ -299,6 +299,7 @@ p.tiny { font-size: 12.5px; margin: -4px 0 8px; }
 /* --- queue --- */
 /* Queue / Saved are text tabs: the active one is simply brighter. */
 .tabs { display: flex; align-items: center; gap: 2px; padding: 12px 16px 4px; flex: none; }
+.tablist { display: flex; align-items: center; gap: 2px; }
 .tab { background: transparent; border: 0; color: var(--dim); padding: 3px 8px; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 600; }
 .tab:hover { color: var(--text); }
 .tab.on { color: var(--text); }
@@ -882,3 +883,22 @@ main.no-prs .burger span { background: var(--accent); }
 .open-q { display: flex; gap: 10px; align-items: baseline; }
 .qmark { color: var(--accent); font-weight: 600; }
 .open-q .md > p { margin: 4px 0; }
+
+/* The person's decision on a PR, under its report. The one taken stands out;
+   clicking it again takes it back. */
+.verdict-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 24px 0 4px; }
+.verdict-bar .btn[aria-pressed="true"] { color: var(--text); background: var(--accent-soft-2); border-color: var(--accent); }
+.verdict-bar .verdict-moved { color: var(--warn); font-size: 12px; }
+.card-verdict { flex: none; font-size: 12px; line-height: 1; }
+
+.summary-dialog {
+  width: min(680px, 92vw); padding: 18px 20px; color: var(--text);
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+.summary-dialog::backdrop { background: rgb(0 0 0 / .55); }
+.summary-dialog h2 { margin: 0 0 4px; font-size: 16px; }
+.summary-dialog textarea {
+  width: 100%; box-sizing: border-box; margin: 10px 0; padding: 8px 10px; resize: vertical;
+  font: 12.5px/1.5 var(--mono); color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+}

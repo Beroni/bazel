@@ -108,6 +108,9 @@ What the helpers take care of:
 | `job-cancel` | cancel | | ✓ |
 | `job-remove` | ✕ | | |
 | `job-published` | ✓ published | | |
+| `job-verdict` | your decision's badge (✅, 📝✅, 🔄), hidden with none | `data-verdict` | |
+| `queue-summary` | Summary button (queue tab) | | |
+| `summary-dialog`, `summary-text`, `summary-missing`, `summary-copy`, `summary-close`, `summary-note` | the Summary dialog | | |
 
 ### Review pane
 
@@ -123,6 +126,9 @@ What the helpers take care of:
 | `keep-here` | keep it here | | |
 | `already-published` | ✓ already on the PR | | ✓ |
 | `post-error` | failed to publish | | |
+| `verdict-bar` | your decision, under the report (Report and Saved) | `data-pr-key`, `data-door` | |
+| `verdict-approve`, `verdict-approve_with_comments`, `verdict-request_changes` | the three buttons | `aria-pressed` | |
+| `verdict-moved` | decided on <sha7>, PR moved | | |
 | `review-footer` | saved to … · clone kept at … | | |
 | `live-log` | log panel | | |
 | `log-pane` | one terminal | `data-agent` | |

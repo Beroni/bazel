@@ -82,10 +82,14 @@
   </aside>
 
   <section class="pane main">
-    <div class="tabs" role="tablist" aria-label="queue or saved reviews">
-      <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
+    <div class="tabs">
+      <div class="tablist" role="tablist" aria-label="queue or saved reviews">
+        <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
+      </div>
       <div class="spacer"></div>
+      <button class="btn small ghost" id="summary" data-testid="queue-summary" hidden
+        title="your decisions on the queue's PRs, one line each, to paste into Slack">Summary</button>
       <div class="conn" id="conn" data-testid="conn-status" data-state="closed" title="event stream">●</div>
     </div>
     <div id="rail" class="rail"></div>
@@ -100,6 +104,21 @@
     </article>
   </section>
 </main>
+
+<!-- The decisions on the queue's PRs as Slack lines. The text is yours to edit
+     before copying; the PRs still without a decision stay out of it. -->
+<dialog id="summary-dialog" class="summary-dialog" data-testid="summary-dialog" aria-labelledby="summary-title">
+  <h2 id="summary-title">Summary</h2>
+  <p class="dim">One line per PR in the queue you decided on, in the order of the cards.</p>
+  <textarea id="summary-text" data-testid="summary-text" rows="8" spellcheck="false" aria-label="summary to copy"></textarea>
+  <p class="dim" id="summary-missing" data-testid="summary-missing" hidden></p>
+  <div class="row">
+    <span class="dim" id="summary-note" data-testid="summary-note" role="status"></span>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="summary-close" data-testid="summary-close">Close</button>
+    <button class="btn primary" id="summary-copy" data-testid="summary-copy">Copy</button>
+  </div>
+</dialog>
 
 <!-- The PRs where you have something to do: asked to review, the author
      answered your changes, still waiting on the author, and your own PRs. -->

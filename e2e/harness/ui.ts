@@ -39,6 +39,19 @@ export const ui = {
   cancelControl: (p: Page) => p.getByTestId('job-cancel'),
   removeButton: (card: Locator) => card.getByTestId('job-remove'),
   jobPublished: (card: Locator) => card.getByTestId('job-published'),
+  /** The card's badge with your decision (✅, 📝✅, 🔄): `data-verdict`. */
+  jobVerdict: (card: Locator) => card.getByTestId('job-verdict'),
+  /** A decision button under a report; `aria-pressed` says it is the one taken. */
+  verdict: (scope: Locator, id: 'approve' | 'approve_with_comments' | 'request_changes') => scope.getByTestId(`verdict-${id}`),
+  /** "decided on <sha7>, PR moved". */
+  verdictMoved: (scope: Locator) => scope.getByTestId('verdict-moved'),
+  /** The queue's Summary button, and its dialog. */
+  summaryButton: (p: Page) => p.getByTestId('queue-summary'),
+  summaryDialog: (p: Page) => p.getByTestId('summary-dialog'),
+  summaryText: (p: Page) => p.getByTestId('summary-text'),
+  summaryMissing: (p: Page) => p.getByTestId('summary-missing'),
+  summaryCopy: (p: Page) => p.getByTestId('summary-copy'),
+  summaryNote: (p: Page) => p.getByTestId('summary-note'),
 
   /** The page-wide message bar (errors, warnings). */
   banner: (p: Page) => p.getByTestId('banner'),

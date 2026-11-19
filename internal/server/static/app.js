@@ -49,6 +49,7 @@ const state = {
   histories: {},     // PR key -> its history (see lazy)
   logFilter: {},     // job id -> agent picked in the live log, '' = all
   instance: null,    // id of the server process; changes when it restarts
+  verdicts: {},      // lower-case PR key -> {verdict, head, at, moved}: your decision on it
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -259,6 +260,7 @@ async function boot() {
     adoptInstance(st.instance);
     state.me = st.me;
     state.jobs = st.jobs || [];
+    state.verdicts = st.verdicts || {};
     state.historyCustom = !!st.history_custom;
     $('#who').textContent = '@' + st.me;
     $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagent: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nconcurrent reviews: ${st.concurrency}`;
@@ -319,6 +321,8 @@ async function loadPRs(force) {
     // list.
     renderRepoFilters();
     renderPRs();
+    // A PR may have moved past the head you decided on.
+    if (Object.keys(state.verdicts).length) refreshVerdicts();
   } catch (err) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'failed: ' + err.message);
@@ -354,6 +358,7 @@ function connect() {
     }
     if (ev.type === 'job') upsertJob(ev.data);
     if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
+    if (ev.type === 'verdicts') adoptVerdicts(ev.data);
     // Another tab took this job off the queue: it goes away here too.
     if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
@@ -427,6 +432,7 @@ async function resync() {
   try {
     const st = await api('/api/state');
     state.jobs = st.jobs || [];
+    state.verdicts = st.verdicts || {};
     state.historyCustom = !!st.history_custom;
     state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
     renderQuota();
@@ -801,6 +807,7 @@ async function openSaved(name) {
     }
     const key = pickKey('saved', name);
     const total = decorateFindings(md, key, !entry || entry.publishable !== false);
+    if (entry && entry.repo) v.append(verdictBar(`${entry.repo}#${entry.number}`, `/api/reviews/${encodeURIComponent(name)}/verdict`));
 
     // A saved review stays publishable: closing Bazel before sending it to the
     // PR can't cost the agent's work.
@@ -1864,6 +1871,7 @@ function renderTabs() {
     t.classList.toggle('on', t.dataset.tab === state.tab);
     t.setAttribute('aria-selected', String(t.dataset.tab === state.tab));
   });
+  $('#summary').hidden = true; // renderJobs shows it again, on the queue
   if (state.tab === 'saved') loadSaved(); else renderJobs();
 }
 
@@ -1939,6 +1947,7 @@ function cardRepo(job) {
 
 function renderJobs() {
   $('#queue-count').textContent = String(state.jobs.length);
+  $('#summary').hidden = state.tab !== 'queue' || !state.jobs.some((j) => !j.history);
   renderSpend();
   setTitle();
   if (state.tab !== 'queue') return;
@@ -1988,7 +1997,9 @@ function newCard(id) {
   x.title = 'drop from the queue';
   x.setAttribute('aria-label', 'drop from the queue');
   x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(id, x); });
-  top.append(el('span', 'dot'), el('span', 'card-ref'), el('div', 'spacer'), x);
+  const badge = tid(el('span', 'card-verdict'), 'job-verdict');
+  badge.hidden = true;
+  top.append(el('span', 'dot'), el('span', 'card-ref'), el('div', 'spacer'), badge, x);
   const title = el('div', 'title');
   title.dir = 'auto';
   const bar = el('div', 'progress');
@@ -2017,6 +2028,7 @@ function fillCard(card, job) {
   if (card.dataset.prKey !== job.pr.key) card.dataset.prKey = job.pr.key;
   setAttr(card, 'aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
   setText(card.querySelector('.card-ref'), `${cardRepo(job)} #${job.pr.number}`);
+  fillVerdictBadge(card.querySelector('.card-verdict'), job);
   setText(card.querySelector(':scope > .title'), job.pr.title);
   const ranText = ranOn(job) || '';
   let ran = card.querySelector(':scope > .card-ran');
@@ -2747,6 +2759,7 @@ function renderReportView(v, job) {
     if (job.incomplete) lockPublish(bar, job.incomplete);
     actionBar = bar;
   }
+  if (!job.history) v.append(verdictBar(job.pr.key, `/api/jobs/${encodeURIComponent(job.id)}/verdict`));
   if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));
 
   // What the review cost, at its end — which is where you arrive after reading.
@@ -2781,6 +2794,9 @@ function renderReportView(v, job) {
 
 function wire() {
   $('#refresh').addEventListener('click', () => { loadPRs(true); loadNeeds(true); });
+  $('#summary').addEventListener('click', openSummary);
+  $('#summary-copy').addEventListener('click', copySummary);
+  $('#summary-close').addEventListener('click', () => $('#summary-dialog').close());
   $('#needs-watched').addEventListener('click', () => { state.needsAll = false; loadNeeds(false); });
   $('#needs-all').addEventListener('click', () => { state.needsAll = true; loadNeeds(false); });
   $('#run').addEventListener('click', startReview);
@@ -3634,3 +3650,125 @@ async function removeRepo(repo, btn) {
 }
 
 boot();
+
+// --- decisions ---
+
+// Your decision on a PR after reading its review. It stays in Bazel: nothing
+// here calls GitHub. The summary turns the queue's decisions into the lines
+// you paste into Slack.
+const VERDICTS = [
+  { id: 'approve', label: '✅ Approve', badge: '✅' },
+  { id: 'approve_with_comments', label: '📝✅ Approve with comments', badge: '📝✅' },
+  { id: 'request_changes', label: '🔄 Request changes', badge: '🔄' },
+];
+const verdictOf = (key) => state.verdicts[(key || '').toLowerCase()] || null;
+
+// verdictBar is the three buttons under a report. door is where the click goes:
+// the job's, or the saved file's, which knows the head that review read.
+function verdictBar(key, door) {
+  const bar = tid(el('div', 'verdict-bar'), 'verdict-bar', { prKey: key });
+  bar.dataset.door = door;
+  bar.setAttribute('role', 'group');
+  bar.setAttribute('aria-label', 'your decision on ' + key);
+  bar.append(el('span', 'dim', 'Your decision:'));
+  for (const it of VERDICTS) {
+    const b = tid(el('button', 'btn small', it.label), 'verdict-' + it.id);
+    b.dataset.verdict = it.id;
+    b.addEventListener('click', () => pickVerdict(bar, it.id));
+    bar.append(b);
+  }
+  bar.append(tid(el('span', 'verdict-moved'), 'verdict-moved'));
+  fillVerdictBar(bar);
+  return bar;
+}
+
+function fillVerdictBar(bar) {
+  const v = verdictOf(bar.dataset.prKey);
+  for (const b of bar.querySelectorAll('button[data-verdict]')) {
+    const on = !!v && v.verdict === b.dataset.verdict;
+    setAttr(b, 'aria-pressed', String(on));
+    b.title = on ? 'click again to take it back' : 'only in Bazel: nothing goes to the PR';
+  }
+  const moved = bar.querySelector('.verdict-moved');
+  const text = v && v.moved && v.head ? `decided on ${v.head.slice(0, 7)}, PR moved` : '';
+  setText(moved, text);
+  moved.hidden = !text;
+}
+
+async function pickVerdict(bar, id) {
+  const v = verdictOf(bar.dataset.prKey);
+  const verdict = v && v.verdict === id ? '' : id; // the one on, again: takes it back
+  const buttons = bar.querySelectorAll('button');
+  buttons.forEach((b) => { b.disabled = true; });
+  clearAlert();
+  try {
+    const out = await api(bar.dataset.door, { method: 'POST', body: JSON.stringify({ verdict }) });
+    adoptVerdicts(out.verdicts || {});
+  } catch (err) {
+    alertError('Could not record the decision: ' + err.message);
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+// adoptVerdicts takes the decisions as the server has them and redraws what
+// shows them: the cards' badges and any bar on screen.
+function adoptVerdicts(all) {
+  state.verdicts = all || {};
+  document.querySelectorAll('#rail .card').forEach((card) => {
+    const job = state.jobs.find((j) => j.id === card.dataset.jobId);
+    if (job) fillVerdictBadge(card.querySelector('.card-verdict'), job);
+  });
+  document.querySelectorAll('.verdict-bar').forEach(fillVerdictBar);
+}
+
+function fillVerdictBadge(badge, job) {
+  const v = job.history ? null : verdictOf(job.pr.key);
+  const it = v && VERDICTS.find((x) => x.id === v.verdict);
+  setText(badge, it ? it.badge : '');
+  setAttr(badge, 'title', it ? 'your decision: ' + it.label.replace(/^\S+ /, '') + (v.moved ? ' (PR moved since)' : '') : '');
+  if (it) badge.dataset.verdict = it.id; else delete badge.dataset.verdict;
+  badge.hidden = !it;
+}
+
+// refreshVerdicts reads them again: a PR list just read may say a PR moved.
+async function refreshVerdicts() {
+  try {
+    adoptVerdicts((await api('/api/verdicts')).verdicts);
+  } catch (err) { /* the badges keep what they had */ }
+}
+
+async function openSummary() {
+  const dlg = $('#summary-dialog');
+  setText($('#summary-note'), '');
+  let data;
+  try {
+    data = await api('/api/summary');
+  } catch (err) {
+    alertError('Could not build the summary: ' + err.message);
+    return;
+  }
+  const text = $('#summary-text');
+  text.value = data.text || '';
+  text.placeholder = 'no decision on the queue\'s PRs yet';
+  const missing = $('#summary-missing');
+  const left = data.undecided || [];
+  missing.textContent = left.length ? 'no decision yet: ' + left.map((p) => '#' + p.number).join(', ') : '';
+  missing.title = left.map((p) => p.key).join('\n');
+  missing.hidden = !left.length;
+  if (!dlg.open) dlg.showModal();
+  text.focus();
+}
+
+async function copySummary() {
+  const text = $('#summary-text');
+  try {
+    await navigator.clipboard.writeText(text.value);
+    setText($('#summary-note'), 'copied');
+  } catch (err) {
+    // No clipboard API (a page served over plain http on another host): the
+    // selection is the next best thing.
+    text.select();
+    setText($('#summary-note'), document.execCommand('copy') ? 'copied' : 'select the text and copy it yourself');
+  }
+}
