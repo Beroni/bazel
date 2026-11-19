@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -366,5 +367,84 @@ func TestResumoDeixaForaOPRQueAndou(t *testing.T) {
 	s = srv.summary(context.Background())
 	if want := "maria\n" + pr.URL + " :git_change_request:\n" + other.URL + " :white_check_mark:"; s.Text != want || len(s.Moved) != 0 {
 		t.Errorf("after deciding again: %q %+v", s.Text, s.Moved)
+	}
+}
+
+// A decision by hand goes on the head the list read from GitHub, not on the
+// review's: after a push, the PR comes back to the summary with no new review.
+func TestDecisaoManualNoHeadAtual(t *testing.T) {
+	log := ghFalso(t, "exit 1")
+	pr := prAt("acme/api-core", 7, headOne)
+	srv, ids := verdictServer(t, pr)
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
+	moved := pr
+	moved.HeadRefOid = headTwo
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{moved}
+	srv.prMu.Unlock()
+	if s := srv.summary(context.Background()); len(s.Moved) != 1 || s.Text != "" {
+		t.Fatalf("before: %+v", s)
+	}
+
+	code, out := call(t, srv, "POST", "/api/prs/acme/api-core/7/verdict", `{"verdict":"approve","head":"`+headOne+`"}`)
+	if code != http.StatusOK {
+		t.Fatalf("%d %v", code, out)
+	}
+	got, _ := store.LoadMarks(srv.reviewsDir).VerdictOf(pr.Key())
+	if got.Head != headTwo || got.Source != store.SourceManual || got.Verdict != store.VerdictApprove {
+		t.Errorf("on disk: %+v (the head is the server's, not the page's)", got)
+	}
+	v := srv.verdictViews()[strings.ToLower(pr.Key())]
+	if v.Moved || v.Source != store.SourceManual || v.Current != headTwo {
+		t.Errorf("view: %+v", v)
+	}
+	if s := srv.summary(context.Background()); s.Text != "maria\n"+pr.URL+" :white_check_mark:" || len(s.Moved) != 0 {
+		t.Errorf("after: %q %+v", s.Text, s.Moved)
+	}
+	// A decision under a review says so.
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
+	if got, _ := store.LoadMarks(srv.reviewsDir).VerdictOf(pr.Key()); got.Source != store.SourceReview {
+		t.Errorf("source: %+v", got)
+	}
+	if n := contaNoLog(log, "start"); n != 0 {
+		t.Errorf("gh ran %d times", n)
+	}
+}
+
+// With the PR out of the list there is no head to decide on: 409, nothing kept.
+// The route takes only a watched repository and a number, and refuses a page
+// of another site like every door.
+func TestDecisaoManualRecusa(t *testing.T) {
+	srv := newTestServer(t)
+	for path, want := range map[string]int{
+		"/api/prs/acme/api-core/7/verdict":  http.StatusConflict,
+		"/api/prs/acme/api-core/x/verdict":  http.StatusBadRequest,
+		"/api/prs/acme/api-core/0/verdict":  http.StatusBadRequest,
+		"/api/prs/evil/api-core/7/verdict":  http.StatusNotFound,
+		"/api/prs/acme/elsewhere/7/verdict": http.StatusNotFound,
+	} {
+		code, out := call(t, srv, "POST", path, `{"verdict":"approve"}`)
+		if code != want {
+			t.Errorf("%s: %d %v, want %d", path, code, out, want)
+		}
+		if want == http.StatusConflict && !strings.Contains(fmt.Sprint(out["error"]), "refresh the PR list first") {
+			t.Errorf("%s: %v", path, out)
+		}
+	}
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{prAt("acme/api-core", 7, headOne)}
+	srv.prMu.Unlock()
+	if code, _ := call(t, srv, "POST", "/api/prs/acme/api-core/7/verdict", `{"verdict":"lgtm"}`); code != http.StatusBadRequest {
+		t.Errorf("bad verdict: %d", code)
+	}
+	req := httptest.NewRequest("POST", "http://127.0.0.1/api/prs/acme/api-core/7/verdict", strings.NewReader(`{"verdict":"approve"}`))
+	req.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-site: %d", rec.Code)
+	}
+	if len(store.LoadMarks(srv.reviewsDir).Verdicts()) != 0 {
+		t.Error("a refused decision was kept")
 	}
 }

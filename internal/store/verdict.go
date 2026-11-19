@@ -34,12 +34,20 @@ func SlackLine(url, verdict string) string {
 	return url + " " + slackEmoji[verdict]
 }
 
+// Where a decision was taken: under a review, on the head that review read, or
+// by hand, on the head the PR was at, after a push or with no review in Bazel.
+const (
+	SourceReview = "review"
+	SourceManual = "manual"
+)
+
 // Verdict is a person's decision on a PR, with the head it was taken on: a
 // commit pushed after it is a change nobody decided on yet.
 type Verdict struct {
 	Verdict string    `json:"verdict"`
 	Head    string    `json:"head,omitempty"`
 	At      time.Time `json:"at"`
+	Source  string    `json:"source,omitempty"`
 }
 
 // Verdicts are the decisions in the index, by its key (lower case).
@@ -62,10 +70,10 @@ func (m Marks) VerdictOf(key string) (Verdict, bool) {
 	return *v, true
 }
 
-// SetVerdict records the decision on a PR, taken on head; "" clears it. It goes
-// in the review index, in the same atomic read-modify-write as every mark, so a
-// restart keeps it.
-func SetVerdict(dir, key, verdict, head string) (*Verdict, error) {
+// SetVerdict records the decision on a PR, taken on head, from source; ""
+// clears it. It goes in the review index, in the same atomic
+// read-modify-write as every mark, so a restart keeps it.
+func SetVerdict(dir, key, verdict, head, source string) (*Verdict, error) {
 	if !ValidVerdict(verdict) {
 		return nil, fmt.Errorf("unknown decision %q", verdict)
 	}
@@ -74,7 +82,7 @@ func SetVerdict(dir, key, verdict, head string) (*Verdict, error) {
 	}
 	var out *Verdict
 	if verdict != "" {
-		out = &Verdict{Verdict: verdict, Head: head, At: time.Now()}
+		out = &Verdict{Verdict: verdict, Head: head, At: time.Now(), Source: source}
 	}
 	err := update(dir, key, func(m Mark) Mark {
 		m.Verdict = out

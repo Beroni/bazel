@@ -29,6 +29,10 @@ type verdictView struct {
 	Head    string    `json:"head,omitempty"`
 	At      time.Time `json:"at"`
 	Moved   bool      `json:"moved,omitempty"`
+	// Source is "review" or "manual"; Current is the head Bazel knows the PR
+	// at now, which a decision taken by hand goes on.
+	Source  string `json:"source,omitempty"`
+	Current string `json:"current,omitempty"`
 }
 
 // verdictViews are the index's decisions, by lower-case PR key.
@@ -47,6 +51,8 @@ func (s *Server) verdictView(v store.Verdict, head string) verdictView {
 		Head:    v.Head,
 		At:      v.At,
 		Moved:   v.Head != "" && head != "" && !strings.EqualFold(v.Head, head),
+		Source:  v.Source,
+		Current: head,
 	}
 }
 
@@ -91,7 +97,7 @@ func (s *Server) handleJobVerdict(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusConflict, errors.New("there is no review to decide on yet"))
 		return
 	}
-	s.decide(w, job.PR.Key, job.PR.Head, verdict)
+	s.decide(w, job.PR.Key, job.PR.Head, verdict, store.SourceReview)
 }
 
 // handleSavedVerdict decides on the PR of a saved review, on the head its file
@@ -112,11 +118,34 @@ func (s *Server) handleSavedVerdict(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("could not tell which PR %q belongs to", r.PathValue("name")))
 		return
 	}
-	s.decide(w, gh.PR{Repo: repo, Number: number}.Key(), store.HeadOf(file), verdict)
+	s.decide(w, gh.PR{Repo: repo, Number: number}.Key(), store.HeadOf(file), verdict, store.SourceReview)
 }
 
-func (s *Server) decide(w http.ResponseWriter, key, head, verdict string) {
-	v, err := store.SetVerdict(s.reviewsDir, key, verdict, head)
+// handlePRVerdict decides by hand on a PR of a watched repository, on the head
+// the list read from GitHub says it is at: after a push, with no new review,
+// or with no review in Bazel at all. The head is the server's, never the
+// page's; without one in the list, there is nothing safe to decide on.
+func (s *Server) handlePRVerdict(w http.ResponseWriter, r *http.Request) {
+	verdict, err := readVerdict(w, r)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	repo, number, code, err := s.watchedRef(r)
+	if err != nil {
+		writeErr(w, code, err)
+		return
+	}
+	pr, ok := s.listedPR(repo, number)
+	if !ok || pr.HeadRefOid == "" {
+		writeErr(w, http.StatusConflict, errors.New("refresh the PR list first: Bazel does not know the head this PR is at"))
+		return
+	}
+	s.decide(w, pr.Key(), pr.HeadRefOid, verdict, store.SourceManual)
+}
+
+func (s *Server) decide(w http.ResponseWriter, key, head, verdict, source string) {
+	v, err := store.SetVerdict(s.reviewsDir, key, verdict, head, source)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, fmt.Errorf("could not record the decision: %w", err))
 		return

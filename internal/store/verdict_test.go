@@ -22,7 +22,7 @@ const (
 // restarted server), changes to another, and clears.
 func TestDecisaoGravaTrocaELimpa(t *testing.T) {
 	dir := t.TempDir()
-	if _, err := SetVerdict(dir, "Acme/Api#7", VerdictApprove, headA); err != nil {
+	if _, err := SetVerdict(dir, "Acme/Api#7", VerdictApprove, headA, SourceReview); err != nil {
 		t.Fatal(err)
 	}
 	got, ok := LoadMarks(dir).VerdictOf("acme/api#7")
@@ -30,7 +30,7 @@ func TestDecisaoGravaTrocaELimpa(t *testing.T) {
 		t.Fatalf("after a restart: %+v %v", got, ok)
 	}
 
-	if _, err := SetVerdict(dir, "acme/api#7", VerdictChanges, headB); err != nil {
+	if _, err := SetVerdict(dir, "acme/api#7", VerdictChanges, headB, SourceReview); err != nil {
 		t.Fatal(err)
 	}
 	got, _ = LoadMarks(dir).VerdictOf("acme/api#7")
@@ -38,7 +38,7 @@ func TestDecisaoGravaTrocaELimpa(t *testing.T) {
 		t.Errorf("changed: %+v", got)
 	}
 
-	if v, err := SetVerdict(dir, "acme/api#7", "", ""); err != nil || v != nil {
+	if v, err := SetVerdict(dir, "acme/api#7", "", "", SourceReview); err != nil || v != nil {
 		t.Fatalf("clear: %v %v", v, err)
 	}
 	if _, ok := LoadMarks(dir).VerdictOf("acme/api#7"); ok {
@@ -52,7 +52,7 @@ func TestDecisaoGravaTrocaELimpa(t *testing.T) {
 func TestDecisaoDesconhecidaERecusada(t *testing.T) {
 	dir := t.TempDir()
 	for _, v := range []string{"lgtm", "APPROVE", " approve"} {
-		if _, err := SetVerdict(dir, "acme/api#7", v, headA); err == nil {
+		if _, err := SetVerdict(dir, "acme/api#7", v, headA, SourceReview); err == nil {
 			t.Errorf("%q was accepted", v)
 		}
 	}
@@ -66,7 +66,7 @@ func TestDecisaoDesconhecidaERecusada(t *testing.T) {
 func TestNovoReviewMantemADecisao(t *testing.T) {
 	dir := t.TempDir()
 	pr := gh.PR{Repo: "acme/api", Number: 7, HeadRefOid: headB}
-	if _, err := SetVerdict(dir, pr.Key(), VerdictComment, headA); err != nil {
+	if _, err := SetVerdict(dir, pr.Key(), VerdictComment, headA, SourceReview); err != nil {
 		t.Fatal(err)
 	}
 	if err := MarkReviewed(dir, agent.Result{Agent: "fleet", PR: pr}, "r.md"); err != nil {
@@ -90,7 +90,7 @@ func TestDecisoesAoMesmoTempoNaoSePerdem(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := SetVerdict(dir, fmt.Sprintf("acme/api#%d", i+1), VerdictApprove, headA); err != nil {
+			if _, err := SetVerdict(dir, fmt.Sprintf("acme/api#%d", i+1), VerdictApprove, headA, SourceReview); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -158,7 +158,7 @@ func TestDecisaoNovaNumaMarcaAntigaSobreviveAoCorte(t *testing.T) {
 		t.Fatal(err)
 	}
 	// #1 is the oldest review in the index.
-	if _, err := SetVerdict(dir, "acme/api#1", VerdictApprove, headA); err != nil {
+	if _, err := SetVerdict(dir, "acme/api#1", VerdictApprove, headA, SourceReview); err != nil {
 		t.Fatal(err)
 	}
 	if err := MarkReviewed(dir, agent.Result{Agent: "fleet", PR: gh.PR{Repo: "acme/api", Number: 9999}}, "r.md"); err != nil {
