@@ -12,6 +12,10 @@ const url = (key: string) => `https://github.com/${key.replace('#', '/pull/')}`;
 // The fixture's #101 asks bob and has carol's approval: its line names them.
 const WHO: Record<string, string> = { 'acme/api-core#101': ' — bob, carol' };
 const line = (key: string, emoji: string) => `${url(key)} ${emoji}${WHO[key] ?? ''}`;
+// The text groups the lines by the PR's author: a header line, a blank line
+// between groups. Fixture authors: #101 alice, #102 e2e-user, web-app#7 carol.
+const group = (author: string, ...lines: string[]) => [author, ...lines].join('\n');
+const text = (...groups: string[]) => groups.join('\n\n');
 
 const writes = (bz: Bazel) => bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment')
   || (c.argv[0] === 'api' && c.argv.some((a) => a === 'POST' || a === '-X' || a === '--method')));
@@ -37,7 +41,7 @@ test.describe('P1 · your decision, edges', () => {
     await expect(cards).toHaveCount(2);
     await decide(bazel, a, 'approve');
     await expect(cards.getByTestId('job-verdict')).toHaveText(['✅', '✅']);
-    expect((await summary(bazel)).text).toBe(line(K, ':white_check_mark:'));
+    expect((await summary(bazel)).text).toBe(group('alice', line(K, ':white_check_mark:')));
   });
 
   test('a decision from Saved, on a PR no longer in the queue, sticks, and the summary of an empty queue is empty', async ({ bazel }) => {
@@ -115,11 +119,11 @@ test.describe('P1 · your decision, edges', () => {
     bazel.movePR(K);
     await bazel.api('GET', '/api/prs?refresh=1');
     const s1 = await summary(bazel);
-    expect(s1.text).toBe(line('acme/web-app#7', ':git_change_request:'));
+    expect(s1.text).toBe(group('carol', line('acme/web-app#7', ':git_change_request:')));
     expect(s1.moved.map((p: any) => p.key)).toEqual([K]);
     await app.reload();
     await ui.summaryButton(app).click();
-    await expect(ui.summaryText(app)).toHaveValue(line('acme/web-app#7', ':git_change_request:'));
+    await expect(ui.summaryText(app)).toHaveValue(group('carol', line('acme/web-app#7', ':git_change_request:')));
     await expect(app.getByTestId('summary-moved')).toContainText('moved since your decision: #101');
     await app.keyboard.press('Escape');
 
@@ -127,7 +131,7 @@ test.describe('P1 · your decision, edges', () => {
     await decide(bazel, b, 'approve');
     const s2 = await summary(bazel);
     expect(s2.moved).toEqual([]);
-    expect(s2.text).toBe([line(K, ':white_check_mark:'), line('acme/web-app#7', ':git_change_request:')].join('\n'));
+    expect(s2.text).toBe(text(group('alice', line(K, ':white_check_mark:')), group('carol', line('acme/web-app#7', ':git_change_request:'))));
     await ui.summaryButton(app).click();
     await expect(app.getByTestId('summary-moved')).toBeHidden();
   });
@@ -139,7 +143,7 @@ test.describe('P1 · your decision, edges', () => {
     await ui.summaryButton(app).click();
     await expect(ui.summaryText(app)).toHaveValue('');
     await expect(ui.summaryText(app)).toHaveAttribute('placeholder', "no decision on the queue's PRs yet");
-    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: #7, #101');
+    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: #101, #7'); // by repo, then number
   });
 
   test('repos apart: each PR is its own line, by its own URL', async ({ bazel }) => {
@@ -150,11 +154,11 @@ test.describe('P1 · your decision, edges', () => {
     await decide(bazel, a, 'approve');
     await decide(bazel, g, 'request_changes');
     await decide(bazel, w, 'approve_with_comments');
-    expect((await summary(bazel)).text).toBe([
-      line('acme/web-app#7', ':memo::white_check_mark:'),
-      line('globex/api-core#101', ':git_change_request:'),
-      line(K, ':white_check_mark:'),
-    ].join('\n'));
+    expect((await summary(bazel)).text).toBe(text(
+      group('alice', line(K, ':white_check_mark:')),
+      group('carol', line('acme/web-app#7', ':memo::white_check_mark:')),
+      group('zoe', line('globex/api-core#101', ':git_change_request:')),
+    ));
   });
 
   // BUG-QA-39, fixed in feat/pr-verdict: two undecided PRs with one number both
@@ -228,7 +232,7 @@ test.describe('P1 · your decision, edges', () => {
     await ui.summaryCopy(app).click();
     await expect(ui.summaryNote(app)).toHaveText(/^(copied|select the text and copy it yourself)$/);
     const selected = await app.evaluate(() => { const t = document.querySelector('#summary-text') as HTMLTextAreaElement; return t.value.slice(t.selectionStart, t.selectionEnd); });
-    expect(selected).toBe(line(K, ':white_check_mark:'));
+    expect(selected).toBe(group('alice', line(K, ':white_check_mark:')));
   });
 });
 
@@ -256,14 +260,14 @@ test.describe('P1 · the reviewers in the Summary', () => {
     await decide(bazel, await done(bazel, R), 'approve');
     const s = await summary(bazel);
     expect(s.decided[0].reviewers).toEqual(['Dave', 'acme/core', 'erin', 'frank']);
-    expect(s.text).toBe(`${url(R)} :white_check_mark: — Dave, acme/core, erin, frank`);
+    expect(s.text).toBe(group('e2e-user', `${url(R)} :white_check_mark: — Dave, acme/core, erin, frank`));
   });
 
   test('a PR with nobody to name keeps the line as it was; an undecided one still lists its reviewers', async ({ bazel }) => {
     await decide(bazel, await done(bazel, 'acme/web-app#7'), 'approve');
     await done(bazel, K);
     const s = await summary(bazel);
-    expect(s.text).toBe(`${url('acme/web-app#7')} :white_check_mark:`);
+    expect(s.text).toBe(group('carol', `${url('acme/web-app#7')} :white_check_mark:`));
     expect(s.undecided[0].reviewers).toEqual(['bob', 'carol']);
   });
 
@@ -281,11 +285,97 @@ test.describe('P1 · the reviewers in the Summary', () => {
     await decide(bazel, await done(bazel, K), 'approve');
     bazel.setGh({ fail: { reviewers: 'HTTP 502: Bad Gateway' } });
     const s = await summary(bazel);
-    expect(s.text).toBe(`${url(K)} :white_check_mark:`);
+    expect(s.text).toBe(group('alice', `${url(K)} :white_check_mark:`));
     expect(s.reviewers_error).toContain('reviewers could not be read');
     await app.reload();
     await ui.summaryButton(app).click();
     await expect(app.getByTestId('summary-warning')).toContainText(/reviewers could not be read/i);
-    await expect(ui.summaryText(app)).toHaveValue(`${url(K)} :white_check_mark:`);
+    await expect(ui.summaryText(app)).toHaveValue(group('alice', `${url(K)} :white_check_mark:`));
+  });
+});
+
+// 5cccf0b: the text grouped by the PR's author — groups by login, case aside, in
+// alphabetical order and "unknown" last; inside a group by repo, then number.
+test.describe('P1 · the Summary grouped by author', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS, repos: ['acme/api-core', 'acme/web-app', 'Zeta/lib'] } } });
+  test.afterEach(async ({ bazel }) => { expect(writes(bazel)).toEqual([]); });
+
+  test('groups in login order whatever the case, one group per login however spelled, unknown last, and each sorted by repo and number', async ({ bazel }) => {
+    const pr = (repo: string, number: number, author?: string) =>
+      bazel.addPR({ repo, number, title: `PR ${repo} ${number}`, headRefName: `h${number}`, ...(author ? { author: { login: author } } : { author: null }) });
+    pr('Zeta/lib', 3, 'Bruno');
+    pr('acme/web-app', 40, 'bruno');
+    pr('acme/web-app', 9, 'BRUNO');
+    pr('acme/api-core', 500, 'amy');
+    pr('acme/api-core', 501);
+    await bazel.api('GET', '/api/prs?refresh=1');
+    // Decided in an order that is none of the expected ones.
+    for (const ref of ['acme/api-core#501', 'acme/web-app#40', 'acme/api-core#500', 'Zeta/lib#3', 'acme/web-app#9']) {
+      await decide(bazel, await done(bazel, ref), 'approve');
+    }
+    const s = await summary(bazel);
+    const ok = (key: string) => `${url(key)} :white_check_mark:`;
+    // The header is the spelling of the group's first PR, in the order of the text.
+    const head = s.decided.find((p: any) => p.author.toLowerCase() === 'bruno').author;
+    expect(s.text).toBe(text(
+      group('amy', ok('acme/api-core#500')),
+      group(head, ok('acme/web-app#9'), ok('acme/web-app#40'), ok('Zeta/lib#3')),
+      group('unknown', ok('acme/api-core#501')),
+    ));
+    expect(s.text.endsWith('\n')).toBe(false);
+    expect(s.decided.map((p: any) => `${p.repo}#${p.number}`)).toEqual(['acme/api-core#500', 'acme/web-app#9', 'acme/web-app#40', 'Zeta/lib#3', 'acme/api-core#501']);
+  });
+
+  test('the undecided list is by repo and number, with the repo only where a number repeats', async ({ app, bazel }) => {
+    bazel.addPR({ repo: 'Zeta/lib', number: 7, title: 'Seven elsewhere', headRefName: 'z7', author: { login: 'yan' } });
+    await bazel.api('GET', '/api/prs?refresh=1');
+    for (const ref of ['Zeta/lib#7', 'acme/web-app#7', K]) await done(bazel, ref);
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await expect(ui.summaryMissing(app)).toHaveText('no decision yet: #101, acme/web-app#7, Zeta/lib#7');
+  });
+});
+
+
+// 5ded103: a decision by hand, from the PR itself, on the head the list read —
+// never one the page sends.
+test.describe('P1 · a decision by hand on a PR', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+  test.afterEach(async ({ bazel }) => { expect(writes(bazel)).toEqual([]); });
+  const door = (key: string) => `/api/prs/${key.replace('#', '/')}/verdict`;
+
+  test('goes on the listed head, clears a "moved", and is marked manual', async ({ bazel }) => {
+    const a = await done(bazel, K);
+    await decide(bazel, a, 'approve');
+    bazel.movePR(K);
+    const head = (await bazel.api('GET', '/api/prs?refresh=1')).json.prs.find((p: any) => p.key === K).head_oid;
+    expect(head).toMatch(/^[0-9a-f]{40}$/);
+    expect((await verdicts(bazel))[K].moved).toBe(true);
+    const r = await bazel.api('POST', door(K), { verdict: 'approve_with_comments', head: '0'.repeat(40) });
+    expect(r.status).toBe(200);
+    const v = (await verdicts(bazel))[K];
+    expect(v).toMatchObject({ verdict: 'approve_with_comments', source: 'manual' });
+    expect(v.head).toBe(head);
+    expect(v.head).not.toBe('0'.repeat(40)); // the page's head is never taken
+    expect(v.moved ?? false).toBe(false);
+    expect((await summary(bazel)).moved).toEqual([]);
+  });
+
+  test('a PR with no review in Bazel can be decided, and a review decision says so', async ({ bazel }) => {
+    await bazel.api('GET', '/api/prs');
+    expect((await bazel.api('POST', door('acme/web-app#7'), { verdict: 'request_changes' })).status).toBe(200);
+    expect((await verdicts(bazel))['acme/web-app#7'].source).toBe('manual');
+    await decide(bazel, await done(bazel, K), 'approve');
+    expect((await verdicts(bazel))[K].source).toBe('review');
+  });
+
+  test('refused: a PR the list does not have, a repo not watched, a bad decision', async ({ bazel }) => {
+    await bazel.api('GET', '/api/prs');
+    const missing = await bazel.api('POST', door('acme/api-core#999'), { verdict: 'approve' });
+    expect(missing.status).toBe(409);
+    expect(missing.json.error).toContain('refresh the PR list first');
+    expect((await bazel.api('POST', door('evil/repo#1'), { verdict: 'approve' })).status).toBe(404);
+    expect((await bazel.api('POST', door(K), { verdict: 'merge' })).status).toBe(400);
+    expect(await verdicts(bazel)).toEqual({});
   });
 });
