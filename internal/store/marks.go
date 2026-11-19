@@ -209,7 +209,16 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// trim drops the oldest records when the index goes over the cap.
+// lastTouched is the newest of the review and the decision on it: a decision
+// just taken on an old review is not an old record.
+func (m Mark) lastTouched() time.Time {
+	if m.Verdict != nil && m.Verdict.At.After(m.At) {
+		return m.Verdict.At
+	}
+	return m.At
+}
+
+// trim drops the records touched longest ago when the index goes over the cap.
 func trim(m Marks) {
 	if len(m) <= maxMarks {
 		return
@@ -218,7 +227,7 @@ func trim(m Marks) {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return m[keys[i]].At.Before(m[keys[j]].At) })
+	sort.Slice(keys, func(i, j int) bool { return m[keys[i]].lastTouched().Before(m[keys[j]].lastTouched()) })
 	for _, k := range keys[:len(m)-maxMarks] {
 		delete(m, k)
 	}

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/gh"
@@ -136,5 +137,44 @@ func TestHeadOf(t *testing.T) {
 	}
 	if got := HeadOf("# acme/api#7 — x\n\n- Author: @a\n\n---\n\n- Head sha: " + headB + "\n"); got != "" {
 		t.Errorf("a head line in the body is not the header's: %q", got)
+	}
+}
+
+// PV-2: the index keeps maxMarks records, dropping the ones touched longest
+// ago. A decision just taken on an old review touches it: the next review that
+// pushes the index over the cap must not take that decision away.
+func TestDecisaoNovaNumaMarcaAntigaSobreviveAoCorte(t *testing.T) {
+	dir := t.TempDir()
+	old := time.Now().Add(-48 * time.Hour)
+	marks := Marks{}
+	for i := range maxMarks {
+		marks[fmt.Sprintf("acme/api#%d", i+1)] = Mark{Agent: "fleet", At: old.Add(time.Duration(i) * time.Minute)}
+	}
+	data, err := json.Marshal(marks)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, marksFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// #1 is the oldest review in the index.
+	if _, err := SetVerdict(dir, "acme/api#1", VerdictApprove, headA); err != nil {
+		t.Fatal(err)
+	}
+	if err := MarkReviewed(dir, agent.Result{Agent: "fleet", PR: gh.PR{Repo: "acme/api", Number: 9999}}, "r.md"); err != nil {
+		t.Fatal(err)
+	}
+	m := LoadMarks(dir)
+	if len(m) != maxMarks {
+		t.Fatalf("%d marks, want %d", len(m), maxMarks)
+	}
+	if _, ok := m.VerdictOf("acme/api#1"); !ok {
+		t.Error("the cut took away a decision just taken")
+	}
+	if _, ok := m["acme/api#2"]; ok {
+		t.Error("the oldest untouched review should have gone instead")
+	}
+	if !m["acme/api#1"].At.Equal(old) {
+		t.Errorf("deciding changed when the review was done: %v", m["acme/api#1"].At)
 	}
 }
