@@ -32,6 +32,8 @@ type prView struct {
 	Base         string    `json:"base"`
 	Decision     string    `json:"review_decision"`
 	Mine         bool      `json:"mine"`
+	// Head is the commit the PR was at when Bazel read it.
+	Head string `json:"head_oid,omitempty"`
 
 	// Reviewed and friends are the history: has this PR been through a review?
 	// Has it changed since then? Did the review go to GitHub?
@@ -74,6 +76,7 @@ func newPRView(pr gh.PR, mine bool, now time.Time) prView {
 		Base:         pr.BaseRefName,
 		Decision:     pr.ReviewDecision,
 		Mine:         mine,
+		Head:         pr.HeadRefOid,
 	}
 }
 

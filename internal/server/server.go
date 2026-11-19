@@ -208,6 +208,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
 	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
 	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/jobs/{id}/verdict", s.handleJobVerdict)
+	mux.HandleFunc("GET /api/verdicts", s.handleVerdicts)
+	mux.HandleFunc("GET /api/summary", s.handleSummary)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -226,6 +229,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reviews/{name}", s.handleSavedOne)
 	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
 	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
+	mux.HandleFunc("POST /api/reviews/{name}/verdict", s.handleSavedVerdict)
 
 	// /mcp goes through the same guard: it is the same port for cloning and
 	// running an agent, just spoken by machine.
@@ -463,8 +467,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			"checkout": s.cfg.Agent.Checkout,
 			"timeout":  s.cfg.Agent.TimeoutSeconds,
 		},
-		"agents": s.agentViews(),
-		"jobs":   s.jobViews(),
+		"agents":   s.agentViews(),
+		"jobs":     s.jobViews(),
+		"verdicts": s.verdictViews(),
 		// An `agent` template that fires off a command on its own makes every
 		// agent run two: the chosen one and the template's. The page warns,
 		// because nothing in the result gives it away — only the spend.
