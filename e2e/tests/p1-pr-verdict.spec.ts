@@ -119,4 +119,27 @@ test.describe('P1 · your decision on a PR', () => {
     expect(await app.evaluate(() => navigator.clipboard.readText())).toBe(edited);
     expect(writes(bazel)).toEqual([]);
   });
+
+  // PV-3: "/" jumps to the PR search from anywhere, but not while you type: in
+  // the Summary's text, a URL is all slashes.
+  test('typing "/" in the Summary stays in the text', async ({ app, bazel }) => {
+    const a = await reviewed(bazel, 'acme/api-core#101');
+    expect((await bazel.api('POST', `/api/jobs/${a.id}/verdict`, { verdict: 'approve' })).status).toBe(200);
+    await app.reload();
+    await ui.summaryButton(app).click();
+    const text = ui.summaryText(app);
+    await text.fill('');
+    await text.pressSequentially('a/b/c');
+    await expect(text).toHaveValue('a/b/c');
+    await expect(text).toBeFocused();
+    await expect(ui.summaryDialog(app)).toBeVisible();
+    await expect(ui.filter(app)).toHaveValue('');
+
+    // Outside a field the shortcut still works.
+    await app.keyboard.press('Escape');
+    await expect(ui.summaryDialog(app)).toBeHidden();
+    await app.locator('body').click({ position: { x: 1, y: 1 } });
+    await app.keyboard.press('/');
+    await expect(ui.filter(app)).toBeFocused();
+  });
 });

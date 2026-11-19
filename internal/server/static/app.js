@@ -2883,12 +2883,21 @@ function wire() {
   $('#config-download').addEventListener('click', () => { window.location.href = '/api/config/file'; });
 
   document.addEventListener('keydown', (e) => {
+    // A key typed into a field, or inside an open dialog, is that field's: "/"
+    // is part of the URL being edited in the Summary, not a jump to the search.
+    if (typing(e.target)) return;
     // Escape on the config goes back to the dashboard: it is what the modal did,
     // and the fingers of those who already used Bazel still know it.
     if (e.key === 'Escape' && pageFromHash() === 'config') location.hash = '#/';
     if (e.key === '/' && document.activeElement !== $('#filter')) { e.preventDefault(); $('#filter').focus(); }
     if (e.key === 'r' && (e.metaKey || e.ctrlKey)) return;
   });
+}
+
+// typing says the key goes to something that takes text, or to an open dialog.
+function typing(t) {
+  return t instanceof Element
+    && !!t.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), dialog[open]');
 }
 
 // renderAgentList is the config's agent list: what each one calls, whether the
