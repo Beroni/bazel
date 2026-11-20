@@ -197,7 +197,7 @@ publish() {
   # The same review on the same commit is not published twice. The print is of the
   # report: what is on the PR changes where each finding goes, not what was reviewed.
   local print marker
-  print=$(jq -c '[.verdict, .human, .extra, .failed, (.findings | map(del(.candidates, .commentable)))]' "$work/plan.json" |
+  print=$(jq -c '[.verdict, .human, .discussed, .extra, .failed, (.findings | map(del(.candidates, .commentable)))]' "$work/plan.json" |
     git hash-object --stdin) || fail "cannot fingerprint the review"
   marker="<!-- bazel-review: $reviewed $print -->"
   if jq -e --arg m "$marker" 'any(.own_bodies[]; split("\n") | any(. == $m))' "$work/plan.json" >/dev/null; then

@@ -458,8 +458,10 @@ It needs `jq`, and says so if it is missing. The card only says published when
 the skill's script says so: a model that stops early leaves an error on it. The
 all-clear goes up only for a report that proves it: every step reported, the
 report is complete, no lens was skipped, the diff was not truncated, nothing was
-unticked. A clean report that falls short of that says why it does not clear the
-PR. Text around the report goes to the PR as plain text, under a label saying
+unticked, and nothing was left out as already discussed on the PR. A clean report
+that falls short of that says why it does not clear the PR; one that only left out
+points the PR already discussed posts a comment with them and their threads, and
+sends you to the reviews and threads already there. Text around the report goes to the PR as plain text, under a label saying
 Bazel does not vouch for it, and so does a finding that lands in the review's
 body: on the PR they are one document, and no HTML in one may hide the next. An
 inline comment stays rendered, unless it has a tag in it, code included: then it

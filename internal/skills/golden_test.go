@@ -22,6 +22,7 @@ var golden = []struct {
 	findings int    // parts SplitFindings marks as findings
 }{
 	{"fleet.md", "", 4},               // 2 findings, 1 cut, 1 needs-human item
+	{"fleet-discussed.md", "", 4},     // the same, and two points the PR already discussed
 	{"incremental.md", "", 4},         // the same, over the changes since an earlier head
 	{"exploit-needs-human.md", "", 3}, // 1 finding, 2 needs-human items
 	// Cuts go by lines_saved alone: a major cut after a bigger minor one.
@@ -41,12 +42,21 @@ func TestValidatorRefuses(t *testing.T) {
 	validate := validator(t)
 	fleet := readGolden(t, "fleet.md")
 	cuts := readGolden(t, "cuts-order.md")
+	discussed := readGolden(t, "fleet-discussed.md")
 	stops := "the report stops before its title and summary are complete"
 	cases := map[string]struct{ body, want string }{
-		"the header alone":      {fleet[:strings.Index(fleet, "# Review Fleet")], stops},
-		"cut after the title":   {fleet[:strings.Index(fleet, "**Verdict:**")], stops},
-		"cut after the verdict": {fleet[:strings.Index(fleet, "**Scope:**")], stops},
-		"cut after the scope":   {fleet[:strings.Index(fleet, "**Lenses:**")], stops},
+		"the header alone":           {fleet[:strings.Index(fleet, "# Review Fleet")], stops},
+		"a major point left out":     {strings.Replace(discussed, "· minor · naming", "· major · naming", 1), "a critical or major point is never left out"},
+		"a critical point left out":  {strings.Replace(discussed, "`PR` · nit", "`PR` · critical", 1), "a critical or major point is never left out"},
+		"a thread on another PR":     {strings.Replace(discussed, "klever/app/pull/123#discussion", "klever/app/pull/9#discussion", 1), "is not on this PR"},
+		"a thread on another repo":   {strings.Replace(discussed, "github.com/klever/app/pull/123#issue", "github.com/evil/app/pull/123#issue", 1), "is not on this PR"},
+		"a link that is no thread":   {strings.Replace(discussed, "#discussion_r42)", "#x)", 1), "an already-discussed item is"},
+		"no marker":                  {strings.Replace(discussed, "<!-- already-discussed -->\n", "", 1), "needs the `<!-- already-discussed -->` marker"},
+		"text in the section":        {discussed + "The rest was fine.\n", "holds only its items"},
+		"before the human questions": {strings.Replace(discussed, "## Needs human verification", "## Already discussed\n<!-- already-discussed -->\n\n- `PR` · nit · docs — x — [thread](https://github.com/klever/app/pull/123#issuecomment-1)\n\n## Needs human verification", 1), "out of order"},
+		"cut after the title":        {fleet[:strings.Index(fleet, "**Verdict:**")], stops},
+		"cut after the verdict":      {fleet[:strings.Index(fleet, "**Scope:**")], stops},
+		"cut after the scope":        {fleet[:strings.Index(fleet, "**Lenses:**")], stops},
 		"cuts out of order": {
 			strings.Replace(strings.Replace(strings.Replace(strings.Replace(cuts, "lines_saved=40", "lines_saved=X", 1), "lines_saved=25", "lines_saved=40", 1), "lines_saved=X", "lines_saved=25", 1), "−25 lines", "−40 lines", 1),
 			"from the biggest",
