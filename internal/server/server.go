@@ -127,7 +127,7 @@ type Server struct {
 	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
 	// fetchConversations is the full read of a PR's discussion, for the review
 	// fleet's discussion.json: gh's, or a test's.
-	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, error)
+	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
 	fetchReviewers     func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
 
@@ -164,7 +164,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		fetchReviewers:     gh.FetchReviewers,
 		convs:              map[string]conversationEntry{},
 		fetchThreadTags:    gh.FetchThreadTags,
-		fetchConversations: gh.FetchConversations,
+		fetchConversations: gh.ReadConversations,
 		cfg:                cfg,
 		me:                 me,
 		reviewsDir:         reviewsDir,

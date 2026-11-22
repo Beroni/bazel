@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/gh"
 )
@@ -20,7 +22,7 @@ func discussionServer(t *testing.T, answer string) (*Server, string) {
 		t.Fatal(err)
 	}
 	srv, log := threadsServer(t, "cat "+file)
-	srv.fetchConversations = gh.FetchConversations
+	srv.fetchConversations = gh.ReadConversations
 	return srv, log
 }
 
@@ -122,10 +124,49 @@ func TestDiscussionCortada(t *testing.T) {
 // A failed read is an error and no file.
 func TestDiscussionComFalha(t *testing.T) {
 	srv := newTestServer(t)
-	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, error) {
-		return nil, errors.New("HTTP 502: Bad Gateway")
+	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return nil, gh.RateLimit{}, errors.New("HTTP 502: Bad Gateway")
 	}
 	if data, err := srv.discussionFor(context.Background(), prAt("acme/api-core", 7, headOne)); err == nil || data != nil {
 		t.Errorf("%s %v", data, err)
+	}
+}
+
+// The review's read keeps to the tags' rules: with GitHub's points below the
+// margin it reads nothing and says why, and a full read that finds them low
+// holds the tags' reads too.
+func TestDiscussionRespeitaORateLimit(t *testing.T) {
+	low := strings.Replace(threadsAnswer, `{"data":{`, `{"data":{"rateLimit":{"cost":9,"remaining":200,"resetAt":"`+time.Now().Add(time.Hour).UTC().Format(time.RFC3339)+`"},`, 1)
+	srv, log := discussionServer(t, low)
+	pr := prAt("acme/api-core", 7, headOne)
+	if _, err := srv.discussionFor(context.Background(), pr); err != nil {
+		t.Fatalf("the read that finds them low still counts: %v", err)
+	}
+	before := contaNoLog(log, "start")
+	if data, err := srv.discussionFor(context.Background(), pr); err == nil || data != nil || !strings.Contains(err.Error(), "rate limit is low") {
+		t.Errorf("%s %v", data, err)
+	}
+	if _, out := call(t, srv, "GET", "/api/open-threads?refresh=1", ""); !strings.Contains(fmt.Sprint(out["error"]), "rate limit is low") {
+		t.Errorf("the tags read on: %v", out)
+	}
+	if n := contaNoLog(log, "start") - before; n != 0 {
+		t.Errorf("%d gh reads below the margin", n)
+	}
+}
+
+// Inside the tags' backoff the review reads nothing either.
+func TestDiscussionRespeitaOBackoff(t *testing.T) {
+	srv := newTestServer(t)
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return nil, gh.RateLimit{}, errors.New("HTTP 502")
+	}
+	read := false
+	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		read = true
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	srv.conversationsOf(context.Background(), []string{"acme/api-core#7"}, false)
+	if _, err := srv.discussionFor(context.Background(), prAt("acme/api-core", 7, headOne)); err == nil || read {
+		t.Errorf("read inside the backoff: %v %v", read, err)
 	}
 }

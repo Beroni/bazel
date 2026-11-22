@@ -345,12 +345,30 @@ func optLine(n int) *int {
 // an error and no file: the review goes without it.
 func (s *Server) discussionFor(ctx context.Context, pr gh.PR) ([]byte, error) {
 	// The full read, for this job alone: the tags' read is too thin for it.
+	// It keeps to the same rules as the tags: not while GitHub's points are
+	// below the margin, nor inside a failure's backoff, and a read that says
+	// they ran low holds the tags too.
 	key := pr.Key()
+	s.convMu.Lock()
+	now := timeNow()
+	hold, failed := s.convHold, s.convFailed
+	s.convMu.Unlock()
+	if now.Before(hold) {
+		return nil, fmt.Errorf("GitHub's rate limit is low: no discussion is read until %s", hold.Local().Format("15:04"))
+	}
+	if !failed.failedAt.IsZero() && now.Sub(failed.failedAt) < failed.backoff() {
+		return nil, fmt.Errorf("GitHub failed a moment ago (%s): read again after the backoff", failed.err)
+	}
 	rctx, cancel := context.WithTimeout(ctx, detailsReadTimeout)
 	defer cancel()
-	convs, err := s.fetchConversations(rctx, []string{key})
+	convs, rl, err := s.fetchConversations(rctx, []string{key})
 	if err != nil {
 		return nil, err
+	}
+	if !rl.ResetAt.IsZero() && rl.Remaining < convRateMargin {
+		s.convMu.Lock()
+		s.convHold = rl.ResetAt
+		s.convMu.Unlock()
 	}
 	c, ok := convs[key]
 	if !ok {

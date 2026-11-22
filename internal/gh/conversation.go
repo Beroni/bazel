@@ -293,6 +293,22 @@ func fetchConversations(ctx context.Context, keys []string) (map[string]Conversa
 	return got, err
 }
 
+// ReadConversations reads, for up to ConversationBatch PRs in one gh call,
+// everything each discussed, and what GitHub says of its rate limit after it.
+// Only reads.
+func ReadConversations(ctx context.Context, keys []string) (map[string]Conversation, RateLimit, error) {
+	var ok []string
+	for _, key := range keys {
+		if _, _, valid := splitKey(key); valid {
+			ok = append(ok, key)
+		}
+	}
+	if len(ok) == 0 {
+		return map[string]Conversation{}, RateLimit{}, nil
+	}
+	return readPRs(ctx, conversationQuery(len(ok)), ok)
+}
+
 // FetchThreadTags reads, for up to ConversationBatch PRs in one gh call, only
 // what the open-thread tags need, and what GitHub says of its rate limit after
 // it. Only reads.
