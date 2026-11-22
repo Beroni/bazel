@@ -20,7 +20,11 @@ import (
 
 // PR is a flattened pull request for use in the TUI.
 type PR struct {
-	Repo         string    `json:"-"`
+	Repo string `json:"-"`
+	// ReadStart and ReadEnd are when the read of its repository began and
+	// ended: the head is GitHub's at some moment in between.
+	ReadStart    time.Time `json:"-"`
+	ReadEnd      time.Time `json:"-"`
 	Number       int       `json:"number"`
 	Title        string    `json:"title"`
 	URL          string    `json:"url"`
@@ -131,7 +135,12 @@ func ListPRs(ctx context.Context, repos []string, opts ListOptions) ([]PR, []Rep
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			start := time.Now()
 			prs, full, err := listRepoPRs(ctx, repo, opts.Limit, slices.Sorted(maps.Keys(authors)))
+			end := time.Now()
+			for i := range prs {
+				prs[i].ReadStart, prs[i].ReadEnd = start, end
+			}
 			mu.Lock()
 			defer mu.Unlock()
 			if err != nil {

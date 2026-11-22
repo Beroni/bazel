@@ -443,16 +443,20 @@ func TestDecisaoManualRecusa(t *testing.T) {
 	}
 }
 
-// listAt puts prs in the server's list as a read from GitHub that began at at.
+// listAt puts prs in the server's list as a read from GitHub done at at.
 func listAt(srv *Server, at time.Time, prs ...gh.PR) {
+	for i := range prs {
+		prs[i].ReadStart, prs[i].ReadEnd = at, at
+	}
+	listAs(srv, prs...)
+}
+
+// listAs puts prs in the server's list as they are, read times and all.
+func listAs(srv *Server, prs ...gh.PR) {
 	srv.prMu.Lock()
 	defer srv.prMu.Unlock()
 	srv.prs = prs
-	srv.prsAt = at
-	srv.prsReadAt = map[string]time.Time{}
-	for _, pr := range prs {
-		srv.prsReadAt[strings.ToLower(pr.Key())] = at
-	}
+	srv.prsAt = time.Now()
 }
 
 // PV-1, the rest: the current head is the newest Bazel knows, by time. A list
@@ -543,5 +547,69 @@ func TestReviewersUmaLeituraEBackoff(t *testing.T) {
 	}
 	if n := reads.Load(); n != 1 {
 		t.Errorf("%d reads inside the backoff, want 1", n)
+	}
+}
+
+// T1: the repos are read a few at a time, so a repo's read may begin before a
+// review's checkout and end after it. With another head in it, nobody can say
+// which is newer, and the safe side is "moved": the summary must not approve a
+// head the PR may have left.
+func TestLeituraQueAtravessaOCheckoutDizMoved(t *testing.T) {
+	ghFalso(t, "exit 1")
+	listed := prAt("acme/api-core", 7, headOne)
+	srv := newTestServer(t)
+	ch := srv.hub.Subscribe()
+	defer srv.hub.Unsubscribe(ch)
+	v, err := srv.jobs.Enqueue(listed, false, srv.cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, v.ID, StateDone)
+	checkout := srv.jobs.reviewedHeads()[strings.ToLower(listed.Key())].at
+	call(t, srv, "POST", "/api/jobs/"+v.ID+"/verdict", `{"verdict":"approve"}`)
+
+	pushed := listed
+	pushed.HeadRefOid = headTwo
+	pushed.ReadStart, pushed.ReadEnd = checkout.Add(-time.Second), checkout.Add(time.Second)
+	listAs(srv, pushed)
+	if got := srv.verdictViews()[strings.ToLower(listed.Key())]; !got.Moved || got.Current != headTwo {
+		t.Errorf("a read across the checkout, with another head: %+v", got)
+	}
+	if s := srv.summary(context.Background()); s.Text != "" || len(s.Moved) != 1 {
+		t.Errorf("the summary approves a head the PR may have left: %q", s.Text)
+	}
+
+	// A read that ended before the checkout knows less than the clone.
+	pushed.ReadStart, pushed.ReadEnd = checkout.Add(-2*time.Second), checkout.Add(-time.Second)
+	listAs(srv, pushed)
+	if got := srv.verdictViews()[strings.ToLower(listed.Key())]; got.Moved {
+		t.Errorf("an older read: %+v", got)
+	}
+}
+
+// PVD3-1: past one batch, the reviewers read is more than one gh call, and the
+// GitHub budget pays for each of them.
+func TestReviewersCobraCadaChamada(t *testing.T) {
+	srv := newTestServer(t)
+	var calls atomic.Int32
+	srv.fetchReviewers = func(_ context.Context, keys []string, _ string) (map[string][]string, error) {
+		calls.Add(1)
+		if len(keys) > gh.ReviewersBatch {
+			t.Errorf("one call for %d PRs", len(keys))
+		}
+		return map[string][]string{}, nil
+	}
+	keys := make([]string, gh.ReviewersBatch+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	if _, err := srv.reviewersOf(context.Background(), keys); err != nil {
+		t.Fatal(err)
+	}
+	srv.detMu.Lock()
+	charged := len(srv.ghReads)
+	srv.detMu.Unlock()
+	if calls.Load() != 2 || charged != 2 {
+		t.Errorf("%d calls, %d charged to the budget, want 2 and 2", calls.Load(), charged)
 	}
 }
