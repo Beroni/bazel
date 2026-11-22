@@ -123,7 +123,7 @@ test.describe('P1 · your open threads', () => {
     await expect(app.getByTestId('pr-open-thread')).toHaveCount(1);
     // Asked again, inside the backoff: the same last good read, still stale.
     const r = await bazel.api('GET', '/api/open-threads?refresh=1');
-    expect([r.json.stale, Object.keys(r.json.threads)]).toEqual([true, ['acme/api-core#101']]);
+    expect([!!r.json.stale['acme/api-core#101'], Object.keys(r.json.threads), r.json.error]).toEqual([true, ['acme/api-core#101'], undefined]);
   });
 
   // OT2-1: GitHub says few points are left: the tags' reads stop until the
@@ -140,8 +140,18 @@ test.describe('P1 · your open threads', () => {
     await expect(tag).toHaveAttribute('data-stale', 'true');
     expect(tags()).toBe(before);
     const r = await bazel.api('GET', '/api/open-threads?refresh=1');
-    expect(r.json.error).toContain('rate limit is low');
+    expect(r.json.errors['acme/api-core#101']).toContain('rate limit is low');
     expect((await bazel.api('GET', '/api/needs?refresh=1')).status).toBe(200);
+  });
+
+  // A PR past its page cap shows what it read, and says there is more.
+  test('a PR with too many threads to read says it is partial', async ({ app, bazel }) => {
+    const thread = CONVERSATION.reviewThreads.nodes[0];
+    bazel.updatePR('acme/api-core#101', { conversation: { reviewThreads: { pageInfo: { hasNextPage: true, endCursor: 'more' }, nodes: [thread] } } });
+    await app.getByTestId('refresh').click();
+    const tag = ui.prRow(app, RATE).getByTestId('pr-open-threads');
+    await expect(tag).toHaveText('💬 4+ open (partial)');
+    await expect(tag).toHaveAttribute('data-partial', 'true');
   });
 });
 

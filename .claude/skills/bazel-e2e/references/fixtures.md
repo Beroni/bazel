@@ -70,7 +70,9 @@ Left out, the PR discussed nothing. `gh.json` `fail.conversation` makes it fail.
 The open-thread tags read the same fixture with a smaller query (`query
 bazelThreadTags(…)`), and both answers carry `rateLimit`: `gh.json`
 `rate_remaining` sets the points left (default plenty), so a low number stops
-the tag reads until the reset.
+the tag reads until the reset. A `reviewThreads` with `pageInfo: { hasNextPage: true,
+endCursor }` makes the tags read more pages (the fake answers the same nodes each
+time), up to the cap, and the PR shows as partial.
 
 `symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
 
