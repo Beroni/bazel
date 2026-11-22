@@ -67,7 +67,10 @@ same aliases and variables): `reviewThreads`, `comments` and `reviews`, each
 `path`, `line`, `originalLine`, `resolvedBy`, `comments: { totalCount, nodes:
 [{ author: { login, __typename }, authorAssociation, body, url, createdAt }] }`).
 Left out, the PR discussed nothing. `gh.json` `fail.conversation` makes it fail.
-The open-thread tags and the fleet's `discussion.json` come from this read.
+The open-thread tags read the same fixture with a smaller query (`query
+bazelThreadTags(…)`), and both answers carry `rateLimit`: `gh.json`
+`rate_remaining` sets the points left (default plenty), so a low number stops
+the tag reads until the reset.
 
 `symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
 
