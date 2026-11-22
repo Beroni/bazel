@@ -430,8 +430,8 @@ func newTestServer(t *testing.T) *Server {
 	srv.fetchReviewers = func(context.Context, []string, string) (map[string][]string, error) {
 		return map[string][]string{}, nil
 	}
-	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, error) {
-		return map[string]gh.Conversation{}, nil
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	return srv
 }

@@ -35,18 +35,49 @@ var conversationFragment = fmt.Sprintf(`fragment bazelConversationPR on PullRequ
   reviews(first: %d) { pageInfo { hasNextPage } nodes { author { login __typename } authorAssociation state body url submittedAt } }
 }`, convThreads, convReplies, convComments, convReviews)
 
-// conversationQuery asks for n PRs, aliased p0…p<n-1>, each by its own
-// variables, as reviewersQuery does.
-func conversationQuery(n int) string {
+// threadTagsFragment is the least that tells whose threads are open: who
+// opened each thread, its last word and how many replies, no bodies but the
+// last. GitHub charges a query by the nodes it may bring, and this one is
+// read for every PR of the list.
+const threadTagsFragment = `fragment bazelThreadTagsPR on PullRequest {
+  author { login __typename }
+  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes {
+    isResolved isOutdated path line originalLine startLine
+    comments(first: 1) { totalCount nodes { author { login __typename } url createdAt } }
+    lastComment: comments(last: 1) { nodes { author { login __typename } body createdAt } } } }
+}`
+
+// rateLimitField is asked with every read: what it cost, and what is left.
+const rateLimitField = "  rateLimit { cost remaining resetAt }\n"
+
+// prsQuery asks for n PRs, aliased p0…p<n-1>, each by its own variables, with
+// fragment, as reviewersQuery does.
+func prsQuery(name, fragment, fragmentName string, n int) string {
 	var vars, body strings.Builder
 	for i := range n {
 		if i > 0 {
 			vars.WriteString(", ")
 		}
 		fmt.Fprintf(&vars, "$o%d: String!, $n%d: String!, $p%d: Int!", i, i, i)
-		fmt.Fprintf(&body, "  p%d: repository(owner: $o%d, name: $n%d) { pullRequest(number: $p%d) { ...bazelConversationPR } }\n", i, i, i, i)
+		fmt.Fprintf(&body, "  p%d: repository(owner: $o%d, name: $n%d) { pullRequest(number: $p%d) { ...%s } }\n", i, i, i, i, fragmentName)
 	}
-	return "query bazelConversation(" + vars.String() + ") {\n" + body.String() + "}\n" + conversationFragment
+	return "query " + name + "(" + vars.String() + ") {\n" + body.String() + rateLimitField + "}\n" + fragment
+}
+
+func conversationQuery(n int) string {
+	return prsQuery("bazelConversation", conversationFragment, "bazelConversationPR", n)
+}
+
+func threadTagsQuery(n int) string {
+	return prsQuery("bazelThreadTags", threadTagsFragment, "bazelThreadTagsPR", n)
+}
+
+// RateLimit is what GitHub says of its GraphQL budget after a read: the points
+// it cost, those left, and when the hour starts again.
+type RateLimit struct {
+	Cost      int       `json:"cost"`
+	Remaining int       `json:"remaining"`
+	ResetAt   time.Time `json:"resetAt"`
 }
 
 // Who is someone who wrote on a PR. Type is "Bot" for an app; Association is
@@ -256,7 +287,28 @@ func FetchConversations(ctx context.Context, keys []string) (map[string]Conversa
 }
 
 func fetchConversations(ctx context.Context, keys []string) (map[string]Conversation, error) {
-	args := []string{"api", "graphql", "-f", "query=" + conversationQuery(len(keys))}
+	got, _, err := readPRs(ctx, conversationQuery(len(keys)), keys)
+	return got, err
+}
+
+// FetchThreadTags reads, for up to ConversationBatch PRs in one gh call, only
+// what the open-thread tags need, and what GitHub says of its rate limit after
+// it. Only reads.
+func FetchThreadTags(ctx context.Context, keys []string) (map[string]Conversation, RateLimit, error) {
+	var ok []string
+	for _, key := range keys {
+		if _, _, valid := splitKey(key); valid {
+			ok = append(ok, key)
+		}
+	}
+	if len(ok) == 0 {
+		return map[string]Conversation{}, RateLimit{}, nil
+	}
+	return readPRs(ctx, threadTagsQuery(len(ok)), ok)
+}
+
+func readPRs(ctx context.Context, query string, keys []string) (map[string]Conversation, RateLimit, error) {
+	args := []string{"api", "graphql", "-f", "query=" + query}
 	for i, key := range keys {
 		repo, number, _ := splitKey(key)
 		owner, name, _ := strings.Cut(repo, "/")
@@ -264,34 +316,39 @@ func fetchConversations(ctx context.Context, keys []string) (map[string]Conversa
 	}
 	raw, err := run(ctx, "gh", args...)
 	if err != nil {
-		return nil, err
+		return nil, RateLimit{}, err
 	}
 	return parseConversations(raw, keys)
 }
 
-func parseConversations(raw string, keys []string) (map[string]Conversation, error) {
+func parseConversations(raw string, keys []string) (map[string]Conversation, RateLimit, error) {
 	var answer struct {
-		Data map[string]*struct {
-			PullRequest *rawConversation `json:"pullRequest"`
-		} `json:"data"`
+		Data   map[string]json.RawMessage `json:"data"`
 		Errors []struct {
 			Message string `json:"message"`
 		} `json:"errors"`
 	}
 	if err := json.Unmarshal([]byte(raw), &answer); err != nil {
-		return nil, fmt.Errorf("gh api graphql: unexpected output: %w", err)
+		return nil, RateLimit{}, fmt.Errorf("gh api graphql: unexpected output: %w", err)
 	}
 	if answer.Data == nil {
 		if len(answer.Errors) > 0 {
-			return nil, errors.New(answer.Errors[0].Message)
+			return nil, RateLimit{}, errors.New(answer.Errors[0].Message)
 		}
-		return nil, errors.New("gh api graphql: no data")
+		return nil, RateLimit{}, errors.New("gh api graphql: no data")
+	}
+	var rl RateLimit
+	if r, ok := answer.Data["rateLimit"]; ok {
+		_ = json.Unmarshal(r, &rl)
 	}
 	out := map[string]Conversation{}
 	for i, key := range keys {
-		if repo := answer.Data["p"+strconv.Itoa(i)]; repo != nil && repo.PullRequest != nil {
+		var repo *struct {
+			PullRequest *rawConversation `json:"pullRequest"`
+		}
+		if r, ok := answer.Data["p"+strconv.Itoa(i)]; ok && json.Unmarshal(r, &repo) == nil && repo != nil && repo.PullRequest != nil {
 			out[key] = repo.PullRequest.conversation()
 		}
 	}
-	return out, nil
+	return out, rl, nil
 }

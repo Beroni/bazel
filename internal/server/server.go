@@ -119,12 +119,13 @@ type Server struct {
 
 	// convs caches what each PR discussed (threads, comments, reviews), for the
 	// open-thread tags and the review fleet's discussion.json; same rules.
-	convMu             sync.Mutex
-	convs              map[string]conversationEntry
-	convFailed         needsCache
-	convReads          []time.Time // these reads' own budget, last minute
-	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, error)
-	fetchReviewers     func(ctx context.Context, keys []string, me string) (map[string][]string, error)
+	convMu          sync.Mutex
+	convs           map[string]conversationEntry
+	convFailed      needsCache
+	convReads       []time.Time // these reads' own budget, last minute
+	convHold        time.Time   // GitHub's rate limit ran low: no tags' read before this
+	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
+	fetchReviewers  func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -150,24 +151,24 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
 	}
 	return &Server{
-		instance:           instance,
-		details:            map[string]detailsEntry{},
-		reading:            map[string]*detailsRead{},
-		fetchSlot:          make(chan struct{}, 1),
-		retried:            map[string]time.Time{},
-		fetchDetails:       gh.GetDetails,
-		reviewers:          map[string]reviewersEntry{},
-		fetchReviewers:     gh.FetchReviewers,
-		convs:              map[string]conversationEntry{},
-		fetchConversations: gh.FetchConversations,
-		cfg:                cfg,
-		me:                 me,
-		reviewsDir:         reviewsDir,
-		configPath:         configPath,
-		opts:               opts,
-		hub:                hub,
-		jobs:               jobs,
-		done:               make(chan struct{}),
+		instance:        instance,
+		details:         map[string]detailsEntry{},
+		reading:         map[string]*detailsRead{},
+		fetchSlot:       make(chan struct{}, 1),
+		retried:         map[string]time.Time{},
+		fetchDetails:    gh.GetDetails,
+		reviewers:       map[string]reviewersEntry{},
+		fetchReviewers:  gh.FetchReviewers,
+		convs:           map[string]conversationEntry{},
+		fetchThreadTags: gh.FetchThreadTags,
+		cfg:             cfg,
+		me:              me,
+		reviewsDir:      reviewsDir,
+		configPath:      configPath,
+		opts:            opts,
+		hub:             hub,
+		jobs:            jobs,
+		done:            make(chan struct{}),
 	}, nil
 }
 

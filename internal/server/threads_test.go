@@ -41,7 +41,7 @@ func threadsServer(t *testing.T, script string) (*Server, string) {
 	t.Helper()
 	log := ghFalso(t, script)
 	srv := newTestServer(t)
-	srv.fetchConversations = gh.FetchConversations
+	srv.fetchThreadTags = gh.FetchThreadTags
 	listAt(srv, time.Now(), prAt("acme/api-core", 7, headOne))
 	return srv, log
 }
@@ -105,10 +105,10 @@ func TestThreadsUmaLeitura(t *testing.T) {
 	srv := newTestServer(t)
 	var reads atomic.Int32
 	release := make(chan struct{})
-	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
 		reads.Add(1)
 		<-release
-		return map[string]gh.Conversation{}, nil
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	var wg sync.WaitGroup
 	for range 8 {
@@ -183,11 +183,11 @@ func TestBackoffPorLote(t *testing.T) {
 	now := time.Now()
 	timeNow = func() time.Time { return now }
 	t.Cleanup(func() { timeNow = time.Now })
-	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
 		if slices.Contains(keys, fmt.Sprintf("acme/api-core#%d", gh.ConversationBatch+1)) {
-			return nil, errors.New("HTTP 502")
+			return nil, gh.RateLimit{}, errors.New("HTTP 502")
 		}
-		return map[string]gh.Conversation{}, nil
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	keys := make([]string, gh.ConversationBatch+1)
 	for i := range keys {
@@ -209,9 +209,9 @@ func TestThreadsTemOrcamentoProprio(t *testing.T) {
 	convReadsPerMin = 1
 	t.Cleanup(func() { convReadsPerMin = old })
 	var calls atomic.Int32
-	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, error) {
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
 		calls.Add(1)
-		return map[string]gh.Conversation{}, nil
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	keys := make([]string, gh.ConversationBatch+1)
 	for i := range keys {
@@ -266,12 +266,12 @@ func TestFalhaMantemAUltimaLeituraBoa(t *testing.T) {
 func TestThreadsEmLotesDoTamanhoDoGh(t *testing.T) {
 	srv := newTestServer(t)
 	var calls atomic.Int32
-	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
 		calls.Add(1)
 		if len(keys) > gh.ConversationBatch {
 			t.Errorf("one call for %d PRs", len(keys))
 		}
-		return map[string]gh.Conversation{}, nil
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	keys := make([]string, gh.ConversationBatch+1)
 	for i := range keys {
@@ -280,5 +280,85 @@ func TestThreadsEmLotesDoTamanhoDoGh(t *testing.T) {
 	srv.conversationsOf(context.Background(), keys, false)
 	if calls.Load() != 2 {
 		t.Errorf("%d calls", calls.Load())
+	}
+}
+
+// OT2-1: GitHub's points, not only calls. Once a read says few are left, the
+// tags' reads stop until the reset, as a failure with the last good tags
+// stale; Needs you, which shares GitHub's hour, still reads.
+func TestRateLimitBaixoParaAsEtiquetas(t *testing.T) {
+	low := strings.Replace(threadsAnswer, `{"data":{`, `{"data":{"rateLimit":{"cost":5,"remaining":400,"resetAt":"`+time.Now().Add(30*time.Minute).UTC().Format(time.RFC3339)+`"},`, 1)
+	answer := filepath.Join(t.TempDir(), "a.json")
+	if err := os.WriteFile(answer, []byte(low), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	needs := `{"data":{"requested":{"issueCount":0,"nodes":[]},"reviewed":{"issueCount":0,"nodes":[]},"authored":{"issueCount":0,"nodes":[]}}}`
+	srv, log := threadsServer(t, `case "$*" in *bazelNeedsYou*) echo '`+needs+`' ;; *) cat `+answer+` ;; esac`)
+	_, out := call(t, srv, "GET", "/api/open-threads", "")
+	if len(out["threads"].(map[string]any)) != 1 {
+		t.Fatalf("the read that said so still counts: %v", out)
+	}
+	before := contaNoLog(log, "start")
+	_, out = call(t, srv, "GET", "/api/open-threads?refresh=1", "")
+	if n := contaNoLog(log, "start") - before; n != 0 {
+		t.Errorf("read the tags %d times with the limit low", n)
+	}
+	if e, _ := out["error"].(string); !strings.Contains(e, "rate limit is low") || out["stale"] != true || len(out["threads"].(map[string]any)) != 1 {
+		t.Errorf("%v", out)
+	}
+	if code, n := call(t, srv, "GET", "/api/needs", ""); code != http.StatusOK || contaNoLog(log, "start")-before != 1 {
+		t.Errorf("Needs you did not read: %d %v", code, n)
+	}
+}
+
+// OT2-1 (Luna): with the budget and the minute, the PRs read longest ago, or
+// never, go first: 210 PRs, a few minutes, every one of them read.
+func TestRodizioLeTodos(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	read := map[string]bool{}
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		for _, k := range keys {
+			read[k] = true
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	keys := make([]string, 210)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	for range 3 {
+		srv.conversationsOf(context.Background(), keys, false)
+		now = now.Add(61 * time.Second)
+	}
+	if len(read) != len(keys) {
+		t.Errorf("%d of %d PRs ever read", len(read), len(keys))
+	}
+}
+
+// OT2-3: past its 30 minutes, a good read is no fallback any more: no tags, and
+// the reason.
+func TestFallbackExpira(t *testing.T) {
+	answer := filepath.Join(t.TempDir(), "a.json")
+	if err := os.WriteFile(answer, []byte(threadsAnswer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fail := filepath.Join(t.TempDir(), "fail")
+	srv, _ := threadsServer(t, "if [ -f "+fail+" ]; then echo 'HTTP 502' >&2; exit 1; fi; cat "+answer)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	call(t, srv, "GET", "/api/open-threads", "")
+	if err := os.WriteFile(fail, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, later := range []time.Duration{31 * time.Minute, 24 * time.Hour} {
+		now = now.Add(later)
+		_, out := call(t, srv, "GET", "/api/open-threads?refresh=1", "")
+		if len(out["threads"].(map[string]any)) != 0 || out["stale"] != nil || out["error"] == nil {
+			t.Errorf("after %v: %v", later, out)
+		}
 	}
 }
