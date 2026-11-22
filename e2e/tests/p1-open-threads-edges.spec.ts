@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { test, expect, knownBug } from '../harness/fixtures';
+import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { tickByFilter, ui } from '../harness/ui';
 
@@ -14,7 +14,7 @@ const said = (login: string, body: string, n: number) =>
 const thread = (path: string, line: number | null, comments: any[], extra: Record<string, unknown> = {}) =>
   ({ isResolved: false, isOutdated: false, path, line, resolvedBy: null, comments: { totalCount: comments.length, nodes: comments }, ...extra });
 const conv = (...threads: any[]) => ({ reviewThreads: { nodes: threads } });
-const reads = (bz: Bazel) => bz.ghCalls().filter((c) => c.argv.some((a) => a.startsWith('query=query bazelConversation(')));
+const reads = (bz: Bazel) => bz.ghCalls().filter((c) => c.argv.some((a) => a.startsWith('query=query bazelThreadTags(')));
 const writes = (bz: Bazel) => bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment')
   || (c.argv[0] === 'api' && c.argv.some((a) => a === 'POST' || a === '-X' || a === '--method' || a.includes('mutation'))));
 const tag = (app: any, title: string) => ui.prRow(app, title).getByTestId('pr-open-threads');
@@ -89,20 +89,23 @@ test.describe('P1 · your open threads, edges', () => {
     expect(reads(bazel).length).toBe(n);
   });
 
-  // BUG-QA-40: a read that worked shows the tag; GitHub then fails one ↻, and the
-  // page drops every tag and reminder for the whole backoff, though what it had
-  // was right a minute ago. The server answers 200 with {threads: {}, error},
-  // and loadOpenThreads takes the empty map. Expected: the last good tags stay
-  // (stale) until a read succeeds, as Needs you keeps its last list.
-  test('a failed ↻ keeps the tags the last good read showed', async ({ app, bazel }) => {
-    knownBug('BUG-QA-40', 'a failed refresh wipes the open-thread tags');
+  // BUG-QA-40, fixed in d43c993: a failed ↻ wiped the tags of the last good read.
+  // Now they stay, marked stale with the time of that read.
+  test('a failed ↻ keeps the last tags, "as of" in the tag, the reminder and the Overview', async ({ app, bazel }) => {
     bazel.updatePR('acme/api-core#101', { conversation: conv(thread('a.go', 12, [said('e2e-user', 'why?', 1)])) });
     await app.getByTestId('refresh').click();
-    await expect(tag(app, RATE)).toHaveText('💬 1 open');
+    await expect(tag(app, RATE)).toHaveAttribute('data-stale', 'false');
     bazel.setGh({ fail: { conversation: 'HTTP 502: Bad Gateway' } });
     await app.getByTestId('refresh').click();
-    await expect.poll(() => reads(bazel).filter((c) => c.exit !== 0).length).toBe(1);
+    await expect(tag(app, RATE)).toHaveAttribute('data-stale', 'true');
     await expect(tag(app, RATE)).toHaveText('💬 1 open');
+    const asOf = /as of \d\d:\d\d.*\(could not refresh\)/;
+    await expect(tag(app, RATE)).toHaveAttribute('title', asOf);
+    await tickByFilter(app, RATE);
+    await expect(app.getByTestId('threads-note').getByTestId('threads-stale')).toHaveText(asOf);
+    await ui.prRow(app, RATE).locator('.title').click();
+    await expect(app.getByTestId('pr-page').getByTestId('threads-stale')).toHaveText(asOf);
+    await expect(app.getByTestId('threads-error')).toHaveCount(0);
   });
 
   test('keyboard reaches the reminder\'s links and the Overview\'s, and axe is clean on both', async ({ app, bazel }) => {
@@ -129,3 +132,68 @@ test.describe('P1 · your open threads, edges', () => {
     }
   });
 });
+
+// f50842d: the tag reads mind GitHub's rate limit. Below the margin they stop
+// until the hour starts again; the rest of Bazel keeps reading.
+test.describe('P1 · open threads and the rate limit', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+  test.afterEach(async ({ bazel }) => { expect(writes(bazel)).toEqual([]); });
+
+  test('low on points: the tags stop reading and go stale, Needs you and the Summary still read', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: conv(thread('a.go', 12, [said('e2e-user', 'why?', 1)])) });
+    bazel.setGh({ rate_remaining: 10 });
+    await app.getByTestId('refresh').click(); // one read, which reports the points left
+    await expect(tag(app, RATE)).toHaveText('💬 1 open');
+    const n = reads(bazel).length;
+    await app.getByTestId('refresh').click();
+    const r = await threads(bazel, true);
+    expect(r.error).toContain('rate limit is low');
+    expect(r.stale).toBe(true);
+    expect(reads(bazel).length).toBe(n);
+    await expect(tag(app, RATE)).toHaveAttribute('data-stale', 'true');
+
+    // The rest of Bazel is not held.
+    const other = (q: string) => bazel.ghCalls().filter((c) => c.argv.some((a) => a.startsWith(q))).length;
+    const needs = other('query=query bazelNeedsYou');
+    expect((await bazel.api('GET', '/api/needs?refresh=1')).status).toBe(200);
+    expect(other('query=query bazelNeedsYou')).toBe(needs + 1);
+    await bazel.waitJob(await bazel.enqueue('acme/api-core#101', 'review-fleet'), (j) => j.state === 'done');
+    await (await bazel.api('GET', '/api/summary')).json;
+    expect(other('query=query bazelReviewers(')).toBeGreaterThan(0);
+  });
+
+  // The order (longest unread first) only matters past the one-minute TTL, too
+  // slow for this suite: internal/server/threads_test.go covers it.
+  test('many PRs over several cycles: all end up read', async ({ bazel }) => {
+    for (let i = 0; i < 25; i++) {
+      bazel.addPR({ repo: 'acme/api-core', number: 700 + i, title: `Cycle ${i}`, headRefName: `c${i}`, author: { login: 'zoe' },
+        conversation: conv(thread(`f${i}.go`, i + 1, [said('e2e-user', 'q', i)])) });
+    }
+    // Every read reports few points left, and the hour starting again soon:
+    // one batch per cycle.
+    bazel.setGh({ rate_remaining: 10, rate_reset_seconds: 2 });
+    await bazel.api('GET', '/api/prs?refresh=1'); // 30 listed, 25 with a thread
+    const tagged = async () => Object.keys((await threads(bazel)).threads).length;
+    let cycles = 0;
+    await expect.poll(async () => {
+      cycles++;
+      return tagged();
+    }, { timeout: 60_000, intervals: [2_500] }).toBe(25);
+    // One batch of ten per cycle at most: at least three were needed.
+    expect(reads(bazel).length).toBeGreaterThanOrEqual(3);
+    expect(cycles).toBeGreaterThanOrEqual(2);
+  });
+});
+
+test.describe('P1 · open threads that were never read', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS }, gh: { fail: { conversation: 'HTTP 502: Bad Gateway' } } } });
+
+  test('with nothing to fall back on, the reminder says the threads could not be read', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: conv(thread('a.go', 12, [said('e2e-user', 'why?', 1)])) });
+    await tickByFilter(app, RATE);
+    await expect(app.getByTestId('threads-error')).toContainText('could not be read');
+    await expect(app.getByTestId('pr-open-threads')).toHaveCount(0);
+    expect((await threads(bazel)).stale ?? false).toBe(false);
+  });
+});
+
