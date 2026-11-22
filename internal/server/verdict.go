@@ -57,9 +57,12 @@ func (s *Server) verdictView(v store.Verdict, head string) verdictView {
 }
 
 // knownHeads is the newest head Bazel knows for each PR, by lower-case key and
-// by time: the list read from GitHub, from when that read began, against the
-// newest review, from when its checkout was done. A list older than the
-// clone knows less than the clone.
+// by time: the list read from GitHub against the newest review, from when its
+// checkout was done. A repository's read that ended before the checkout knows
+// less than the clone. One that ended after it may have caught a push after
+// the checkout, or not: in doubt the list's head wins, and a different head
+// says "moved" rather than vouch for one the PR may have left. A PR kept from
+// an earlier read, after its repository failed, keeps that read's times.
 func (s *Server) knownHeads() map[string]string {
 	type seen struct {
 		head string
@@ -72,9 +75,8 @@ func (s *Server) knownHeads() map[string]string {
 	s.prMu.RLock()
 	for _, pr := range s.prs {
 		k := strings.ToLower(pr.Key())
-		at := s.prsReadAt[k]
-		if r, ok := newest[k]; pr.HeadRefOid != "" && (!ok || !at.Before(r.at)) {
-			newest[k] = seen{pr.HeadRefOid, at}
+		if r, ok := newest[k]; pr.HeadRefOid != "" && (!ok || !pr.ReadEnd.Before(r.at)) {
+			newest[k] = seen{pr.HeadRefOid, pr.ReadEnd}
 		}
 	}
 	s.prMu.RUnlock()
