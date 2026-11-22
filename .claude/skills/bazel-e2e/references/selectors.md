@@ -165,7 +165,7 @@ What the helpers take care of:
 
 | testid | element | extra attrs |
 | --- | --- | --- |
-| `pr-open-threads` | "💬 N open" in a PR row; its title lists path:line | `data-count`, `data-stale` (the last read failed; these are from the one before) |
+| `pr-open-threads` | "💬 N open" ("N+ open (partial)" past the page cap) in a PR row; its title lists path:line | `data-count`, `data-stale` (its last read failed; these are from the one before), `data-partial` |
 | `pr-open-threads-list`, `pr-open-thread` | "Your open threads" on the PR's page | `data-path` |
 | `thread-author-replied` | the PR author has the last word in the thread | |
 | `thread-more` | "+N more": replies one read did not bring | |

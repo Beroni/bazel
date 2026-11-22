@@ -52,7 +52,8 @@ const state = {
   verdicts: {},      // lower-case PR key -> {verdict, head, at, moved}: your decision on it
   openThreads: {},   // lower-case PR key -> the threads you opened there that are still open
   threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
-  threadsStale: null,  // when the threads on screen were read, if the last read failed
+  threadsStale: {},    // lower-case PR key -> when its threads on screen were read, if its last read failed
+  threadsPartial: {},  // lower-case PR key -> true: past its page cap, it has more threads than shown
   threadsError: '',    // why there are no threads on screen: the read failed with nothing to fall back on
 };
 
@@ -2422,7 +2423,7 @@ function renderPRPage(body, pr, job, redraw) {
   const mine = threadsOf(pr.key);
   if (mine.length) {
     const label = sectionLabel('Your open threads');
-    if (state.threadsStale) label.append(' ', tid(el('span', 'dim', staleNote()), 'threads-stale'));
+    if (staleOf(pr.key)) label.append(' ', tid(el('span', 'dim', staleNote(pr.key)), 'threads-stale'));
     main.append(label);
     const ul = tid(el('ul', 'open-threads'), 'pr-open-threads-list');
     for (const t of mine) {
@@ -3935,17 +3936,18 @@ function threadLink(t) {
 async function loadOpenThreads(force) {
   const open = state.jobs.find((j) => j.id === state.activeJob);
   const key = state.activePR || (open && open.pr.key);
-  const seen = () => (key ? JSON.stringify([threadsOf(key), state.threadsStale]) : '');
+  const seen = () => (key ? JSON.stringify([threadsOf(key), staleOf(key)]) : '');
   const before = seen();
   try {
     // A read that failed on the server still answers what the last good one
     // said, marked stale with its time; the page keeps those tags and says so.
     const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
     state.openThreads = out.threads || {};
-    state.threadsStale = out.stale ? out.stale_at : null;
+    state.threadsStale = out.stale || {};
+    state.threadsPartial = out.partial || {};
     // No read to fall back on (none yet, or past its 30 minutes): no tags, and
     // the page says the threads could not be read.
-    state.threadsError = out.error && !out.stale ? out.error : '';
+    state.threadsError = out.error || '';
   } catch (err) {
     return; // the server did not answer at all: the tags on screen stay
   }
@@ -3958,14 +3960,19 @@ async function loadOpenThreads(force) {
 function openThreadsTag(pr) {
   const list = threadsOf(pr.key);
   if (!list.length) return null;
-  const t = tid(el('span', 'tag stale', `💬 ${list.length} open`), 'pr-open-threads', { count: list.length, stale: !!state.threadsStale });
+  const partial = !!state.threadsPartial[pr.key.toLowerCase()];
+  const t = tid(el('span', 'tag stale', `💬 ${list.length}${partial ? '+' : ''} open${partial ? ' (partial)' : ''}`), 'pr-open-threads',
+    { count: list.length, stale: !!staleOf(pr.key), partial });
   t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n')
-    + (state.threadsStale ? '\n' + staleNote() : '');
+    + (partial ? '\n(more threads than one read brings: these are the first)' : '')
+    + (staleOf(pr.key) ? '\n' + staleNote(pr.key) : '');
   return t;
 }
 
-// staleNote says the threads on screen are from an earlier read.
-const staleNote = () => `as of ${new Date(state.threadsStale).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (could not refresh)`;
+// staleOf is when a PR's threads on screen were read, if its last read failed;
+// staleNote says so.
+const staleOf = (key) => state.threadsStale[(key || '').toLowerCase()] || '';
+const staleNote = (key) => `as of ${new Date(staleOf(key)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (could not refresh)`;
 
 // fillThreadsNote reminds, under the Review button, of the open threads on the
 // PRs you ticked.
@@ -3984,7 +3991,7 @@ function fillThreadsNote() {
     const p = tid(el('p'), 'threads-note-pr', { prKey: key });
     p.append(`${key}: You still have ${list.length} open thread${list.length === 1 ? '' : 's'} on this PR`);
     list.forEach((t, i) => p.append(i ? ', ' : ' — ', threadLink(t)));
-    if (state.threadsStale) p.append(' ', tid(el('span', 'dim', staleNote()), 'threads-stale'));
+    if (staleOf(key)) p.append(' ', tid(el('span', 'dim', staleNote(key)), 'threads-stale'));
     note.append(p);
   }
   note.hidden = !note.childElementCount;
