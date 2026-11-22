@@ -95,6 +95,8 @@ type settings struct {
 	// RateRemaining is the GraphQL points left that the thread reads report;
 	// unset, plenty.
 	RateRemaining *int `json:"rate_remaining"`
+	// RateResetSeconds is when GitHub's hour starts again, from now; unset, an hour.
+	RateResetSeconds *int `json:"rate_reset_seconds"`
 	// Hold maps a call key ("comment", "api") to a gate: the call announces
 	// itself in <state>/<gate>.entered and waits for <state>/<gate>, whose text
 	// "fail" makes it fail and anything else lets it through. A write held open,
@@ -562,7 +564,11 @@ func apiConversation(args []string) int {
 	if cfg.RateRemaining != nil {
 		remaining = *cfg.RateRemaining
 	}
-	data["rateLimit"] = map[string]any{"cost": 1, "remaining": remaining, "resetAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+	reset := time.Hour
+	if cfg.RateResetSeconds != nil {
+		reset = time.Duration(*cfg.RateResetSeconds) * time.Second
+	}
+	data["rateLimit"] = map[string]any{"cost": 1, "remaining": remaining, "resetAt": time.Now().Add(reset).UTC().Format(time.RFC3339)}
 	out, _ := json.Marshal(map[string]any{"data": data})
 	fmt.Println(string(out))
 	return 0

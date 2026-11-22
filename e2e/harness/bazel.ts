@@ -95,6 +95,8 @@ export interface GhSettings {
   slow_clone_ms?: number;
   /** GraphQL points left that the open-thread reads report (default plenty). */
   rate_remaining?: number;
+  /** Seconds until that rate limit resets (default an hour). */
+  rate_reset_seconds?: number;
   /** Call key ("comment", "api") → gate: see holdingGh / releaseGh. */
   hold?: Record<string, string>;
 }
