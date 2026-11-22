@@ -215,3 +215,51 @@ test.describe('P1 · open threads that were never read', () => {
   });
 });
 
+// 0a14421 / 9a5c7e3: a failure is its PRs', and a slow call holds no page.
+test.describe('P1 · open threads, one PR in trouble', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+  test.afterEach(async ({ bazel }) => { expect(writes(bazel)).toEqual([]); });
+
+  test('a PR that keeps failing ends up alone in its backoff; the others read fresh, and there is no page-wide error', async ({ app, bazel }) => {
+    test.setTimeout(3 * BUDGET);
+    bazel.updatePR('acme/api-core#101', { conversation: conv(thread('a.go', 1, [said('e2e-user', 'q', 1)])) });
+    bazel.updatePR('acme/api-core#102', { conversation: conv(thread('b.go', 2, [said('e2e-user', 'q', 2)])) });
+    await app.getByTestId('refresh').click();
+    await expect(tag(app, NIL)).toHaveText('💬 1 open', { timeout: BUDGET });
+    // One bad PR fails the call it is in: its batch-mates wait out that one
+    // backoff with it, then each is read alone and the healthy ones recover.
+    bazel.setGh({ fail: { 'conversation:acme/api-core#101': 'HTTP 502: Bad Gateway' } });
+    const staleKeys = async () => {
+      const r = await threads(bazel, true);
+      expect(r.error).toBeUndefined();
+      return Object.keys(r.stale ?? {}).sort();
+    };
+    await expect.poll(staleKeys, { timeout: 2 * BUDGET, intervals: [5_000] }).toEqual(['acme/api-core#101']);
+    const r = await threads(bazel, true);
+    expect(Object.keys(r.errors ?? {})).toEqual(['acme/api-core#101']);
+    expect(r.threads['acme/api-core#102']).toHaveLength(1);
+    // The page's ↻ asks the same; a plain reload would serve #101's last good
+    // read as fresh while it is under a minute old.
+    await app.getByTestId('refresh').click();
+    await expect(tag(app, RATE)).toHaveAttribute('data-stale', 'true', { timeout: BUDGET });
+    await expect(tag(app, NIL)).toHaveAttribute('data-stale', 'false');
+    await expect(app.getByTestId('threads-error')).toHaveCount(0);
+  });
+
+  test('a PR whose read hangs holds no page: the list, the state and a cached read answer at once', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#102', { conversation: conv(thread('b.go', 2, [said('e2e-user', 'q', 2)])) });
+    bazel.setGh({ hold: { 'conversation:acme/api-core#101': 'gate' } });
+    const refresh = bazel.api('GET', '/api/open-threads?refresh=1'); // its own read: up to the 15 s call limit
+    await expect.poll(() => bazel.holdingGh('gate')).toBe(true);
+    const t = Date.now();
+    for (const path of ['/api/prs', '/api/state', '/api/open-threads', '/api/needs']) {
+      expect((await bazel.api('GET', path)).status, path).toBeLessThan(500);
+    }
+    await app.reload();
+    await expect(ui.prCount(app)).toHaveText('5 PRs');
+    expect(Date.now() - t).toBeLessThan(5_000);
+    expect((await refresh).status).toBe(200); // the held call is cut at its limit
+    bazel.releaseGh('gate');
+  });
+});
+
