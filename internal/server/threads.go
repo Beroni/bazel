@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -163,4 +164,45 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 		out["error"] = "open threads could not be read: " + err.Error()
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// discussionBody caps each text in discussion.json: a long body is cut and
+// says so, as "cut".
+const discussionBody = 4000
+
+// discussionFor is what the review fleet reads as <plugin>/discussion.json:
+// the PR's threads (resolved or open, with their replies), comments and
+// reviews, its author on top. Long bodies are cut, marked. A failed read is an
+// error and no file: the review goes without it.
+func (s *Server) discussionFor(ctx context.Context, pr gh.PR) ([]byte, error) {
+	key := pr.Key()
+	convs, err := s.conversationsOf(ctx, []string{key}, false)
+	if err != nil {
+		return nil, err
+	}
+	c, ok := convs[strings.ToLower(key)]
+	if !ok {
+		return nil, errors.New("GitHub said nothing of this PR")
+	}
+	if c.Author.Login == "" {
+		c.Author = gh.Who{Login: pr.Author.Login}
+	}
+	cut := func(list []gh.Said) []gh.Said {
+		out := make([]gh.Said, len(list))
+		for i, x := range list {
+			if utf8.RuneCountInString(x.Body) > discussionBody {
+				x.Body = string([]rune(x.Body)[:discussionBody]) + " … [cut by Bazel]"
+				x.Cut = true
+			}
+			out[i] = x
+		}
+		return out
+	}
+	threads := make([]gh.Thread, len(c.Threads))
+	for i, t := range c.Threads {
+		t.Comments = cut(t.Comments)
+		threads[i] = t
+	}
+	c.Threads, c.Comments, c.Reviews = threads, cut(c.Comments), cut(c.Reviews)
+	return json.MarshalIndent(c, "", "  ")
 }

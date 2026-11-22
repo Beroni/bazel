@@ -152,7 +152,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	if opts.QueueDir != "" {
 		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
 	}
-	return &Server{
+	s := &Server{
 		instance:           instance,
 		details:            map[string]detailsEntry{},
 		reading:            map[string]*detailsRead{},
@@ -171,7 +171,11 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		hub:                hub,
 		jobs:               jobs,
 		done:               make(chan struct{}),
-	}, nil
+	}
+	// A review gets what its PR discussed from the same read, and cache, as
+	// the open-thread tags.
+	jobs.runner.Discussion = s.discussionFor
+	return s, nil
 }
 
 // jobLogDir gets the folder for the job logs ready and clears old ones. A folder

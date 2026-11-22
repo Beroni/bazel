@@ -144,7 +144,15 @@ type Runner struct {
 	// If nil, the cost comes from the total_cost_usd field of the stream-json
 	// (Claude Code).
 	PricingTable *pricing.Table
+	// Discussion, when set, reads what the PR discussed (threads, comments,
+	// reviews) as the review fleet's discussion.json. A review writes it into
+	// the plugin before its first step; a read that fails is a line in the
+	// log, and the review goes without it.
+	Discussion func(ctx context.Context, pr gh.PR) ([]byte, error)
 }
+
+// DiscussionFile is where a review finds what its PR discussed, in the plugin.
+const DiscussionFile = "discussion.json"
 
 // New creates a Runner.
 func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
@@ -311,6 +319,24 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	diff, truncated, err := r.material(ctx, pr, choice)
 	if err != nil {
 		return Result{}, err
+	}
+
+	// A review gets what the PR already discussed; publishing a review that is
+	// done does not.
+	if _, publishing := extra["{{review_file}}"]; plugin != "" && r.Discussion != nil && !publishing && len(choice.Steps) > 0 {
+		say := func(text string) {
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name, Text: text})
+		}
+		data, derr := r.Discussion(ctx, pr)
+		if derr == nil {
+			// Half a file would read as a PR that discussed less than it did.
+			if derr = os.WriteFile(filepath.Join(plugin, DiscussionFile), data, 0o600); derr != nil {
+				os.Remove(filepath.Join(plugin, DiscussionFile))
+			}
+		}
+		if derr != nil {
+			say("· the PR's discussion could not be read, so the review goes without it: " + derr.Error())
+		}
 	}
 
 	steps := make([]StepResult, 0, total)
