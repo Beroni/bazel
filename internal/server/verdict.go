@@ -357,41 +357,59 @@ type reviewersEntry struct {
 }
 
 // reviewersOf is who reviews each PR, by lower-case key: what was read in the
-// last minute, and one gh read for the rest. A failed read gives no names.
+// last minute, and one gh read for the rest. The read is one at a time, under
+// revMu: summaries opened together wait for the first and find its answer.
+// It is charged to the same budget as the other GitHub reads, and a failed
+// read is not tried again before its backoff, as the Needs you page does;
+// meanwhile the names are missing and the error says so.
 func (s *Server) reviewersOf(ctx context.Context, keys []string) (map[string][]string, error) {
 	out := map[string][]string{}
 	var missing []string
 	s.revMu.Lock()
+	defer s.revMu.Unlock()
+	now := timeNow()
 	for _, key := range keys {
 		k := strings.ToLower(key)
-		if e, ok := s.reviewers[k]; ok && time.Since(e.at) < reviewersTTL {
+		if e, ok := s.reviewers[k]; ok && now.Sub(e.at) < reviewersTTL {
 			out[k] = e.names
 		} else {
 			missing = append(missing, key)
 		}
 	}
-	s.revMu.Unlock()
 	if len(missing) == 0 {
 		return out, nil
 	}
-	got, err := s.fetchReviewers(ctx, missing, s.me)
+	if f := s.revFailed; !f.failedAt.IsZero() && now.Sub(f.failedAt) < f.backoff() {
+		return map[string][]string{}, errors.New(f.err)
+	}
+	s.detMu.Lock()
+	err := s.ghReadLocked(now, false)
+	s.detMu.Unlock()
 	if err != nil {
 		return map[string][]string{}, err
 	}
-	now := time.Now()
-	s.revMu.Lock()
+	// Not the request's context: a tab closed mid-read must not fail the
+	// summaries waiting on this one.
+	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
+	defer cancel()
+	got, err := s.fetchReviewers(rctx, missing, s.me)
+	if err != nil {
+		s.revFailed = needsCache{failedAt: timeNow(), failures: s.revFailed.failures + 1, err: err.Error()}
+		return map[string][]string{}, err
+	}
+	s.revFailed = needsCache{}
+	at := timeNow()
 	for key, names := range got {
 		k := strings.ToLower(key)
-		s.reviewers[k] = reviewersEntry{names: names, at: now}
+		s.reviewers[k] = reviewersEntry{names: names, at: at}
 		out[k] = names
 	}
 	// The cache only keeps what a summary may still ask for.
 	for k, e := range s.reviewers {
-		if time.Since(e.at) >= reviewersTTL {
+		if at.Sub(e.at) >= reviewersTTL {
 			delete(s.reviewers, k)
 		}
 	}
-	s.revMu.Unlock()
 	return out, nil
 }
 

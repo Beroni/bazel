@@ -119,6 +119,7 @@ type Server struct {
 	// fetchReviewers is gh's, or a test's.
 	revMu          sync.Mutex
 	reviewers      map[string]reviewersEntry
+	revFailed      needsCache // the last failed read and its backoff, as for Needs you
 	fetchReviewers func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
 

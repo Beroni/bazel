@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,6 +12,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -489,5 +492,56 @@ func TestListaVelhaNaoVenceOCheckout(t *testing.T) {
 	listAt(srv, time.Now(), moved)
 	if got := srv.verdictViews()[strings.ToLower(listed.Key())]; !got.Moved || got.Current != moved.HeadRefOid {
 		t.Errorf("a newer list: %+v", got)
+	}
+}
+
+// R1: eight summaries at once with a cold cache read who reviews once, and a
+// failed read waits out its backoff: an open inside it reads nothing and says
+// the names are missing.
+func TestReviewersUmaLeituraEBackoff(t *testing.T) {
+	srv, ids := verdictServer(t, prAt("acme/api-core", 7, headOne))
+	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
+	var reads atomic.Int32
+	release := make(chan struct{})
+	srv.fetchReviewers = func(ctx context.Context, keys []string, me string) (map[string][]string, error) {
+		reads.Add(1)
+		<-release
+		return map[string][]string{keys[0]: {"bob"}}, nil
+	}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if s := srv.summary(context.Background()); !strings.HasSuffix(s.Text, " — bob") {
+				t.Errorf("text: %q %q", s.Text, s.ReviewersError)
+			}
+		}()
+	}
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	wg.Wait()
+	if n := reads.Load(); n != 1 {
+		t.Errorf("%d reads for 8 summaries at once", n)
+	}
+
+	// A failure, past the cache: the next summary inside the backoff reads
+	// nothing.
+	srv.revMu.Lock()
+	srv.reviewers = map[string]reviewersEntry{}
+	srv.revMu.Unlock()
+	reads.Store(0)
+	srv.fetchReviewers = func(context.Context, []string, string) (map[string][]string, error) {
+		reads.Add(1)
+		return nil, errors.New("HTTP 403: API rate limit exceeded")
+	}
+	for range 3 {
+		s := srv.summary(context.Background())
+		if !strings.HasPrefix(s.ReviewersError, "reviewers could not be read") || strings.Contains(s.Text, "—") {
+			t.Errorf("in the backoff: %q %q", s.Text, s.ReviewersError)
+		}
+	}
+	if n := reads.Load(); n != 1 {
+		t.Errorf("%d reads inside the backoff, want 1", n)
 	}
 }
