@@ -6,7 +6,7 @@ description: Runs the SUBTRACTION lens over one PR inside Bazel — hunts over-e
   Ships inside Bazel and runs headless in the PR's clone. Use it as
   /bazel-lazy-senior-dev <PR number>. For bugs and security use bazel-exploit-digger; for all
   three lenses with dedup use bazel-review-fleet.
-allowed-tools: Read Write Grep Glob Bash Agent
+allowed-tools: Read Write Edit Grep Glob Bash Agent
 model: inherit
 effort: high
 ---

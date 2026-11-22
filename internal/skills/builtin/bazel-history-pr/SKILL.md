@@ -5,7 +5,7 @@ description: Reconstructs the story of one PR inside Bazel — what it set out t
   axis — and prints it as a markdown report to read before reviewing. Read-only; it is not a
   review and is never published. Ships inside Bazel and runs headless in the PR's clone. Use it
   as /bazel-history-pr <PR number>.
-allowed-tools: Read Write Grep Glob Bash
+allowed-tools: Read Write Edit Grep Glob Bash
 model: inherit
 effort: high
 ---

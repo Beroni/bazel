@@ -121,15 +121,18 @@ Rules that keep that honest:
   `## Needs human verification`. A heading outside those sections gets no checkbox.
 - **Never write inside the clone** — not `.reviews/`, not anywhere. A directory the PR
   versions can be a symlink that sends the write somewhere else on the machine. To validate,
-  write the report to a fresh scratch file outside it and run the validator on that:
+  write the report to a fresh scratch folder outside it and run the validator on that:
 
   ```bash
-  R=$(mktemp "${TMPDIR:-/tmp}/bazel-report.XXXXXX")   # then write the report to "$R"
+  D=$(mktemp -d "${TMPDIR:-/tmp}/bazel-report.XXXXXX"); R="$D/report.md"; echo "$R"
+  # write the report to "$R" with Write: the file does not exist yet, so no Read comes first
   bash "<plugin>/skills/bazel-review-fleet/references/validate-report.sh" "$R"
   ```
 
-  Exit 1 → fix what it pointed at and validate again. The printed report is the one that
-  counts; the scratch file is only for the validator.
+  Exit 1 → fix what it pointed at in "$R" (Edit, or Write the whole report again) and
+  validate again. Do not create the file with `mktemp` or `touch`: Write refuses to replace a
+  file it has not read. The printed report is the one that counts; the scratch folder is only
+  for the validator, and `rm -rf "$D"` once the report passes.
 
 ## 4. English
 

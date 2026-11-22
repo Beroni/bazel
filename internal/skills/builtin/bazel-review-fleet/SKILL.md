@@ -6,7 +6,7 @@ description: Runs three code-review lenses over one PR inside Bazel — precisio
   report with one verdict. Ships inside Bazel and runs headless in the PR's clone. Use it as
   /bazel-review-fleet <PR number>. For one lens alone use bazel-senior-code-reviewer,
   bazel-exploit-digger or bazel-lazy-senior-dev; to publish a review use bazel-post-report.
-allowed-tools: Read Write Grep Glob Bash Agent
+allowed-tools: Read Write Edit Grep Glob Bash Agent
 model: inherit
 effort: high
 ---
