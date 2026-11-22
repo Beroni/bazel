@@ -84,7 +84,9 @@ def entry($line):
    else "" end) as $note
 # A finding someone else already made gets its 👍 and nothing more: saying it again
 # in a body repeats it. With only those, there is no review to post.
-| (($dups != []) and $inline == [] and $bodied == [] and $settled == []
+# A point the PR already settled gets a 👍 where it was settled, and nothing more,
+# like one already on the PR: with only those, no review goes up.
+| ((($dups + $settled) != []) and $inline == [] and $bodied == []
    and $p.human == "" and $p.extra == "" and $p.failed == [] and $discussed_items == []) as $only_dups
 | ( if $repeated then
       {kind: "nothing", why: "every finding is already on the PR, in this account's own comments"}
@@ -108,12 +110,12 @@ def entry($line):
     else
       {kind: "review", body: (
         (["## Automated review — Bazel\(if $note != "" then $note else "" end)",
-          "**Verdict in the report:** \($p.verdict) · \(plural(($inline + $bodied + $settled) | length; "finding")) in this review"
-          + (if $dups == [] then "" else ", \(plural($dups | length; "more")) already on the PR (👍)" end),
+          "**Verdict in the report:** \($p.verdict) · \(plural(($inline + $bodied) | length; "finding")) in this review"
+          + (if $dups == [] then "" else ", \(plural($dups | length; "more")) already on the PR (👍)" end)
+          + (if $settled == [] then "" else ", \(plural($settled | length; "more")) already settled on the PR (👍)" end),
           coverage]
          + section("Findings that could not be anchored";
              $bodied | map(entry("\(where) · \(level)\(lens_list)")))
-         + section("Already settled on the PR"; $settled | map(entry("\(where) · \(level)\(lens_list) — settled by @\(.match.settled_by | plain), [thread](\(.match.url))")))
          + section("Open questions"; if $p.human == "" then [] else [$p.human | readable] end)
          + $discussed_section
          + section("Steps that failed"; $p.failed | map("- \(. | plain)"))
@@ -124,7 +126,8 @@ def entry($line):
 | $what + {
     comments: ($inline | map(comment)),
     bodied: ($bodied | map({id, title, path, line})),
-    reactions: ($dups | map(select(.match.user_key != $p.me) | .match.comment_id)),
+    reactions: (($dups | map(select(.match.user_key != $p.me) | .match.comment_id))
+                + ($settled | map(select(.match.settled_comment_key != $p.me) | .match.settled_comment))),
     counts: {inline: ($inline | length), body: ($bodied | length), duplicates: ($dups | length), settled: ($settled | length)},
     settled: ($settled | map({path, line, level: level, by: .match.settled_by})),
     duplicates: ($dups | map({path, line, user: .match.user}))}

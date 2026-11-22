@@ -178,8 +178,8 @@ publish() {
         return 0
       fi ;;
     reactions)
-      # Every finding is someone else's comment already: a 👍 on each, and no
-      # review. That reached the PR, so it is published.
+      # Every finding is on the PR already, said or settled by someone else: a 👍 on
+      # each, and no review. That reached the PR, so it is published.
       local done=0 id
       outcome failed "Publishing failed: the 👍 on the PR did not finish."
       for id in $(jq -r '.reactions[]' "$work/decided.json"); do
@@ -189,7 +189,8 @@ publish() {
       : > "$work/published"
       outcome published "Published: the findings were already on the PR; no review posted."
       jq -r --argjson done "$done" '
-        "Published: 0 inline, 0 in the review body, \(.counts.duplicates) already on the PR (👍), no review posted.",
+        "Published: 0 inline, 0 in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled (👍), no review posted.",
+        (.settled[] | "Already settled on the PR (by @\(.by)): \(.path):\(.line) (\(.level))"),
         (if $done < (.reactions | length) then "\((.reactions | length) - $done) 👍 could not be added." else empty end)' "$work/decided.json"
       return 0 ;;
   esac
@@ -236,7 +237,7 @@ publish() {
   done
 
   jq -r --argjson rejected "$rejected" --argjson rf "$failed_reactions" --arg moved "$moved" '
-    "Published: \(.counts.inline - $rejected) inline, \(.counts.body + $rejected) in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled.",
+    "Published: \(.counts.inline - $rejected) inline, \(.counts.body + $rejected) in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled (👍).",
     (if $rejected > 0 then "GitHub refused the inline anchors, so \($rejected) finding(s) went to the body instead." else empty end),
     (if $rf > 0 then "\($rf) 👍 could not be added." else empty end),
     (if $moved == "yes" then "The PR moved after the review: nothing was anchored." else empty end),
