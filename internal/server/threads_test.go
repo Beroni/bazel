@@ -115,9 +115,8 @@ func TestThreadsUmaLeitura(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := srv.conversationsOf(context.Background(), []string{"acme/api-core#7"}, false); err != nil {
-				t.Error(err)
-			}
+			// The others do not wait: they answer at once from what there is.
+			srv.conversationsOf(context.Background(), []string{"acme/api-core#7"}, false)
 		}()
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -254,14 +253,18 @@ func TestFalhaMantemAUltimaLeituraBoa(t *testing.T) {
 	read := now
 	now = now.Add(2 * time.Minute) // past the minute: a new read, and it fails
 	_, out := call(t, srv, "GET", "/api/open-threads?refresh=1", "")
-	if len(out["threads"].(map[string]any)) != 1 || out["stale"] != true || out["error"] == nil {
+	stale, _ := out["stale"].(map[string]any)
+	if len(out["threads"].(map[string]any)) != 1 || stale == nil || out["errors"] == nil {
 		t.Fatalf("a failed read wiped the last good one: %v", out)
 	}
-	if at, _ := time.Parse(time.RFC3339Nano, out["stale_at"].(string)); !at.Equal(read) {
-		t.Errorf("stale_at %v, the good read was at %v", out["stale_at"], read)
+	if at, _ := time.Parse(time.RFC3339Nano, stale["acme/api-core#7"].(string)); !at.Equal(read) {
+		t.Errorf("stale at %v, the good read was at %v", stale["acme/api-core#7"], read)
+	}
+	if out["error"] != nil {
+		t.Errorf("the PR still shows what it said: no global error, %v", out["error"])
 	}
 	// Inside the backoff too.
-	if _, out := call(t, srv, "GET", "/api/open-threads", ""); len(out["threads"].(map[string]any)) != 1 || out["stale"] != true {
+	if _, out := call(t, srv, "GET", "/api/open-threads", ""); len(out["threads"].(map[string]any)) != 1 || out["stale"] == nil {
 		t.Errorf("in the backoff: %v", out)
 	}
 }
@@ -307,7 +310,8 @@ func TestRateLimitBaixoParaAsEtiquetas(t *testing.T) {
 	if n := contaNoLog(log, "start") - before; n != 0 {
 		t.Errorf("read the tags %d times with the limit low", n)
 	}
-	if e, _ := out["error"].(string); !strings.Contains(e, "rate limit is low") || out["stale"] != true || len(out["threads"].(map[string]any)) != 1 {
+	errs, _ := out["errors"].(map[string]any)
+	if e, _ := errs["acme/api-core#7"].(string); !strings.Contains(e, "rate limit is low") || out["stale"] == nil || len(out["threads"].(map[string]any)) != 1 {
 		t.Errorf("%v", out)
 	}
 	if code, n := call(t, srv, "GET", "/api/needs", ""); code != http.StatusOK || contaNoLog(log, "start")-before != 1 {
@@ -493,5 +497,106 @@ func TestThreadsPaginaSoAquelePR(t *testing.T) {
 	}
 	if n := len(srv.convReads); n != 3 {
 		t.Errorf("%d calls charged, want 3", n)
+	}
+}
+
+// Q1: a PR that always times out holds nobody: while its call is out, the
+// page's reads answer at once from what there is; and once it was isolated,
+// it is read alone, never in a batch with good PRs again.
+func TestTimeoutNaoSeguraAPagina(t *testing.T) {
+	srv := newTestServer(t)
+	old := convCallTimeout
+	convCallTimeout = 2 * time.Second
+	t.Cleanup(func() { convCallTimeout = old })
+	listAt(srv, time.Now(), prAt("acme/api-core", 1, headOne), prAt("acme/api-core", 2, headOne), prAt("acme/api-core", 3, headOne))
+	var mu sync.Mutex
+	var batches [][]string
+	srv.fetchThreadTags = func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		mu.Lock()
+		batches = append(batches, slices.Clone(keys))
+		mu.Unlock()
+		if slices.Contains(keys, "acme/api-core#3") {
+			<-ctx.Done()
+			return nil, gh.RateLimit{}, ctx.Err()
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		call(t, srv, "GET", "/api/open-threads", "")
+	}()
+	time.Sleep(50 * time.Millisecond) // the first read is out, on its slow call
+	start := time.Now()
+	code, _ := call(t, srv, "GET", "/api/open-threads", "")
+	if d := time.Since(start); code != http.StatusOK || d > time.Second {
+		t.Errorf("a read waited %v on the slow call (%d)", d, code)
+	}
+	<-done
+	if f := srv.convFails["acme/api-core#3"]; f.failures != 1 {
+		t.Fatalf("not in quarantine: %+v", srv.convFails)
+	}
+
+	// Past its backoff, it goes alone.
+	srv.convMu.Lock()
+	srv.convFails["acme/api-core#3"] = needsCache{failedAt: time.Now().Add(-time.Hour), failures: 1, err: "timeout"}
+	for k := range srv.convs {
+		srv.convs[k] = conversationEntry{at: time.Now().Add(-2 * time.Minute)}
+	}
+	srv.convMu.Unlock()
+	mu.Lock()
+	batches = nil
+	mu.Unlock()
+	call(t, srv, "GET", "/api/open-threads", "")
+	for _, b := range batches {
+		if slices.Contains(b, "acme/api-core#3") && len(b) > 1 {
+			t.Errorf("the PR in quarantine went with others: %v", b)
+		}
+	}
+}
+
+// Q2: one PR in its backoff is that PR's news: the others are fresh, nothing
+// is stale, and there is no error for the whole page.
+func TestUmPREmBackoffNaoEDaPaginaToda(t *testing.T) {
+	srv := newTestServer(t)
+	listAt(srv, time.Now(), prAt("acme/api-core", 1, headOne), prAt("acme/api-core", 2, headOne))
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		if slices.Contains(keys, "acme/api-core#2") {
+			return nil, gh.RateLimit{}, errors.New("HTTP 502")
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	srv.convMu.Lock()
+	srv.convFails["acme/api-core#2"] = needsCache{failedAt: time.Now(), failures: 1, err: "HTTP 502"}
+	srv.convMu.Unlock()
+	_, out := call(t, srv, "GET", "/api/open-threads", "")
+	errs, _ := out["errors"].(map[string]any)
+	if out["error"] != nil || out["stale"] != nil || len(errs) != 1 || errs["acme/api-core#2"] == nil {
+		t.Errorf("%v", out)
+	}
+}
+
+// Q3: a PR with more pages than the cap reads that many and says it is partial.
+func TestPaginasTemTeto(t *testing.T) {
+	srv := newTestServer(t)
+	listAt(srv, time.Now(), prAt("acme/api-core", 7, headOne))
+	mine := gh.Thread{URL: "https://github.com/acme/api-core/pull/7#d", Comments: []gh.Said{{Author: gh.Who{Login: "beroni"}}}}
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return map[string]gh.Conversation{"acme/api-core#7": {Threads: []gh.Thread{mine}, ThreadsAfter: "c"}}, gh.RateLimit{}, nil
+	}
+	pages := 0
+	srv.fetchThreadTagsPage = func(context.Context, string, string) (gh.Conversation, gh.RateLimit, error) {
+		pages++
+		return gh.Conversation{Threads: []gh.Thread{mine}, ThreadsAfter: "more"}, gh.RateLimit{}, nil
+	}
+	_, out := call(t, srv, "GET", "/api/open-threads", "")
+	if pages != convMorePages {
+		t.Errorf("%d more pages read, the cap is %d", pages, convMorePages)
+	}
+	if p, _ := out["partial"].(map[string]any); p["acme/api-core#7"] != true {
+		t.Errorf("not marked partial: %v", out)
+	}
+	if n := len(out["threads"].(map[string]any)["acme/api-core#7"].([]any)); n != 1+convMorePages {
+		t.Errorf("%d threads", n)
 	}
 }

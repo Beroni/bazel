@@ -125,6 +125,7 @@ type Server struct {
 	convTried       map[string]time.Time  // when each PR was last tried, read or not
 	convReads       []time.Time           // these reads' own budget, last minute
 	convHold        time.Time             // GitHub's rate limit ran low: no tags' read before this
+	convReading     bool                  // a tags' read is out: the others answer from what there is
 	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
 	// fetchThreadTagsPage reads one more page of a PR's threads: gh's, or a test's.
 	fetchThreadTagsPage func(ctx context.Context, key, after string) (gh.Conversation, gh.RateLimit, error)
