@@ -39,13 +39,33 @@ var conversationFragment = fmt.Sprintf(`fragment bazelConversationPR on PullRequ
 // opened each thread, its last word and how many replies, no bodies but the
 // last. GitHub charges a query by the nodes it may bring, and this one is
 // read for every PR of the list.
-const threadTagsFragment = `fragment bazelThreadTagsPR on PullRequest {
+//
+// What it costs, by GitHub's formula: each connection counts once per node its
+// parents may bring, and a call costs that sum over 100. A thread needs two
+// children, its first comment (who opened it: a thread has no author of its
+// own) and its last one, so a PR is 1 + 2×ThreadTagsPage, and a batch of ten
+// with 50 threads a page about 10 points; with 100 it was 20 (see TagsCost).
+// A PR past one page reads the rest on its own, page by page.
+const ThreadTagsPage = 50
+
+var threadTagsFragment = fmt.Sprintf(`fragment bazelThreadTagsPR on PullRequest {
   author { login __typename }
-  reviewThreads(first: 100) { pageInfo { hasNextPage } nodes {
-    isResolved isOutdated path line originalLine startLine
-    comments(first: 1) { totalCount nodes { author { login __typename } url createdAt } }
-    lastComment: comments(last: 1) { nodes { author { login __typename } body createdAt } } } }
+  reviewThreads(first: %d) { pageInfo { hasNextPage endCursor } nodes { ...bazelThreadTagsNode } }
+}
+`, ThreadTagsPage) + threadTagsNode
+
+const threadTagsNode = `fragment bazelThreadTagsNode on PullRequestReviewThread {
+  isResolved isOutdated path line originalLine startLine
+  comments(first: 1) { totalCount nodes { author { login __typename } url createdAt } }
+  lastComment: comments(last: 1) { nodes { author { login __typename } body createdAt } }
 }`
+
+// TagsCost is the points GitHub charges a tags' read of prs PRs with threads
+// threads a page, by its documented formula.
+func TagsCost(prs, threads int) int {
+	requests := prs * (1 + 2*threads)
+	return max(1, (requests+50)/100)
+}
 
 // rateLimitField is asked with every read: what it cost, and what is left.
 const rateLimitField = "  rateLimit { cost remaining resetAt }\n"
@@ -72,12 +92,24 @@ func threadTagsQuery(n int) string {
 	return prsQuery("bazelThreadTags", threadTagsFragment, "bazelThreadTagsPR", n)
 }
 
+// threadTagsPageQuery reads one more page of one PR's threads.
+func threadTagsPageQuery() string {
+	return fmt.Sprintf(`query bazelThreadTagsPage($o0: String!, $n0: String!, $p0: Int!, $after: String!) {
+  p0: repository(owner: $o0, name: $n0) { pullRequest(number: $p0) {
+    reviewThreads(first: %d, after: $after) { pageInfo { hasNextPage endCursor } nodes { ...bazelThreadTagsNode } } } }
+%s}
+`, ThreadTagsPage, rateLimitField) + threadTagsNode
+}
+
 // RateLimit is what GitHub says of its GraphQL budget after a read: the points
 // it cost, those left, and when the hour starts again.
 type RateLimit struct {
-	Cost      int       `json:"cost"`
-	Remaining int       `json:"remaining"`
-	ResetAt   time.Time `json:"resetAt"`
+	Cost      int
+	Remaining int
+	// ResetAt is zero when GitHub's answer had none Bazel could read.
+	ResetAt time.Time
+	// Known says the answer carried a rate limit at all.
+	Known bool
 }
 
 // Who is someone who wrote on a PR. Type is "Bot" for an app; Association is
@@ -128,6 +160,8 @@ type Conversation struct {
 	Threads  []Thread `json:"threads"`
 	Comments []Said   `json:"comments"`
 	Reviews  []Said   `json:"reviews"`
+	// ThreadsAfter is where the next page of threads starts, when there is one.
+	ThreadsAfter string `json:"-"`
 }
 
 type rawActor struct {
@@ -170,7 +204,8 @@ type rawConversation struct {
 	Author        *rawActor `json:"author"`
 	ReviewThreads struct {
 		PageInfo struct {
-			HasNextPage bool `json:"hasNextPage"`
+			HasNextPage bool   `json:"hasNextPage"`
+			EndCursor   string `json:"endCursor"`
 		} `json:"pageInfo"`
 		Nodes []struct {
 			IsResolved   bool      `json:"isResolved"`
@@ -210,6 +245,9 @@ func (r *rawConversation) conversation() Conversation {
 		Threads:  []Thread{},
 		Comments: []Said{},
 		Reviews:  []Said{},
+	}
+	if r.ReviewThreads.PageInfo.HasNextPage {
+		c.ThreadsAfter = r.ReviewThreads.PageInfo.EndCursor
 	}
 	for _, n := range r.ReviewThreads.Nodes {
 		t := Thread{Path: n.Path, IsResolved: n.IsResolved, IsOutdated: n.IsOutdated, Comments: []Said{}}
@@ -337,10 +375,7 @@ func parseConversations(raw string, keys []string) (map[string]Conversation, Rat
 		}
 		return nil, RateLimit{}, errors.New("gh api graphql: no data")
 	}
-	var rl RateLimit
-	if r, ok := answer.Data["rateLimit"]; ok {
-		_ = json.Unmarshal(r, &rl)
-	}
+	rl := parseRateLimit(answer.Data["rateLimit"])
 	out := map[string]Conversation{}
 	for i, key := range keys {
 		var repo *struct {
@@ -351,4 +386,46 @@ func parseConversations(raw string, keys []string) (map[string]Conversation, Rat
 		}
 	}
 	return out, rl, nil
+}
+
+// parseRateLimit reads GitHub's rateLimit field; a resetAt it cannot read is
+// left zero, and the caller decides how long to wait without it.
+func parseRateLimit(raw json.RawMessage) RateLimit {
+	var r struct {
+		Cost      int    `json:"cost"`
+		Remaining *int   `json:"remaining"`
+		ResetAt   string `json:"resetAt"`
+	}
+	if len(raw) == 0 || json.Unmarshal(raw, &r) != nil || r.Remaining == nil {
+		return RateLimit{}
+	}
+	rl := RateLimit{Cost: r.Cost, Remaining: *r.Remaining, Known: true}
+	if at, err := time.Parse(time.RFC3339, r.ResetAt); err == nil {
+		rl.ResetAt = at
+	}
+	return rl
+}
+
+// FetchThreadTagsPage reads the next page of one PR's threads, from after, for
+// the tags, and GitHub's rate limit after it. Only reads.
+func FetchThreadTagsPage(ctx context.Context, key, after string) (Conversation, RateLimit, error) {
+	repo, number, ok := splitKey(key)
+	if !ok {
+		return Conversation{}, RateLimit{}, fmt.Errorf("not a PR: %q", key)
+	}
+	owner, name, _ := strings.Cut(repo, "/")
+	raw, err := run(ctx, "gh", "api", "graphql", "-f", "query="+threadTagsPageQuery(),
+		"-f", "o0="+owner, "-f", "n0="+name, "-F", fmt.Sprintf("p0=%d", number), "-f", "after="+after)
+	if err != nil {
+		return Conversation{}, RateLimit{}, err
+	}
+	got, rl, err := parseConversations(raw, []string{key})
+	if err != nil {
+		return Conversation{}, rl, err
+	}
+	c, ok := got[key]
+	if !ok {
+		return Conversation{}, rl, fmt.Errorf("GitHub said nothing of %s", key)
+	}
+	return c, rl, nil
 }
