@@ -148,3 +148,22 @@ func TestParseRefRecusaOutroHost(t *testing.T) {
 		}
 	}
 }
+
+// Each PR carries when the read of its repository began and ended: the repos
+// are read a few at a time, so one may be read long after the list began.
+func TestListPRsGuardaAHoraDaLeituraDoRepo(t *testing.T) {
+	fakeGH(t, `case "$*" in *a/slow*) sleep 0.3 ;; esac; echo '[{"number":1,"author":{"login":"maria"}}]'`)
+	before := time.Now()
+	prs, errs := ListPRs(context.Background(), []string{"a/fast", "a/slow"}, ListOptions{})
+	if len(prs) != 2 || len(errs) != 0 {
+		t.Fatalf("%+v %+v", prs, errs)
+	}
+	for _, pr := range prs {
+		if pr.ReadStart.Before(before) || pr.ReadEnd.Before(pr.ReadStart) || pr.ReadEnd.After(time.Now()) {
+			t.Errorf("%s: %v..%v", pr.Repo, pr.ReadStart, pr.ReadEnd)
+		}
+		if pr.Repo == "a/slow" && pr.ReadEnd.Sub(pr.ReadStart) < 250*time.Millisecond {
+			t.Errorf("the slow repo's read: %v", pr.ReadEnd.Sub(pr.ReadStart))
+		}
+	}
+}
