@@ -56,7 +56,11 @@ type fixturePR struct {
 	IssueComments  []json.RawMessage `json:"issue_comments,omitempty"`
 	Submitted      []json.RawMessage `json:"submitted_reviews,omitempty"`
 	Threads        []json.RawMessage `json:"review_threads,omitempty"`
-	Author         struct {
+	// Conversation is what the conversation read gets for this PR, in
+	// GraphQL's shape: reviewThreads, comments and reviews, each {nodes: […]}.
+	// Left out, the PR discussed nothing.
+	Conversation map[string]any `json:"conversation,omitempty"`
+	Author       struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	ReviewDecision string            `json:"reviewDecision"`
@@ -351,6 +355,8 @@ func apiCall(args []string) int {
 		return apiNeeds(args)
 	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelReviewers(") }):
 		return apiReviewers(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelConversation(") }):
+		return apiConversation(args)
 	case len(args) > 2 && args[1] == "graphql":
 		return apiThreads(args)
 	case len(args) == 6 && reactionsRe.MatchString(args[3]):
@@ -490,6 +496,59 @@ func apiReviewers(args []string) int {
 			"reviewRequests": map[string]any{"nodes": requestNodes(pr.ReviewRequests)},
 			"latestReviews":  map[string]any{"nodes": reviewNodes(pr.LatestReviews)},
 		}}
+	}
+	out, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Println(string(out))
+	return 0
+}
+
+// apiConversation answers the read of what each PR discussed, by the same
+// aliases and variables as apiReviewers, from the fixtures' conversation.
+func apiConversation(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	if failed("conversation") {
+		return 1
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		number, err := strconv.Atoi(vars[fmt.Sprintf("p%d", i)])
+		if err != nil {
+			return unsupported(args)
+		}
+		alias := fmt.Sprintf("p%d", i)
+		pr, found := find(owner+"/"+vars[fmt.Sprintf("n%d", i)], number)
+		if !found {
+			data[alias] = map[string]any{"pullRequest": nil}
+			continue
+		}
+		node := map[string]any{"author": map[string]string{"login": pr.Author.Login, "__typename": "User"}}
+		for _, list := range []string{"reviewThreads", "comments", "reviews"} {
+			v, ok := pr.Conversation[list]
+			if !ok {
+				v = map[string]any{"nodes": []any{}}
+			}
+			if m, ok := v.(map[string]any); ok {
+				if _, ok := m["pageInfo"]; !ok {
+					m["pageInfo"] = map[string]any{"hasNextPage": false}
+				}
+			}
+			node[list] = v
+		}
+		data[alias] = map[string]any{"pullRequest": node}
 	}
 	out, _ := json.Marshal(map[string]any{"data": data})
 	fmt.Println(string(out))

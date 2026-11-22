@@ -50,6 +50,8 @@ const state = {
   logFilter: {},     // job id -> agent picked in the live log, '' = all
   instance: null,    // id of the server process; changes when it restarts
   verdicts: {},      // lower-case PR key -> {verdict, head, at, moved}: your decision on it
+  openThreads: {},   // lower-case PR key -> the threads you opened there that are still open
+  threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -323,6 +325,7 @@ async function loadPRs(force) {
     renderPRs();
     // A PR may have moved past the head you decided on.
     if (Object.keys(state.verdicts).length) refreshVerdicts();
+    loadOpenThreads(force);
   } catch (err) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'failed: ' + err.message);
@@ -550,6 +553,10 @@ function keepFocus(target) {
 
 function startReview() {
   clearAlert();
+  // A reminder, not a gate: the review goes all the same, and the note stays
+  // after the ticks clear, until you tick something else.
+  state.threadsReminded = markedPRs().filter((k) => threadsOf(k).length);
+  fillThreadsNote();
   return reviewRefs(markedPRs());
 }
 
@@ -1757,6 +1764,8 @@ function renderPRs() {
     sub.append(meta);
     const tag = prStateTag(pr);
     if (tag) sub.append(tag);
+    const threads = openThreadsTag(pr);
+    if (threads) sub.append(threads);
     // The title is the keyboard way in: the row's click opens the PR, and the
     // checkbox next to it stays its own control.
     const title = operable(el('span', 'title', pr.title), `open ${pr.key}: ${pr.title}`, () => openPR(pr.key));
@@ -1835,6 +1844,7 @@ function prStateTag(pr) {
 
 function toggle(key, on) {
   if (on) state.selected.add(key); else state.selected.delete(key);
+  state.threadsReminded = [];
   renderPRs();
 }
 
@@ -1847,6 +1857,7 @@ function updateReviewButton() {
     ? 'no agents configured — go to "config" and build the list out of your skills'
     : 'runs the chosen agent over the ticked PRs';
   btn.textContent = n > 1 ? `▶ Review ${n}` : '▶ Review';
+  fillThreadsNote();
 }
 
 // togglePRs collapses the left list down to the hamburger strip and brings it
@@ -2403,6 +2414,27 @@ function renderPRPage(body, pr, job, redraw) {
     const p = tid(el('p', 'dim perr'), 'pr-error');
     p.append(document.createTextNode('Could not read the rest of the PR from GitHub: ' + err + ' '), retryButton('details', pr.key, redraw));
     main.append(p);
+  }
+
+  // What you asked on this PR that nobody resolved yet, with the last word.
+  const mine = threadsOf(pr.key);
+  if (mine.length) {
+    main.append(sectionLabel('Your open threads'));
+    const ul = tid(el('ul', 'open-threads'), 'pr-open-threads-list');
+    for (const t of mine) {
+      const li = tid(el('li'), 'pr-open-thread', { path: t.path || '' });
+      li.append(threadLink(t));
+      if (t.outdated) li.append(' ', el('span', 'tag stale', 'outdated'));
+      if (t.author_replied) li.append(' ', tid(el('span', 'tag approved', 'author replied'), 'thread-author-replied'));
+      if (t.last) {
+        const q = el('p', 'dim thread-last');
+        q.dir = 'auto';
+        q.textContent = `@${t.last.author}: ${t.last.body}`;
+        li.append(q);
+      }
+      ul.append(li);
+    }
+    main.append(ul);
   }
 
   // ACTIVITY: opened, each commit, and Bazel's reviews of it.
@@ -3875,4 +3907,57 @@ async function copySummary() {
     text.select();
     setText($('#summary-note'), document.execCommand('copy') ? 'copied' : 'select the text and copy it yourself');
   }
+}
+
+// --- your open threads ---
+
+// The threads you opened on the listed PRs that are still open, read from
+// GitHub (only reads, a minute at a time). A reminder: nothing waits on it,
+// and a failed read shows nothing.
+const threadsOf = (key) => state.openThreads[(key || '').toLowerCase()] || [];
+const threadWhere = (t) => (t.path ? `${t.path}:${t.line || '?'}` : 'the PR');
+
+function threadLink(t) {
+  const a = el('a', null, threadWhere(t));
+  a.href = t.url;
+  a.target = '_blank';
+  a.rel = 'noreferrer';
+  return a;
+}
+
+async function loadOpenThreads(force) {
+  try {
+    const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
+    state.openThreads = out.threads || {};
+  } catch (err) {
+    return; // the tags stay as they were
+  }
+  renderPRs();
+  const open = state.jobs.find((j) => j.id === state.activeJob);
+  const key = state.activePR || (open && open.pr.key);
+  if (key && threadsOf(key).length) followPRPage(key);
+}
+
+function openThreadsTag(pr) {
+  const list = threadsOf(pr.key);
+  if (!list.length) return null;
+  const t = tid(el('span', 'tag stale', `💬 ${list.length} open`), 'pr-open-threads', { count: list.length });
+  t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n');
+  return t;
+}
+
+// fillThreadsNote reminds, under the Review button, of the open threads on the
+// PRs you ticked.
+function fillThreadsNote() {
+  const note = $('#threads-note');
+  note.replaceChildren();
+  for (const key of new Set([...markedPRs(), ...(state.threadsReminded || [])])) {
+    const list = threadsOf(key);
+    if (!list.length) continue;
+    const p = tid(el('p'), 'threads-note-pr', { prKey: key });
+    p.append(`${key}: You still have ${list.length} open thread${list.length === 1 ? '' : 's'} on this PR`);
+    list.forEach((t, i) => p.append(i ? ', ' : ' — ', threadLink(t)));
+    note.append(p);
+  }
+  note.hidden = !note.childElementCount;
 }

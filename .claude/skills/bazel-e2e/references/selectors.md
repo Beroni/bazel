@@ -94,6 +94,7 @@ What the helpers take care of:
 | `pr-select-all` | select all | | ✓ |
 | `agent-select` | agent selector | | ✓ |
 | `run-review` | run button | | ✓ |
+| `threads-note`, `threads-note-pr` | "You still have N open threads on this PR", under Review | `data-pr-key` | |
 | `toggle-prs` | ☰ | | |
 
 ### Queue and cards
@@ -157,3 +158,12 @@ What the helpers take care of:
 | `pipeline-name`, `pipeline-create`, `pipeline-row`, `pipeline-remove` | | `data-pipeline` |
 | `config-download`, `config-yaml` | file | |
 | `stray-warning` | stray command warning | |
+
+### Open threads
+
+| testid | element | extra attrs |
+| --- | --- | --- |
+| `pr-open-threads` | "💬 N open" in a PR row; its title lists path:line | `data-count` |
+| `pr-open-threads-list`, `pr-open-thread` | "Your open threads" on the PR's page | `data-path` |
+| `thread-author-replied` | the PR author has the last word in the thread | |
+

@@ -1,0 +1,81 @@
+import { test, expect } from '../harness/fixtures';
+import { Bazel } from '../harness/bazel';
+import { tickByFilter, ui } from '../harness/ui';
+
+// The threads you opened on a PR that nobody resolved yet: a tag in the list, a
+// reminder when you tick the PR or hit Review (it never stops either), and a
+// section on the PR's page. Read from GitHub in one batched, read-only call.
+const AGENTS = [{ name: 'review-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings' } }];
+const RATE = 'Add rate limiter to the public API';
+const url = (n: number) => `https://github.com/acme/api-core/pull/101#discussion_r${n}`;
+const said = (login: string, body: string, n: number, at: string) =>
+  ({ author: { login, __typename: 'User' }, authorAssociation: 'MEMBER', body, url: url(n), createdAt: at });
+
+const CONVERSATION = {
+  reviewThreads: {
+    nodes: [
+      { isResolved: false, isOutdated: false, path: 'src/a.go', line: 12, resolvedBy: null,
+        comments: { totalCount: 2, nodes: [said('e2e-user', 'why a lock here?', 1, '2026-11-01T10:00:00Z'), said('alice', 'two writers race on it', 2, '2026-11-02T10:00:00Z')] } },
+      { isResolved: true, isOutdated: false, path: 'src/b.go', line: 3, resolvedBy: { login: 'e2e-user', __typename: 'User' },
+        comments: { totalCount: 1, nodes: [said('e2e-user', 'settled', 3, '2026-11-01T10:00:00Z')] } },
+      { isResolved: false, isOutdated: false, path: 'src/c.go', line: 9, resolvedBy: null,
+        comments: { totalCount: 1, nodes: [said('bob', 'not mine', 4, '2026-11-01T10:00:00Z')] } },
+      { isResolved: false, isOutdated: true, path: 'src/d.go', line: null, originalLine: 40, resolvedBy: null,
+        comments: { totalCount: 1, nodes: [said('e2e-user', 'still here?', 5, '2026-11-01T10:00:00Z')] } },
+    ],
+  },
+};
+
+/** gh calls that write: a review, a comment, a reaction, a mutation. */
+const writes = (bz: Bazel) => bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment')
+  || (c.argv[0] === 'api' && c.argv.some((a) => a === 'POST' || a === '-X' || a === '--method' || a.includes('mutation'))));
+
+test.describe('P1 · your open threads', () => {
+  test.use({ bazelOptions: { config: { agents: AGENTS } } });
+
+  test('the list tags them, ticking and Review remind of them, and the PR page lists them', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: CONVERSATION });
+    await app.getByTestId('refresh').click(); // the page read them at boot: ↻ reads them again
+    const tag = ui.prRow(app, RATE).getByTestId('pr-open-threads');
+    await expect(tag).toHaveText('💬 2 open');
+    await expect(tag).toHaveAttribute('title', 'your threads still open:\nsrc/a.go:12 (author replied)\nsrc/d.go:40');
+    await expect(ui.prRow(app, 'Fix nil pointer on empty config').getByTestId('pr-open-threads')).toHaveCount(0);
+
+    await tickByFilter(app, RATE);
+    const note = app.getByTestId('threads-note');
+    await expect(note).toHaveText('acme/api-core#101: You still have 2 open threads on this PR — src/a.go:12, src/d.go:40');
+    await expect(note.getByRole('link', { name: 'src/a.go:12' })).toHaveAttribute('href', url(1));
+
+    // A reminder, not a gate: the review goes.
+    await ui.runButton(app).click();
+    await expect(ui.jobCard(app, RATE)).toHaveCount(1);
+    await expect(note).toBeVisible();
+
+    await ui.prRow(app, RATE).locator('.title').click();
+    const page = app.getByTestId('pr-page');
+    const items = page.getByTestId('pr-open-thread');
+    await expect(items).toHaveCount(2);
+    await expect(items.first()).toContainText('src/a.go:12');
+    await expect(items.first()).toContainText('@alice: two writers race on it');
+    await expect(items.first().getByTestId('thread-author-replied')).toHaveText('author replied');
+    await expect(items.nth(1)).toContainText('outdated');
+    await expect(items.nth(1).getByTestId('thread-author-replied')).toHaveCount(0);
+    expect(writes(bazel)).toEqual([]);
+  });
+
+  test('a read that fails blocks nothing: no tags, no reminder, and the review goes', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: CONVERSATION });
+    bazel.setGh({ fail: { conversation: 'HTTP 502: Bad Gateway' } });
+    await app.getByTestId('refresh').click();
+    await expect(ui.prRow(app, RATE)).toBeVisible();
+    const r = await bazel.api('GET', '/api/open-threads?refresh=1');
+    expect(r.status).toBe(200);
+    expect(r.json.error).toContain('open threads could not be read');
+    await expect(app.getByTestId('pr-open-threads')).toHaveCount(0);
+    await tickByFilter(app, RATE);
+    await expect(app.getByTestId('threads-note')).toBeHidden();
+    await ui.runButton(app).click();
+    await expect(ui.jobCard(app, RATE)).toHaveCount(1);
+    expect(writes(bazel)).toEqual([]);
+  });
+});

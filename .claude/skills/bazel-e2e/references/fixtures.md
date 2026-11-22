@@ -61,6 +61,14 @@ team, `{ "slug": "core", "organization": { "login": "acme" } }`, and an entry
 may carry `__typename` (`Bot`, …); without one it is a `User`. A PR not in the
 fixtures answers null. `gh.json` `fail.reviewers` makes that read fail.
 
+`conversation` is what the read of a PR's discussion gets (`query bazelConversation(…)`,
+same aliases and variables): `reviewThreads`, `comments` and `reviews`, each
+`{ "nodes": [...] }` in GraphQL's shape (a thread: `isResolved`, `isOutdated`,
+`path`, `line`, `originalLine`, `resolvedBy`, `comments: { totalCount, nodes:
+[{ author: { login, __typename }, authorAssociation, body, url, createdAt }] }`).
+Left out, the PR discussed nothing. `gh.json` `fail.conversation` makes it fail.
+The open-thread tags and the fleet's `discussion.json` come from this read.
+
 `symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
 
 `url` defaults to `https://github.com/<repo>/pull/<n>`; `updatedAt` (ISO) or
