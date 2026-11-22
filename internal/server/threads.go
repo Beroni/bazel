@@ -49,26 +49,26 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 	if f := s.convFailed; !f.failedAt.IsZero() && now.Sub(f.failedAt) < f.backoff() {
 		return out, errors.New(f.err)
 	}
-	// Not the request's context: a tab closed mid-read must not fail the
-	// others waiting on this one.
-	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
-	defer cancel()
 	for len(missing) > 0 {
 		n := min(len(missing), conversationBatch)
 		batch := missing[:n]
 		missing = missing[n:]
-		s.detMu.Lock()
-		err := s.ghReadLocked(timeNow(), false)
-		s.detMu.Unlock()
-		if err != nil {
-			return out, err
+		// A budget of their own: however many PRs the list has, these reads
+		// never take the Overview's.
+		s.convReads = lastMinute(s.convReads, timeNow())
+		if len(s.convReads) >= convReadsPerMin {
+			return out, errors.New("too many reads of the PRs' threads; the rest come next minute")
 		}
+		s.convReads = append(s.convReads, timeNow())
+		// Not the request's context: a tab closed mid-read must not fail the
+		// others waiting on this one. The time limit is per call.
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
 		got, err := s.fetchConversations(rctx, batch)
+		cancel()
 		if err != nil {
 			s.convFailed = needsCache{failedAt: timeNow(), failures: s.convFailed.failures + 1, err: err.Error()}
 			return out, err
 		}
-		s.convFailed = needsCache{}
 		at := timeNow()
 		for _, key := range batch {
 			k := strings.ToLower(key)
@@ -80,6 +80,9 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 			out[k] = c
 		}
 	}
+	// Only a read where every call went well ends the backoff: one batch that
+	// worked says nothing of the one that keeps failing.
+	s.convFailed = needsCache{}
 	for k, e := range s.convs {
 		if timeNow().Sub(e.at) >= conversationTTL {
 			delete(s.convs, k)
@@ -88,17 +91,23 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 	return out, nil
 }
 
-// conversationBatch is how many PRs one gh call asks about.
+// conversationBatch is how many PRs one gh call asks about; convReadsPerMin
+// caps those calls, apart from the budget of the Overview and the list.
 const conversationBatch = 10
+
+var convReadsPerMin = 20
 
 // openThread is a thread you opened on a PR that nobody resolved yet.
 type openThread struct {
-	Path     string    `json:"path,omitempty"`
-	Line     int       `json:"line,omitempty"`
-	URL      string    `json:"url,omitempty"`
-	Outdated bool      `json:"outdated,omitempty"`
-	Replies  int       `json:"replies"`
-	Last     *lastSaid `json:"last,omitempty"`
+	Path     string `json:"path,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	URL      string `json:"url,omitempty"`
+	Outdated bool   `json:"outdated,omitempty"`
+	Replies  int    `json:"replies"`
+	// More is how many replies one read did not bring; the last one is read
+	// on its own, so it is the real last word.
+	More int       `json:"more,omitempty"`
+	Last *lastSaid `json:"last,omitempty"`
 	// AuthorReplied says the last word is the PR author's: they answered, and
 	// the thread waits on you.
 	AuthorReplied bool `json:"author_replied,omitempty"`
@@ -110,26 +119,47 @@ type lastSaid struct {
 	At     time.Time `json:"at"`
 }
 
-// openThreadsOf picks, from a conversation, the threads me started that are
-// still open. An outdated one is still open, and says so.
-func openThreadsOf(c gh.Conversation, me string) []openThread {
+// openThreadsOf picks, from the conversation of the PR key, the threads me
+// started that are still open. An outdated one is still open, and says so.
+func openThreadsOf(c gh.Conversation, me, key string) []openThread {
 	out := []openThread{}
 	if me == "" {
 		return out
 	}
+	// On your own PR the author's reply is yours: nothing to flag.
+	mine := strings.EqualFold(c.Author.Login, me)
 	for _, t := range c.Threads {
 		if t.IsResolved || len(t.Comments) == 0 || !strings.EqualFold(t.Comments[0].Author.Login, me) {
 			continue
 		}
-		ot := openThread{Path: t.Path, Line: t.Line, URL: t.URL, Outdated: t.IsOutdated, Replies: len(t.Comments) - 1}
-		if len(t.Comments) > 1 {
-			last := t.Comments[len(t.Comments)-1]
+		total := max(t.Total, len(t.Comments))
+		ot := openThread{Path: t.Path, Line: t.Line, URL: threadURL(t.URL, key), Outdated: t.IsOutdated,
+			Replies: total - 1, More: total - len(t.Comments)}
+		last := t.Last
+		if last == nil {
+			last = &t.Comments[len(t.Comments)-1]
+		}
+		if total > 1 {
 			ot.Last = &lastSaid{Author: last.Author.Login, Body: clip(last.Body, 280), At: last.At}
-			ot.AuthorReplied = c.Author.Login != "" && strings.EqualFold(last.Author.Login, c.Author.Login)
+			ot.AuthorReplied = !mine && c.Author.Login != "" && strings.EqualFold(last.Author.Login, c.Author.Login)
 		}
 		out = append(out, ot)
 	}
 	return out
+}
+
+// threadURL is u when it is a page of the PR key on GitHub, or "": a link the
+// page draws goes nowhere else.
+func threadURL(u, key string) string {
+	repo, number, ok := strings.Cut(key, "#")
+	if !ok {
+		return ""
+	}
+	prefix := "https://github.com/" + strings.ToLower(repo) + "/pull/" + number
+	if lu := strings.ToLower(u); lu == prefix || strings.HasPrefix(lu, prefix+"#") || strings.HasPrefix(lu, prefix+"/") || strings.HasPrefix(lu, prefix+"?") {
+		return u
+	}
+	return ""
 }
 
 // clip cuts s to at most n runes on one line, with an ellipsis when it did.
@@ -154,7 +184,7 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 	convs, err := s.conversationsOf(r.Context(), keys, r.URL.Query().Get("refresh") == "1")
 	threads := map[string][]openThread{}
 	for k, c := range convs {
-		if t := openThreadsOf(c, s.me); len(t) > 0 {
+		if t := openThreadsOf(c, s.me, k); len(t) > 0 {
 			threads[k] = t
 		}
 	}

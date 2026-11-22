@@ -2,9 +2,12 @@ package server
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -122,5 +125,106 @@ func TestThreadsUmaLeitura(t *testing.T) {
 	wg.Wait()
 	if n := reads.Load(); n != 1 {
 		t.Errorf("%d reads", n)
+	}
+}
+
+// L-OT-1: a thread longer than one read: the last word is read on its own, so
+// the 50th reply, the author's, is not taken for it; and the read says how many
+// replies it did not bring.
+func TestThreadLongaUsaAUltimaDeVerdade(t *testing.T) {
+	c := gh.Conversation{Author: gh.Who{Login: "maria"}, Threads: []gh.Thread{{
+		Path: "a.go", Line: 1, URL: "https://github.com/acme/api-core/pull/7#discussion_r1", Total: 51,
+		Comments: []gh.Said{{Author: gh.Who{Login: "beroni"}, Body: "why?"}, {Author: gh.Who{Login: "maria"}, Body: "the 50th"}},
+		Last:     &gh.Said{Author: gh.Who{Login: "bob"}, Body: "the 51st"},
+	}}}
+	got := openThreadsOf(c, "beroni", "acme/api-core#7")
+	if len(got) != 1 {
+		t.Fatalf("%+v", got)
+	}
+	if ot := got[0]; ot.AuthorReplied || ot.Last == nil || ot.Last.Body != "the 51st" || ot.Replies != 50 || ot.More != 49 {
+		t.Errorf("%+v %+v", ot, ot.Last)
+	}
+}
+
+// O-OT-2: on your own PR, "author replied" is you: not flagged.
+func TestNoProprioPRNaoHaAutorQueRespondeu(t *testing.T) {
+	c := gh.Conversation{Author: gh.Who{Login: "Beroni"}, Threads: []gh.Thread{{
+		Total: 2, Comments: []gh.Said{{Author: gh.Who{Login: "beroni"}, Body: "note"}, {Author: gh.Who{Login: "beroni"}, Body: "done"}},
+	}}}
+	if got := openThreadsOf(c, "beroni", "acme/api-core#7"); len(got) != 1 || got[0].AuthorReplied {
+		t.Errorf("%+v", got)
+	}
+}
+
+// O-OT-3: a link the page draws goes to this PR on GitHub, or there is none.
+func TestLinkSoParaOProprioPR(t *testing.T) {
+	for u, keep := range map[string]bool{
+		"https://github.com/acme/api-core/pull/7#discussion_r1":        true,
+		"https://github.com/Acme/Api-Core/pull/7/files#r2":             true,
+		"https://github.com/acme/api-core/pull/7":                      true,
+		"https://github.com/acme/api-core/pull/70#discussion_r":        false,
+		"https://github.com/evil/api-core/pull/7#discussion_r1":        false,
+		"javascript:alert(1)//https://github.com/acme/api-core/pull/7": false,
+		"https://github.com.evil.example/acme/api-core/pull/7":         false,
+		"": false,
+	} {
+		c := gh.Conversation{Threads: []gh.Thread{{URL: u, Comments: []gh.Said{{Author: gh.Who{Login: "beroni"}}}}}}
+		got := openThreadsOf(c, "beroni", "acme/api-core#7")[0].URL
+		if keep && got != u || !keep && got != "" {
+			t.Errorf("%q → %q", u, got)
+		}
+	}
+}
+
+// L-OT-3: the backoff only ends when every call of a read went well: a batch
+// that works must not reset the one that keeps failing, so the wait doubles.
+func TestBackoffPorLote(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
+		if slices.Contains(keys, "acme/api-core#11") {
+			return nil, errors.New("HTTP 502")
+		}
+		return map[string]gh.Conversation{}, nil
+	}
+	keys := make([]string, 11)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	srv.conversationsOf(context.Background(), keys, false)
+	now = now.Add(2 * time.Minute) // past the backoff and the cache
+	srv.conversationsOf(context.Background(), keys, false)
+	if f := srv.convFailed.failures; f != 2 {
+		t.Errorf("failures in a row: %d, want 2", f)
+	}
+}
+
+// O-OT-1: the tags' reads have a ceiling of their own and never spend the
+// Overview's budget; past it, the rest wait for the next minute.
+func TestThreadsTemOrcamentoProprio(t *testing.T) {
+	srv := newTestServer(t)
+	old := convReadsPerMin
+	convReadsPerMin = 1
+	t.Cleanup(func() { convReadsPerMin = old })
+	var calls atomic.Int32
+	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, error) {
+		calls.Add(1)
+		return map[string]gh.Conversation{}, nil
+	}
+	keys := make([]string, 11)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	got, err := srv.conversationsOf(context.Background(), keys, false)
+	if err == nil || calls.Load() != 1 || len(got) != 10 {
+		t.Errorf("%d calls, %d read, err %v", calls.Load(), len(got), err)
+	}
+	srv.detMu.Lock()
+	spent := len(srv.ghReads)
+	srv.detMu.Unlock()
+	if spent != 0 {
+		t.Errorf("the Overview's budget paid %d", spent)
 	}
 }

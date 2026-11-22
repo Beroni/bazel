@@ -29,7 +29,8 @@ var conversationFragment = fmt.Sprintf(`fragment bazelConversationPR on PullRequ
   reviewThreads(first: %d) { pageInfo { hasNextPage } nodes {
     isResolved isOutdated path line originalLine startLine
     resolvedBy { login __typename }
-    comments(first: %d) { totalCount nodes { author { login __typename } authorAssociation body url createdAt } } } }
+    comments(first: %d) { totalCount nodes { author { login __typename } authorAssociation body url createdAt } }
+    lastComment: comments(last: 1) { nodes { author { login __typename } authorAssociation body url createdAt } } } }
   comments(first: %d) { pageInfo { hasNextPage } nodes { author { login __typename } authorAssociation body url createdAt } }
   reviews(first: %d) { pageInfo { hasNextPage } nodes { author { login __typename } authorAssociation state body url submittedAt } }
 }`, convThreads, convReplies, convComments, convReviews)
@@ -81,6 +82,10 @@ type Thread struct {
 	IsOutdated bool   `json:"isOutdated"`
 	ResolvedBy *Who   `json:"resolvedBy"`
 	Comments   []Said `json:"comments"`
+	// Total is how many comments the thread has, and Last the newest of them,
+	// read on its own: past the first ones read, Comments is not all of it.
+	Total int   `json:"-"`
+	Last  *Said `json:"-"`
 }
 
 // Conversation is what a PR has discussed: its review threads, its comments
@@ -148,6 +153,9 @@ type rawConversation struct {
 				TotalCount int       `json:"totalCount"`
 				Nodes      []rawSaid `json:"nodes"`
 			} `json:"comments"`
+			LastComment struct {
+				Nodes []rawSaid `json:"nodes"`
+			} `json:"lastComment"`
 		} `json:"nodes"`
 	} `json:"reviewThreads"`
 	Comments struct {
@@ -194,6 +202,13 @@ func (r *rawConversation) conversation() Conversation {
 		}
 		if len(t.Comments) > 0 {
 			t.URL = t.Comments[0].URL
+		}
+		t.Total = max(n.Comments.TotalCount, len(t.Comments))
+		if len(n.LastComment.Nodes) > 0 {
+			last := n.LastComment.Nodes[0].said()
+			t.Last = &last
+		} else if len(t.Comments) > 0 {
+			t.Last = &t.Comments[len(t.Comments)-1]
 		}
 		if n.Comments.TotalCount > len(n.Comments.Nodes) {
 			c.Complete = false
