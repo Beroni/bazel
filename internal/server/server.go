@@ -93,6 +93,10 @@ type Server struct {
 	prErrs    []gh.RepoError
 	prsAt     time.Time
 	prGen     int
+	// prsReadAt is when the read each listed PR came from began, by lower-case
+	// key: a PR kept from an earlier list after its repository failed keeps
+	// the time of that earlier read. A head is only as new as its read.
+	prsReadAt map[string]time.Time
 
 	// details caches each PR's page (the Overview) by head sha: one gh call
 	// per commit the PR is at, not one per click. fetchDetails is gh's, or a
@@ -515,6 +519,12 @@ func (s *Server) listedNow() []gh.PR {
 // keepFailed puts back the PRs of the repositories that failed this read: one
 // bad answer from GitHub must not empty the list, and the page says what failed
 // from repo_errors.
+// keptFrom says repo's PRs in the list came from an earlier read: its read
+// failed, and keepFailed kept them.
+func keptFrom(errs []gh.RepoError, repo string) bool {
+	return slices.ContainsFunc(errs, func(e gh.RepoError) bool { return !e.Truncated && strings.EqualFold(e.Repo, repo) })
+}
+
 func keepFailed(found, old []gh.PR, errs []gh.RepoError) []gh.PR {
 	for _, e := range errs {
 		if e.Truncated {
@@ -664,6 +674,7 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 		return nil, nil, now, nil
 	}
 
+	started := time.Now()
 	found, repoErrs := gh.ListPRs(ctx, repos, opts)
 	if err := ctx.Err(); err != nil {
 		return nil, nil, time.Time{}, err
@@ -671,6 +682,16 @@ func (s *Server) loadPRs(ctx context.Context, force bool) ([]gh.PR, []gh.RepoErr
 	found = keepFailed(found, s.listedNow(), repoErrs)
 	now := time.Now()
 	s.prMu.Lock()
+	readAt := make(map[string]time.Time, len(found))
+	for _, pr := range found {
+		k := strings.ToLower(pr.Key())
+		if old, ok := s.prsReadAt[k]; ok && keptFrom(repoErrs, pr.Repo) {
+			readAt[k] = old
+		} else {
+			readAt[k] = started
+		}
+	}
+	s.prsReadAt = readAt
 	s.prs, s.prErrs, s.prsAt = found, repoErrs, now
 	// The list changed while this read was out: it can be shown, not kept.
 	if s.prGen != gen {

@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/gh"
@@ -150,9 +151,7 @@ func TestDecisaoDePRQueAndou(t *testing.T) {
 
 	moved := pr
 	moved.HeadRefOid = headTwo
-	srv.prMu.Lock()
-	srv.prs = []gh.PR{moved}
-	srv.prMu.Unlock()
+	listAt(srv, time.Now(), moved)
 	v := srv.verdictViews()[strings.ToLower(pr.Key())]
 	if !v.Moved || v.Verdict != store.VerdictApprove || v.Head != headOne {
 		t.Errorf("the PR moved: %+v", v)
@@ -246,9 +245,7 @@ func TestDecisaoNoHeadRevisadoNaoNoListado(t *testing.T) {
 	}
 	now := listed
 	now.HeadRefOid = headTwo
-	srv.prMu.Lock()
-	srv.prs = []gh.PR{now}
-	srv.prMu.Unlock()
+	listAt(srv, time.Now(), now)
 	if v := srv.verdictViews()[strings.ToLower(listed.Key())]; v.Moved {
 		t.Errorf("the PR is where the review read it, yet: %+v", v)
 	}
@@ -340,9 +337,7 @@ func TestResumoDeixaForaOPRQueAndou(t *testing.T) {
 	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
 	moved := pr
 	moved.HeadRefOid = headTwo
-	srv.prMu.Lock()
-	srv.prs = []gh.PR{moved, other}
-	srv.prMu.Unlock()
+	listAt(srv, time.Now(), moved, other)
 
 	s := srv.summary(context.Background())
 	if s.Text != "maria\n"+other.URL+" :white_check_mark:" {
@@ -379,9 +374,7 @@ func TestDecisaoManualNoHeadAtual(t *testing.T) {
 	call(t, srv, "POST", "/api/jobs/"+ids[0]+"/verdict", `{"verdict":"approve"}`)
 	moved := pr
 	moved.HeadRefOid = headTwo
-	srv.prMu.Lock()
-	srv.prs = []gh.PR{moved}
-	srv.prMu.Unlock()
+	listAt(srv, time.Now(), moved)
 	if s := srv.summary(context.Background()); len(s.Moved) != 1 || s.Text != "" {
 		t.Fatalf("before: %+v", s)
 	}
@@ -431,9 +424,7 @@ func TestDecisaoManualRecusa(t *testing.T) {
 			t.Errorf("%s: %v", path, out)
 		}
 	}
-	srv.prMu.Lock()
-	srv.prs = []gh.PR{prAt("acme/api-core", 7, headOne)}
-	srv.prMu.Unlock()
+	listAt(srv, time.Now(), prAt("acme/api-core", 7, headOne))
 	if code, _ := call(t, srv, "POST", "/api/prs/acme/api-core/7/verdict", `{"verdict":"lgtm"}`); code != http.StatusBadRequest {
 		t.Errorf("bad verdict: %d", code)
 	}
@@ -446,5 +437,57 @@ func TestDecisaoManualRecusa(t *testing.T) {
 	}
 	if len(store.LoadMarks(srv.reviewsDir).Verdicts()) != 0 {
 		t.Error("a refused decision was kept")
+	}
+}
+
+// listAt puts prs in the server's list as a read from GitHub that began at at.
+func listAt(srv *Server, at time.Time, prs ...gh.PR) {
+	srv.prMu.Lock()
+	defer srv.prMu.Unlock()
+	srv.prs = prs
+	srv.prsAt = at
+	srv.prsReadAt = map[string]time.Time{}
+	for _, pr := range prs {
+		srv.prsReadAt[strings.ToLower(pr.Key())] = at
+	}
+}
+
+// PV-1, the rest: the current head is the newest Bazel knows, by time. A list
+// read before the review's checkout says less than the clone did: with A in
+// it and B in the clone, nothing moved, and a decision by hand ("keep") goes
+// on B, not back on A.
+func TestListaVelhaNaoVenceOCheckout(t *testing.T) {
+	ghFalso(t, "exit 1")
+	listed := prAt("acme/api-core", 7, headOne)
+	srv := newTestServer(t)
+	listAt(srv, time.Now().Add(-time.Minute), listed) // A, read before the review
+	ch := srv.hub.Subscribe()
+	defer srv.hub.Unsubscribe(ch)
+	v, err := srv.jobs.Enqueue(listed, false, srv.cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, v.ID, StateDone)
+	srv.jobs.mu.Lock()
+	srv.jobs.jobs[v.ID].Result.PR.HeadRefOid = headTwo // B, what the clone read
+	srv.jobs.mu.Unlock()
+
+	call(t, srv, "POST", "/api/jobs/"+v.ID+"/verdict", `{"verdict":"approve"}`)
+	if got := srv.verdictViews()[strings.ToLower(listed.Key())]; got.Moved || got.Current != headTwo {
+		t.Errorf("an older list made it move: %+v", got)
+	}
+	if code, out := call(t, srv, "POST", "/api/prs/acme/api-core/7/verdict", `{"verdict":"approve"}`); code != http.StatusOK {
+		t.Fatalf("keep: %d %v", code, out)
+	}
+	if got, _ := store.LoadMarks(srv.reviewsDir).VerdictOf(listed.Key()); got.Head != headTwo || got.Source != store.SourceManual {
+		t.Errorf("keep went on %s, the newest known head is %s: %+v", got.Head, headTwo, got)
+	}
+
+	// A list read after the review is newer: its head is the current one.
+	moved := listed
+	moved.HeadRefOid = "3333333333333333333333333333333333333333"
+	listAt(srv, time.Now(), moved)
+	if got := srv.verdictViews()[strings.ToLower(listed.Key())]; !got.Moved || got.Current != moved.HeadRefOid {
+		t.Errorf("a newer list: %+v", got)
 	}
 }

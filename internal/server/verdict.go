@@ -56,24 +56,62 @@ func (s *Server) verdictView(v store.Verdict, head string) verdictView {
 	}
 }
 
-// knownHeads is the newest head Bazel knows for each PR, by lower-case key: the
-// list read from GitHub, and for a PR outside it, the newest job's.
+// knownHeads is the newest head Bazel knows for each PR, by lower-case key and
+// by time: the list read from GitHub, from when that read began, against the
+// newest review, from when its checkout was done. A list older than the
+// clone knows less than the clone.
 func (s *Server) knownHeads() map[string]string {
-	heads := map[string]string{}
-	for _, j := range s.jobs.Snapshot() { // newest first: the first one wins
-		k := strings.ToLower(j.PR.Key)
-		if _, ok := heads[k]; !ok && j.PR.Head != "" {
-			heads[k] = j.PR.Head
-		}
+	type seen struct {
+		head string
+		at   time.Time
+	}
+	newest := map[string]seen{}
+	for k, r := range s.jobs.reviewedHeads() {
+		newest[k] = seen{r.head, r.at}
 	}
 	s.prMu.RLock()
 	for _, pr := range s.prs {
-		if pr.HeadRefOid != "" {
-			heads[strings.ToLower(pr.Key())] = pr.HeadRefOid
+		k := strings.ToLower(pr.Key())
+		at := s.prsReadAt[k]
+		if r, ok := newest[k]; pr.HeadRefOid != "" && (!ok || !at.Before(r.at)) {
+			newest[k] = seen{pr.HeadRefOid, at}
 		}
 	}
 	s.prMu.RUnlock()
+	heads := make(map[string]string, len(newest))
+	for k, v := range newest {
+		heads[k] = v.head
+	}
 	return heads
+}
+
+type reviewedHead struct {
+	head string
+	at   time.Time
+}
+
+// reviewedHeads is, for each PR, the head its newest review read and when:
+// the start of its first step, which comes right after the checkout, or the
+// end of the job when no step ran.
+func (m *Manager) reviewedHeads() map[string]reviewedHead {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := map[string]reviewedHead{}
+	for _, j := range m.jobs {
+		head := j.Result.PR.HeadRefOid
+		if j.History || head == "" || !strings.EqualFold(j.Result.PR.Key(), j.PR.Key()) {
+			continue
+		}
+		at := j.FinishedAt
+		if len(j.Steps) > 0 && !j.Steps[0].StartedAt.IsZero() {
+			at = j.Steps[0].StartedAt
+		}
+		k := strings.ToLower(j.PR.Key())
+		if r, ok := out[k]; !ok || at.After(r.at) {
+			out[k] = reviewedHead{head, at}
+		}
+	}
+	return out
 }
 
 func (s *Server) handleVerdicts(w http.ResponseWriter, r *http.Request) {
@@ -136,12 +174,18 @@ func (s *Server) handlePRVerdict(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, code, err)
 		return
 	}
-	pr, ok := s.listedPR(repo, number)
-	if !ok || pr.HeadRefOid == "" {
+	// The newest head known, by time: the list's, unless a review read a newer
+	// one after that list was read.
+	key := gh.PR{Repo: repo, Number: number}.Key()
+	head := s.knownHeads()[strings.ToLower(key)]
+	if head == "" {
 		writeErr(w, http.StatusConflict, errors.New("refresh the PR list first: Bazel does not know the head this PR is at"))
 		return
 	}
-	s.decide(w, pr.Key(), pr.HeadRefOid, verdict, store.SourceManual)
+	if pr, ok := s.listedPR(repo, number); ok {
+		key = pr.Key()
+	}
+	s.decide(w, key, head, verdict, store.SourceManual)
 }
 
 func (s *Server) decide(w http.ResponseWriter, key, head, verdict, source string) {
