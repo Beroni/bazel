@@ -27,7 +27,7 @@ const (
 var conversationFragment = fmt.Sprintf(`fragment bazelConversationPR on PullRequest {
   author { login __typename }
   reviewThreads(first: %d) { pageInfo { hasNextPage } nodes {
-    isResolved isOutdated path line originalLine startLine
+    isResolved isOutdated path line originalLine startLine diffSide
     resolvedBy { login __typename }
     comments(first: %d) { totalCount nodes { author { login __typename } authorAssociation body url createdAt } } } }
   comments(first: %d) { pageInfo { hasNextPage } nodes { author { login __typename } authorAssociation body url createdAt } }
@@ -77,6 +77,7 @@ type Thread struct {
 	Path       string `json:"path,omitempty"`
 	Line       int    `json:"line,omitempty"`
 	StartLine  int    `json:"start_line,omitempty"`
+	Side       string `json:"side,omitempty"` // LEFT or RIGHT
 	IsResolved bool   `json:"isResolved"`
 	IsOutdated bool   `json:"isOutdated"`
 	ResolvedBy *Who   `json:"resolvedBy"`
@@ -143,6 +144,7 @@ type rawConversation struct {
 			Line         *int      `json:"line"`
 			OriginalLine *int      `json:"originalLine"`
 			StartLine    *int      `json:"startLine"`
+			DiffSide     string    `json:"diffSide"`
 			ResolvedBy   *rawActor `json:"resolvedBy"`
 			Comments     struct {
 				TotalCount int       `json:"totalCount"`
@@ -173,7 +175,7 @@ func (r *rawConversation) conversation() Conversation {
 		Reviews:  []Said{},
 	}
 	for _, n := range r.ReviewThreads.Nodes {
-		t := Thread{Path: n.Path, IsResolved: n.IsResolved, IsOutdated: n.IsOutdated, Comments: []Said{}}
+		t := Thread{Path: n.Path, Side: n.DiffSide, IsResolved: n.IsResolved, IsOutdated: n.IsOutdated, Comments: []Said{}}
 		// An outdated thread has no line in the current diff: it keeps the one
 		// it was written on.
 		switch {

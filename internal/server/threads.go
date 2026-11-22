@@ -167,13 +167,93 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 }
 
 // discussionBody caps each text in discussion.json: a long body is cut and
-// says so, as "cut".
+// says so, as "cut". Past discussionThreads threads or discussionBytes in all,
+// the file keeps what fits and says complete: false.
 const discussionBody = 4000
+
+var (
+	discussionThreads = 200
+	discussionBytes   = 2 << 20
+)
+
+// The shape bazel-review-fleet's discussion.jq reads. Every author carries its
+// type (User or Bot) and, on what they wrote, its association.
+type (
+	discussionWho struct {
+		Login       string `json:"login"`
+		Type        string `json:"type"`
+		Association string `json:"association,omitempty"`
+	}
+	discussionSaid struct {
+		Author    discussionWho `json:"author"`
+		CreatedAt time.Time     `json:"createdAt"`
+		Body      string        `json:"body"`
+		URL       string        `json:"url,omitempty"`
+		Cut       bool          `json:"cut,omitempty"`
+	}
+	discussionReview struct {
+		Author      discussionWho `json:"author"`
+		State       string        `json:"state"`
+		SubmittedAt time.Time     `json:"submittedAt"`
+		Body        string        `json:"body"`
+		URL         string        `json:"url,omitempty"`
+		Cut         bool          `json:"cut,omitempty"`
+	}
+	discussionThread struct {
+		URL        string           `json:"url,omitempty"`
+		Path       string           `json:"path,omitempty"`
+		Line       *int             `json:"line"`
+		StartLine  *int             `json:"start_line"`
+		Side       string           `json:"side,omitempty"`
+		IsResolved bool             `json:"isResolved"`
+		IsOutdated bool             `json:"isOutdated"`
+		ResolvedBy *discussionWho   `json:"resolvedBy"`
+		Comments   []discussionSaid `json:"comments"`
+	}
+	discussionFile struct {
+		Repo     string             `json:"repo"`
+		PR       int                `json:"pr"`
+		HeadSha  string             `json:"head_sha"`
+		Complete bool               `json:"complete"`
+		Author   discussionWho      `json:"author"`
+		Threads  []discussionThread `json:"threads"`
+		Comments []discussionSaid   `json:"comments"`
+		Reviews  []discussionReview `json:"reviews"`
+	}
+)
+
+func whoOf(w gh.Who) discussionWho {
+	t := "User"
+	if w.IsBot() {
+		t = "Bot"
+	}
+	return discussionWho{Login: w.Login, Type: t, Association: w.Association}
+}
+
+// cutBody keeps a body within discussionBody, marked when it was cut.
+func cutBody(b string) (string, bool) {
+	if utf8.RuneCountInString(b) <= discussionBody {
+		return b, false
+	}
+	return string([]rune(b)[:discussionBody]) + " … [cut by Bazel]", true
+}
+
+func saidOf(x gh.Said) discussionSaid {
+	body, cut := cutBody(x.Body)
+	return discussionSaid{Author: whoOf(x.Author), CreatedAt: x.At, Body: body, URL: x.URL, Cut: cut}
+}
+
+func optLine(n int) *int {
+	if n == 0 {
+		return nil
+	}
+	return &n
+}
 
 // discussionFor is what the review fleet reads as <plugin>/discussion.json:
 // the PR's threads (resolved or open, with their replies), comments and
-// reviews, its author on top. Long bodies are cut, marked. A failed read is an
-// error and no file: the review goes without it.
+// reviews, its author on top, at the head the review reads. A failed read is
+// an error and no file: the review goes without it.
 func (s *Server) discussionFor(ctx context.Context, pr gh.PR) ([]byte, error) {
 	key := pr.Key()
 	convs, err := s.conversationsOf(ctx, []string{key}, false)
@@ -184,25 +264,51 @@ func (s *Server) discussionFor(ctx context.Context, pr gh.PR) ([]byte, error) {
 	if !ok {
 		return nil, errors.New("GitHub said nothing of this PR")
 	}
-	if c.Author.Login == "" {
-		c.Author = gh.Who{Login: pr.Author.Login}
+	author := c.Author
+	if author.Login == "" {
+		author = gh.Who{Login: pr.Author.Login}
 	}
-	cut := func(list []gh.Said) []gh.Said {
-		out := make([]gh.Said, len(list))
-		for i, x := range list {
-			if utf8.RuneCountInString(x.Body) > discussionBody {
-				x.Body = string([]rune(x.Body)[:discussionBody]) + " … [cut by Bazel]"
-				x.Cut = true
-			}
-			out[i] = x
+	f := discussionFile{
+		Repo: pr.Repo, PR: pr.Number, HeadSha: pr.HeadRefOid, Complete: c.Complete,
+		Author:  whoOf(gh.Who{Login: author.Login, Type: author.Type}),
+		Threads: []discussionThread{}, Comments: []discussionSaid{}, Reviews: []discussionReview{},
+	}
+	for _, t := range c.Threads {
+		dt := discussionThread{URL: t.URL, Path: t.Path, Line: optLine(t.Line), StartLine: optLine(t.StartLine), Side: t.Side,
+			IsResolved: t.IsResolved, IsOutdated: t.IsOutdated, Comments: []discussionSaid{}}
+		if t.ResolvedBy != nil {
+			w := whoOf(*t.ResolvedBy)
+			w.Association = ""
+			dt.ResolvedBy = &w
 		}
-		return out
+		for _, x := range t.Comments {
+			dt.Comments = append(dt.Comments, saidOf(x))
+		}
+		f.Threads = append(f.Threads, dt)
 	}
-	threads := make([]gh.Thread, len(c.Threads))
-	for i, t := range c.Threads {
-		t.Comments = cut(t.Comments)
-		threads[i] = t
+	for _, x := range c.Comments {
+		f.Comments = append(f.Comments, saidOf(x))
 	}
-	c.Threads, c.Comments, c.Reviews = threads, cut(c.Comments), cut(c.Reviews)
-	return json.MarshalIndent(c, "", "  ")
+	for _, x := range c.Reviews {
+		body, cut := cutBody(x.Body)
+		f.Reviews = append(f.Reviews, discussionReview{Author: whoOf(x.Author), State: x.State, SubmittedAt: x.At, Body: body, URL: x.URL, Cut: cut})
+	}
+	if len(f.Threads) > discussionThreads {
+		f.Threads, f.Complete = f.Threads[:discussionThreads], false
+	}
+	data, err := json.Marshal(f)
+	// Too big: the newest of each list goes first, until it fits.
+	for err == nil && len(data) > discussionBytes && len(f.Threads)+len(f.Comments)+len(f.Reviews) > 0 {
+		f.Complete = false
+		switch {
+		case len(f.Reviews) > 0:
+			f.Reviews = f.Reviews[:len(f.Reviews)/2]
+		case len(f.Comments) > 0:
+			f.Comments = f.Comments[:len(f.Comments)/2]
+		default:
+			f.Threads = f.Threads[:len(f.Threads)/2]
+		}
+		data, err = json.Marshal(f)
+	}
+	return data, err
 }

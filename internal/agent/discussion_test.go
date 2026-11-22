@@ -19,7 +19,7 @@ func discussionReview(t *testing.T, discussion func(context.Context, gh.PR) ([]b
 	hostileClone(t)
 	bin, seen := t.TempDir(), filepath.Join(t.TempDir(), "seen")
 	script := "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --plugin-dir ] && dir=$2; shift; done\ncat >/dev/null\n" +
-		"if [ -f \"$dir/discussion.json\" ]; then cat \"$dir/discussion.json\" > " + seen + "; else echo none > " + seen + "; fi\n" +
+		"if [ -f \"$dir/discussion.json\" ]; then cat \"$dir/discussion.json\" > " + seen + "; ls -l \"$dir/discussion.json\" | cut -c1-10 >> " + seen + "; else echo none > " + seen + "; fi\n" +
 		"echo '# Verdict'\n"
 	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -65,6 +65,9 @@ func TestReviewGanhaDiscussion(t *testing.T) {
 	}
 	if !strings.Contains(got, `"author":{"login":"maria"}`) {
 		t.Errorf("the agent saw: %q", got)
+	}
+	if !strings.Contains(got, "-rw-------") {
+		t.Errorf("the file is not the user's alone: %q", got)
 	}
 	if asked.Number != testPR().Number {
 		t.Errorf("read for %+v", asked)
