@@ -20,7 +20,7 @@ export const isNeedsRead = (c: GhCall): boolean =>
  * reviews the Summary's PRs, and what the listed PRs discussed (the open-thread
  * tags and the fleet's discussion.json).
  */
-const BAZEL_READS = ['query=query bazelNeedsYou', 'query=query bazelReviewers(', 'query=query bazelConversation('];
+const BAZEL_READS = ['query=query bazelNeedsYou', 'query=query bazelReviewers(', 'query=query bazelConversation(', 'query=query bazelThreadTags('];
 
 export interface GhCall {
   /** When gh was called; `at` is when it returned. */
@@ -93,6 +93,8 @@ export interface GhSettings {
   forks?: Record<string, string>;
   /** Extra milliseconds for every gh repo clone: a loaded machine, on purpose. */
   slow_clone_ms?: number;
+  /** GraphQL points left that the open-thread reads report (default plenty). */
+  rate_remaining?: number;
   /** Call key ("comment", "api") → gate: see holdingGh / releaseGh. */
   hold?: Record<string, string>;
 }

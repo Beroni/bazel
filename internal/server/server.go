@@ -119,10 +119,14 @@ type Server struct {
 
 	// convs caches what each PR discussed (threads, comments, reviews), for the
 	// open-thread tags and the review fleet's discussion.json; same rules.
-	convMu             sync.Mutex
-	convs              map[string]conversationEntry
-	convFailed         needsCache
-	convReads          []time.Time // these reads' own budget, last minute
+	convMu          sync.Mutex
+	convs           map[string]conversationEntry
+	convFailed      needsCache
+	convReads       []time.Time // these reads' own budget, last minute
+	convHold        time.Time   // GitHub's rate limit ran low: no tags' read before this
+	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
+	// fetchConversations is the full read of a PR's discussion, for the review
+	// fleet's discussion.json: gh's, or a test's.
 	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, error)
 	fetchReviewers     func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
@@ -159,6 +163,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		reviewers:          map[string]reviewersEntry{},
 		fetchReviewers:     gh.FetchReviewers,
 		convs:              map[string]conversationEntry{},
+		fetchThreadTags:    gh.FetchThreadTags,
 		fetchConversations: gh.FetchConversations,
 		cfg:                cfg,
 		me:                 me,
@@ -169,8 +174,7 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs:               jobs,
 		done:               make(chan struct{}),
 	}
-	// A review gets what its PR discussed from the same read, and cache, as
-	// the open-thread tags.
+	// A review gets what its PR discussed, read in full for that job alone.
 	jobs.runner.Discussion = s.discussionFor
 	return s, nil
 }

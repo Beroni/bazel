@@ -19,13 +19,15 @@ func discussionServer(t *testing.T, answer string) (*Server, string) {
 	if err := os.WriteFile(file, []byte(answer), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return threadsServer(t, "cat "+file)
+	srv, log := threadsServer(t, "cat "+file)
+	srv.fetchConversations = gh.FetchConversations
+	return srv, log
 }
 
 // The fleet's discussion.json, in the shape discussion.jq reads: the PR and
 // its head, its author on top, every thread (resolved or open, outdated too)
 // with its replies, each author with type and association; long bodies cut
-// and marked. It comes from the same read, and cache, as the open threads.
+// and marked. Its own full read, apart from the tags' thin one.
 func TestDiscussionJSON(t *testing.T) {
 	long := strings.Repeat("é", discussionBody+50)
 	answer := strings.Replace(threadsAnswer, `"body":"two writers"`, `"body":"`+long+`"`, 1)
@@ -42,8 +44,9 @@ func TestDiscussionJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if n := contaNoLog(log, "start") - before; n != 0 {
-		t.Errorf("the discussion read gh again (%d): it shares the open threads' read", n)
+	// Its own full read: the tags' read is too thin for the fleet.
+	if n := contaNoLog(log, "start") - before; n != 1 {
+		t.Errorf("the discussion read gh %d times, want its own one", n)
 	}
 	var d map[string]any
 	if err := json.Unmarshal(data, &d); err != nil {

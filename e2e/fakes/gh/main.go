@@ -92,6 +92,9 @@ type settings struct {
 	// loaded machine does, on purpose, so a test that confuses a running job with
 	// a running agent fails every time instead of now and then.
 	SlowClone int `json:"slow_clone_ms"`
+	// RateRemaining is the GraphQL points left that the thread reads report;
+	// unset, plenty.
+	RateRemaining *int `json:"rate_remaining"`
 	// Hold maps a call key ("comment", "api") to a gate: the call announces
 	// itself in <state>/<gate>.entered and waits for <state>/<gate>, whose text
 	// "fail" makes it fail and anything else lets it through. A write held open,
@@ -355,7 +358,9 @@ func apiCall(args []string) int {
 		return apiNeeds(args)
 	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelReviewers(") }):
 		return apiReviewers(args)
-	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelConversation(") }):
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool {
+		return strings.HasPrefix(a, "query=query bazelConversation(") || strings.HasPrefix(a, "query=query bazelThreadTags(")
+	}):
 		return apiConversation(args)
 	case len(args) > 2 && args[1] == "graphql":
 		return apiThreads(args)
@@ -550,6 +555,13 @@ func apiConversation(args []string) int {
 		}
 		data[alias] = map[string]any{"pullRequest": node}
 	}
+	// GitHub's word on its rate limit, as both reads ask for it; gh.json
+	// rate_remaining sets what is left.
+	remaining := 4999
+	if cfg.RateRemaining != nil {
+		remaining = *cfg.RateRemaining
+	}
+	data["rateLimit"] = map[string]any{"cost": 1, "remaining": remaining, "resetAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
 	out, _ := json.Marshal(map[string]any{"data": data})
 	fmt.Println(string(out))
 	return 0

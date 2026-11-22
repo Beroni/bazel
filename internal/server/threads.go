@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -36,6 +38,13 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 	s.convMu.Lock()
 	defer s.convMu.Unlock()
 	now := timeNow()
+	// What is past keeping goes now, failure or not: a read that keeps failing
+	// must not leave a fallback that never ages.
+	for k, e := range s.convs {
+		if now.Sub(e.at) >= conversationKept {
+			delete(s.convs, k)
+		}
+	}
 	for _, key := range keys {
 		k := strings.ToLower(key)
 		if e, ok := s.convs[k]; ok && !force && now.Sub(e.at) < conversationTTL {
@@ -46,6 +55,15 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 	}
 	if len(missing) == 0 {
 		return out, nil
+	}
+	// The ones read longest ago, or never, go first: with the budget spent
+	// before the end of the list, the same PRs must not be the ones left out
+	// every minute.
+	slices.SortStableFunc(missing, func(a, b string) int {
+		return s.convs[strings.ToLower(a)].at.Compare(s.convs[strings.ToLower(b)].at)
+	})
+	if now.Before(s.convHold) {
+		return out, fmt.Errorf("GitHub's rate limit is low: the open threads wait until %s", s.convHold.Local().Format("15:04"))
 	}
 	if f := s.convFailed; !f.failedAt.IsZero() && now.Sub(f.failedAt) < f.backoff() {
 		return out, errors.New(f.err)
@@ -64,11 +82,17 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 		// Not the request's context: a tab closed mid-read must not fail the
 		// others waiting on this one. The time limit is per call.
 		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
-		got, err := s.fetchConversations(rctx, batch)
+		got, rl, err := s.fetchThreadTags(rctx, batch)
 		cancel()
 		if err != nil {
 			s.convFailed = needsCache{failedAt: timeNow(), failures: s.convFailed.failures + 1, err: err.Error()}
 			return out, err
+		}
+		// Past the margin, these reads stop until GitHub's hour starts again:
+		// the list, Needs you, the summary and publishing keep the rest.
+		low := !rl.ResetAt.IsZero() && rl.Remaining < convRateMargin
+		if low {
+			s.convHold = rl.ResetAt
 		}
 		at := timeNow()
 		for _, key := range batch {
@@ -80,15 +104,13 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 			s.convs[k] = conversationEntry{conv: c, at: at}
 			out[k] = c
 		}
+		if low && len(missing) > 0 {
+			return out, fmt.Errorf("GitHub's rate limit is low (%d left): the open threads wait until %s", rl.Remaining, rl.ResetAt.Local().Format("15:04"))
+		}
 	}
 	// Only a read where every call went well ends the backoff: one batch that
 	// worked says nothing of the one that keeps failing.
 	s.convFailed = needsCache{}
-	for k, e := range s.convs {
-		if timeNow().Sub(e.at) >= conversationKept {
-			delete(s.convs, k)
-		}
-	}
 	return out, nil
 }
 
@@ -104,7 +126,7 @@ func (s *Server) lastConversations(keys []string, out map[string]gh.Conversation
 		if _, ok := out[k]; ok {
 			continue
 		}
-		if e, ok := s.convs[k]; ok {
+		if e, ok := s.convs[k]; ok && timeNow().Sub(e.at) < conversationKept {
 			out[k] = e.conv
 			if oldest.IsZero() || e.at.Before(oldest) {
 				oldest = e.at
@@ -117,6 +139,10 @@ func (s *Server) lastConversations(keys []string, out map[string]gh.Conversation
 // convReadsPerMin caps the gh calls of these reads, gh.ConversationBatch PRs
 // each, apart from the budget of the Overview and the list.
 var convReadsPerMin = 20
+
+// convRateMargin is the GraphQL points these reads always leave to the rest of
+// Bazel: below it, they stop until the rate limit resets.
+var convRateMargin = 1000
 
 // conversationKept is how long a good read is kept past its minute: when the
 // next one fails, the page still shows what it said, as stale.
@@ -318,12 +344,15 @@ func optLine(n int) *int {
 // reviews, its author on top, at the head the review reads. A failed read is
 // an error and no file: the review goes without it.
 func (s *Server) discussionFor(ctx context.Context, pr gh.PR) ([]byte, error) {
+	// The full read, for this job alone: the tags' read is too thin for it.
 	key := pr.Key()
-	convs, err := s.conversationsOf(ctx, []string{key}, false)
+	rctx, cancel := context.WithTimeout(ctx, detailsReadTimeout)
+	defer cancel()
+	convs, err := s.fetchConversations(rctx, []string{key})
 	if err != nil {
 		return nil, err
 	}
-	c, ok := convs[strings.ToLower(key)]
+	c, ok := convs[key]
 	if !ok {
 		return nil, errors.New("GitHub said nothing of this PR")
 	}

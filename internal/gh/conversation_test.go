@@ -24,7 +24,7 @@ const conversationAnswer = `{"data":{
  "p1":{"pullRequest":null}}}`
 
 func TestConversaLida(t *testing.T) {
-	got, err := parseConversations(conversationAnswer, []string{"o/r#7", "o/r#99"})
+	got, _, err := parseConversations(conversationAnswer, []string{"o/r#7", "o/r#99"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,5 +84,40 @@ func TestConversaEmLoteSoLeitura(t *testing.T) {
 	fakeGH(t, "echo 'HTTP 502' >&2; exit 1")
 	if _, err := FetchConversations(context.Background(), []string{"o/r#7"}); err == nil {
 		t.Error("gh failed and FetchConversations said nothing")
+	}
+}
+
+// The tags' read is the least query that tells whose threads are open, and it
+// asks GitHub what it cost and what is left.
+func TestThreadTagsLeituraMinima(t *testing.T) {
+	q := threadTagsQuery(2)
+	for _, want := range []string{"query bazelThreadTags(", "comments(first: 1)", "lastComment: comments(last: 1)", "rateLimit { cost remaining resetAt }", "isResolved", "isOutdated", "path", "line"} {
+		if !strings.Contains(q, want) {
+			t.Errorf("no %q in:\n%s", want, q)
+		}
+	}
+	for _, not := range []string{"comments(first: 50)", "comments(first: 100)", "reviews(", "authorAssociation", "resolvedBy"} {
+		if strings.Contains(q, not) {
+			t.Errorf("the tags' query asks for %q", not)
+		}
+	}
+	answer := filepath.Join(t.TempDir(), "a.json")
+	if err := os.WriteFile(answer, []byte(`{"data":{"rateLimit":{"cost":3,"remaining":812,"resetAt":"2026-11-22T20:00:00Z"},
+	 "p0":{"pullRequest":{"author":{"login":"alice","__typename":"User"},"reviewThreads":{"pageInfo":{"hasNextPage":false},"nodes":[
+	  {"isResolved":false,"isOutdated":false,"path":"a.go","line":3,"comments":{"totalCount":4,"nodes":[{"author":{"login":"me","__typename":"User"},"url":"https://github.com/o/r/pull/7#discussion_r1","createdAt":"2026-11-01T10:00:00Z"}]},
+	   "lastComment":{"nodes":[{"author":{"login":"alice","__typename":"User"},"body":"done","createdAt":"2026-11-02T10:00:00Z"}]}}]}}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fakeGH(t, "cat "+answer)
+	got, rl, err := FetchThreadTags(context.Background(), []string{"o/r#7", "bad"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rl.Remaining != 812 || rl.Cost != 3 || rl.ResetAt.IsZero() {
+		t.Errorf("rate limit: %+v", rl)
+	}
+	th := got["o/r#7"].Threads[0]
+	if th.Total != 4 || th.Last == nil || th.Last.Author.Login != "alice" || th.Comments[0].Author.Login != "me" || th.URL == "" {
+		t.Errorf("%+v %+v", th, th.Last)
 	}
 }

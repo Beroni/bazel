@@ -53,6 +53,7 @@ const state = {
   openThreads: {},   // lower-case PR key -> the threads you opened there that are still open
   threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
   threadsStale: null,  // when the threads on screen were read, if the last read failed
+  threadsError: '',    // why there are no threads on screen: the read failed with nothing to fall back on
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -2420,7 +2421,9 @@ function renderPRPage(body, pr, job, redraw) {
   // What you asked on this PR that nobody resolved yet, with the last word.
   const mine = threadsOf(pr.key);
   if (mine.length) {
-    main.append(sectionLabel('Your open threads'));
+    const label = sectionLabel('Your open threads');
+    if (state.threadsStale) label.append(' ', tid(el('span', 'dim', staleNote()), 'threads-stale'));
+    main.append(label);
     const ul = tid(el('ul', 'open-threads'), 'pr-open-threads-list');
     for (const t of mine) {
       const li = tid(el('li'), 'pr-open-thread', { path: t.path || '' });
@@ -3932,20 +3935,24 @@ function threadLink(t) {
 async function loadOpenThreads(force) {
   const open = state.jobs.find((j) => j.id === state.activeJob);
   const key = state.activePR || (open && open.pr.key);
-  const before = key ? JSON.stringify(threadsOf(key)) : '';
+  const seen = () => (key ? JSON.stringify([threadsOf(key), state.threadsStale]) : '');
+  const before = seen();
   try {
     // A read that failed on the server still answers what the last good one
     // said, marked stale with its time; the page keeps those tags and says so.
     const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
     state.openThreads = out.threads || {};
     state.threadsStale = out.stale ? out.stale_at : null;
+    // No read to fall back on (none yet, or past its 30 minutes): no tags, and
+    // the page says the threads could not be read.
+    state.threadsError = out.error && !out.stale ? out.error : '';
   } catch (err) {
     return; // the server did not answer at all: the tags on screen stay
   }
   renderPRs();
   // The page on screen follows the new read, the section going away too when
   // you resolved the last thread.
-  if (key && JSON.stringify(threadsOf(key)) !== before) followPRPage(key);
+  if (key && seen() !== before) followPRPage(key);
 }
 
 function openThreadsTag(pr) {
@@ -3953,21 +3960,31 @@ function openThreadsTag(pr) {
   if (!list.length) return null;
   const t = tid(el('span', 'tag stale', `💬 ${list.length} open`), 'pr-open-threads', { count: list.length, stale: !!state.threadsStale });
   t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n')
-    + (state.threadsStale ? `\n(as of ${new Date(state.threadsStale).toLocaleTimeString()}: GitHub could not be read since)` : '');
+    + (state.threadsStale ? '\n' + staleNote() : '');
   return t;
 }
+
+// staleNote says the threads on screen are from an earlier read.
+const staleNote = () => `as of ${new Date(state.threadsStale).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (could not refresh)`;
 
 // fillThreadsNote reminds, under the Review button, of the open threads on the
 // PRs you ticked.
 function fillThreadsNote() {
   const note = $('#threads-note');
   note.replaceChildren();
+  if (state.threadsError) {
+    const p = tid(el('p'), 'threads-error');
+    p.textContent = 'Your open threads could not be read from GitHub, so none are shown.';
+    p.title = state.threadsError;
+    note.append(p);
+  }
   for (const key of new Set([...markedPRs(), ...(state.threadsReminded || [])])) {
     const list = threadsOf(key);
     if (!list.length) continue;
     const p = tid(el('p'), 'threads-note-pr', { prKey: key });
     p.append(`${key}: You still have ${list.length} open thread${list.length === 1 ? '' : 's'} on this PR`);
     list.forEach((t, i) => p.append(i ? ', ' : ' — ', threadLink(t)));
+    if (state.threadsStale) p.append(' ', tid(el('span', 'dim', staleNote()), 'threads-stale'));
     note.append(p);
   }
   note.hidden = !note.childElementCount;
