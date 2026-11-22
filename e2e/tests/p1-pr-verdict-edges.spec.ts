@@ -223,6 +223,8 @@ test.describe('P1 · your decision, edges', () => {
     await expect(ui.summaryDialog(app)).toBeHidden();
     await expect(ui.summaryButton(app)).toBeFocused();
     const v = await openJob(app, RATE);
+    // The bar comes with the review's body, after the detail opens.
+    await expect(v.getByTestId('verdict-bar')).toBeVisible();
     expect(await axe('[data-testid=verdict-bar]')).toEqual([]);
     expect(await pressed(v)).toEqual(['approve']);
 
