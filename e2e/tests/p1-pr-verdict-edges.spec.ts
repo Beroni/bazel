@@ -293,6 +293,32 @@ test.describe('P1 · the reviewers in the Summary', () => {
     await expect(app.getByTestId('summary-warning')).toContainText(/reviewers could not be read/i);
     await expect(ui.summaryText(app)).toHaveValue(group('alice', `${url(K)} :white_check_mark:`));
   });
+
+  // 7d295d6: a failed read backs off — a second Summary right after does not
+  // ask gh again, and still says why the names are missing.
+  test('a failed read is not retried at once: a second Summary reads nothing', async ({ bazel }) => {
+    await decide(bazel, await done(bazel, K), 'approve');
+    bazel.setGh({ fail: { reviewers: 'HTTP 502: Bad Gateway' } });
+    const reads = () => bazel.ghCalls().filter((c) => c.argv.some((a) => a.startsWith('query=query bazelReviewers('))).length;
+    const first = await summary(bazel);
+    expect(first.reviewers_error).toContain('reviewers could not be read');
+    expect(reads()).toBe(1);
+    bazel.setGh({}); // GitHub is back; the backoff still holds
+    const [a, b] = await Promise.all([summary(bazel), summary(bazel)]);
+    for (const s of [a, b]) {
+      expect(s.text).toBe(group('alice', `${url(K)} :white_check_mark:`));
+      expect(s.reviewers_error).toContain('reviewers could not be read');
+    }
+    expect(reads()).toBe(1);
+  });
+
+  test('summaries at once share one read', async ({ bazel }) => {
+    await decide(bazel, await done(bazel, K), 'approve');
+    const reads = () => bazel.ghCalls().filter((c) => c.argv.some((a) => a.startsWith('query=query bazelReviewers('))).length;
+    const all = await Promise.all(Array.from({ length: 5 }, () => summary(bazel)));
+    for (const s of all) expect(s.text).toBe(group('alice', line(K, ':white_check_mark:')));
+    expect(reads()).toBe(1);
+  });
 });
 
 // 5cccf0b: the text grouped by the PR's author — groups by login, case aside, in
@@ -446,6 +472,26 @@ test.describe('P1 · deciding again on the current head', () => {
     await ui.prRow(app, RATE).getByText(RATE).click();
     await expect(app.getByTestId('pr-page')).toHaveAttribute('data-pr-key', K);
     await expect(app.getByTestId('pr-verdict')).toHaveCount(0);
+  });
+
+  // c709a14: the newest head by time wins. A list read before a push says A; the
+  // review cloned after it read B. B is what Bazel knows now.
+  test('a list older than the review: no "moved", and keep records the review\'s head', async ({ app, bazel }) => {
+    const before = (await bazel.api('GET', '/api/prs')).json.prs.find((p: any) => p.key === K).head_oid as string;
+    bazel.movePR(K); // pushed after the list was read; nobody refreshes it
+    const id = await done(bazel, K);
+    await decide(bazel, id, 'approve');
+    const v = (await verdicts(bazel))[K];
+    expect(v.head).not.toBe(before);
+    expect(v.moved ?? false).toBe(false);
+    expect((await summary(bazel)).moved).toEqual([]);
+    // By hand on the current head: the review's, not the old list's.
+    expect((await bazel.api('POST', `/api/prs/${K.replace('#', '/')}/verdict`, { verdict: 'request_changes' })).status).toBe(200);
+    expect((await verdicts(bazel))[K].head).toBe(v.head);
+    await app.reload();
+    await ui.summaryButton(app).click();
+    await expect(app.locator(`[data-testid=summary-moved-item][data-key="${K}"]`)).toHaveCount(0);
+    await expect(ui.summaryText(app)).toHaveValue(group('alice', line(K, ':git_change_request:')));
   });
 
   test('the client\'s head is never used, and a PR the list does not know cannot be decided by hand', async ({ bazel }) => {
