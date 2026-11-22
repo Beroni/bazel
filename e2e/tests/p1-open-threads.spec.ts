@@ -78,4 +78,24 @@ test.describe('P1 · your open threads', () => {
     await expect(ui.jobCard(app, RATE)).toHaveCount(1);
     expect(writes(bazel)).toEqual([]);
   });
+
+  // L-OT-2: resolve the last open thread and refresh: the tag goes, and so
+  // does the section on the PR's page, which follows the new read.
+  test('the PR page follows a read where the threads were resolved', async ({ app, bazel }) => {
+    const one = { reviewThreads: { nodes: [CONVERSATION.reviewThreads.nodes[0]] } };
+    bazel.updatePR('acme/api-core#101', { conversation: one });
+    await app.getByTestId('refresh').click();
+    await expect(ui.prRow(app, RATE).getByTestId('pr-open-threads')).toHaveText('💬 1 open');
+    await ui.prRow(app, RATE).locator('.title').click();
+    const page = app.getByTestId('pr-page');
+    await expect(page.getByTestId('pr-open-thread')).toHaveCount(1);
+
+    const resolved = { ...CONVERSATION.reviewThreads.nodes[0], isResolved: true, resolvedBy: { login: 'e2e-user', __typename: 'User' } };
+    bazel.updatePR('acme/api-core#101', { conversation: { reviewThreads: { nodes: [resolved] } } });
+    await app.getByTestId('refresh').click();
+    await expect(ui.prRow(app, RATE).getByTestId('pr-open-threads')).toHaveCount(0);
+    await expect(app.getByTestId('pr-page').getByTestId('pr-open-thread')).toHaveCount(0);
+    await expect(app.getByTestId('pr-page').getByTestId('pr-open-threads-list')).toHaveCount(0);
+  });
 });
+

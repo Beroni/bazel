@@ -2426,6 +2426,7 @@ function renderPRPage(body, pr, job, redraw) {
       li.append(threadLink(t));
       if (t.outdated) li.append(' ', el('span', 'tag stale', 'outdated'));
       if (t.author_replied) li.append(' ', tid(el('span', 'tag approved', 'author replied'), 'thread-author-replied'));
+      if (t.more) li.append(' ', tid(el('span', 'dim', `+${t.more} more`), 'thread-more'));
       if (t.last) {
         const q = el('p', 'dim thread-last');
         q.dir = 'auto';
@@ -3918,6 +3919,8 @@ const threadsOf = (key) => state.openThreads[(key || '').toLowerCase()] || [];
 const threadWhere = (t) => (t.path ? `${t.path}:${t.line || '?'}` : 'the PR');
 
 function threadLink(t) {
+  // The server only sends a link to this PR on GitHub; without one, the text.
+  if (!t.url) return el('span', null, threadWhere(t));
   const a = el('a', null, threadWhere(t));
   a.href = t.url;
   a.target = '_blank';
@@ -3926,6 +3929,9 @@ function threadLink(t) {
 }
 
 async function loadOpenThreads(force) {
+  const open = state.jobs.find((j) => j.id === state.activeJob);
+  const key = state.activePR || (open && open.pr.key);
+  const before = key ? JSON.stringify(threadsOf(key)) : '';
   try {
     const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
     state.openThreads = out.threads || {};
@@ -3933,9 +3939,9 @@ async function loadOpenThreads(force) {
     return; // the tags stay as they were
   }
   renderPRs();
-  const open = state.jobs.find((j) => j.id === state.activeJob);
-  const key = state.activePR || (open && open.pr.key);
-  if (key && threadsOf(key).length) followPRPage(key);
+  // The page on screen follows the new read, the section going away too when
+  // you resolved the last thread.
+  if (key && JSON.stringify(threadsOf(key)) !== before) followPRPage(key);
 }
 
 function openThreadsTag(pr) {
