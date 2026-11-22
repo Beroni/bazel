@@ -66,7 +66,10 @@ test.describe('P1 · your open threads', () => {
   test('a read that fails blocks nothing: no tags, no reminder, and the review goes', async ({ app, bazel }) => {
     bazel.updatePR('acme/api-core#101', { conversation: CONVERSATION });
     bazel.setGh({ fail: { conversation: 'HTTP 502: Bad Gateway' } });
-    await app.getByTestId('refresh').click();
+    // A server with no good read to fall back on: the page's first read at
+    // boot may have come before the failure, and would be kept as stale.
+    await bazel.restart({ samePort: true });
+    await app.reload();
     await expect(ui.prRow(app, RATE)).toBeVisible();
     const r = await bazel.api('GET', '/api/open-threads?refresh=1');
     expect(r.status).toBe(200);
@@ -96,6 +99,23 @@ test.describe('P1 · your open threads', () => {
     await expect(ui.prRow(app, RATE).getByTestId('pr-open-threads')).toHaveCount(0);
     await expect(app.getByTestId('pr-page').getByTestId('pr-open-thread')).toHaveCount(0);
     await expect(app.getByTestId('pr-page').getByTestId('pr-open-threads-list')).toHaveCount(0);
+  });
+
+  // BUG-QA-40: a read that fails after one that worked keeps its tags, marked
+  // stale with the time of the read they came from.
+  test('a failed refresh keeps the last good tags, as stale', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: { reviewThreads: { nodes: [CONVERSATION.reviewThreads.nodes[0]] } } });
+    await app.getByTestId('refresh').click();
+    const tag = ui.prRow(app, RATE).getByTestId('pr-open-threads');
+    await expect(tag).toHaveAttribute('data-stale', 'false');
+    bazel.setGh({ fail: { conversation: 'HTTP 502: Bad Gateway' } });
+    await app.getByTestId('refresh').click();
+    await expect(tag).toHaveAttribute('data-stale', 'true');
+    await expect(tag).toHaveText('💬 1 open');
+    await expect(tag).toHaveAttribute('title', /GitHub could not be read since/);
+    // Asked again, inside the backoff: the same last good read, still stale.
+    const r = await bazel.api('GET', '/api/open-threads?refresh=1');
+    expect([r.json.stale, Object.keys(r.json.threads)]).toEqual([true, ['acme/api-core#101']]);
   });
 });
 

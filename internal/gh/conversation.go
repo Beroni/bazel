@@ -11,10 +11,10 @@ import (
 	"time"
 )
 
-// conversationBatch caps the PRs one gh call reads the conversation of: each
+// ConversationBatch caps the PRs one gh call reads the conversation of: each
 // brings up to a hundred threads with their replies, and GitHub weighs the
-// whole query.
-const conversationBatch = 10
+// whole query. The server cuts its reads by it too.
+const ConversationBatch = 10
 
 // Limits of one read. A PR past any of them comes back with Complete false.
 const (
@@ -245,7 +245,7 @@ func FetchConversations(ctx context.Context, keys []string) (map[string]Conversa
 		if _, _, ok := splitKey(key); !ok {
 			continue
 		}
-		if batch = append(batch, key); len(batch) == conversationBatch {
+		if batch = append(batch, key); len(batch) == ConversationBatch {
 			if err := flush(); err != nil {
 				return nil, err
 			}

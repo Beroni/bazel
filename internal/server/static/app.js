@@ -52,6 +52,7 @@ const state = {
   verdicts: {},      // lower-case PR key -> {verdict, head, at, moved}: your decision on it
   openThreads: {},   // lower-case PR key -> the threads you opened there that are still open
   threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
+  threadsStale: null,  // when the threads on screen were read, if the last read failed
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -3933,10 +3934,13 @@ async function loadOpenThreads(force) {
   const key = state.activePR || (open && open.pr.key);
   const before = key ? JSON.stringify(threadsOf(key)) : '';
   try {
+    // A read that failed on the server still answers what the last good one
+    // said, marked stale with its time; the page keeps those tags and says so.
     const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
     state.openThreads = out.threads || {};
+    state.threadsStale = out.stale ? out.stale_at : null;
   } catch (err) {
-    return; // the tags stay as they were
+    return; // the server did not answer at all: the tags on screen stay
   }
   renderPRs();
   // The page on screen follows the new read, the section going away too when
@@ -3947,8 +3951,9 @@ async function loadOpenThreads(force) {
 function openThreadsTag(pr) {
   const list = threadsOf(pr.key);
   if (!list.length) return null;
-  const t = tid(el('span', 'tag stale', `💬 ${list.length} open`), 'pr-open-threads', { count: list.length });
-  t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n');
+  const t = tid(el('span', 'tag stale', `💬 ${list.length} open`), 'pr-open-threads', { count: list.length, stale: !!state.threadsStale });
+  t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n')
+    + (state.threadsStale ? `\n(as of ${new Date(state.threadsStale).toLocaleTimeString()}: GitHub could not be read since)` : '');
   return t;
 }
 

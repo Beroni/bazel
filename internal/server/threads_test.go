@@ -184,12 +184,12 @@ func TestBackoffPorLote(t *testing.T) {
 	timeNow = func() time.Time { return now }
 	t.Cleanup(func() { timeNow = time.Now })
 	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
-		if slices.Contains(keys, "acme/api-core#11") {
+		if slices.Contains(keys, fmt.Sprintf("acme/api-core#%d", gh.ConversationBatch+1)) {
 			return nil, errors.New("HTTP 502")
 		}
 		return map[string]gh.Conversation{}, nil
 	}
-	keys := make([]string, 11)
+	keys := make([]string, gh.ConversationBatch+1)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
 	}
@@ -213,12 +213,12 @@ func TestThreadsTemOrcamentoProprio(t *testing.T) {
 		calls.Add(1)
 		return map[string]gh.Conversation{}, nil
 	}
-	keys := make([]string, 11)
+	keys := make([]string, gh.ConversationBatch+1)
 	for i := range keys {
 		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
 	}
 	got, err := srv.conversationsOf(context.Background(), keys, false)
-	if err == nil || calls.Load() != 1 || len(got) != 10 {
+	if err == nil || calls.Load() != 1 || len(got) != gh.ConversationBatch {
 		t.Errorf("%d calls, %d read, err %v", calls.Load(), len(got), err)
 	}
 	srv.detMu.Lock()
@@ -226,5 +226,59 @@ func TestThreadsTemOrcamentoProprio(t *testing.T) {
 	srv.detMu.Unlock()
 	if spent != 0 {
 		t.Errorf("the Overview's budget paid %d", spent)
+	}
+}
+
+// BUG-QA-40: a read that fails after one that worked keeps what that one said,
+// marked stale with its time, as Needs you keeps its last list.
+func TestFalhaMantemAUltimaLeituraBoa(t *testing.T) {
+	answer := filepath.Join(t.TempDir(), "a.json")
+	if err := os.WriteFile(answer, []byte(threadsAnswer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fail := filepath.Join(t.TempDir(), "fail")
+	srv, _ := threadsServer(t, "if [ -f "+fail+" ]; then echo 'HTTP 502' >&2; exit 1; fi; cat "+answer)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	if _, out := call(t, srv, "GET", "/api/open-threads", ""); len(out["threads"].(map[string]any)) != 1 {
+		t.Fatalf("the good read: %v", out)
+	}
+	if err := os.WriteFile(fail, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	read := now
+	now = now.Add(2 * time.Minute) // past the minute: a new read, and it fails
+	_, out := call(t, srv, "GET", "/api/open-threads?refresh=1", "")
+	if len(out["threads"].(map[string]any)) != 1 || out["stale"] != true || out["error"] == nil {
+		t.Fatalf("a failed read wiped the last good one: %v", out)
+	}
+	if at, _ := time.Parse(time.RFC3339Nano, out["stale_at"].(string)); !at.Equal(read) {
+		t.Errorf("stale_at %v, the good read was at %v", out["stale_at"], read)
+	}
+	// Inside the backoff too.
+	if _, out := call(t, srv, "GET", "/api/open-threads", ""); len(out["threads"].(map[string]any)) != 1 || out["stale"] != true {
+		t.Errorf("in the backoff: %v", out)
+	}
+}
+
+// The reads go gh.ConversationBatch PRs a call: one past it is a second call.
+func TestThreadsEmLotesDoTamanhoDoGh(t *testing.T) {
+	srv := newTestServer(t)
+	var calls atomic.Int32
+	srv.fetchConversations = func(_ context.Context, keys []string) (map[string]gh.Conversation, error) {
+		calls.Add(1)
+		if len(keys) > gh.ConversationBatch {
+			t.Errorf("one call for %d PRs", len(keys))
+		}
+		return map[string]gh.Conversation{}, nil
+	}
+	keys := make([]string, gh.ConversationBatch+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	srv.conversationsOf(context.Background(), keys, false)
+	if calls.Load() != 2 {
+		t.Errorf("%d calls", calls.Load())
 	}
 }

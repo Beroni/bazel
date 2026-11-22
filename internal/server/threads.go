@@ -51,7 +51,7 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 		return out, errors.New(f.err)
 	}
 	for len(missing) > 0 {
-		n := min(len(missing), conversationBatch)
+		n := min(len(missing), gh.ConversationBatch)
 		batch := missing[:n]
 		missing = missing[n:]
 		// A budget of their own: however many PRs the list has, these reads
@@ -85,18 +85,42 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 	// worked says nothing of the one that keeps failing.
 	s.convFailed = needsCache{}
 	for k, e := range s.convs {
-		if timeNow().Sub(e.at) >= conversationTTL {
+		if timeNow().Sub(e.at) >= conversationKept {
 			delete(s.convs, k)
 		}
 	}
 	return out, nil
 }
 
-// conversationBatch is how many PRs one gh call asks about; convReadsPerMin
-// caps those calls, apart from the budget of the Overview and the list.
-const conversationBatch = 10
+// lastConversations fills out with the last good read of each key it lacks,
+// however old (within conversationKept), and returns the oldest such read: a
+// failed read still shows what the one before said, as stale.
+func (s *Server) lastConversations(keys []string, out map[string]gh.Conversation) time.Time {
+	var oldest time.Time
+	s.convMu.Lock()
+	defer s.convMu.Unlock()
+	for _, key := range keys {
+		k := strings.ToLower(key)
+		if _, ok := out[k]; ok {
+			continue
+		}
+		if e, ok := s.convs[k]; ok {
+			out[k] = e.conv
+			if oldest.IsZero() || e.at.Before(oldest) {
+				oldest = e.at
+			}
+		}
+	}
+	return oldest
+}
 
+// convReadsPerMin caps the gh calls of these reads, gh.ConversationBatch PRs
+// each, apart from the budget of the Overview and the list.
 var convReadsPerMin = 20
+
+// conversationKept is how long a good read is kept past its minute: when the
+// next one fails, the page still shows what it said, as stale.
+const conversationKept = 30 * time.Minute
 
 // openThread is a thread you opened on a PR that nobody resolved yet.
 type openThread struct {
@@ -183,6 +207,10 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 	}
 	s.prMu.RUnlock()
 	convs, err := s.conversationsOf(r.Context(), keys, r.URL.Query().Get("refresh") == "1")
+	var staleAt time.Time
+	if err != nil {
+		staleAt = s.lastConversations(keys, convs)
+	}
 	threads := map[string][]openThread{}
 	for k, c := range convs {
 		if t := openThreadsOf(c, s.me, k); len(t) > 0 {
@@ -192,6 +220,11 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 	out := map[string]any{"threads": threads}
 	if err != nil {
 		out["error"] = "open threads could not be read: " + err.Error()
+		// What the last good read said, as Needs you keeps its last list.
+		if !staleAt.IsZero() {
+			out["stale"] = true
+			out["stale_at"] = staleAt
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
