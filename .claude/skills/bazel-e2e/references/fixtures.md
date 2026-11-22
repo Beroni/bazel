@@ -66,7 +66,7 @@ same aliases and variables): `reviewThreads`, `comments` and `reviews`, each
 `{ "nodes": [...] }` in GraphQL's shape (a thread: `isResolved`, `isOutdated`,
 `path`, `line`, `originalLine`, `resolvedBy`, `comments: { totalCount, nodes:
 [{ author: { login, __typename }, authorAssociation, body, url, createdAt }] }`).
-Left out, the PR discussed nothing. `gh.json` `fail.conversation` makes it fail.
+Left out, the PR discussed nothing. `fail` or `hold` keyed `conversation:owner/name#n` fails or holds the whole call that PR is in, as one bad node does on GitHub. `gh.json` `fail.conversation` makes it fail.
 The open-thread tags read the same fixture with a smaller query (`query
 bazelThreadTags(…)`), and both answers carry `rateLimit`: `gh.json`
 `rate_remaining` sets the points left (default plenty), so a low number stops

@@ -527,6 +527,17 @@ func apiConversation(args []string) int {
 	if failed("conversation") {
 		return 1
 	}
+	// One PR of the batch can fail or hang the whole call, as one bad node does
+	// on GitHub: "conversation:owner/name#n" in fail or hold.
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		if failed(fmt.Sprintf("conversation:%s/%s#%s", owner, vars[fmt.Sprintf("n%d", i)], vars[fmt.Sprintf("p%d", i)])) {
+			return 1
+		}
+	}
 	data := map[string]any{}
 	for i := 0; ; i++ {
 		owner, ok := vars[fmt.Sprintf("o%d", i)]
