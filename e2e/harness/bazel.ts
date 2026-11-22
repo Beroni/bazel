@@ -8,12 +8,19 @@ import { BIN, FIXTURES, OUT, SCENARIOS, safeEnv } from './paths';
 
 /** One recorded call to the fake gh. */
 /**
- * The "Needs you" read: one GraphQL query the page makes on its own, on load
- * and on refresh. It writes nothing, so the "nothing reached GitHub" checks
- * leave it out.
+ * A GraphQL read Bazel makes on its own (see BAZEL_READS), on load and on
+ * refresh. It writes nothing, so the "nothing reached GitHub" checks leave it
+ * out. The name is from when Needs you was the only one.
  */
 export const isNeedsRead = (c: GhCall): boolean =>
-  c.argv[0] === 'api' && c.argv[1] === 'graphql' && c.argv.some((a) => a.startsWith('query=query bazelNeedsYou'));
+  c.argv[0] === 'api' && c.argv[1] === 'graphql' && c.argv.some((a) => BAZEL_READS.some((q) => a.startsWith(q)));
+
+/**
+ * Bazel's own GraphQL reads, which write nothing: the Needs you searches, who
+ * reviews the Summary's PRs, and what the listed PRs discussed (the open-thread
+ * tags and the fleet's discussion.json).
+ */
+const BAZEL_READS = ['query=query bazelNeedsYou', 'query=query bazelReviewers(', 'query=query bazelConversation('];
 
 export interface GhCall {
   /** When gh was called; `at` is when it returned. */
