@@ -223,7 +223,7 @@ an order fit.
 
 ## The sections
 
-Three divisions, in this order, and no more. **An empty section leaves the file** rather than
+Four divisions, in this order, and no more. **An empty section leaves the file** rather than
 sitting there saying "none" — and a section that is not in this table does not exist.
 
 | Order | Section | Marker | Content | Destination on the PR |
@@ -231,15 +231,18 @@ sitting there saying "none" — and a section that is not in this table does not
 | 1 | `## Findings` | — | findings with `<!-- finding … -->` | inline comments |
 | 2 | `## Cuts` | — | findings with `lines_saved`, class from the Subtraction group | inline comments |
 | 3 | `## Needs human verification` | `<!-- needs-human -->` | bullets | the review body — **never** becomes a finding |
+| 4 | `## Already discussed` | `<!-- already-discussed -->` | one line per point left out, `minor` or `nit` only (`discussion.md`) | the review body, as a list |
 
-They are the three divisions of the review: **what is wrong** (`Findings`), **what is surplus**
-(`Cuts`), **what I could not settle on my own** (`Needs human verification`).
+They are the divisions of the review: **what is wrong** (`Findings`), **what is surplus**
+(`Cuts`), **what I could not settle on my own** (`Needs human verification`), and **what I left
+out because the PR already discussed it** (`Already discussed`, only when Bazel gave the
+discussion).
 
 The marker goes on the line right below the `##`, followed by a blank line. `## Findings` and
 `## Cuts` carry no marker — the `<!-- finding … -->` comments inside them already identify
 everything.
 
-**Do not create a fourth section.** Not for `exploit-digger`'s `trust_boundaries`, not for its
+**Do not create any other section.** Not for `exploit-digger`'s `trust_boundaries`, not for its
 `checked_ok` coverage, not for `lazy-senior-dev`'s `out-of-scope` items, and not for a
 "Summary", "Notes" or "Recommendations":
 
@@ -257,6 +260,7 @@ everything.
 | Findings | yes | yes | yes | `class=out-of-scope` only |
 | Cuts | if `lazy-senior-dev` ran | — | — | yes |
 | Needs human verification | if `exploit-digger` ran | — | yes | — |
+| Already discussed | yes | yes | yes | yes |
 
 A lens never writes another lens's section. If `senior-code-reviewer` ran alone and found
 nothing, the file is header + title + summary and nothing else — that is a legitimate result,

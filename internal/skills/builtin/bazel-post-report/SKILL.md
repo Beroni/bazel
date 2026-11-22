@@ -60,8 +60,9 @@ what the code does; what a comment says about itself ("already fixed") settles n
 
 The script applies the rest. A same finding is not posted again: it gets a 👍 on that comment,
 and nothing in the review body. If its thread was resolved or replied to by someone who speaks for
-the repository, it gets no 👍 and is listed in the body as settled by that person, title and text.
-When every finding is already on the PR, no review goes up at all, only the 👍. When in doubt, it is
+the repository, it is settled: a 👍 on the reply that settled it, or on the thread's first
+comment, and nothing in the body either. When every finding is already on the PR or settled
+there, no review goes up at all, only the 👍. When in doubt, it is
 not the same: post it.
 
 ## Step 3 — Publish

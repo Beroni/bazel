@@ -35,7 +35,12 @@ account($pr[0].author.login; $pr[0].author.is_bot) as $author
        | {comment_id: .id, user: .user.login, user_key: account(.user.login; .user.type), url: .html_url, excerpt: (.body // "")[0:400],
           settled: ($resolved or ($rs != [])),
           settled_by: (if $resolved then $t.resolvedBy
-                       elif $rs != [] then $rs[-1].user.login else null end)}]
+                       elif $rs != [] then $rs[-1].user.login else null end),
+          # Where the 👍 goes for a settled point: on the reply that settled it, or on
+          # the thread's first comment when a resolution did.
+          settled_comment: (if $resolved or $rs == [] then .id else $rs[-1].id end),
+          settled_comment_key: (if $resolved or $rs == [] then account(.user.login; .user.type)
+                                else ($rs[-1] | account(.user.login; .user.type)) end)}]
     end;
   $r + {
     pr_url: ($pr[0].url // ""),
