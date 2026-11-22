@@ -121,3 +121,41 @@ func TestThreadTagsLeituraMinima(t *testing.T) {
 		t.Errorf("%+v %+v", th, th.Last)
 	}
 }
+
+// What the tags' read costs, by GitHub's formula: a connection counts once per
+// node its parents may bring, a call is that sum over 100. A thread needs two
+// children (the first comment says who opened it, the last is the last word),
+// so a PR is 1 + 2×threads requests. A batch of ten:
+//
+//	before: reviewThreads(first: 100) → 10 × (1 + 200) = 2010 → 20 points
+//	now:    reviewThreads(first: 50)  → 10 × (1 + 100) = 1010 → 10 points
+//
+// A PR past 50 threads pays its next pages one call at a time.
+func TestTagsCustamMetade(t *testing.T) {
+	if got := TagsCost(ConversationBatch, 100); got != 20 {
+		t.Errorf("before: %d points", got)
+	}
+	if got := TagsCost(ConversationBatch, ThreadTagsPage); got != 10 {
+		t.Errorf("now: %d points", got)
+	}
+	if q := threadTagsQuery(1); !strings.Contains(q, "reviewThreads(first: 50)") || !strings.Contains(q, "endCursor") {
+		t.Errorf("the tags' query: %s", q)
+	}
+	if q := threadTagsPageQuery(); !strings.Contains(q, "query bazelThreadTagsPage(") || !strings.Contains(q, "after: $after") || !strings.Contains(q, "rateLimit") {
+		t.Errorf("the page query: %s", q)
+	}
+}
+
+// A rate limit with no resetAt it can read still says what is left; one with
+// no remaining is not known.
+func TestRateLimitMalFormado(t *testing.T) {
+	if rl := parseRateLimit([]byte(`{"cost":1,"remaining":12,"resetAt":"soon"}`)); !rl.Known || rl.Remaining != 12 || !rl.ResetAt.IsZero() {
+		t.Errorf("%+v", rl)
+	}
+	if rl := parseRateLimit([]byte(`{"cost":1}`)); rl.Known {
+		t.Errorf("%+v", rl)
+	}
+	if rl := parseRateLimit(nil); rl.Known {
+		t.Errorf("%+v", rl)
+	}
+}

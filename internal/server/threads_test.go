@@ -196,8 +196,12 @@ func TestBackoffPorLote(t *testing.T) {
 	srv.conversationsOf(context.Background(), keys, false)
 	now = now.Add(2 * time.Minute) // past the backoff and the cache
 	srv.conversationsOf(context.Background(), keys, false)
-	if f := srv.convFailed.failures; f != 2 {
-		t.Errorf("failures in a row: %d, want 2", f)
+	bad := fmt.Sprintf("acme/api-core#%d", gh.ConversationBatch+1)
+	if f := srv.convFails[bad].failures; f != 2 {
+		t.Errorf("failures in a row of the batch that fails: %d, want 2", f)
+	}
+	if f, ok := srv.convFails["acme/api-core#1"]; ok {
+		t.Errorf("the batch that worked carries a failure: %+v", f)
 	}
 }
 
@@ -360,5 +364,134 @@ func TestFallbackExpira(t *testing.T) {
 		if len(out["threads"].(map[string]any)) != 0 || out["stale"] != nil || out["error"] == nil {
 			t.Errorf("after %v: %v", later, out)
 		}
+	}
+}
+
+// OT3-1: a batch that always fails takes only its own PRs out: they go to the
+// back of the rotation and wait their own backoff, and the healthy PR after
+// them is read.
+func TestLoteQueFalhaNaoSeguraOsOutros(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	healthy := fmt.Sprintf("acme/api-core#%d", gh.ConversationBatch+1)
+	read := map[string]int{}
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		if slices.Contains(keys, "acme/api-core#1") {
+			return nil, gh.RateLimit{}, errors.New("HTTP 502")
+		}
+		for _, k := range keys {
+			read[k]++
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	keys := make([]string, gh.ConversationBatch+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	srv.conversationsOf(context.Background(), keys, false)
+	if read[healthy] != 1 {
+		t.Errorf("the healthy PR was read %d times in the first round", read[healthy])
+	}
+	now = now.Add(61 * time.Second)
+	srv.conversationsOf(context.Background(), keys, false)
+	if read[healthy] != 2 {
+		t.Errorf("the healthy PR was read %d times after the next round", read[healthy])
+	}
+}
+
+// A batch that times out is split in two until the PR that will not answer is
+// alone, in a quarantine of its own; every other PR is read.
+func TestTimeoutDivideOLote(t *testing.T) {
+	srv := newTestServer(t)
+	calls := 0
+	read := map[string]bool{}
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		calls++
+		if slices.Contains(keys, "acme/api-core#3") {
+			return nil, gh.RateLimit{}, context.DeadlineExceeded
+		}
+		for _, k := range keys {
+			read[k] = true
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	keys := make([]string, gh.ConversationBatch)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	srv.conversationsOf(context.Background(), keys, false)
+	if len(read) != gh.ConversationBatch-1 || read["acme/api-core#3"] {
+		t.Errorf("read %d of %d: %v", len(read), gh.ConversationBatch-1, read)
+	}
+	if f := srv.convFails["acme/api-core#3"]; f.failures != 1 || len(srv.convFails) != 1 {
+		t.Errorf("quarantine: %+v", srv.convFails)
+	}
+	if calls > 8 {
+		t.Errorf("%d calls to isolate one PR in %d", calls, gh.ConversationBatch)
+	}
+}
+
+// OT3-2: how long the hold lasts: what GitHub says, between a minute and an
+// hour; five minutes when its reset time is gone, unreadable, or already past
+// by this clock.
+func TestTravaComResetAtLimitado(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	for name, c := range map[string]struct {
+		rl   gh.RateLimit
+		wait time.Duration
+	}{
+		"in 20 minutes":       {gh.RateLimit{Known: true, Remaining: 10, ResetAt: now.Add(20 * time.Minute)}, 20 * time.Minute},
+		"in 5 seconds":        {gh.RateLimit{Known: true, Remaining: 10, ResetAt: now.Add(5 * time.Second)}, time.Minute},
+		"in 3 hours":          {gh.RateLimit{Known: true, Remaining: 10, ResetAt: now.Add(3 * time.Hour)}, time.Hour},
+		"in the past":         {gh.RateLimit{Known: true, Remaining: 10, ResetAt: now.Add(-time.Minute)}, 5 * time.Minute},
+		"unreadable or none":  {gh.RateLimit{Known: true, Remaining: 10}, 5 * time.Minute},
+		"plenty left":         {gh.RateLimit{Known: true, Remaining: 4000, ResetAt: now.Add(time.Hour)}, 0},
+		"no rate limit given": {gh.RateLimit{}, 0},
+	} {
+		srv.convHold = time.Time{}
+		srv.holdIfLow(c.rl)
+		got := time.Duration(0)
+		if !srv.convHold.IsZero() {
+			got = srv.convHold.Sub(now)
+		}
+		if got != c.wait {
+			t.Errorf("%s: held %v, want %v", name, got, c.wait)
+		}
+	}
+}
+
+// A PR past one page of threads reads the rest page by page, each a call of
+// the same budget.
+func TestThreadsPaginaSoAquelePR(t *testing.T) {
+	srv := newTestServer(t)
+	mine := func(path string) gh.Thread {
+		return gh.Thread{Path: path, URL: "https://github.com/acme/api-core/pull/7#d", Comments: []gh.Said{{Author: gh.Who{Login: "beroni"}}}}
+	}
+	srv.fetchThreadTags = func(_ context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return map[string]gh.Conversation{"acme/api-core#7": {Threads: []gh.Thread{mine("a.go")}, ThreadsAfter: "c1"}}, gh.RateLimit{}, nil
+	}
+	var pages []string
+	srv.fetchThreadTagsPage = func(_ context.Context, key, after string) (gh.Conversation, gh.RateLimit, error) {
+		pages = append(pages, key+"@"+after)
+		next := ""
+		if after == "c1" {
+			next = "c2"
+		}
+		return gh.Conversation{Threads: []gh.Thread{mine("p" + after + ".go")}, ThreadsAfter: next}, gh.RateLimit{}, nil
+	}
+	got, err := srv.conversationsOf(context.Background(), []string{"acme/api-core#7", "acme/api-core#8"}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(got["acme/api-core#7"].Threads); n != 3 || !slices.Equal(pages, []string{"acme/api-core#7@c1", "acme/api-core#7@c2"}) {
+		t.Errorf("%d threads, pages %v", n, pages)
+	}
+	if n := len(srv.convReads); n != 3 {
+		t.Errorf("%d calls charged, want 3", n)
 	}
 }

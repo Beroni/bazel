@@ -121,10 +121,13 @@ type Server struct {
 	// open-thread tags and the review fleet's discussion.json; same rules.
 	convMu          sync.Mutex
 	convs           map[string]conversationEntry
-	convFailed      needsCache
-	convReads       []time.Time // these reads' own budget, last minute
-	convHold        time.Time   // GitHub's rate limit ran low: no tags' read before this
+	convFails       map[string]needsCache // each PR's failures and backoff
+	convTried       map[string]time.Time  // when each PR was last tried, read or not
+	convReads       []time.Time           // these reads' own budget, last minute
+	convHold        time.Time             // GitHub's rate limit ran low: no tags' read before this
 	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
+	// fetchThreadTagsPage reads one more page of a PR's threads: gh's, or a test's.
+	fetchThreadTagsPage func(ctx context.Context, key, after string) (gh.Conversation, gh.RateLimit, error)
 	// fetchConversations is the full read of a PR's discussion, for the review
 	// fleet's discussion.json: gh's, or a test's.
 	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
@@ -154,25 +157,28 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
 	}
 	s := &Server{
-		instance:           instance,
-		details:            map[string]detailsEntry{},
-		reading:            map[string]*detailsRead{},
-		fetchSlot:          make(chan struct{}, 1),
-		retried:            map[string]time.Time{},
-		fetchDetails:       gh.GetDetails,
-		reviewers:          map[string]reviewersEntry{},
-		fetchReviewers:     gh.FetchReviewers,
-		convs:              map[string]conversationEntry{},
-		fetchThreadTags:    gh.FetchThreadTags,
-		fetchConversations: gh.ReadConversations,
-		cfg:                cfg,
-		me:                 me,
-		reviewsDir:         reviewsDir,
-		configPath:         configPath,
-		opts:               opts,
-		hub:                hub,
-		jobs:               jobs,
-		done:               make(chan struct{}),
+		instance:            instance,
+		details:             map[string]detailsEntry{},
+		reading:             map[string]*detailsRead{},
+		fetchSlot:           make(chan struct{}, 1),
+		retried:             map[string]time.Time{},
+		fetchDetails:        gh.GetDetails,
+		reviewers:           map[string]reviewersEntry{},
+		fetchReviewers:      gh.FetchReviewers,
+		convs:               map[string]conversationEntry{},
+		fetchThreadTags:     gh.FetchThreadTags,
+		fetchThreadTagsPage: gh.FetchThreadTagsPage,
+		convFails:           map[string]needsCache{},
+		convTried:           map[string]time.Time{},
+		fetchConversations:  gh.ReadConversations,
+		cfg:                 cfg,
+		me:                  me,
+		reviewsDir:          reviewsDir,
+		configPath:          configPath,
+		opts:                opts,
+		hub:                 hub,
+		jobs:                jobs,
+		done:                make(chan struct{}),
 	}
 	// A review gets what its PR discussed, read in full for that job alone.
 	jobs.runner.Discussion = s.discussionFor
