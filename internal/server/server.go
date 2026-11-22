@@ -122,6 +122,7 @@ type Server struct {
 	convMu             sync.Mutex
 	convs              map[string]conversationEntry
 	convFailed         needsCache
+	convReads          []time.Time // these reads' own budget, last minute
 	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, error)
 	fetchReviewers     func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }

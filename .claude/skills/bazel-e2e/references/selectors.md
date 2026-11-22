@@ -166,4 +166,5 @@ What the helpers take care of:
 | `pr-open-threads` | "💬 N open" in a PR row; its title lists path:line | `data-count` |
 | `pr-open-threads-list`, `pr-open-thread` | "Your open threads" on the PR's page | `data-path` |
 | `thread-author-replied` | the PR author has the last word in the thread | |
+| `thread-more` | "+N more": replies one read did not bring | |
 
