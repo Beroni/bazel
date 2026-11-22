@@ -11,9 +11,9 @@ import (
 	"strings"
 )
 
-// reviewersBatch caps the PRs one gh call asks about: each is an alias in the
+// ReviewersBatch caps the PRs one gh call asks about: each is an alias in the
 // query, and GitHub weighs the whole query.
-const reviewersBatch = 40
+const ReviewersBatch = 40
 
 // reviewersFragment is what tells who reviews a PR: the requests still
 // pending and the latest review of each person. Only reads.
@@ -85,7 +85,7 @@ func FetchReviewers(ctx context.Context, keys []string, me string) (map[string][
 		if _, _, ok := splitKey(key); !ok {
 			continue
 		}
-		if batch = append(batch, key); len(batch) == reviewersBatch {
+		if batch = append(batch, key); len(batch) == ReviewersBatch {
 			if err := flush(); err != nil {
 				return nil, err
 			}

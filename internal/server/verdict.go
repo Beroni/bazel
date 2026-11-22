@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -384,20 +385,28 @@ func (s *Server) reviewersOf(ctx context.Context, keys []string) (map[string][]s
 	if f := s.revFailed; !f.failedAt.IsZero() && now.Sub(f.failedAt) < f.backoff() {
 		return map[string][]string{}, errors.New(f.err)
 	}
-	s.detMu.Lock()
-	err := s.ghReadLocked(now, false)
-	s.detMu.Unlock()
-	if err != nil {
-		return map[string][]string{}, err
-	}
 	// Not the request's context: a tab closed mid-read must not fail the
 	// summaries waiting on this one.
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
 	defer cancel()
-	got, err := s.fetchReviewers(rctx, missing, s.me)
-	if err != nil {
-		s.revFailed = needsCache{failedAt: timeNow(), failures: s.revFailed.failures + 1, err: err.Error()}
-		return map[string][]string{}, err
+	// One gh call per batch, and the budget pays for each.
+	got := map[string][]string{}
+	for len(missing) > 0 {
+		n := min(len(missing), gh.ReviewersBatch)
+		batch := missing[:n]
+		missing = missing[n:]
+		s.detMu.Lock()
+		err := s.ghReadLocked(timeNow(), false)
+		s.detMu.Unlock()
+		if err != nil {
+			return map[string][]string{}, err
+		}
+		names, err := s.fetchReviewers(rctx, batch, s.me)
+		if err != nil {
+			s.revFailed = needsCache{failedAt: timeNow(), failures: s.revFailed.failures + 1, err: err.Error()}
+			return map[string][]string{}, err
+		}
+		maps.Copy(got, names)
 	}
 	s.revFailed = needsCache{}
 	at := timeNow()

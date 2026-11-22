@@ -586,3 +586,30 @@ func TestLeituraQueAtravessaOCheckoutDizMoved(t *testing.T) {
 		t.Errorf("an older read: %+v", got)
 	}
 }
+
+// PVD3-1: past one batch, the reviewers read is more than one gh call, and the
+// GitHub budget pays for each of them.
+func TestReviewersCobraCadaChamada(t *testing.T) {
+	srv := newTestServer(t)
+	var calls atomic.Int32
+	srv.fetchReviewers = func(_ context.Context, keys []string, _ string) (map[string][]string, error) {
+		calls.Add(1)
+		if len(keys) > gh.ReviewersBatch {
+			t.Errorf("one call for %d PRs", len(keys))
+		}
+		return map[string][]string{}, nil
+	}
+	keys := make([]string, gh.ReviewersBatch+1)
+	for i := range keys {
+		keys[i] = fmt.Sprintf("acme/api-core#%d", i+1)
+	}
+	if _, err := srv.reviewersOf(context.Background(), keys); err != nil {
+		t.Fatal(err)
+	}
+	srv.detMu.Lock()
+	charged := len(srv.ghReads)
+	srv.detMu.Unlock()
+	if calls.Load() != 2 || charged != 2 {
+		t.Errorf("%d calls, %d charged to the budget, want 2 and 2", calls.Load(), charged)
+	}
+}
