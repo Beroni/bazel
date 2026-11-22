@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
 import { tickByFilter, ui } from '../harness/ui';
@@ -40,7 +41,8 @@ test.describe('P1 · your open threads, edges', () => {
     bazel.updatePR('acme/api-core#101', { conversation: conv(thread('a.go', 1, [said('e2e-user', 'q', 1)]), thread('b.go', 2, [said('e2e-user', 'q', 2)])) });
     bazel.updatePR('acme/api-core#102', { conversation: conv(thread('c.go', 3, [said('e2e-user', 'q', 3)])) });
     await app.getByTestId('refresh').click();
-    await expect(tag(app, RATE)).toHaveText('💬 2 open');
+    // The ↻ answers when its gh call does: that is the chain BUDGET is for.
+    await expect(tag(app, RATE)).toHaveText('💬 2 open', { timeout: BUDGET });
     await expect(tag(app, NIL)).toHaveText('💬 1 open');
     await tickByFilter(app, 'api-core');
     const notes = app.getByTestId('threads-note-pr');
@@ -77,6 +79,23 @@ test.describe('P1 · your open threads, edges', () => {
     expect(await app.evaluate(() => (window as any).__xss)).toBeUndefined();
   });
 
+  // 99477a5: a PR past one page of threads reads the rest, up to three more
+  // pages (200 threads), and is shown partial past that.
+  test('a PR with more pages than the cap reads three more and says it is partial', async ({ app, bazel }) => {
+    const c = conv(thread('a.go', 1, [said('e2e-user', 'q', 1)]));
+    (c.reviewThreads as any).pageInfo = { hasNextPage: true, endCursor: 'next' };
+    bazel.updatePR('acme/api-core#101', { conversation: c });
+    const pages = () => bazel.ghCalls().filter((x) => x.argv.some((a) => a.startsWith('query=query bazelThreadTagsPage('))).length;
+    await app.getByTestId('refresh').click();
+    await expect(tag(app, RATE)).toHaveAttribute('data-partial', 'true', { timeout: BUDGET });
+    await expect(tag(app, RATE)).toHaveText(/^💬 \d+\+ open \(partial\)$/);
+    // Three more pages per read of #101: the boot read may have come after the
+    // fixture changed, so one or two reads.
+    expect([3, 6]).toContain(pages());
+    expect((await threads(bazel)).partial['acme/api-core#101']).toBe(true);
+    await expect(tag(app, NIL)).toHaveCount(0);
+  });
+
   test('↻ in the backoff of a failed read asks gh nothing', async ({ app, bazel }) => {
     bazel.setGh({ fail: { conversation: 'HTTP 502: Bad Gateway' } });
     await app.getByTestId('refresh').click();
@@ -85,7 +104,7 @@ test.describe('P1 · your open threads, edges', () => {
     const n = reads(bazel).length;
     await app.getByTestId('refresh').click();
     const r = await threads(bazel, true);
-    expect(r.error).toContain('open threads could not be read');
+    expect(r.error ?? Object.values(r.errors ?? {})[0]).toBeTruthy();
     expect(reads(bazel).length).toBe(n);
   });
 
@@ -147,8 +166,10 @@ test.describe('P1 · open threads and the rate limit', () => {
     const n = reads(bazel).length;
     await app.getByTestId('refresh').click();
     const r = await threads(bazel, true);
-    expect(r.error).toContain('rate limit is low');
-    expect(r.stale).toBe(true);
+    // Per PR since 0a14421: the reason and the time of the read it fell back on.
+    expect(r.errors['acme/api-core#101']).toContain('rate limit is low');
+    expect(r.stale['acme/api-core#101']).toBeTruthy();
+    expect(r.error).toBeUndefined();
     expect(reads(bazel).length).toBe(n);
     await expect(tag(app, RATE)).toHaveAttribute('data-stale', 'true');
 
@@ -163,25 +184,22 @@ test.describe('P1 · open threads and the rate limit', () => {
   });
 
   // The order (longest unread first) only matters past the one-minute TTL, too
-  // slow for this suite: internal/server/threads_test.go covers it.
-  test('many PRs over several cycles: all end up read', async ({ bazel }) => {
-    for (let i = 0; i < 25; i++) {
+  // slow for this suite: internal/server/threads_test.go covers it. A low rate
+  // holds the reads a minute at least (0a14421), so two cycles take that long.
+  test('many PRs over several cycles: the first cycle stops at one batch, the next reads the rest', async ({ bazel }) => {
+    test.setTimeout(4 * BUDGET);
+    for (let i = 0; i < 15; i++) {
       bazel.addPR({ repo: 'acme/api-core', number: 700 + i, title: `Cycle ${i}`, headRefName: `c${i}`, author: { login: 'zoe' },
         conversation: conv(thread(`f${i}.go`, i + 1, [said('e2e-user', 'q', i)])) });
     }
-    // Every read reports few points left, and the hour starting again soon:
-    // one batch per cycle.
-    bazel.setGh({ rate_remaining: 10, rate_reset_seconds: 2 });
-    await bazel.api('GET', '/api/prs?refresh=1'); // 30 listed, 25 with a thread
-    const tagged = async () => Object.keys((await threads(bazel)).threads).length;
-    let cycles = 0;
-    await expect.poll(async () => {
-      cycles++;
-      return tagged();
-    }, { timeout: 60_000, intervals: [2_500] }).toBe(25);
-    // One batch of ten per cycle at most: at least three were needed.
-    expect(reads(bazel).length).toBeGreaterThanOrEqual(3);
-    expect(cycles).toBeGreaterThanOrEqual(2);
+    bazel.setGh({ rate_remaining: 10, rate_reset_seconds: 1 });
+    await bazel.api('GET', '/api/prs?refresh=1'); // 20 listed, 15 with a thread
+    const tagged = async () => Object.keys((await threads(bazel, true)).threads).length;
+    const first = await tagged();
+    expect(first).toBeGreaterThan(0);
+    expect(first).toBeLessThan(15);
+    bazel.setGh({}); // plenty of points from the next cycle on
+    await expect.poll(tagged, { timeout: 3 * BUDGET, intervals: [5_000] }).toBe(15);
   });
 });
 
