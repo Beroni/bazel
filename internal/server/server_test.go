@@ -433,6 +433,9 @@ func newTestServer(t *testing.T) *Server {
 	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
 		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
 	}
+	srv.fetchThreadTagsPage = func(context.Context, string, string) (gh.Conversation, gh.RateLimit, error) {
+		return gh.Conversation{}, gh.RateLimit{}, nil
+	}
 	return srv
 }
 

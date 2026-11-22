@@ -359,7 +359,8 @@ func apiCall(args []string) int {
 	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelReviewers(") }):
 		return apiReviewers(args)
 	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool {
-		return strings.HasPrefix(a, "query=query bazelConversation(") || strings.HasPrefix(a, "query=query bazelThreadTags(")
+		return strings.HasPrefix(a, "query=query bazelConversation(") || strings.HasPrefix(a, "query=query bazelThreadTags(") ||
+			strings.HasPrefix(a, "query=query bazelThreadTagsPage(")
 	}):
 		return apiConversation(args)
 	case len(args) > 2 && args[1] == "graphql":

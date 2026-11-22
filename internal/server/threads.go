@@ -30,7 +30,12 @@ type conversationEntry struct {
 
 // conversationsOf is what each PR has discussed, by lower-case key: what was
 // read in the last minute, and gh reads for the rest, a batch per call. force
-// reads them all again (the list's ↻), but not inside a failure's backoff.
+// reads them all again (the list's ↻), but not a PR inside its own backoff.
+//
+// A failure is a PR's or its batch's, never the whole list's: the PRs it took
+// go back in the rotation and wait out their own backoff, the next batch
+// still goes, and a batch that times out is split in two until the PR that
+// will not answer is alone in its quarantine.
 func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool) (map[string]gh.Conversation, error) {
 	out := map[string]gh.Conversation{}
 	var missing []string
@@ -44,74 +49,155 @@ func (s *Server) conversationsOf(ctx context.Context, keys []string, force bool)
 			delete(s.convs, k)
 		}
 	}
+	var lastErr error
 	for _, key := range keys {
 		k := strings.ToLower(key)
 		if e, ok := s.convs[k]; ok && !force && now.Sub(e.at) < conversationTTL {
 			out[k] = e.conv
-		} else {
-			missing = append(missing, key)
+			continue
 		}
+		if f, ok := s.convFails[k]; ok && now.Sub(f.failedAt) < f.backoff() {
+			lastErr = errors.New(f.err)
+			continue
+		}
+		missing = append(missing, key)
 	}
 	if len(missing) == 0 {
-		return out, nil
+		return out, lastErr
 	}
-	// The ones read longest ago, or never, go first: with the budget spent
+	// The ones tried longest ago, or never, go first: with the budget spent
 	// before the end of the list, the same PRs must not be the ones left out
-	// every minute.
+	// every minute, and a PR that failed goes to the back like one just read.
 	slices.SortStableFunc(missing, func(a, b string) int {
-		return s.convs[strings.ToLower(a)].at.Compare(s.convs[strings.ToLower(b)].at)
+		return s.convTried[strings.ToLower(a)].Compare(s.convTried[strings.ToLower(b)])
 	})
 	if now.Before(s.convHold) {
 		return out, fmt.Errorf("GitHub's rate limit is low: the open threads wait until %s", s.convHold.Local().Format("15:04"))
 	}
-	if f := s.convFailed; !f.failedAt.IsZero() && now.Sub(f.failedAt) < f.backoff() {
-		return out, errors.New(f.err)
-	}
+	queue := [][]string{}
 	for len(missing) > 0 {
 		n := min(len(missing), gh.ConversationBatch)
-		batch := missing[:n]
+		queue = append(queue, missing[:n])
 		missing = missing[n:]
-		// A budget of their own: however many PRs the list has, these reads
-		// never take the Overview's.
-		s.convReads = lastMinute(s.convReads, timeNow())
-		if len(s.convReads) >= convReadsPerMin {
+	}
+	for len(queue) > 0 {
+		batch := queue[0]
+		queue = queue[1:]
+		if !s.takeConvRead() {
 			return out, errors.New("too many reads of the PRs' threads; the rest come next minute")
 		}
-		s.convReads = append(s.convReads, timeNow())
 		// Not the request's context: a tab closed mid-read must not fail the
 		// others waiting on this one. The time limit is per call.
-		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), detailsReadTimeout)
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), convCallTimeout)
 		got, rl, err := s.fetchThreadTags(rctx, batch)
 		cancel()
-		if err != nil {
-			s.convFailed = needsCache{failedAt: timeNow(), failures: s.convFailed.failures + 1, err: err.Error()}
-			return out, err
-		}
-		// Past the margin, these reads stop until GitHub's hour starts again:
-		// the list, Needs you, the summary and publishing keep the rest.
-		low := !rl.ResetAt.IsZero() && rl.Remaining < convRateMargin
-		if low {
-			s.convHold = rl.ResetAt
-		}
 		at := timeNow()
 		for _, key := range batch {
+			s.convTried[strings.ToLower(key)] = at
+		}
+		if err != nil {
+			lastErr = err
+			if timedOut(err) && len(batch) > 1 {
+				half := len(batch) / 2
+				queue = append([][]string{batch[:half], batch[half:]}, queue...)
+				continue
+			}
+			for _, key := range batch {
+				k := strings.ToLower(key)
+				f := s.convFails[k]
+				s.convFails[k] = needsCache{failedAt: at, failures: f.failures + 1, err: err.Error()}
+			}
+			continue
+		}
+		for _, key := range batch {
 			k := strings.ToLower(key)
+			delete(s.convFails, k)
 			c, ok := got[key]
 			if !ok { // GitHub did not answer for it: nothing to say, for a minute
 				c = gh.Conversation{Threads: []gh.Thread{}, Comments: []gh.Said{}, Reviews: []gh.Said{}}
 			}
+			if c.ThreadsAfter != "" && !s.holdIfLow(rl) {
+				c = s.moreThreads(ctx, key, c)
+			}
 			s.convs[k] = conversationEntry{conv: c, at: at}
 			out[k] = c
 		}
-		if low && len(missing) > 0 {
-			return out, fmt.Errorf("GitHub's rate limit is low (%d left): the open threads wait until %s", rl.Remaining, rl.ResetAt.Local().Format("15:04"))
+		// Past the margin, these reads stop until GitHub's hour starts again:
+		// the list, Needs you, the summary and publishing keep the rest.
+		if s.holdIfLow(rl) && len(queue) > 0 {
+			return out, fmt.Errorf("GitHub's rate limit is low (%d left): the open threads wait until %s", rl.Remaining, s.convHold.Local().Format("15:04"))
 		}
 	}
-	// Only a read where every call went well ends the backoff: one batch that
-	// worked says nothing of the one that keeps failing.
-	s.convFailed = needsCache{}
-	return out, nil
+	return out, lastErr
 }
+
+// takeConvRead takes one call from these reads' own budget, which never is
+// the Overview's. Call with convMu held.
+func (s *Server) takeConvRead() bool {
+	now := timeNow()
+	s.convReads = lastMinute(s.convReads, now)
+	if len(s.convReads) >= convReadsPerMin {
+		return false
+	}
+	s.convReads = append(s.convReads, now)
+	return true
+}
+
+// moreThreads reads the rest of a PR's threads, a page a call, each from the
+// same budget: past it, or past the rate limit's margin, the tags keep what
+// they have, which says less than all. Call with convMu held.
+func (s *Server) moreThreads(ctx context.Context, key string, c gh.Conversation) gh.Conversation {
+	for c.ThreadsAfter != "" {
+		if !s.takeConvRead() {
+			break
+		}
+		rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), convCallTimeout)
+		page, rl, err := s.fetchThreadTagsPage(rctx, key, c.ThreadsAfter)
+		cancel()
+		if err != nil {
+			break
+		}
+		c.Threads = append(c.Threads, page.Threads...)
+		c.ThreadsAfter = page.ThreadsAfter
+		if s.holdIfLow(rl) {
+			break
+		}
+	}
+	return c
+}
+
+// holdIfLow holds the tags' reads when GitHub says few points are left, for
+// as long as it says, between a minute and an hour; with no reset time it can
+// trust (none, or one already past: a clock ahead of GitHub's), five minutes.
+// Call with convMu held.
+func (s *Server) holdIfLow(rl gh.RateLimit) bool {
+	if !rl.Known || rl.Remaining >= convRateMargin {
+		return false
+	}
+	now := timeNow()
+	wait := convHoldUnknown
+	if d := rl.ResetAt.Sub(now); !rl.ResetAt.IsZero() && d > 0 {
+		wait = min(max(d, convHoldMin), convHoldMax)
+	}
+	if until := now.Add(wait); until.After(s.convHold) {
+		s.convHold = until
+	}
+	return true
+}
+
+func timedOut(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || strings.Contains(strings.ToLower(err.Error()), "timeout") ||
+		strings.Contains(err.Error(), "deadline exceeded")
+}
+
+// How long the tags' reads wait once GitHub's points run low, and how long one
+// call may take.
+var (
+	convHoldMin     = time.Minute
+	convHoldMax     = time.Hour
+	convHoldUnknown = 5 * time.Minute
+	convCallTimeout = detailsReadTimeout
+)
 
 // lastConversations fills out with the last good read of each key it lacks,
 // however old (within conversationKept), and returns the oldest such read: a
