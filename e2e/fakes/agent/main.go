@@ -189,6 +189,15 @@ func record(prompt string) {
 		}
 	}
 	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
+	// What Bazel left for the review in the plugin: the PR's discussion, as
+	// read, and its file mode ("" when there is no file).
+	discussion, discussionMode := "", ""
+	if plugin != "" {
+		if st, err := os.Stat(filepath.Join(plugin, "discussion.json")); err == nil {
+			b, _ := os.ReadFile(filepath.Join(plugin, "discussion.json"))
+			discussion, discussionMode = string(b), fmt.Sprintf("%04o", st.Mode().Perm())
+		}
+	}
 	gitStatus, _ := exec.Command("git", "status", "--porcelain").Output()
 	branch, _ := exec.Command("git", "branch", "--show-current").Output()
 	gitExclude, _ := os.ReadFile(filepath.Join(cwd, ".git", "info", "exclude"))
@@ -209,6 +218,8 @@ func record(prompt string) {
 		"clone_skills":         cloneSkills,
 		"plugin_dir":           plugin,
 		"plugin_name":          pluginName,
+		"discussion":           discussion,
+		"discussion_mode":      discussionMode,
 		"setting_sources_user": argValue("--setting-sources") == "user",
 		"strict_mcp_config":    strictMCP(),
 		"agent_config":         agentConfig(cwd),

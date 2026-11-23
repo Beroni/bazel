@@ -65,7 +65,7 @@ Nothing else from the developer's shell is inherited.
 | `job(id)` / `waitJob(id, pred, ms?)` | `GET /api/jobs/{id}` (with body/html), polled until `pred` |
 | `mcp(method, params?, id?)` | one JSON-RPC call to `/mcp` |
 | `ghCalls()` | `[{ argv, stdin, cwd, at }]` from the fake gh |
-| `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, at }]` |
+| `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, discussion, discussion_mode, at }]` (`discussion` is `<plugin>/discussion.json` as the agent found it) |
 | `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` and `FAKE_AGENT_GATE=<name>` |
 | `agentAlive(pid)` | whether an agent process (`agentCalls()[n].pid`) is still there |
 | `kill()` | SIGKILL, as a crash: nothing of the server runs after |

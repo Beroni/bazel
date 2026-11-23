@@ -65,6 +65,9 @@ export interface AgentCall {
   /** --plugin-dir and the name in its .claude-plugin/plugin.json. */
   plugin_dir: string;
   plugin_name: string;
+  /** <plugin>/discussion.json as the agent found it, and its mode ("" when absent). */
+  discussion: string;
+  discussion_mode: string;
   /** Confinement of the PR's own Claude Code config. */
   setting_sources_user: boolean;
   strict_mcp_config: boolean;
