@@ -600,3 +600,104 @@ func TestPaginasTemTeto(t *testing.T) {
 		t.Errorf("%d threads", n)
 	}
 }
+
+// N5-1: a read that panics lets the next one go.
+func TestPanicNaoTravaAsEtiquetas(t *testing.T) {
+	srv := newTestServer(t)
+	listAt(srv, time.Now(), prAt("acme/api-core", 7, headOne))
+	calls := 0
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		calls++
+		if calls == 1 {
+			panic("boom")
+		}
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	call(t, srv, "GET", "/api/open-threads", "")
+	call(t, srv, "GET", "/api/open-threads?refresh=1", "")
+	if calls != 2 {
+		t.Errorf("after a panic the tags read %d times, want 2", calls)
+	}
+}
+
+// N5-2: while a read is out, the page gets what there is as it is: a PR read a
+// moment ago is not stale, and a page with nothing yet is loading, not failed.
+func TestLeituraEmCursoNaoEStale(t *testing.T) {
+	srv := newTestServer(t)
+	now := time.Now()
+	timeNow = func() time.Time { return now }
+	t.Cleanup(func() { timeNow = time.Now })
+	listAt(srv, now, prAt("acme/api-core", 7, headOne))
+	release := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		entered <- struct{}{}
+		<-release
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+
+	// At boot, nothing yet.
+	go call(t, srv, "GET", "/api/open-threads", "")
+	<-entered
+	_, out := call(t, srv, "GET", "/api/open-threads", "")
+	if out["loading"] != true || out["reading"] != true || out["error"] != nil || out["stale"] != nil {
+		t.Errorf("at boot: %v", out)
+	}
+	release <- struct{}{}
+	waitUnlocked(t, srv)
+
+	// Past the minute, a read goes out again: the PR read the last time is not
+	// stale meanwhile.
+	now = now.Add(61 * time.Second)
+	go call(t, srv, "GET", "/api/open-threads", "")
+	<-entered
+	_, out = call(t, srv, "GET", "/api/open-threads", "")
+	if out["stale"] != nil || out["error"] != nil || out["loading"] != nil || out["reading"] != true {
+		t.Errorf("while a read is out: %v", out)
+	}
+	release <- struct{}{}
+	waitUnlocked(t, srv)
+}
+
+// waitUnlocked waits for the read under way to end.
+func waitUnlocked(t *testing.T, srv *Server) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		srv.convMu.Lock()
+		busy := srv.convReading
+		srv.convMu.Unlock()
+		if !busy {
+			return
+		}
+	}
+	t.Fatal("the read never ended")
+}
+
+// QA: after a ↻ that failed, a plain reload within the minute does not serve
+// that PR's last good read as fresh: it stays stale until a read of it works.
+func TestFalhaFicaStaleMesmoDentroDoMinuto(t *testing.T) {
+	answer := filepath.Join(t.TempDir(), "a.json")
+	if err := os.WriteFile(answer, []byte(threadsAnswer), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fail := filepath.Join(t.TempDir(), "fail")
+	srv, _ := threadsServer(t, "if [ -f "+fail+" ]; then echo 'HTTP 502' >&2; exit 1; fi; cat "+answer)
+	call(t, srv, "GET", "/api/open-threads", "")
+	if err := os.WriteFile(fail, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	call(t, srv, "GET", "/api/open-threads?refresh=1", "")
+	_, out := call(t, srv, "GET", "/api/open-threads", "") // a plain reload, within the minute
+	stale, _ := out["stale"].(map[string]any)
+	if stale["acme/api-core#7"] == nil || len(out["threads"].(map[string]any)) != 1 {
+		t.Errorf("the PR that failed reads as fresh: %v", out)
+	}
+	// A read of it that works ends it.
+	os.Remove(fail)
+	srv.convMu.Lock()
+	srv.convFails["acme/api-core#7"] = needsCache{failedAt: time.Now().Add(-time.Hour), failures: 1, err: "HTTP 502"}
+	srv.convMu.Unlock()
+	if _, out := call(t, srv, "GET", "/api/open-threads", ""); out["stale"] != nil {
+		t.Errorf("after a good read: %v", out)
+	}
+}

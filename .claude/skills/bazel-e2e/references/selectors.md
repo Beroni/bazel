@@ -96,6 +96,7 @@ What the helpers take care of:
 | `run-review` | run button | | ✓ |
 | `threads-note`, `threads-note-pr` | "You still have N open threads on this PR", under Review | `data-pr-key` | |
 | `threads-error` | "Your open threads could not be read…": a failed read with nothing to fall back on | | |
+| `threads-loading` | "Reading your open threads…": a read is under way and there is nothing yet | | |
 | `threads-stale` | "as of HH:MM (could not refresh)", in the reminder and the PR's page | | |
 | `toggle-prs` | ☰ | | |
 

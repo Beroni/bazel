@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"time"
@@ -37,6 +38,10 @@ type threadsRead struct {
 	stale map[string]time.Time
 	errs  map[string]string
 	fresh int
+	// reading says some PRs wait on a read under way: ask again shortly.
+	// loading says one of them has nothing yet: the page says so, not that it
+	// could not be read.
+	reading, loading bool
 }
 
 // conversationsOf is readThreads for callers that want a map and an error: the
@@ -78,13 +83,20 @@ func (s *Server) readThreads(ctx context.Context, keys []string, force bool) thr
 	var missing []string
 	for _, key := range keys {
 		k := strings.ToLower(key)
+		// A PR whose last read failed is not fresh, whatever its cache says,
+		// until a read of it works: within its backoff it waits, past it, it
+		// is read again.
+		if f, ok := s.convFails[k]; ok {
+			if now.Sub(f.failedAt) < f.backoff() {
+				r.errs[k] = f.err
+			} else {
+				missing = append(missing, key)
+			}
+			continue
+		}
 		if e, ok := s.convs[k]; ok && !force && now.Sub(e.at) < conversationTTL {
 			r.convs[k] = e.conv
 			r.fresh++
-			continue
-		}
-		if f, ok := s.convFails[k]; ok && now.Sub(f.failedAt) < f.backoff() {
-			r.errs[k] = f.err
 			continue
 		}
 		missing = append(missing, key)
@@ -123,31 +135,63 @@ func (s *Server) readThreads(ctx context.Context, keys []string, force bool) thr
 	}
 	s.convMu.Unlock()
 
-	if why != "" {
+	// Another read is out: its PRs are being read, not failing. What they
+	// have is shown as it is, and one with nothing yet says it is loading.
+	reading := map[string]bool{}
+	switch {
+	case why == "the open threads are being read":
+		for _, key := range missing {
+			reading[strings.ToLower(key)] = true
+		}
+		r.reading = true
+	case why != "":
 		for _, key := range missing {
 			r.errs[strings.ToLower(key)] = why
 		}
-	} else if len(missing) > 0 {
-		s.readQueue(ctx, queue, &r)
-		s.convMu.Lock()
-		s.convReading = false
-		s.convMu.Unlock()
+	case len(missing) > 0:
+		s.readQueueOnce(ctx, queue, &r)
 	}
 
-	// What has nothing fresh says what the last good read said, and when.
+	// What has nothing fresh shows what the last good read said: stale, with
+	// when, unless it only waits on the read under way.
 	s.convMu.Lock()
 	for _, key := range keys {
 		k := strings.ToLower(key)
 		if _, ok := r.convs[k]; ok {
 			continue
 		}
-		if e, ok := s.convs[k]; ok && timeNow().Sub(e.at) < conversationKept {
+		e, ok := s.convs[k]
+		switch {
+		case ok && timeNow().Sub(e.at) < conversationKept:
 			r.convs[k] = e.conv
-			r.stale[k] = e.at
+			if !reading[k] {
+				r.stale[k] = e.at
+			}
+		case reading[k]:
+			r.loading = true
 		}
 	}
 	s.convMu.Unlock()
 	return r
+}
+
+// readQueueOnce runs the read this call took, and lets the next one go however
+// it ends: a panic in it must not leave the tags stuck until a restart.
+func (s *Server) readQueueOnce(ctx context.Context, queue [][]string, r *threadsRead) {
+	defer func() {
+		s.convMu.Lock()
+		s.convReading = false
+		s.convMu.Unlock()
+		if p := recover(); p != nil {
+			fmt.Fprintf(os.Stderr, "bazel: the open threads' read failed: %v\n", p)
+			for _, batch := range queue {
+				for _, key := range batch {
+					r.errs[strings.ToLower(key)] = fmt.Sprintf("the read failed: %v", p)
+				}
+			}
+		}
+	}()
+	s.readQueue(ctx, queue, r)
 }
 
 // readQueue reads the batches, the state locked only to take from the budget
@@ -423,9 +467,15 @@ func (s *Server) handleOpenThreads(w http.ResponseWriter, r *http.Request) {
 	if len(partial) > 0 {
 		out["partial"] = partial
 	}
+	if read.reading {
+		out["reading"] = true
+	}
+	if read.loading {
+		out["loading"] = true
+	}
 	if len(read.errs) > 0 {
 		out["errors"] = read.errs
-		if read.fresh == 0 && len(read.stale) == 0 {
+		if read.fresh == 0 && len(read.stale) == 0 && !read.loading {
 			for _, key := range keys {
 				if e, ok := read.errs[strings.ToLower(key)]; ok {
 					out["error"] = "open threads could not be read: " + e
