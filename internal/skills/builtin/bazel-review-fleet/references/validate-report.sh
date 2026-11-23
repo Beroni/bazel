@@ -39,6 +39,8 @@ BEGIN {
   SECTION_ORDER["Findings"] = 1; SECTION_ORDER["Cuts"] = 2      # canonical order
   SECTION_ORDER["Needs human verification"] = 3
   MARKER["Needs human verification"] = "<!-- needs-human -->"
+  SECTION_ORDER["Already discussed"] = 4
+  MARKER["Already discussed"] = "<!-- already-discussed -->"
   split("severity class lenses path line side start_line start_side confidence lines_saved ref", t, " ")
   for (i in t) ATTR_OK[t[i]] = 1
   ATTR_POS["severity"]=1; ATTR_POS["class"]=2; ATTR_POS["lenses"]=3; ATTR_POS["path"]=4
@@ -135,7 +137,7 @@ infence { next }
 /^## / {
   close_finding()
   sec = substr($0, 4)
-  if (!(sec in SECTION_ORDER)) { err(NR, "section `" sec "` does not exist in the format — the divisions are Findings, Cuts and Needs human verification"); cur = ""; next }
+  if (!(sec in SECTION_ORDER)) { err(NR, "section `" sec "` does not exist in the format — the divisions are Findings, Cuts, Needs human verification and Already discussed"); cur = ""; next }
   if (SECTION_ORDER[sec] <= lastsec) err(NR, "section `" sec "` out of order")
   if (seen[sec]++) err(NR, "section `" sec "` appears twice")
   lastsec = SECTION_ORDER[sec]; cur = sec; lastsev = 0; lastsaved = 999999
@@ -234,8 +236,19 @@ pending_level && $0 != "" {
 /^- / {
   if (cur == "Needs human verification") { has_item[cur] = 1
     if ($0 !~ /^- `[^`]+:[0-9]+` — /) err(NR, "bullet must start with `` `file:line` — ``") }
+  if (cur == "Already discussed") { has_item[cur] = 1
+    if ($0 ~ /^- (`[^`]+:[0-9]+`|`PR`) · (critical|major) · /)
+      err(NR, "a critical or major point is never left out as already discussed: keep the finding and cite the thread")
+    else if ($0 !~ /^- (`[^`]+:[0-9]+`|`PR`) · (minor|nit) · [a-z-]+ — .+ — \[thread\]\(https:\/\/github\.com\/[^\/]+\/[^\/]+\/pull\/[0-9]+#(discussion_r|issuecomment-|pullrequestreview-)[0-9]+\)$/)
+      err(NR, "an already-discussed item is `` - `file:line` · <minor|nit> · <class> — <point> — [thread](<url>) ``")
+    else {
+      u = $0; sub(/.*\(https:\/\/github\.com\//, "", u); sub(/\/pull\//, "#", u); sub(/#(discussion_r|issuecomment-|pullrequestreview-).*/, "", u)
+      if (tolower(u) != tolower(HDR["repo"] "#" HDR["pr"])) err(NR, "an already-discussed thread is not on this PR: `" u "`")
+    }
+  }
   next
 }
+cur == "Already discussed" && $0 != "" { err(NR, "`## Already discussed` holds only its items, one line each") }
 
 /<!-- finding / && cur != "Findings" && cur != "Cuts" { err(NR, "`<!-- finding … -->` only lives in Findings and Cuts") }
 /<!-- (trust-boundaries|out-of-scope|checked-ok) -->/ { err(NR, "marker for a section that does not exist in the format") }

@@ -43,6 +43,9 @@ const (
 	// EventLimits is Claude's quota, which rides along in the stream of whoever
 	// is running.
 	EventLimits EventKind = "limits"
+	// EventSince is what a review of what changed starts from, once the clone
+	// has vouched for it: Text is the commit, or empty for a whole review.
+	EventSince EventKind = "since"
 )
 
 // Event is the progress of a review. It's what lets the TUI and the web
@@ -82,11 +85,19 @@ type StepResult struct {
 	// Usage is how much model this step spent.
 	Usage Usage
 	Err   error
+	// Pending is why the step's own stream says its report never came: the
+	// process ended with work it had sent to the background still out.
+	Pending string
+	// Doubt is why the stream makes the report worth a second look, short of
+	// proving it incomplete.
+	Doubt string
 }
 
 // Result is the output of a review.
 type Result struct {
 	PR gh.PR
+	// Since is the commit a review of what changed started from, when it was one.
+	Since string
 	// Agent is the name of the agent or pipeline that ran.
 	Agent string
 	// Posts says whether this agent publishes to the PR on its own — whoever is
@@ -102,7 +113,15 @@ type Result struct {
 	Keeps   bool
 	// PublishSteps are the steps in Publish.
 	PublishSteps []StepResult
-	Steps        []StepResult
+	// Pending is why what would go to the PR is not a report, from the stream of
+	// the steps that publish. Nothing of such a review is published.
+	Pending string
+	// Short says what would go to the PR has no finding and no structure in any
+	// step: a hint for the one who sends it, not a block.
+	Short bool
+	// Doubt is the first publishing step's reason to read twice, from its stream.
+	Doubt string
+	Steps []StepResult
 	// Usage is the spend of the whole review: the sum of the steps.
 	Usage     Usage
 	Duration  time.Duration
@@ -125,7 +144,15 @@ type Runner struct {
 	// If nil, the cost comes from the total_cost_usd field of the stream-json
 	// (Claude Code).
 	PricingTable *pricing.Table
+	// Discussion, when set, reads what the PR discussed (threads, comments,
+	// reviews) as the review fleet's discussion.json. A review writes it into
+	// the plugin before its first step; a read that fails is a line in the
+	// log, and the review goes without it.
+	Discussion func(ctx context.Context, pr gh.PR) ([]byte, error)
 }
+
+// DiscussionFile is where a review finds what its PR discussed, in the plugin.
+const DiscussionFile = "discussion.json"
 
 // New creates a Runner.
 func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
@@ -142,6 +169,33 @@ func New(cfg *config.Config) *Runner { return &Runner{cfg: cfg} }
 // the review's goroutine, so the listener must not block in it.
 func (r *Runner) Review(ctx context.Context, pr gh.PR, choice config.Choice, onEvent func(Event)) (Result, error) {
 	return r.run(ctx, pr, choice, nil, onEvent)
+}
+
+// ReviewSince reviews only what changed after since, the head of the last
+// review: {{since}} carries it, and the built-in review skills get it as
+// --since=<sha>. When the clone cannot vouch for it (a force push rewrote the
+// branch, or it is not there) the review is a whole one, and the log says why.
+func (r *Runner) ReviewSince(ctx context.Context, pr gh.PR, choice config.Choice, since string, onEvent func(Event)) (Result, error) {
+	return r.run(ctx, pr, choice, map[string]string{sincePlaceholder: since}, onEvent)
+}
+
+const sincePlaceholder = "{{since}}"
+
+// reviewSkills are the built-in skills that take --since.
+var reviewSkills = map[string]bool{
+	"bazel-review-fleet": true, "bazel-senior-code-reviewer": true,
+	"bazel-exploit-digger": true, "bazel-lazy-senior-dev": true,
+}
+
+// withSince hands since to a built-in review skill that was not told already.
+func withSince(task, since string) string {
+	if since == "" || strings.Contains(task, sincePlaceholder) || strings.Contains(task, "--since=") {
+		return task
+	}
+	if !reviewSkills[strings.ToLower(skills.Bare(skills.TaskSkill(task)))] {
+		return task
+	}
+	return strings.TrimRight(task, " \t\r\n") + " --since=" + since
 }
 
 // Publish runs the publishing agent over a review that is already done — what
@@ -216,6 +270,28 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 	}
 
+	// {{since}} is always there, empty unless this is a review of what changed,
+	// and then only with a commit the clone shows the head grew from.
+	since := ""
+	if v, ok := extra[sincePlaceholder]; ok && v != "" {
+		if workspace.IsAncestor(ctx, workdir, v) {
+			since = v
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+				Text: fmt.Sprintf("↻ reviewing what changed since %.12s", v)})
+		} else {
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name,
+				Text: fmt.Sprintf("↻ %.12s, the last reviewed head, is not behind this one (a force push, or no clone): reviewing the whole PR", v)})
+		}
+	}
+	if _, asked := extra[sincePlaceholder]; asked {
+		emit(Event{Kind: EventSince, Total: total, Name: choice.Steps[0].Name, Text: since})
+	}
+	extra = maps.Clone(extra)
+	if extra == nil {
+		extra = map[string]string{}
+	}
+	extra[sincePlaceholder] = since
+
 	// Now that the clone has a path: a flag that reads a file from it hands the
 	// PR's content to the agent as configuration.
 	for _, s := range choice.Steps {
@@ -243,6 +319,24 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 	diff, truncated, err := r.material(ctx, pr, choice)
 	if err != nil {
 		return Result{}, err
+	}
+
+	// A review gets what the PR already discussed; publishing a review that is
+	// done does not.
+	if _, publishing := extra["{{review_file}}"]; plugin != "" && r.Discussion != nil && !publishing && len(choice.Steps) > 0 {
+		say := func(text string) {
+			emit(Event{Kind: EventLog, Total: total, Name: choice.Steps[0].Name, Stream: "stdout", Agent: choice.Steps[0].Name, Text: text})
+		}
+		data, derr := r.Discussion(ctx, pr)
+		if derr == nil {
+			// Half a file would read as a PR that discussed less than it did.
+			if derr = os.WriteFile(filepath.Join(plugin, DiscussionFile), data, 0o600); derr != nil {
+				os.Remove(filepath.Join(plugin, DiscussionFile))
+			}
+		}
+		if derr != nil {
+			say("· the PR's discussion could not be read, so the review goes without it: " + derr.Error())
+		}
 	}
 
 	steps := make([]StepResult, 0, total)
@@ -308,7 +402,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		}
 		// Claude Code finds the built-in skills in the plugin; the other CLIs
 		// get the skill inside the prompt, with the plugin's path.
-		task := skills.Canonical(step.Task)
+		task := withSince(skills.Canonical(step.Task), since)
 		if !runsClaude(step) {
 			task = skills.Inline(task, plugin)
 		}
@@ -322,7 +416,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 				return Result{}, fmt.Errorf("telling the publishing skill its PR: %w", err)
 			}
 		}
-		body, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
+		out, used, err := r.exec(ctx, step, prompt, dir, plugin, guard,
 			func(stream, who, text string) {
 				if who == "" {
 					who = step.Name
@@ -344,6 +438,9 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		if err == nil && skills.IsPost(step.Task) {
 			if msg := skills.PublishFailure(plugin); msg != "" {
 				err = refusal(msg)
+				if skills.PublishNotSent(plugin) {
+					err = notSent{refusal(msg)}
+				}
 			}
 		}
 		// A refused step ends the job: it must not turn into one failed section
@@ -353,14 +450,14 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 			return Result{}, err
 		}
 		// Only a skill that ships here promises to print nothing before its report.
-		text, cut := strings.TrimSpace(body), ""
+		text, cut := strings.TrimSpace(out.Body), ""
 		if skills.IsBuiltin(skills.TaskSkill(step.Task)) {
 			if text, cut = dropPreamble(text); cut != "" {
 				emit(Event{Kind: EventLog, Index: i, Total: total, Name: step.Name, Stream: "stdout", Agent: step.Name,
 					Text: "· cut from before the report: " + strconv.Quote(cut)})
 			}
 		}
-		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err}
+		res := StepResult{Name: step.Name, Ran: attribution(provider(step), used.Model), Body: text, Cut: cut, Duration: time.Since(stepStart), Usage: used, Err: err, Pending: out.Pending, Doubt: out.Doubt}
 		if err == nil && res.Body == "" {
 			res.Err = fmt.Errorf("the agent `%s` returned nothing", step.Command)
 		}
@@ -395,6 +492,7 @@ func (r *Runner) run(ctx context.Context, pr gh.PR, choice config.Choice, extra 
 		Duration:  time.Since(start),
 		Truncated: truncated,
 		Workdir:   workdir,
+		Since:     since,
 		StoppedAt: stopped,
 	}, nil
 }
@@ -519,6 +617,15 @@ func (r refusal) Is(target error) bool { return target == errRefused }
 // errRefused marks a step Bazel would not start: the whole job stops, instead of
 // that step failing inside a review.
 var errRefused = errors.New("refused")
+
+// ErrNotSent is a publication that stopped before writing anything to the PR,
+// by the publishing script's own word. Any other failure of a publication may
+// have written something.
+var ErrNotSent = errors.New("nothing was sent")
+
+type notSent struct{ refusal }
+
+func (n notSent) Is(target error) bool { return target == ErrNotSent || n.refusal.Is(target) }
 
 // neutralizedNote tells the agent why those paths are missing from the working
 // tree. The review still covers them: they are the PR's change like any other,
@@ -940,6 +1047,11 @@ func Split(res Result, choice config.Choice) Result {
 	return res
 }
 
+// PublishingSteps are the steps of res whose output may go to the PR.
+func PublishingSteps(res Result, choice config.Choice) []StepResult {
+	return stepsWhere(res, choice, true)
+}
+
 // ContextBody is the flip side of PublishableBody: the body of the steps that
 // stay in Bazel. It's what the screen shows separately, to make clear it
 // doesn't go to the PR.
@@ -1030,7 +1142,18 @@ func joinSteps(steps []StepResult) (string, error) {
 // is who knows how to count it — and flows out along the way through onUsage,
 // which is what makes the count move on screen instead of only showing at the
 // end.
-func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (string, Usage, error) {
+// idleGrace is how long a process may linger once its stream said it is done.
+var idleGrace = 10 * time.Second
+
+// execOut is what a step's process left: its report and, when its own stream
+// said the report never came, why.
+type execOut struct {
+	Body    string
+	Pending string
+	Doubt   string
+}
+
+func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, workdir, plugin string, guard func() (string, error), onLog func(stream, agent, text string), onUsage func(Usage), onLimits func(Limits)) (execOut, Usage, error) {
 	if step.TimeoutSeconds > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, time.Duration(step.TimeoutSeconds)*time.Second)
@@ -1038,11 +1161,11 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 
 	if _, err := exec.LookPath(step.Command); err != nil {
-		return "", Usage{}, fmt.Errorf("agent `%s` not found in PATH", step.Command)
+		return execOut{}, Usage{}, fmt.Errorf("agent `%s` not found in PATH", step.Command)
 	}
 	adapter, err := newOutputAdapter(step.Format, step.Args)
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	// The done line prices the run with the same table the Runner settles on.
 	switch a := adapter.(type) {
@@ -1053,7 +1176,7 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	}
 	createdHome, err := isolateGrok(&step)
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	if createdHome != "" {
 		defer os.RemoveAll(createdHome)
@@ -1078,13 +1201,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// even if something it left behind still holds its output open.
 	stdout, stdoutW, err := os.Pipe()
 	if err != nil {
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	defer stdout.Close()
 	stderr, stderrW, err := os.Pipe()
 	if err != nil {
 		stdoutW.Close()
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	defer stderr.Close()
 	cmd.Stdout, cmd.Stderr = stdoutW, stderrW
@@ -1097,14 +1220,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if err != nil {
 		stdoutW.Close()
 		stderrW.Close()
-		return "", Usage{}, err
+		return execOut{}, Usage{}, err
 	}
 	cmd.Stdin = strings.NewReader(prompt + note)
 	err = cmd.Start()
 	stdoutW.Close()
 	stderrW.Close()
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
+		return execOut{}, Usage{}, fmt.Errorf("agent `%s` did not start: %w", step.Command, err)
 	}
 
 	log := func(stream, who, text string) {
@@ -1117,12 +1240,65 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 		errBuf lastLines
 	)
 
+	raw := openRawStream(step.Name)
+	defer raw.Close()
+
+	// A run whose stream says it is over does not get to keep the step: past a
+	// short grace with nothing more on stdout, its process goes. A wakeup the
+	// agent scheduled for half an hour later held a finished review "running".
+	//
+	// The parser has one owner, the goroutine that reads stdout: it decides
+	// whether the stream is over and hands the timer only that answer. touch,
+	// before each line, makes any timer already armed stale, so one that fires
+	// while the line is being read kills nothing.
+	ender, _ := adapter.(interface{ finished() bool })
+	var (
+		idleMu    sync.Mutex
+		idleTimer *time.Timer
+		idleGen   int
+		idleEnded bool
+	)
+	touch := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		idleGen++
+		if idleTimer != nil {
+			idleTimer.Stop()
+			idleTimer = nil
+		}
+	}
+	arm := func() {
+		idleMu.Lock()
+		defer idleMu.Unlock()
+		gen := idleGen
+		idleTimer = time.AfterFunc(idleGrace, func() {
+			idleMu.Lock()
+			defer idleMu.Unlock()
+			if gen != idleGen {
+				return
+			}
+			idleEnded = true
+			killProcessGroup(cmd)
+			_ = cmd.Process.Kill()
+		})
+	}
+	defer func() {
+		idleMu.Lock()
+		if idleTimer != nil {
+			idleTimer.Stop()
+		}
+		idleMu.Unlock()
+	}()
+
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		visto := 0
 		var cota time.Time
-		eachLine(stdout, func(line string) {
+		// Any byte is activity: touch runs as bytes arrive, not as lines end, and
+		// the grace is armed only with no part of a next line already read.
+		eachLineRest(touchReader{stdout, touch}, func(line string, rest int) {
+			raw.write(line)
 			for _, out := range adapter.line(line) {
 				log("stdout", out.Agent, out.Text)
 			}
@@ -1135,6 +1311,9 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 			if limits := adapter.limits(); onLimits != nil && limits.At.After(cota) {
 				cota = limits.At
 				onLimits(limits)
+			}
+			if rest == 0 && ender != nil && ender.finished() {
+				arm()
 			}
 		})
 	}()
@@ -1151,6 +1330,13 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	// left it, and a background process could write to it. That also closes the
 	// pipes; the delay is for one that left the group and still holds them.
 	err = cmd.Wait()
+	idleMu.Lock()
+	if idleEnded {
+		// Bazel ended it, after its stream said it was done.
+		err = nil
+		log("stdout", "", fmt.Sprintf("· the agent stayed alive %s after its report; Bazel ended it", idleGrace))
+	}
+	idleMu.Unlock()
 	killProcessGroup(cmd)
 	stray := time.AfterFunc(Grace, func() {
 		stdout.Close()
@@ -1160,25 +1346,25 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	stray.Stop()
 
 	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		return "", Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
+		return execOut{}, Usage{}, fmt.Errorf("`%s` blew past its %ds timeout", step.Name, step.TimeoutSeconds)
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
-		return "", Usage{}, context.Canceled
+		return execOut{}, Usage{}, context.Canceled
 	}
 	if err != nil {
 		if ae := adapter.err(); ae != nil && errBuf.String() == "" {
-			return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
+			return execOut{}, adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 		}
 		msg := errBuf.String()
 		if msg == "" {
 			msg = err.Error()
 		}
-		return "", adapter.usage(), agentFailure(step, msg)
+		return execOut{}, adapter.usage(), agentFailure(step, msg)
 	}
 	// A CLI can say in its stream that it failed and still exit 0: what it wrote
 	// until then is not a finished review.
 	if ae := adapter.err(); ae != nil {
-		return "", adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
+		return execOut{}, adapter.usage(), fmt.Errorf("agent `%s` failed: %w", step.Command, ae)
 	}
 	// With a pricing table configured, recompute the cost from the tokens and
 	// the model — that is what lets the cost change without rebuilding the
@@ -1187,7 +1373,14 @@ func (r *Runner) exec(ctx context.Context, step config.ResolvedAgent, prompt, wo
 	if m, ok := adapter.(interface{ models() []Usage }); ok {
 		byModel = m.models()
 	}
-	return adapter.report(), priced(adapter.usage(), byModel, r.PricingTable), nil
+	out := execOut{Body: adapter.report()}
+	if p, ok := adapter.(interface{ pending() string }); ok {
+		out.Pending = p.pending()
+	}
+	if d, ok := adapter.(interface{ doubtful() string }); ok {
+		out.Doubt = d.doubtful()
+	}
+	return out, priced(adapter.usage(), byModel, r.PricingTable), nil
 }
 
 func agentFailure(step config.ResolvedAgent, message string) error {
@@ -1199,6 +1392,35 @@ func agentFailure(step config.ResolvedAgent, message string) error {
 
 // eachLine calls fn for each line read, with no size limit — a stream-json
 // event with a large tool result overflows bufio.Scanner.
+// touchReader calls touch whenever bytes arrive.
+type touchReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (t touchReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.touch()
+	}
+	return n, err
+}
+
+// eachLineRest is eachLine that also says how many bytes of the next line it
+// already holds.
+func eachLineRest(r io.Reader, fn func(line string, rest int)) {
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := br.ReadString('\n')
+		if line = strings.TrimRight(line, "\r\n"); line != "" {
+			fn(line, br.Buffered())
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func eachLine(r io.Reader, fn func(string)) {
 	br := bufio.NewReaderSize(r, 64*1024)
 	for {

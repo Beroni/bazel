@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { isNeedsRead } from '../harness/bazel';
 import { test, expect } from '../harness/fixtures';
 import { ui } from '../harness/ui';
 
@@ -56,7 +57,7 @@ test.describe('P1 · saved reviews', () => {
       expect((await bazel.api('POST', `/api/reviews/${name}/comment`, {})).status, name).toBe(400);
       expect((await bazel.api('POST', `/api/reviews/${name}/publish`, {})).status, name).toBe(400);
     }
-    expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || c.argv[0] === 'api' && c.argv[1] !== 'user')).toEqual([]);
+    expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c))).toEqual([]);
   });
 });
 

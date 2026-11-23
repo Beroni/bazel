@@ -22,6 +22,8 @@ var golden = []struct {
 	findings int    // parts SplitFindings marks as findings
 }{
 	{"fleet.md", "", 4},               // 2 findings, 1 cut, 1 needs-human item
+	{"fleet-discussed.md", "", 4},     // the same, and two points the PR already discussed
+	{"incremental.md", "", 4},         // the same, over the changes since an earlier head
 	{"exploit-needs-human.md", "", 3}, // 1 finding, 2 needs-human items
 	// Cuts go by lines_saved alone: a major cut after a bigger minor one.
 	{"cuts-order.md", "", 5},
@@ -40,12 +42,21 @@ func TestValidatorRefuses(t *testing.T) {
 	validate := validator(t)
 	fleet := readGolden(t, "fleet.md")
 	cuts := readGolden(t, "cuts-order.md")
+	discussed := readGolden(t, "fleet-discussed.md")
 	stops := "the report stops before its title and summary are complete"
 	cases := map[string]struct{ body, want string }{
-		"the header alone":      {fleet[:strings.Index(fleet, "# Review Fleet")], stops},
-		"cut after the title":   {fleet[:strings.Index(fleet, "**Verdict:**")], stops},
-		"cut after the verdict": {fleet[:strings.Index(fleet, "**Scope:**")], stops},
-		"cut after the scope":   {fleet[:strings.Index(fleet, "**Lenses:**")], stops},
+		"the header alone":           {fleet[:strings.Index(fleet, "# Review Fleet")], stops},
+		"a major point left out":     {strings.Replace(discussed, "· minor · naming", "· major · naming", 1), "a critical or major point is never left out"},
+		"a critical point left out":  {strings.Replace(discussed, "`PR` · nit", "`PR` · critical", 1), "a critical or major point is never left out"},
+		"a thread on another PR":     {strings.Replace(discussed, "klever/app/pull/123#discussion", "klever/app/pull/9#discussion", 1), "is not on this PR"},
+		"a thread on another repo":   {strings.Replace(discussed, "github.com/klever/app/pull/123#issue", "github.com/evil/app/pull/123#issue", 1), "is not on this PR"},
+		"a link that is no thread":   {strings.Replace(discussed, "#discussion_r42)", "#x)", 1), "an already-discussed item is"},
+		"no marker":                  {strings.Replace(discussed, "<!-- already-discussed -->\n", "", 1), "needs the `<!-- already-discussed -->` marker"},
+		"text in the section":        {discussed + "The rest was fine.\n", "holds only its items"},
+		"before the human questions": {strings.Replace(discussed, "## Needs human verification", "## Already discussed\n<!-- already-discussed -->\n\n- `PR` · nit · docs — x — [thread](https://github.com/klever/app/pull/123#issuecomment-1)\n\n## Needs human verification", 1), "out of order"},
+		"cut after the title":        {fleet[:strings.Index(fleet, "**Verdict:**")], stops},
+		"cut after the verdict":      {fleet[:strings.Index(fleet, "**Scope:**")], stops},
+		"cut after the scope":        {fleet[:strings.Index(fleet, "**Lenses:**")], stops},
 		"cuts out of order": {
 			strings.Replace(strings.Replace(strings.Replace(strings.Replace(cuts, "lines_saved=40", "lines_saved=X", 1), "lines_saved=25", "lines_saved=40", 1), "lines_saved=X", "lines_saved=25", 1), "−25 lines", "−40 lines", 1),
 			"from the biggest",
@@ -187,5 +198,93 @@ func TestGoldenHistoryParses(t *testing.T) {
 	}
 	if len(h.StillOpen) != 1 || !strings.Contains(h.Rest, "## Timeline") {
 		t.Errorf("still open = %v, rest = %.60q", h.StillOpen, h.Rest)
+	}
+}
+
+// The check headless.md tells a skill to run on --since, run as written, in a real
+// repository: only an ancestor of HEAD that is in the clone makes the review
+// incremental, and everything else is the whole PR.
+func TestSinceCheck(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git")
+	}
+	data, err := os.ReadFile(filepath.Join("builtin", "bazel-review-fleet", "references", "headless.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	i := strings.Index(text, "S=<the 40 characters>")
+	if i < 0 {
+		t.Fatal("headless.md lost the --since check")
+	}
+	recipe := text[i : i+strings.Index(text[i:], "```")]
+
+	repo := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = repo
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "one")
+	old := git("rev-parse", "HEAD")
+	git("checkout", "-q", "-b", "side")
+	git("commit", "-q", "--allow-empty", "-m", "elsewhere")
+	side := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+	git("commit", "-q", "--allow-empty", "-m", "two")
+
+	for name, c := range map[string]struct {
+		sha  string
+		want bool
+	}{
+		"an ancestor":       {old, true},
+		"not an ancestor":   {side, false},
+		"not in the clone":  {strings.Repeat("a", 40), false},
+		"short":             {old[:12], false},
+		"upper case":        {strings.ToUpper(old), false},
+		"empty":             {"", false},
+		"a ref, not a sha":  {"HEAD~1", false},
+		"text built to run": {"$(touch ran)", false},
+		"a quote":           {"x'; touch ran; '", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The value comes in as data, through the environment: the check itself
+			// has to be safe on anything, and only a value that passes is ever typed.
+			script := strings.Replace(recipe, "<the 40 characters>", `"$CANDIDATE"`, 1)
+			cmd := exec.Command("bash", "-c", script)
+			cmd.Dir = repo
+			cmd.Env = append(os.Environ(), "CANDIDATE="+c.sha)
+			out, _ := cmd.CombinedOutput()
+			if got := strings.Contains(string(out), "incremental"); got != c.want {
+				t.Errorf("incremental = %v, want %v: %s", got, c.want, out)
+			}
+			if _, err := os.Stat(filepath.Join(repo, "ran")); err == nil {
+				t.Error("the sha was executed")
+			}
+		})
+	}
+}
+
+// The value from the task is the one thing a person, or a PR, could make anything:
+// the skill is told to look at it before any command, and the recipe never quotes it.
+func TestSinceNeverGoesIntoTheShellUnchecked(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("builtin", "bazel-review-fleet", "references", "headless.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	for _, want := range []string{"Look at the value before it goes into any command", "never reaches the shell, not even quoted"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("headless.md lost %q", want)
+		}
+	}
+	if strings.Contains(text, "S='<") {
+		t.Error("the recipe puts the raw value in a shell literal again")
 	}
 }

@@ -1,6 +1,6 @@
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { expandFindings, openJob, recordPosts, settled, ui } from '../harness/ui';
+import { expandFindings, jobTab, openJob, recordPosts, settled, ui } from '../harness/ui';
 import { Page } from '@playwright/test';
 
 const TITLE = 'Add rate limiter to the public API';
@@ -62,7 +62,7 @@ test.describe('P1 · redesign details', () => {
 
     const { viewer } = await reviewed(app, bazel, 'sections');
     await expandFindings(viewer);
-    await app.getByRole('tab', { name: 'Report' }).click();
+    await jobTab(app, 'Report');
     await expect(viewer.getByRole('link', { name: 'image: chart' })).toBeVisible();
     expect(await viewer.locator('img[src*="attacker"]').count()).toBe(0);
     expect(fetched).toEqual([]);
@@ -70,7 +70,7 @@ test.describe('P1 · redesign details', () => {
 
   test('the confirm says what goes; dismissing it sends nothing', async ({ app, bazel, dialogs }) => {
     const { viewer } = await reviewed(app, bazel, 'review-fleet');
-    await app.getByRole('tab', { name: 'Report' }).click();
+    await jobTab(app, 'Report');
     await ui.findingPicks(viewer).nth(1).uncheck();
     const posts = recordPosts(app);
     dialogs.accept = false;
@@ -85,7 +85,7 @@ test.describe('P1 · redesign details', () => {
 
   test('the rest of the report is open and flagged when it goes to the PR', async ({ app, bazel, dialogs }) => {
     const { viewer } = await reviewed(app, bazel, 'sections');
-    await app.getByRole('tab', { name: 'Report' }).click();
+    await jobTab(app, 'Report');
     const more = viewer.getByTestId('review-more');
     await expect(more).toHaveAttribute('data-publishes', 'true');
     await expect(more).toHaveJSProperty('open', true);
@@ -100,7 +100,7 @@ test.describe('P1 · redesign details', () => {
 
   test('…and closed, without the label, when it does not', async ({ app, bazel }) => {
     const { viewer } = await reviewed(app, bazel, 'sections-stay');
-    await app.getByRole('tab', { name: 'Report' }).click();
+    await jobTab(app, 'Report');
     const more = viewer.getByTestId('review-more');
     await expect(more).toHaveAttribute('data-publishes', 'false');
     await expect(more).toHaveJSProperty('open', false);
@@ -113,7 +113,7 @@ test.describe('P1 · what the markdown hides', () => {
 
   test('hidden text is flagged on top, counted in the confirm, and a malformed finding comment shows', async ({ app, bazel, dialogs }) => {
     const { viewer } = await reviewed(app, bazel, 'hidden');
-    await app.getByRole('tab', { name: 'Report' }).click();
+    await jobTab(app, 'Report');
     const hidden = viewer.getByTestId('review-hidden');
     await expect(hidden).toContainText('E2E-HIDDEN-COMMENT');
     await expect(hidden).toContainText('E2E-HIDDEN-NOTE');
@@ -168,7 +168,7 @@ test.describe('P1 · a history_agent of your own', () => {
     test('runs, and the History tab says Bazel cannot vouch for it', async ({ app, bazel }) => {
       expect((await bazel.api('GET', '/api/state')).json.history_custom).toBe(true);
       await reviewed(app, bazel, 'review-fleet');
-      await app.getByRole('tab', { name: 'History' }).click();
+      await jobTab(app, 'History');
       await expect(app.getByTestId('history-custom')).toContainText('cannot vouch');
     });
   });
@@ -217,7 +217,7 @@ test.describe('P1 · a history job is not a review', () => {
     await expect(activity).toContainText('is writing the history with');
     bazel.release('release-history');
     await bazel.waitJob(q.json.id, (j) => j.state === 'done');
-    await expect(activity).toContainText('wrote the history with', { timeout: 5_000 });
+    await expect(activity).toContainText('wrote the history with');
   });
 
   test('a running review does get the tag (the control for the test above)', async ({ app, bazel }) => {

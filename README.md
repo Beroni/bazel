@@ -162,6 +162,32 @@ repository with more says so in the banner, and one that fails keeps the PRs it
 had and says that too. With `authors:` set, the filter goes to `gh`, so the limit
 applies to their PRs.
 
+### Needs you
+
+The **Needs you** tab lists the open PRs where you have something to do, each
+once, under the first reason that applies:
+
+1. **Review requested from you**, or from a team of yours, with no review of
+   yours since the last request.
+2. **You asked for changes and the author answered**: your last review asked
+   for changes, or a thread you started is still open, and the PR's author
+   pushed, replied in a thread you started, or resolved a thread of that review
+   since. A reply in someone else's thread, or a comment on the conversation,
+   does not count; a thread you left open before approving does not reopen it.
+3. **You asked for changes, waiting for the author**: the same, with nothing
+   from the author yet. It is shown quieter and does not count in the tab.
+4. **Your PRs** with changes requested, a thread or comment waiting for you,
+   failing checks, a conflict with the base, or approved and ready to merge.
+
+Only the PR's author counts as an answer, and bots' comments are not news. A
+request to a team counts as yours, because the search found the PR for you and
+GitHub does not say which requested team you are in. A
+commit made before your review and pushed after it is not seen as a push, so
+such a PR stays in "waiting". The page reads GitHub with one `gh api graphql`
+call that runs three searches (50 PRs each), kept a minute and read again on ↻,
+under the same budget as the PR list. It shows the repositories you watch, and
+**all repos** shows the rest, from the same read. Nothing is written to GitHub.
+
 ## Agents are your skills
 
 **An agent is one of your skills running over a PR.** A new config starts with
@@ -247,16 +273,17 @@ subagents the fleet runs its lenses as sequential passes in one process, which
 keeps them less independent; `serial-fleet` keeps each lens in its own process
 on any CLI.
 
-**Your own skill of the same name may win.** The built-ins reach Claude Code as
-plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` may answer
-the bare `/bazel-<name>` instead. That is why they all carry the `bazel-`
-prefix: your `review-fleet` and Bazel's `bazel-review-fleet` live side by side,
-and you pick one by choosing the agent. The same goes for publishing: point
-`post_agent.task` at your own skill, or build an agent out of it in the panel. A
-`post_agent` you have edited is never rewritten — only the old untouched default
-is migrated to the built-in. Publishing is safe from this: the
-`post_agent` always runs `/bazel:bazel-post-report`, even from a config saved with
-the bare name, which is left as it is in the file.
+**Your own skill of the same name does not win.** The built-ins reach Claude Code
+as plugin skills (`bazel:<name>`), and a `~/.claude/skills/bazel-<name>` or one in
+the PR's own `.claude/skills` would answer the bare `/bazel-<name>`. So every task
+that calls a built-in runs as `/bazel:<name>`, even from a config saved with the
+bare name, which is left as it is in the file; the starter agents are saved with
+the plugin's name. Your `review-fleet` and Bazel's `bazel-review-fleet` live side
+by side, and you pick one by choosing the agent. The same goes for publishing:
+point `post_agent.task` at your own skill, or build an agent out of it in the
+panel. A `post_agent` you have edited is never rewritten — only the old untouched
+default is migrated to the built-in, and a publishing prompt saved as an older
+default, with the PR's title and author in it, runs as the current one.
 
 Everything the page does is written to `config.yaml`, and you can edit it by
 hand for what the page doesn't offer — another model, another executable, your
@@ -302,7 +329,9 @@ To keep the whole log, set `log_dir` in the config or start with `--log-dir
 <dir>`: every job then writes each line, as it arrives and without the window's
 limits, to `<job-id>-<pr>.log`, and the job's Live log and Overview say where.
 The lines are what the log shows, so with `claude-stream` they are the readable
-ones, not the raw events. It is off by default. At boot only the newest
+ones, not the raw events. To debug what a CLI really sends, start Bazel with
+`BAZEL_RAW_STREAM=<dir>`: each step's stdout goes, line for line, to a private
+file in that folder. It holds the PR's code and is never pruned. It is off by default. At boot only the newest
 `log_keep` files stay (200 by default); nothing else in that folder is touched.
 The files hold whatever the agent wrote, so they are readable by you alone. A
 folder that cannot be used turns this off with a line on the terminal.
@@ -413,7 +442,9 @@ click **publish inline review**. That runs the `post_agent` — the
 `bazel-post-report` skill, which ships inside the binary — over a clone of the PR, with the markdown file you just read in the
 prompt and the instruction **not to redo the review**: it publishes what is in
 the file, with inline comments on the right lines, 👍 on what is already flagged
-in the PR, and an all-clear when there is nothing to say. It runs **in the
+in the PR (and no review at all when that is everything), and an all-clear when
+there is nothing to say. A finding that fits no line goes in the review body as
+markdown, as it reads on screen; no HTML of the report's is live there. It runs **in the
 review's own card** — the card goes back to running with the post agent's step
 at the end of the list, log and all, and comes back to the review, now marked
 `✓ published`, when it finishes. Publishing is the end of a review, not a second
@@ -427,8 +458,10 @@ It needs `jq`, and says so if it is missing. The card only says published when
 the skill's script says so: a model that stops early leaves an error on it. The
 all-clear goes up only for a report that proves it: every step reported, the
 report is complete, no lens was skipped, the diff was not truncated, nothing was
-unticked. A clean report that falls short of that says why it does not clear the
-PR. Text around the report goes to the PR as plain text, under a label saying
+unticked, and nothing was left out as already discussed on the PR. A clean report
+that falls short of that says why it does not clear the PR; one that only left out
+points the PR already discussed posts a comment with them and their threads, and
+sends you to the reviews and threads already there. Text around the report goes to the PR as plain text, under a label saying
 Bazel does not vouch for it, and so does a finding that lands in the review's
 body: on the PR they are one document, and no HTML in one may hide the next. An
 inline comment stays rendered, unless it has a tag in it, code included: then it
@@ -568,7 +601,7 @@ post_agent:
   task: /bazel:bazel-post-report {{review_file}}
   posts: true
 
-# Who writes the History tab. Optional: the default runs /bazel-history-pr {{number}}
+# Who writes the History tab. Optional: the default runs /bazel:bazel-history-pr {{number}}
 # with the factory prompt, not your agent.prompt.
 # history_agent:
 #   task: /my-history {{number}}

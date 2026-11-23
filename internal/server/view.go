@@ -1,6 +1,7 @@
 package server
 
 import (
+	"strings"
 	"time"
 
 	"github.com/beroni/bazel/internal/agent"
@@ -32,6 +33,8 @@ type prView struct {
 	Base         string    `json:"base"`
 	Decision     string    `json:"review_decision"`
 	Mine         bool      `json:"mine"`
+	// Head is the commit the PR was at when Bazel read it.
+	Head string `json:"head_oid,omitempty"`
 
 	// Reviewed and friends are the history: has this PR been through a review?
 	// Has it changed since then? Did the review go to GitHub?
@@ -74,6 +77,7 @@ func newPRView(pr gh.PR, mine bool, now time.Time) prView {
 		Base:         pr.BaseRefName,
 		Decision:     pr.ReviewDecision,
 		Mine:         mine,
+		Head:         pr.HeadRefOid,
 	}
 }
 
@@ -102,9 +106,22 @@ type jobView struct {
 	// sent, no omitempty: the false is exactly what the page needs to read to
 	// hide the publish buttons.
 	Publishable bool `json:"publishable"`
+	// Since is the head this review started from, when it covers only what
+	// changed after an earlier one.
+	Since string `json:"since,omitempty"`
 	// AwaitsPublish marks the pipeline that ended in a `publish` step and
 	// waits for you to choose what goes to the PR.
 	AwaitsPublish bool `json:"awaits_publish,omitempty"`
+	// Incomplete is why the review has nothing to publish, when it came back
+	// without a report.
+	Incomplete string `json:"incomplete,omitempty"`
+	// Short is a review with no finding and no structure in what goes to the
+	// PR: the page warns before it goes.
+	Short bool `json:"short,omitempty"`
+	// InlineIssue is why the inline publisher would refuse this review.
+	InlineIssue string `json:"inline_issue,omitempty"`
+	// Doubt is why the stream makes the review worth a second look.
+	Doubt string `json:"doubt,omitempty"`
 	// History is a job writing the PR's history for the History tab.
 	History bool `json:"history,omitempty"`
 	// Publishing marks the job that is carrying an already-read review to the
@@ -153,6 +170,11 @@ type jobView struct {
 func (j *Job) view() jobView {
 	v := jobView{
 		Savable:     j.savable(),
+		Since:       j.Since,
+		Incomplete:  j.Incomplete,
+		Short:       j.Result.Short && j.publish == nil,
+		Doubt:       doubtOf(j),
+		InlineIssue: j.InlineIssue,
 		ID:          j.ID,
 		PR:          newPRView(j.PR, j.Mine, time.Now()),
 		Agent:       j.Choice.Name,
@@ -187,11 +209,17 @@ func (j *Job) view() jobView {
 	case !j.Live.Empty():
 		v.Tokens, v.Cost, v.Partial = j.Live.Total(), j.Live.CostUSD, true
 	}
+	// The clone may find the PR past the head it was listed at, and the review
+	// is of what it read: a decision on this job is on that head, the one its
+	// saved file records.
+	if h := j.Result.PR.HeadRefOid; h != "" && strings.EqualFold(j.Result.PR.Key(), j.PR.Key()) {
+		v.PR.Head = h
+	}
 	if j.publish != nil {
 		v.Publishing = true
 	}
 	if j.State == StatePaused {
-		v.Publishes = j.Choice.PublishesBy()
+		v.Publishes = publishesOnItsOwn(j.Choice)
 	}
 	v.AwaitsPublish = j.AwaitsPublish
 	v.History = j.History
@@ -254,4 +282,11 @@ func (j *Job) stepViews() []stepView {
 		out = append(out, v)
 	}
 	return out
+}
+
+func doubtOf(j *Job) string {
+	if j.publish != nil || j.Incomplete != "" {
+		return ""
+	}
+	return j.Result.Doubt
 }

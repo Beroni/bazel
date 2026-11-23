@@ -47,6 +47,9 @@ var (
 	stateDir = os.Getenv("FAKE_AGENT_STATE")
 )
 
+// started is when Bazel spawned the agent; `at` is when its record is written.
+var started = time.Now()
+
 func main() {
 	if dir == "" || name == "" || stateDir == "" {
 		fail(2, "fake-agent: FAKE_AGENT_SCENARIOS, FAKE_AGENT_SCENARIO and FAKE_AGENT_STATE must be set")
@@ -186,6 +189,15 @@ func record(prompt string) {
 		}
 	}
 	_, grokCfgErr := os.Stat(filepath.Join(os.Getenv("GROK_HOME"), "config.toml"))
+	// What Bazel left for the review in the plugin: the PR's discussion, as
+	// read, and its file mode ("" when there is no file).
+	discussion, discussionMode := "", ""
+	if plugin != "" {
+		if st, err := os.Stat(filepath.Join(plugin, "discussion.json")); err == nil {
+			b, _ := os.ReadFile(filepath.Join(plugin, "discussion.json"))
+			discussion, discussionMode = string(b), fmt.Sprintf("%04o", st.Mode().Perm())
+		}
+	}
 	gitStatus, _ := exec.Command("git", "status", "--porcelain").Output()
 	branch, _ := exec.Command("git", "branch", "--show-current").Output()
 	gitExclude, _ := os.ReadFile(filepath.Join(cwd, ".git", "info", "exclude"))
@@ -206,6 +218,8 @@ func record(prompt string) {
 		"clone_skills":         cloneSkills,
 		"plugin_dir":           plugin,
 		"plugin_name":          pluginName,
+		"discussion":           discussion,
+		"discussion_mode":      discussionMode,
 		"setting_sources_user": argValue("--setting-sources") == "user",
 		"strict_mcp_config":    strictMCP(),
 		"agent_config":         agentConfig(cwd),
@@ -216,6 +230,7 @@ func record(prompt string) {
 		"git_config":           gitConfig(cwd),
 		"grok_env":             grok,
 		"grok_home_config":     os.Getenv("GROK_HOME") != "" && grokCfgErr == nil,
+		"started_at":           started.UTC().Format(time.RFC3339Nano),
 		"at":                   time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(stateDir, 0o755)
@@ -380,7 +395,15 @@ func outcome(status, message string) {
 	if plugin == "" {
 		return
 	}
-	if err := os.WriteFile(filepath.Join(plugin, "publish-outcome"), []byte(status+"\n"+message+"\n"), 0o644); err != nil {
+	// One line added per result, as the skill's script does.
+	f, err := os.OpenFile(filepath.Join(plugin, "publish-outcome"), os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0o644)
+	if err == nil {
+		_, err = f.WriteString(status + "\t" + message + "\n")
+		if cerr := f.Close(); err == nil {
+			err = cerr
+		}
+	}
+	if err != nil {
 		fail(4, "fake-agent: writing the outcome: "+err.Error())
 	}
 }

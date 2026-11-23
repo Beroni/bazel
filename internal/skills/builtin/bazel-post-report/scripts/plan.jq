@@ -2,15 +2,18 @@
 # are settled here; the only thing left for the model is whether a comment near a
 # finding is about the same root cause, and for that it gets `candidates`.
 
-($pr[0].author.login // "") as $author
-| ($me[0]) as $me
+include "names";
+
+account($pr[0].author.login; $pr[0].author.is_bot) as $author
+| account($me[0]; null) as $me
 | ($report[0]) as $r
 # A comment or a reply counts against a finding only if it comes from someone who
 # can speak for the repository, or from an earlier run of this same account: never
 # from the PR's author or a passer-by, who could use it to make a finding disappear.
 | def speaks:
-    .user.login == $me or
-    ((.author_association // "NONE" | IN("OWNER", "MEMBER", "COLLABORATOR")) and .user.login != $author);
+    account(.user.login; .user.type) as $who
+    | $who == $me or
+      ((.author_association // "NONE" | IN("OWNER", "MEMBER", "COLLABORATOR")) and $who != $author);
   ($comments[0] | map(select(.in_reply_to_id != null and speaks)) | group_by(.in_reply_to_id)
     | map({key: (.[0].in_reply_to_id | tostring), value: .}) | from_entries) as $replies
 | ($threads[0] | map({key: (.root | tostring), value: .}) | from_entries) as $thread
@@ -26,16 +29,21 @@
        # Who resolved it comes as a login with no standing, so it counts unless it
        # is the author's own: resolving takes write access otherwise.
        | ($thread[$id] // {}) as $t
-       | (($t.isResolved // false) and ($t.resolvedBy // "") != ""
-          and ($t.resolvedBy != $author or $t.resolvedBy == $me)) as $resolved
+       | account($t.resolvedBy; $t.resolvedByType) as $by
+       | (($t.isResolved // false) and $by != "" and ($by != $author or $by == $me)) as $resolved
        | ($replies[$id] // []) as $rs
-       | {comment_id: .id, user: .user.login, url: .html_url, excerpt: (.body // "")[0:400],
+       | {comment_id: .id, user: .user.login, user_key: account(.user.login; .user.type), url: .html_url, excerpt: (.body // "")[0:400],
           settled: ($resolved or ($rs != [])),
           settled_by: (if $resolved then $t.resolvedBy
-                       elif $rs != [] then $rs[-1].user.login else null end)}]
+                       elif $rs != [] then $rs[-1].user.login else null end),
+          # Where the 👍 goes for a settled point: on the reply that settled it, or on
+          # the thread's first comment when a resolution did.
+          settled_comment: (if $resolved or $rs == [] then .id else $rs[-1].id end),
+          settled_comment_key: (if $resolved or $rs == [] then account(.user.login; .user.type)
+                                else ($rs[-1] | account(.user.login; .user.type)) end)}]
     end;
   $r + {
     pr_url: ($pr[0].url // ""),
     me: $me,
-    own_bodies: ([$issue[0][], $reviews[0][] | select(.user.login == $me) | .body // ""]),
+    own_bodies: ([$issue[0][], $reviews[0][] | select(account(.user.login; .user.type) == $me) | .body // ""]),
     findings: [$r.findings[] | . + {commentable: commentable(.), candidates: candidates(.)}]}

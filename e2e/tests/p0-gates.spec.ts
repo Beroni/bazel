@@ -1,14 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
-import { Bazel } from '../harness/bazel';
+import { Bazel, isNeedsRead } from '../harness/bazel';
 import { openJob, recordPosts, settled, ui } from '../harness/ui';
 
 // The gates in front of GitHub. "GitHub" is the fake gh's log; a write is a
 // `gh pr comment` or any `gh api` other than `api user`.
 
 const writes = (bz: Bazel) =>
-  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+  bz.ghCalls().filter((c) => (c.argv[0] === 'pr' && c.argv[1] === 'comment') || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
 const reviewCalls = (bz: Bazel) => bz.ghCalls().filter((c) => c.argv[0] === 'api' && c.argv.some((a) => a.endsWith('/reviews')));
 const TITLE = 'Add rate limiter to the public API';
 
@@ -163,7 +164,12 @@ test.describe('P0 · post agent failures', () => {
     expect(failed.html).toContain('E2E-FINDING-ONE'); // the review is still on the card
     expect(failed.steps.map((s: any) => s.name)).toEqual(['review-fleet', 'bazel-post-report']);
 
-    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] })).status).toBe(202);
+    // A post agent that failed may have written something: the retry asks first,
+    // and goes with the yes.
+    const asked = await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [] });
+    expect(asked.status).toBe(409);
+    expect(asked.json.confirm).toBe(true);
+    expect((await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [], again: true })).status).toBe(202);
     const again = await bazel.waitJob(id, (j) => j.state === 'done' && !!j.post_error && bazel.agentCalls().length === 3, 20_000);
     expect(again.steps.map((s: any) => s.name)).toEqual(['review-fleet', 'bazel-post-report']);
     expect(reviewCalls(bazel)).toEqual([]);
@@ -191,7 +197,7 @@ test.describe('P0 · cancel a publication', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [1] });
     await bazel.waitJob(id, (j) => j.state === 'running' && j.publishing);
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
 
     expect((await bazel.api('POST', `/api/jobs/${id}/cancel`)).status).toBe(200);
     const back = await bazel.waitJob(id, (j) => j.state === 'done');
@@ -210,7 +216,7 @@ test.describe('P0 · cancel a publication', () => {
     const id = await bazel.enqueue('acme/api-core#101', 'review-fleet');
     await bazel.waitJob(id, (j) => j.state === 'done');
     await bazel.api('POST', `/api/jobs/${id}/publish`, { skip: [0] });
-    await expect.poll(() => bazel.agentCalls().length).toBe(2);
+    await bazel.waitAgents(2);
     const reviewFile = bazel.agentCalls()[1].prompt.match(/\/bazel:bazel-post-report\s+(\S+)/)![1];
     expect(fs.existsSync(reviewFile)).toBe(true); // exists while the post agent runs
     bazel.release('release-post');
@@ -254,7 +260,7 @@ test.describe('P0 · the page asks before writing', () => {
     dialogs.accept = true;
     await ui.runButton(app).click();
     const viewer = ui.viewer(app);
-    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: 20_000 });
+    await expect(viewer.getByText('E2E-FINDING-ONE')).toBeVisible({ timeout: BUDGET }); // a whole job
     expect(bazel.agentCalls()[0].prompt).toContain('/review-fleet 101 --post');
 
     posts.length = 0;

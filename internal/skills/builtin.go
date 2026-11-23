@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 )
@@ -24,6 +23,13 @@ var builtinFS embed.FS
 
 // builtinRoot is the folder inside the embed.
 const builtinRoot = "builtin"
+
+// ParseReportScript is the reader bazel-post-report publishes with: Bazel runs
+// the same one to say, before Publish, whether a report will be refused.
+func ParseReportScript() []byte {
+	b, _ := builtinFS.ReadFile(builtinRoot + "/" + postSkill + "/scripts/parse-report.jq")
+	return b
+}
 
 // PluginName is the Claude Code plugin the embedded skills are packaged as.
 // Claude Code also finds a plugin's skills by their bare name, so a task keeps
@@ -106,16 +112,23 @@ func Bare(name string) string {
 	return name
 }
 
-// PostTask points a task at the plugin's own publishing skill, whatever a saved
-// config calls it: a homonym would publish with none of the script's checks. Any
-// other task comes back as it was.
-func PostTask(task string) string {
-	if !IsPost(task) {
+// Qualify points a task that calls a built-in skill at the plugin's own copy,
+// `/bazel:<name>`, whatever a saved config calls it. The bare name goes to any
+// skill of that name in the user's or the project's folder: a homonym would run in
+// its place, with none of the built-in's rules. Any other task comes back as it was.
+func Qualify(task string) string {
+	name := TaskSkill(task)
+	s, ok := builtinNamed(name)
+	if !ok {
 		return task
 	}
-	name := TaskSkill(task)
 	trimmed := strings.TrimSpace(task)
-	return "/" + pluginPrefix + postSkill + trimmed[1+len(name):]
+	return "/" + pluginPrefix + s.Name + trimmed[1+len(name):]
+}
+
+// QualifiedTask is the task that calls a built-in skill by the plugin's name.
+func QualifiedTask(name, args string) string {
+	return Qualify("/" + name + " " + args)
 }
 
 // Materialize writes the embedded skills into dir as a Claude Code plugin —
@@ -190,17 +203,43 @@ func PublishTarget(plugin, repo string, number int) error {
 // and its words say nothing about that: the script refusing is a successful run
 // for the model, and a model can stop before it ever calls the script. Anything
 // but a proof of publishing is a failure.
+// PublishNotSent says the publishing script stopped before it wrote anything:
+// it refused, or had nothing to send. A failure or no word at all may have
+// written something.
+func PublishNotSent(plugin string) bool {
+	status, _ := publishOutcome(plugin)
+	return status == "refused" || status == "nothing"
+}
+
 func PublishFailure(plugin string) string {
-	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
-	status, msg, _ := strings.Cut(string(data), "\n")
-	msg = strings.TrimSpace(msg)
-	switch {
-	case err == nil && status == "published":
+	switch status, msg := publishOutcome(plugin); {
+	case status == "published":
 		return ""
-	case err == nil && msg != "" && slices.Contains([]string{"refused", "failed", "nothing"}, status):
+	case status != "" && msg != "":
 		return msg
 	}
 	return "Not published: the publishing script never finished, so nothing is known to have reached the PR. Check the PR, then publish again."
+}
+
+// outcomeRank orders what a run of the script can say: what reached the PR
+// outweighs a write that may have, which outweighs one that never began.
+var outcomeRank = map[string]int{"refused": 1, "nothing": 1, "failed": 2, "published": 3}
+
+// publishOutcome reads the lines the script added, one "<status>\t<message>" per
+// result, and returns the weightiest; among equals, the last. Runs of the script
+// in one job may overlap, so every line counts and none replaces another.
+func publishOutcome(plugin string) (status, msg string) {
+	data, err := os.ReadFile(filepath.Join(plugin, "publish-outcome"))
+	if err != nil {
+		return "", ""
+	}
+	for line := range strings.Lines(string(data)) {
+		s, m, _ := strings.Cut(strings.TrimRight(line, "\r\n"), "\t")
+		if r := outcomeRank[s]; r > 0 && r >= outcomeRank[status] {
+			status, msg = s, strings.TrimSpace(m)
+		}
+	}
+	return status, msg
 }
 
 // writeFile writes data to path, creating the folders on the way.

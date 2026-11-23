@@ -83,6 +83,24 @@ func Save(dir string, res agent.Result, pricing *pricing.Table) (string, error) 
 	if res.Posts {
 		b.WriteString("- ⇧ This agent published the review to the PR on its own.\n")
 	}
+	// The file keeps its own record of going to the PR (<file>.posted): one
+	// without this line is from before, and its history is unknown.
+	b.WriteString(postRecordLine + "\n")
+	// A review of what changed since an earlier head says from where.
+	if res.Since != "" {
+		fmt.Fprintf(&b, "- Since: %s\n", res.Since)
+	}
+	// What the run's stream said: the report never came, and nothing of this
+	// file goes to the PR. Kept here so the Saved tab decides the same way.
+	if res.Pending != "" {
+		fmt.Fprintf(&b, "%s%s\n", pendingLine, oneLine(res.Pending))
+	}
+	if res.Short {
+		b.WriteString(shortLine + "\n")
+	}
+	if res.Doubt != "" && res.Pending == "" {
+		fmt.Fprintf(&b, "%s%s\n", doubtLine, oneLine(res.Doubt))
+	}
 	// For the publisher, which has no say in the wording of the warning below. It
 	// is written either way: a file that does not say is a file that proves nothing.
 	if res.Truncated {
@@ -279,6 +297,47 @@ func Heading(file string) string {
 
 // AgentOf is the agent that wrote an already-read review — the "- Agent: ..."
 // line of the header. Empty when the file doesn't say.
+const (
+	pendingLine = "- Incomplete: "
+	shortLine   = "- Short: no findings and no structure"
+	doubtLine   = "- Doubt: "
+)
+
+// DoubtOf is why the saved review is worth a second look, from its run's stream.
+func DoubtOf(file string) string {
+	head, _, _, _ := SavedParts(file)
+	for _, line := range strings.Split(head, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), doubtLine); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// PendingOf is why a saved review never got its report, or "".
+func PendingOf(file string) string {
+	head, _, _, _ := SavedParts(file)
+	for _, line := range strings.Split(head, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), pendingLine); ok {
+			return v
+		}
+	}
+	return ""
+}
+
+// ShortOf says the saved review was short and had no findings when it ran.
+func ShortOf(file string) bool {
+	head, _, _, _ := SavedParts(file)
+	for _, line := range strings.Split(head, "\n") {
+		if strings.TrimSpace(line) == shortLine {
+			return true
+		}
+	}
+	return false
+}
+
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
 func AgentOf(file string) string {
 	for _, line := range strings.SplitN(file, "\n", 16) {
 		line = strings.TrimSpace(line)

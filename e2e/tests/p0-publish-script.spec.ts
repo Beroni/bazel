@@ -98,7 +98,8 @@ ${prose}
     expect(payload.commit_id).toBe(SHA);
     expect(payload.comments).toHaveLength(1);
     expect(payload.comments[0].path).toBe(hostile);
-    expect(payload.comments[0].body).toContain(prose);
+    // As written, but `#999` links no issue: a zero-width space after the `#`.
+    expect(payload.comments[0].body).toContain(prose.replace('#999', '#\u200b999'));
     expect(fs.readdirSync(w.clone).filter((f) => f.startsWith('E2E-RAN'))).toEqual([]);
     fs.rmSync(w.root, { recursive: true });
   });

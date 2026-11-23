@@ -1397,7 +1397,7 @@ func TestHistoryChoice(t *testing.T) {
 		t.Errorf("the default history agent is valid: %v", err)
 	}
 	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
-	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel-history-pr {{number}}" {
+	if ch := c.HistoryChoice(); ch.Name != "story" || ch.Steps[0].Task != "/bazel:bazel-history-pr {{number}}" {
 		t.Errorf("configured history choice: %+v", ch)
 	}
 	c.HistoryAgent = AgentDef{}
@@ -1947,5 +1947,131 @@ func TestTightenFechaOQueFicouAberto(t *testing.T) {
 	}
 	if info, _ := os.Stat(home); info.Mode().Perm() != 0o700 {
 		t.Errorf("home: %v", info.Mode())
+	}
+}
+
+// Every built-in runs as the plugin's copy, whatever a saved config calls it, and
+// the file keeps what it says: a homonym in the user's or the project's skills would
+// otherwise answer the bare name, with none of the built-in's rules.
+func TestBuiltinsRunAsThePlugins(t *testing.T) {
+	c := Default()
+	for _, a := range c.Agents {
+		if !strings.HasPrefix(a.Task, "/bazel:bazel-") {
+			t.Errorf("the starter %s is saved as %q", a.Name, a.Task)
+		}
+	}
+	saved := []AgentDef{
+		{Name: "fleet", Task: "/bazel-review-fleet {{number}}"},
+		{Name: "lens", Task: "/BAZEL-EXPLOIT-DIGGER {{number}}"},
+		{Name: "mine", Task: "/review-fleet {{number}}"},
+	}
+	c.Agents = append([]AgentDef(nil), saved...)
+	c.Pipelines = []Pipeline{{Name: "both", Steps: []string{"fleet", "lens"}}}
+	want := map[string]string{"fleet": "/bazel:bazel-review-fleet {{number}}", "lens": "/bazel:bazel-exploit-digger {{number}}", "mine": "/review-fleet {{number}}"}
+	for name, task := range want {
+		ch, err := c.ChoiceByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := ch.Steps[0].Task; got != task {
+			t.Errorf("%s runs as %q, want %q", name, got, task)
+		}
+	}
+	ch, err := c.ChoiceByName("both")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Steps[0].Task != want["fleet"] || ch.Steps[1].Task != want["lens"] {
+		t.Errorf("a pipeline's steps: %q, %q", ch.Steps[0].Task, ch.Steps[1].Task)
+	}
+	for i, a := range c.Agents {
+		if a.Task != saved[i].Task {
+			t.Errorf("the config itself changed to %q: it would be saved", a.Task)
+		}
+	}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}"}
+	if got := c.HistoryChoice().Steps[0].Task; got != "/bazel:bazel-history-pr {{number}}" {
+		t.Errorf("history runs as %q", got)
+	}
+	if c.HistoryCustom() {
+		t.Error("a saved bare name is still the default history")
+	}
+	if def, err := Default().AddAgentFromSkill("bazel-lazy-senior-dev", "x", false); err != nil || def.Task != "/bazel:bazel-lazy-senior-dev {{number}}" {
+		t.Errorf("added from the page: %+v %v", def, err)
+	}
+}
+
+// A publishing prompt saved as an older default, with the PR's title and author,
+// runs as the current one; one edited by hand stays the user's.
+func TestOldPublishPromptRunsAsTheCurrentOne(t *testing.T) {
+	for i, old := range legacyPublishPrompts {
+		c := Default()
+		c.PostAgent.Prompt = old
+		if got := c.PostChoice().Steps[0].Prompt; got != publishPrompt {
+			t.Errorf("legacy prompt %d still runs: %.80q", i, got)
+		}
+		if c.PostAgent.Prompt != old {
+			t.Error("the config itself changed: it would be saved")
+		}
+		if !strings.Contains(old, "{{title}}") {
+			t.Errorf("legacy prompt %d is not the one with the title", i)
+		}
+	}
+	// What a YAML round trip does to spacing does not make it the user's.
+	c := Default()
+	c.PostAgent.Prompt = strings.ReplaceAll(legacyPublishPrompts[0], "\n", "\n  ") + "\n"
+	if c.PostChoice().Steps[0].Prompt != publishPrompt {
+		t.Error("spacing makes no hand edit")
+	}
+	edited := strings.Replace(legacyPublishPrompts[0], "Write to stdout", "Also tag @team. Write to stdout", 1)
+	c.PostAgent.Prompt = edited
+	if c.PostChoice().Steps[0].Prompt != edited {
+		t.Error("a prompt edited by hand is the user's")
+	}
+}
+
+// The first configs saved their templates in Portuguese. Left as they are, the
+// review one does not say the prohibition the gates look for, so the agent reads as
+// one that publishes; they run as today's.
+func TestPortugueseDefaultsRunAsToday(t *testing.T) {
+	var review, post string
+	for old, now := range legacyPrompts {
+		switch now {
+		case defaultPrompt:
+			review = old
+		case postPrompt:
+			post = old
+		}
+	}
+	if review == "" || post == "" {
+		t.Fatal("both old templates should be known")
+	}
+	c := Default()
+	c.Agent.Prompt = review
+	c.Agents = []AgentDef{{Name: "lens", Task: "/review-fleet {{number}}"}, {Name: "own", Task: "/review-fleet {{number}}", Prompt: post, Posts: true}}
+	ch, err := c.ChoiceByName("lens")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ch.Steps[0].Prompt != defaultPrompt || ch.PublishesBy() != "" {
+		t.Errorf("the inherited review template: publishes %q, prompt %.60q", ch.PublishesBy(), ch.Steps[0].Prompt)
+	}
+	if got := c.baseChoice().Steps[0].Prompt; got != defaultPrompt {
+		t.Errorf("the bare agent block: %.60q", got)
+	}
+	if ch, _ := c.ChoiceByName("own"); ch.Steps[0].Prompt != postPrompt {
+		t.Errorf("the posting template: %.60q", ch.Steps[0].Prompt)
+	}
+	if c.Agent.Prompt != review {
+		t.Error("the config itself changed: it would be saved")
+	}
+	c.HistoryAgent = AgentDef{Name: "story", Task: "/bazel-history-pr {{number}}", Prompt: review}
+	if err := c.ValidateHistoryAgent(); err != nil {
+		t.Errorf("a history agent with the old review template: %v", err)
+	}
+	edited := strings.Replace(review, "Devolva no stdout", "Seja breve. Devolva no stdout", 1)
+	c.Agent.Prompt = edited
+	if got := c.baseChoice().Steps[0].Prompt; got != edited {
+		t.Error("a template edited by hand is the user's")
 	}
 }

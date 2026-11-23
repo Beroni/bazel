@@ -16,6 +16,7 @@ fixture git repos under `$FAKE_GH_STATE/repos/<owner>/<repo>.git`.
 | `gh pr view N --repo R --json …` | one object; unknown PR → GraphQL-style error |
 | `gh pr diff N --repo R` | `diff` from the fixture, or one generated from `files` |
 | `gh pr comment N --repo R --body-file -` | prints a fake comment URL; stdin recorded; unknown PR or empty body fails |
+| `gh repo view [R] --json nameWithOwner [--jq .nameWithOwner]` | R, else `GH_REPO`, else the clone's origin; a repo with no PR in the fixture → GraphQL error; other fields or flags unsupported |
 | `gh repo clone R DIR -- ARGS` | `git clone ARGS file://<state>/repos/R.git DIR` |
 | `gh pr checkout N [--repo R]` (in a clone) | the PR's branch; a PR of another repo comes by fetch |
 | anything else, any other `gh api` included | exit 1, `fake gh: unsupported: gh …` |
@@ -52,6 +53,26 @@ the redesign's Overview) take gh's shape in the fixture: `createdAt`, `commits`
 `headRefOid`, empty lists. `files` in the fixture is the branch content (a map);
 asked with `--json files` it comes back as gh's list (`path`, `additions`,
 `deletions`).
+
+The same `reviewRequests` and `latestReviews` answer the Summary's read of who
+reviews each PR (`gh api graphql` with `query bazelReviewers(…)`, aliases
+`p0…pN` by the variables `o<i>`, `n<i>`, `p<i>`). There a request may also be a
+team, `{ "slug": "core", "organization": { "login": "acme" } }`, and an entry
+may carry `__typename` (`Bot`, …); without one it is a `User`. A PR not in the
+fixtures answers null. `gh.json` `fail.reviewers` makes that read fail.
+
+`conversation` is what the read of a PR's discussion gets (`query bazelConversation(…)`,
+same aliases and variables): `reviewThreads`, `comments` and `reviews`, each
+`{ "nodes": [...] }` in GraphQL's shape (a thread: `isResolved`, `isOutdated`,
+`path`, `line`, `originalLine`, `resolvedBy`, `comments: { totalCount, nodes:
+[{ author: { login, __typename }, authorAssociation, body, url, createdAt }] }`).
+Left out, the PR discussed nothing. `fail` or `hold` keyed `conversation:owner/name#n` fails or holds the whole call that PR is in, as one bad node does on GitHub. `gh.json` `fail.conversation` makes it fail.
+The open-thread tags read the same fixture with a smaller query (`query
+bazelThreadTags(…)`), and both answers carry `rateLimit`: `gh.json`
+`rate_remaining` sets the points left (default plenty), so a low number stops
+the tag reads until the reset. A `reviewThreads` with `pageInfo: { hasNextPage: true,
+endCursor }` makes the tags read more pages (the fake answers the same nodes each
+time), up to the cap, and the PR shows as partial.
 
 `symlinks` (path → target) commits links in the PR branch, for hostile-PR tests.
 

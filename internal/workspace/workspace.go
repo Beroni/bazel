@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -197,6 +198,20 @@ func (w *Workspace) Remove() {
 		fmt.Fprintf(os.Stderr, "bazel: could not remove the clone: %v\n", err)
 	}
 }
+
+// IsAncestor says whether sha is a commit of the clone at dir and an ancestor
+// of its HEAD: what a review "since" that commit needs. A force push that
+// rewrote the branch leaves it out, and so does a sha the clone never fetched.
+func IsAncestor(ctx context.Context, dir, sha string) bool {
+	if dir == "" || !shaRe.MatchString(sha) {
+		return false
+	}
+	return run(ctx, dir, "git", "cat-file", "-e", sha+"^{commit}") == nil &&
+		run(ctx, dir, "git", "merge-base", "--is-ancestor", sha, "HEAD") == nil
+}
+
+// shaRe is a full commit id, the only form a review records.
+var shaRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
 func run(ctx context.Context, dir, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)

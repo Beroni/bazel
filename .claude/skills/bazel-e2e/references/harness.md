@@ -65,9 +65,13 @@ Nothing else from the developer's shell is inherited.
 | `job(id)` / `waitJob(id, pred, ms?)` | `GET /api/jobs/{id}` (with body/html), polled until `pred` |
 | `mcp(method, params?, id?)` | one JSON-RPC call to `/mcp` |
 | `ghCalls()` | `[{ argv, stdin, cwd, at }]` from the fake gh |
-| `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, at }]` |
+| `agentCalls()` | `[{ scenario, pid, branch, argv, cwd, prompt, builtin_skill, discussion, discussion_mode, at }]` (`discussion` is `<plugin>/discussion.json` as the agent found it) |
 | `release(name)` | creates `agent/<name>`; unblocks `#!wait <name>` and `FAKE_AGENT_GATE=<name>` |
 | `agentAlive(pid)` | whether an agent process (`agentCalls()[n].pid`) is still there |
+| `kill()` | SIGKILL, as a crash: nothing of the server runs after |
+| `holdingGh(gate)` / `releaseGh(gate, 'go' \| 'fail')` | with `gh: { hold: { comment: 'gate' } }`, a gh write that waits until released: kill Bazel in the middle of a send |
+| `new Bazel({ share: bz })` | a second server over the same BAZEL_HOME, HOME and gh fixtures and log: two Bazels on one machine |
+| `rewritePR(key)` | a force push: a new history on the PR's branch, so no head from before is in it |
 | `movePR(key)` | a new commit on the PR's branch: gh lists it, a clone gets it, Bazel notices on its next refresh |
 | `tool(name, args)` | MCP `tools/call` → `{ isError, text, out }` |
 | `events()` | opens `/api/events`: `{ list, next(pred), close() }` (first event is `hello`) |
@@ -117,6 +121,15 @@ keeps the port, so an open page reconnects: `bazel.restart({ samePort: true })`.
 
 ## Determinism
 
+- A wait on a chain of processes the test does not drive (clone, agent spawn,
+  job, boot, the browser's EventSource retry) uses `BUDGET` from
+  `harness/budget.ts`, and waits on the event itself: `bazel.waitAgents(n)` for
+  an agent, never `running` (a job is running from its clone on). A clone slowed
+  on purpose (`gh: { slow_clone_ms }`) turns that race into a certain failure.
+- Scenario files are shared by every worker: never write one from a test; add
+  it to `fixtures/agent/`, or use `testInfo.outputPath`.
+- A failed test attaches `timeline.txt`: every gh and agent call with its start
+  and duration, and the load average every 2s.
 - Never sleep for "long enough". Hold an agent with `#!wait <name>` and call
   `bazel.release(name)` when the test has seen what it needs. A negative gets a
   barrier: `settled(page)` after a dismissed confirm, `agentAlive(pid)` for a kill.

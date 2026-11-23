@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { tickByFilter, ui } from '../harness/ui';
 
@@ -41,13 +42,13 @@ test.describe('P1 · built-in skills', () => {
     await ui.runButton(app).click();
 
     const viewer = ui.viewer(app);
-    await expect(viewer.getByText('E2E-BUILTIN-FINDING-ONE bucket refills past its capacity')).toBeVisible({ timeout: 20_000 });
+    await expect(viewer.getByText('E2E-BUILTIN-FINDING-ONE bucket refills past its capacity')).toBeVisible({ timeout: BUDGET }); // a whole job
     // 2 findings + 1 cut + 1 needs-human item, each with its own tick.
     await expect(ui.findingPicks(viewer)).toHaveCount(4);
     await expect(ui.publishInline(viewer)).toBeVisible();
 
     const call = bazel.agentCalls()[0];
-    expect(call.prompt.startsWith('/bazel-review-fleet 101')).toBe(true);
+    expect(call.prompt.startsWith('/bazel:bazel-review-fleet 101')).toBe(true);
     expect(call.prompt).toContain('do not publish anything to GitHub');
     expect([...call.skills].sort()).toEqual(BUILTIN);
     expect(call.builtin_skill_source).toBe('plugin');

@@ -1,11 +1,14 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/beroni/bazel/internal/agent"
 	"github.com/beroni/bazel/internal/gh"
@@ -185,5 +188,141 @@ func TestSaveDizOQueRodou(t *testing.T) {
 		if !strings.Contains(head, "- Ran on: "+c.want) || strings.Contains(body, "Ran on") {
 			t.Errorf("header %q, report %q", head, body)
 		}
+	}
+}
+
+// Only a record that is not there means not published: one that cannot be
+// read counts as published.
+func TestPostedOfSoAusenteENaoPublicado(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "r.md")
+	if _, ok := PostedOf(file); ok {
+		t.Error("no record, yet published")
+	}
+	if err := os.Mkdir(file+".posted", 0o700); err != nil { // reading a folder fails
+		t.Fatal(err)
+	}
+	if p, ok := PostedOf(file); !ok || p.How != "unknown" {
+		t.Errorf("unreadable record: %+v %v", p, ok)
+	}
+}
+
+// The claim is a lock held for the whole send: a second claimant waits for no
+// pid and asks no question, it is told the review is being sent now.
+func TestClaimEUmaTrava(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	a, err := ClaimPosting(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimPosting(file, true); !errors.Is(err, ErrClaimBusy) {
+		t.Errorf("while held, even with a yes: %v", err)
+	}
+	if err := a.Sending(); err != nil {
+		t.Fatal(err)
+	}
+	// ND-1: the second one takes the lock after the first recorded the send.
+	if err := a.Done("comment", "abc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClaimPosting(file, true); !errors.Is(err, ErrPosted) {
+		t.Errorf("after the first went: %v", err)
+	}
+}
+
+// ND-4/C1: what is left by a send that never said how it ended asks, whoever
+// left it and whatever pid it had; a yes takes it over, under the lock.
+func TestClaimDeixadoPerguntaSemPid(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	for _, state := range []string{"sending 2026-01-01T00:00:00Z\n", "unknown 2026-01-01T00:00:00Z gh timed out\n"} {
+		if err := os.WriteFile(file+".posting", []byte(state), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ClaimPosting(file, false); !errors.Is(err, ErrClaimOrphan) {
+			t.Errorf("%q without a yes: %v", state, err)
+		}
+		c, err := ClaimPosting(file, true)
+		if err != nil {
+			t.Fatalf("%q with a yes: %v", state, err)
+		}
+		c.Release()
+	}
+	if c, err := ClaimPosting(file, false); err != nil {
+		t.Errorf("released, it is free: %v", err)
+	} else {
+		c.Release()
+	}
+}
+
+// ND-2: two yes at once to an orphan send one review, not two.
+func TestDoisSimNumOrfaoEnviamUmaVez(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	if err := os.WriteFile(file+".posting", []byte("sending x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	var sent atomic.Int32
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			c, err := ClaimPosting(file, true)
+			if err != nil {
+				return
+			}
+			_ = c.Sending()
+			time.Sleep(100 * time.Millisecond)
+			sent.Add(1)
+			_ = c.Done("comment", "")
+		}()
+	}
+	wg.Wait()
+	if sent.Load() != 1 {
+		t.Errorf("sent %d times", sent.Load())
+	}
+}
+
+// The record of a send that is not known says so after the lock is gone.
+func TestUnknownFicaNoArquivo(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	c, err := ClaimPosting(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = c.Sending()
+	c.Unknown("gh: context deadline exceeded")
+	if _, err := ClaimPosting(file, false); !errors.Is(err, ErrClaimOrphan) {
+		t.Errorf("after an unknown outcome: %v", err)
+	}
+	if err := CheckPosting(file, false); !errors.Is(err, ErrClaimOrphan) {
+		t.Errorf("check: %v", err)
+	}
+}
+
+// CL-1: a send left "sending" becomes "unknown" without the file ever being
+// empty on the way: a crash between the two would let the next send go.
+func TestUnknownNuncaPassaPorVazio(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "r.md")
+	c, err := ClaimPosting(file, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Sending(); err != nil {
+		t.Fatal(err)
+	}
+	var mid string
+	old := claimMidWrite
+	claimMidWrite = func() {
+		b, _ := os.ReadFile(file + ".posting")
+		mid = string(b)
+	}
+	t.Cleanup(func() { claimMidWrite = old })
+	c.Unknown("gh timed out")
+	if !strings.HasPrefix(mid, "unknown") {
+		t.Errorf("halfway the file said %q", mid)
+	}
+	b, _ := os.ReadFile(file + ".posting")
+	if !strings.HasPrefix(string(b), "unknown") || strings.Contains(string(b), "sending") {
+		t.Errorf("at the end: %q", b)
 	}
 }

@@ -31,6 +31,15 @@ const state = {
   activePR: null,      // key of the PR open in the right-hand pane
   bodies: {},        // job id -> review html
   splits: {},        // job id -> {pub, ctx} when only part goes to the PR
+  needs: null,       // the last answer of /api/needs
+  needsSig: '',      // what it looked like, to draw only on a change
+  needsAll: false,   // all repos, or only the watched ones
+  needsGen: 0,       // the latest /api/needs request; older answers are dropped
+  needsError: '',
+  needsPRs: {},      // key -> PR from the needs page, for opening one outside the list
+  savedShort: {},    // saved review name -> true when it is short with no findings
+  savedInline: {},   // saved review name -> why the inline publisher would refuse it
+  savedDoubt: {},    // saved review name -> why its stream makes it worth a second look
   picks: {},         // 'job:<id>' | 'saved:<name>' -> Set of unticked findings
   logs: {},          // job id -> {next, lines, dropped, live, busy}
   skillFilter: '',   // the search over the installed skills
@@ -40,6 +49,13 @@ const state = {
   histories: {},     // PR key -> its history (see lazy)
   logFilter: {},     // job id -> agent picked in the live log, '' = all
   instance: null,    // id of the server process; changes when it restarts
+  verdicts: {},      // lower-case PR key -> {verdict, head, at, moved}: your decision on it
+  openThreads: {},   // lower-case PR key -> the threads you opened there that are still open
+  threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
+  threadsStale: {},    // lower-case PR key -> when its threads on screen were read, if its last read failed
+  threadsPartial: {},  // lower-case PR key -> true: past its page cap, it has more threads than shown
+  threadsLoading: false, // a read is out and the page has nothing yet
+  threadsError: '',    // why there are no threads on screen: the read failed with nothing to fall back on
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -137,8 +153,13 @@ async function api(path, opts = {}) {
   const res = await fetch(path, { ...opts, headers });
   const body = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const err = new Error(body.error || `${res.status} ${res.statusText}`);
+    // A refusal of many items (POST /api/reviews) says why in errors[].
+    const why = body.error || (Array.isArray(body.errors) && body.errors.length ? body.errors.join('\n') : '');
+    const err = new Error(why || `${res.status} ${res.statusText}`);
     err.status = res.status;
+    err.body = body;
+    // The server asks before doing it: the caller may send it again with a yes.
+    err.confirm = !!body.confirm;
     // The page is from another server process: say so, and bring the queue,
     // the PRs and the saved list up to date before anything else is tried.
     if (res.status === 409 && body.stale) {
@@ -245,6 +266,7 @@ async function boot() {
     adoptInstance(st.instance);
     state.me = st.me;
     state.jobs = st.jobs || [];
+    state.verdicts = st.verdicts || {};
     state.historyCustom = !!st.history_custom;
     $('#who').textContent = '@' + st.me;
     $('#who').title = `config: ${st.config_path}\nreviews: ${st.reviews_dir}\nagent: ${st.agent.command} ${(st.agent.args || []).join(' ')}\nconcurrent reviews: ${st.concurrency}`;
@@ -258,6 +280,9 @@ async function boot() {
     if (st.stray_command) {
       state.warning = `Your agent.prompt has no {{task}} and runs ${st.stray_command} on its own —`
         + ` every agent you pick runs two commands, the one you chose and that one. Fix it in "config".`;
+    } else if (st.queue_busy) {
+      state.warning = `Another Bazel is running on this folder and keeps the queue (${st.queue_busy}).`
+        + ' This one keeps its queue in memory: what is pending here does not come back after a restart.';
     } else if (!state.repos.length) {
       state.warning = 'No repositories watched — go to "config" and add one (owner/repo).';
     } else if (!selectableAgents().length) {
@@ -273,6 +298,8 @@ async function boot() {
   // at #/config needs the agent list to draw anything.
   await route();
   loadPRs(false);
+  // The tab's counter is there from the start, whatever page is open.
+  if (pageFromHash() !== 'needs') loadNeeds(false);
 }
 
 async function loadPRs(force) {
@@ -300,6 +327,9 @@ async function loadPRs(force) {
     // list.
     renderRepoFilters();
     renderPRs();
+    // A PR may have moved past the head you decided on.
+    if (Object.keys(state.verdicts).length) refreshVerdicts();
+    loadOpenThreads(force);
   } catch (err) {
     list.innerHTML = '';
     const p = el('p', 'empty', 'failed: ' + err.message);
@@ -335,6 +365,7 @@ function connect() {
     }
     if (ev.type === 'job') upsertJob(ev.data);
     if (ev.type === 'limits') { state.limits = ev.data; renderQuota(); }
+    if (ev.type === 'verdicts') adoptVerdicts(ev.data);
     // Another tab took this job off the queue: it goes away here too.
     if (ev.type === 'job_gone') dropJob(ev.data.id);
   };
@@ -408,6 +439,7 @@ async function resync() {
   try {
     const st = await api('/api/state');
     state.jobs = st.jobs || [];
+    state.verdicts = st.verdicts || {};
     state.historyCustom = !!st.history_custom;
     state.limits = st.limits && st.limits.at && !st.limits.at.startsWith('0001') ? st.limits : null;
     renderQuota();
@@ -525,18 +557,28 @@ function keepFocus(target) {
 
 function startReview() {
   clearAlert();
+  // A reminder, not a gate: the review goes all the same, and the note stays
+  // after the ticks clear, until you tick something else.
+  state.threadsReminded = markedPRs().filter((k) => threadsOf(k).length);
+  fillThreadsNote();
   return reviewRefs(markedPRs());
 }
 
-async function reviewRefs(refs) {
+// confirmPublishing asks before running an agent that publishes on its own:
+// writing on someone else's PR is worth a question first, the same ceremony as
+// the "publish to the PR" button. Every way of starting a review goes through it.
+function confirmPublishing(agentName, refs, posts = false) {
+  const chosen = state.agents.find((a) => a.name === agentName);
+  if (!(chosen && chosen.posts) && !posts) return true;
+  const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
+  return confirm(`The agent "${agentName}" publishes the review straight to ${alvo}. Run it anyway?`);
+}
+
+// keep leaves the dashboard's ticks alone: a review started elsewhere (Needs
+// you) is not the run of what is ticked.
+async function reviewRefs(refs, keep = false) {
   if (!refs.length) return;
-  // Picking an agent that publishes is writing on someone else's PR: it is worth
-  // a question first, the same ceremony as the "publish to the PR" button.
-  const chosen = state.agents.find((a) => a.name === state.agent);
-  if (chosen && chosen.posts) {
-    const alvo = refs.length > 1 ? `${refs.length} PRs` : refs[0];
-    if (!confirm(`The agent "${chosen.name}" publishes the review straight to ${alvo}. Run it anyway?`)) return;
-  }
+  if (!confirmPublishing(state.agent, refs)) return;
   $('#run').disabled = true;
   try {
     const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs, agent: state.agent }) });
@@ -548,7 +590,7 @@ async function reviewRefs(refs) {
       state.activeSaved = null;
       state.activePR = null;
     }
-    state.selected.clear();
+    if (!keep) state.selected.clear();
     renderPRs();
     renderTabs();
     keepFocus('#rail .card.on');
@@ -562,7 +604,7 @@ async function reviewRefs(refs) {
 }
 
 function openPR(key) {
-  const pr = state.prs.find((p) => p.key === key);
+  const pr = state.prs.find((p) => p.key === key) || state.needsPRs[key];
   if (!pr) return;
   // Drawn again over itself (a read landed, a job moved), it stays where you
   // were reading.
@@ -592,6 +634,8 @@ function openPR(key) {
   heading.dir = 'auto';
   grow.append(kicker, heading);
   head.append(grow);
+  // Changed since its last review: review only the new commits.
+  if (pr.changed_since_review) head.append(sinceButton(pr.key));
   v.append(head);
 
   // The same page the Overview of a job shows: description, timeline, files,
@@ -641,12 +685,13 @@ async function publishJob(id, btn) {
   const job = state.jobs.find((j) => j.id === id);
   if (!job) return;
   const skip = skipList(pickKey('job', id));
-  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}`)) return;
+  if (!confirm(`Publish this review on ${job.pr.key} with inline comments?\n\nThe post agent runs in this same card, publishing what you have just read.${skipNote(skip)}${changedNote(job.pr.key)}${shortNote(job.short)}${doubtNote(job.doubt)}${inlineConfirm(job.inline_issue)}`)) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
   try {
-    const view = await api(`/api/jobs/${encodeURIComponent(id)}/publish`, { method: 'POST', body: JSON.stringify({ skip }) });
+    const view = await askedDoor(`/api/jobs/${encodeURIComponent(id)}/publish`, skip);
+    if (!view) { if (btn) { btn.disabled = false; btn.textContent = label; } return; }
     upsertJob(view);
     state.activeJob = view.id;
     state.tab = 'queue';
@@ -702,12 +747,14 @@ async function postJob(id, btn) {
   const aviso = job.posts
     ? `The agent "${job.agent}" already published this review on ${job.pr.key}. Publish it again, as a comment?`
     : `Publish this review as a comment on ${job.pr.key}?`;
-  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key))) return;
+  if (!confirm(aviso + skipNote(skip) + changedNote(job.pr.key) + shortNote(job.short) + doubtNote(job.doubt))) return;
   const label = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = 'publishing…'; }
   clearAlert();
   try {
-    upsertJob(await api(`/api/jobs/${encodeURIComponent(id)}/post`, { method: 'POST', body: JSON.stringify({ skip }) }));
+    const view = await askedDoor(`/api/jobs/${encodeURIComponent(id)}/post`, skip);
+    if (!view) { if (btn) { btn.disabled = false; btn.textContent = label; } return; }
+    upsertJob(view);
     keepFocus('#viewer .vtab.on');
   } catch (err) {
     // 409 and 404 are Bazel turning the request down (busy, already posted,
@@ -753,6 +800,13 @@ async function openSaved(name) {
     v.append(head);
     const moved = entry && entry.repo ? reportChanged(`${entry.repo}#${entry.number}`) : null;
     if (moved) v.append(moved);
+    if (data.incomplete) v.append(incompleteNote(data.incomplete));
+    else if (data.short) v.append(shortBox());
+    if (!data.incomplete && data.doubt) v.append(doubtBox(data.doubt));
+    if (!data.incomplete && data.inline_issue) v.append(inlineNote(data.inline_issue));
+    state.savedShort[name] = !!data.short;
+    state.savedDoubt[name] = data.doubt || '';
+    state.savedInline[name] = data.inline_issue || '';
     const md = tid(el('div', 'md'), 'review-body');
     md.innerHTML = data.html;
     v.append(md);
@@ -764,6 +818,7 @@ async function openSaved(name) {
     }
     const key = pickKey('saved', name);
     const total = decorateFindings(md, key, !entry || entry.publishable !== false);
+    if (entry && entry.repo) v.append(verdictBar(`${entry.repo}#${entry.number}`, `/api/reviews/${encodeURIComponent(name)}/verdict`));
 
     // A saved review stays publishable: closing Bazel before sending it to the
     // PR can't cost the agent's work.
@@ -772,6 +827,13 @@ async function openSaved(name) {
       nota.style.marginTop = '28px';
       nota.textContent = `This is not a review — what "${entry.agent}" produces stays in Bazel.`;
       v.append(nota);
+    } else if (entry && entry.repo && entry.posted) {
+      // It went to the PR, as this file records: no second time, restart or not.
+      const bar = el('div', 'viewer-actions');
+      const when = new Date(entry.posted.at).toLocaleString();
+      const done = tid(el('span', 'state done', `✓ already on the PR (${entry.posted.how}, ${when})`), 'already-published');
+      bar.append(el('div', 'spacer'), done);
+      v.append(bar);
     } else if (entry && entry.repo) {
       const bar = el('div', 'viewer-actions');
       const pub = tid(el('button', 'btn primary', '↗ Publish'), 'saved-publish');
@@ -781,11 +843,76 @@ async function openSaved(name) {
       cm.title = `pastes this review as a single comment on ${entry.repo}#${entry.number}`;
       cm.addEventListener('click', () => commentSaved(name, cm));
       bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'), cm, pub);
+      if (data.incomplete) lockPublish(bar, data.incomplete);
       v.append(bar);
     }
     v.scrollTop = 0;
   } catch (err) {
     banner(err.message);
+  }
+}
+
+// incompleteNote says the review came back without a report, above the text the
+// agent did leave: there is nothing to pick and nothing to send.
+function incompleteNote(why) {
+  return tid(el('div', 'error-box', `The review came back incomplete: ${why}. Nothing of it can go to the PR; run it again.`), 'review-incomplete');
+}
+
+// shortBox and shortNote warn about a report with no finding and no structure.
+// It may be a whole review ("No issues found.") or an agent that stopped early:
+// only the one reading can tell, so it is said, not blocked.
+function shortBox() {
+  return tid(el('div', 'stale-box', 'This review is short and has no findings. Read it before it goes to the PR: the agent may have stopped early.'), 'review-short');
+}
+const shortNote = (short) => (short ? '\n\nThis review is short and has no findings.' : '');
+
+// doubtBox and doubtNote say the stream gives a reason to read the review twice:
+// its last turn began with background agents still out.
+function doubtBox(why) {
+  return tid(el('div', 'stale-box', `Read this one carefully: ${why}.`), 'review-doubt');
+}
+const doubtNote = (why) => (why ? `\n\nThe agent's stream says ${why}.` : '');
+
+// lockPublish turns off the ways to the PR of a review with no report, and says
+// why on each of them.
+// inlineNote says the inline publisher will refuse this report, and why. As a
+// comment it still goes: the check only speaks for the inline path.
+function inlineNote(why) {
+  return tid(el('div', 'stale-box', `This report is not in the format Publish (inline) accepts: ${why}. You can still paste it As comment.`), 'review-inline-issue');
+}
+
+// inlineConfirm is the line the Publish confirm adds for such a report: the
+// choice stays the user's, who may know the publisher was changed.
+const inlineConfirm = (why) => (why ? `\n\nThe inline publisher will likely refuse it: ${why}. "As comment" pastes it as it is.` : '');
+
+function lockPublish(bar, why) {
+  for (const id of ['paste-comment', 'publish-inline', 'saved-comment', 'saved-publish']) {
+    const b = bar.querySelector(`[data-testid=${id}]`);
+    if (!b) continue;
+    b.disabled = true;
+    b.dataset.locked = 'incomplete';
+    b.title = why;
+  }
+}
+
+// runAgain queues the same agent over the same PR: what a review that came back
+// incomplete leaves to do.
+async function runAgain(job, btn) {
+  // The agent of this job, as the config has it now, or as the job ran.
+  if (!confirmPublishing(job.agent, [job.pr.key], job.posts)) return;
+  btn.disabled = true;
+  clearAlert();
+  try {
+    const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs: [job.pr.key], agent: job.agent }) });
+    (res.jobs || []).forEach(upsertJob);
+    if (res.errors && res.errors.length) banner(res.errors.join('\n'));
+    if (res.jobs && res.jobs.length) {
+      state.activeJob = res.jobs[0].id;
+      renderJobs();
+    }
+  } catch (err) {
+    alertError('Could not run it again: ' + err.message);
+    btn.disabled = false;
   }
 }
 
@@ -795,11 +922,12 @@ async function publishSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}`)) return;
+  if (!confirm(`Publish this saved review on ${alvo} with inline comments?\n\nThe agent runs to publish what is in the file — it does not review again.${skipNote(skip)}${changedNote(alvo)}${shortNote(state.savedShort[name])}${doubtNote(state.savedDoubt[name])}${inlineConfirm(state.savedInline[name])}`)) return;
   btn.disabled = true;
   clearAlert();
   try {
-    const job = await api('/api/reviews/' + encodeURIComponent(name) + '/publish', { method: 'POST', body: JSON.stringify({ skip }) });
+    const job = await savedDoor(name, 'publish', skip);
+    if (!job) { btn.disabled = false; return; }
     upsertJob(job);
     state.tab = 'queue';
     state.activeJob = job.id;
@@ -813,18 +941,42 @@ async function publishSaved(name, btn) {
   }
 }
 
+// savedDoor posts to one of the Saved tab's doors. When the server cannot tell
+// whether this file is the review that already went to the PR, it asks, and
+// only a yes sends it; a no returns null.
+async function savedDoor(name, door, skip) {
+  return askedDoor('/api/reviews/' + encodeURIComponent(name) + '/' + door, skip);
+}
+
+// askedDoor posts to a door to the PR; when the server cannot tell whether the
+// review already went (a send that never said how it ended, or a file from
+// before the record), it asks, and only a yes sends. A no returns null.
+async function askedDoor(path, skip) {
+  try {
+    return await api(path, { method: 'POST', body: JSON.stringify({ skip }) });
+  } catch (err) {
+    if (!err.confirm) throw err;
+    if (!confirm(`${err.message}.\n\nSend it to the PR again?`)) return null;
+    return api(path, { method: 'POST', body: JSON.stringify({ skip, again: true }) });
+  }
+}
+
 // commentSaved pastes the saved review on the PR, with no agent.
 async function commentSaved(name, btn) {
   const entry = state.saved.find((x) => x.name === name);
   const alvo = entry ? `${entry.repo}#${entry.number}` : 'the PR';
   const skip = skipList(pickKey('saved', name));
-  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo))) return;
+  if (!confirm(`Paste this saved review as a comment on ${alvo}?` + skipNote(skip) + changedNote(alvo) + shortNote(state.savedShort[name]) + doubtNote(state.savedDoubt[name]))) return;
   btn.disabled = true;
   const antes = btn.textContent;
   btn.textContent = 'publishing…';
   clearAlert();
   try {
-    await api('/api/reviews/' + encodeURIComponent(name) + '/comment', { method: 'POST', body: JSON.stringify({ skip }) });
+    if (!(await savedDoor(name, 'comment', skip))) {
+      btn.disabled = false;
+      btn.textContent = antes;
+      return;
+    }
     btn.textContent = '✓ commented on ' + alvo;
     loadPRs(false);
   } catch (err) {
@@ -1091,7 +1243,7 @@ function refreshPickSummary(s = document.querySelector('#viewer .pick-summary'))
   // With every finding out, only a verdict over an empty list would go.
   for (const id of ['paste-comment', 'publish-inline', 'saved-publish', 'saved-comment']) {
     const b = document.querySelector(`#viewer [data-testid=${id}]`);
-    if (!b) continue;
+    if (!b || b.dataset.locked) continue;
     b.disabled = total > 0 && !kept;
     if (b.disabled) b.title = 'every finding is unticked: there is nothing to publish';
   }
@@ -1598,15 +1750,26 @@ function renderPRs() {
     // and ticking for review has a target of its own.
     row.addEventListener('click', () => openPR(pr.key));
 
-    // Two lines, as the design draws them: the title, then the repository and
-    // number with one state tag on the right — reviewing, changed or
-    // reviewed. Everything else about the PR (author, size, age, draft,
-    // approvals) is in the row's tooltip and in its Overview.
+    // Two lines, as the design draws them: the title, then the repository,
+    // number and author with one state tag on the right — reviewing, changed
+    // or reviewed. Short of room the author gives way first, then the
+    // repository; the tag never does. Everything else about the PR (size, age,
+    // draft, approvals) is in the row's tooltip and in its Overview.
     const main = el('div', 'pr-main');
     const sub = el('div', 'pr-sub');
-    sub.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
+    const meta = el('span', 'meta');
+    meta.append(el('span', 'repo', `${pr.slug} #${pr.number}`));
+    if (pr.author) {
+      const who = tid(el('span', 'author' + (pr.mine ? ' mine' : ''), '@' + pr.author), 'pr-author', { mine: !!pr.mine });
+      who.dir = 'auto';
+      if (pr.mine) who.title = 'your PR';
+      meta.append(el('span', 'sep', ' · '), who);
+    }
+    sub.append(meta);
     const tag = prStateTag(pr);
     if (tag) sub.append(tag);
+    const threads = openThreadsTag(pr);
+    if (threads) sub.append(threads);
     // The title is the keyboard way in: the row's click opens the PR, and the
     // checkbox next to it stays its own control.
     const title = operable(el('span', 'title', pr.title), `open ${pr.key}: ${pr.title}`, () => openPR(pr.key));
@@ -1685,6 +1848,7 @@ function prStateTag(pr) {
 
 function toggle(key, on) {
   if (on) state.selected.add(key); else state.selected.delete(key);
+  state.threadsReminded = [];
   renderPRs();
 }
 
@@ -1697,6 +1861,7 @@ function updateReviewButton() {
     ? 'no agents configured — go to "config" and build the list out of your skills'
     : 'runs the chosen agent over the ticked PRs';
   btn.textContent = n > 1 ? `▶ Review ${n}` : '▶ Review';
+  fillThreadsNote();
 }
 
 // togglePRs collapses the left list down to the hamburger strip and brings it
@@ -1721,6 +1886,7 @@ function renderTabs() {
     t.classList.toggle('on', t.dataset.tab === state.tab);
     t.setAttribute('aria-selected', String(t.dataset.tab === state.tab));
   });
+  $('#summary').hidden = true; // renderJobs shows it again, on the queue
   if (state.tab === 'saved') loadSaved(); else renderJobs();
 }
 
@@ -1795,90 +1961,132 @@ function cardRepo(job) {
 }
 
 function renderJobs() {
-  const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
   $('#queue-count').textContent = String(state.jobs.length);
+  $('#summary').hidden = state.tab !== 'queue' || !state.jobs.some((j) => !j.history);
   renderSpend();
-  document.title = active ? `(${active}) Bazel` : 'Bazel';
+  setTitle();
   if (state.tab !== 'queue') return;
 
+  // The rail updates every second while a job runs. The cards stay the same
+  // nodes and only what changed is written: a card recreated under the pointer
+  // loses the click whose press and release straddle the update (BUG-QA-28), and
+  // whoever is on a card with the keyboard keeps the focus.
   const rail = $('#rail');
-  const scroll = rail.scrollLeft;
-  // The rail is rebuilt every second while a job runs. Whoever is on a card
-  // (or its ✕) with the keyboard keeps their place: note it and put the focus
-  // back on the same element of the rebuilt card (review F2).
+  // The cards of jobs that left go first: with one still in place, every card
+  // after it would be moved, and a moved card drops the focus it held.
+  const live = new Set(state.jobs.map((j) => j.id));
+  const old = new Map();
+  for (const c of [...rail.children]) {
+    if (live.has(c.dataset.jobId)) old.set(c.dataset.jobId, c);
+    else c.remove();
+  }
   const focused = rail.contains(document.activeElement) ? document.activeElement : null;
-  const focusCard = focused && focused.closest('.card') ? focused.closest('.card').dataset.jobId : null;
-  const focusX = !!(focused && focused.classList.contains('card-x'));
-  rail.innerHTML = '';
-  // A card is a summary: which PR, what runs over it, how far it got. The
-  // actions (cancel, publish, comment, keep it here) live in the job's detail,
-  // next to what they act on.
+  let at = rail.firstElementChild;
   for (const job of state.jobs) {
-    const card = el('div', 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (state.activeJob === job.id ? ' on' : ''));
-    tid(card, 'job-card', { jobId: job.id, state: job.state, prKey: job.pr.key });
-    // A named group that takes the keyboard too: Enter or Space opens it, like a click.
-    card.setAttribute('role', 'group');
-    card.setAttribute('aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
-    card.tabIndex = 0;
-    card.addEventListener('click', () => openJob(job.id));
-    card.addEventListener('keydown', (e) => {
-      if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openJob(job.id); }
-    });
-
-    const top = el('div', 'card-top');
-    top.append(el('span', 'dot'), el('span', 'card-ref', `${cardRepo(job)} #${job.pr.number}`));
-    const sp = el('div', 'spacer');
-    const x = tid(el('button', 'card-x', '✕'), 'job-remove');
-    x.title = 'drop from the queue';
-    x.setAttribute('aria-label', 'drop from the queue');
-    x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(job.id, x); });
-    top.append(sp, x);
-    const title = el('div', 'title', job.pr.title);
-    title.dir = 'auto';
-    card.append(top, title);
-    const ran = ranOn(job);
-    if (ran) card.append(tid(el('div', 'card-ran', ran), 'job-ran'));
-
-    // The design's card is the dot, repo #n, ✕, the title and the bar. State,
-    // agent and spend go to the tooltip and to the detail; the state stays in
-    // the card as screen-reader text, so the card still says it out loud.
-    const meta = el('div', 'sr-only');
-    meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
-    if (job.agent) meta.append(el('span', null, ' · ' + job.agent));
-    if (job.posted) meta.append(tid(el('span', null, ' ✓ published'), 'job-published'));
-    const custo = gasto(job);
-    if (custo) meta.append(tid(el('span', 'tokens', ' · ' + custo), 'job-tokens', { partial: !!job.tokens_partial }));
-    card.title = [
-      `${job.pr.key} — ${job.pr.title}`,
-      label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
-      job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
-      custo,
-    ].filter(Boolean).join('\n');
-    card.append(meta, progressBar(job));
-    rail.append(card);
+    let card = old.get(job.id);
+    if (!card) card = newCard(job.id);
+    fillCard(card, job);
+    if (card !== at) rail.insertBefore(card, at);
+    else at = at.nextElementSibling;
   }
-  rail.scrollLeft = scroll;
-  if (focusCard) {
-    const card = [...rail.querySelectorAll('.card')].find((c) => c.dataset.jobId === focusCard);
-    const target = card && (focusX ? card.querySelector('.card-x') : card);
-    if (target) target.focus({ preventScroll: true });
-  }
+  // A card that did move (the order changed) takes its focus along.
+  if (focused && document.activeElement !== focused && rail.contains(focused)) focused.focus({ preventScroll: true });
 }
 
-// progressBar is the card's bar: the share of steps already finished, a moving
-// stripe while a lone step runs, and full once the job is over.
-function progressBar(job) {
+// newCard is a job's card with its controls, empty of the job: fillCard writes
+// that. A card is a summary: which PR, what runs over it, how far it got. The
+// actions (cancel, publish, comment, keep it here) live in the job's detail,
+// next to what they act on.
+function newCard(id) {
+  const card = el('div', 'card');
+  tid(card, 'job-card', { jobId: id });
+  // A named group that takes the keyboard too: Enter or Space opens it, like a click.
+  card.setAttribute('role', 'group');
+  card.tabIndex = 0;
+  card.addEventListener('click', () => openJob(id));
+  card.addEventListener('keydown', (e) => {
+    if (e.target === card && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); openJob(id); }
+  });
+  const top = el('div', 'card-top');
+  const x = tid(el('button', 'card-x', '✕'), 'job-remove');
+  x.title = 'drop from the queue';
+  x.setAttribute('aria-label', 'drop from the queue');
+  x.addEventListener('click', (e) => { e.stopPropagation(); removeJob(id, x); });
+  const badge = tid(el('span', 'card-verdict'), 'job-verdict');
+  badge.hidden = true;
+  top.append(el('span', 'dot'), el('span', 'card-ref'), el('div', 'spacer'), badge, x);
+  const title = el('div', 'title');
+  title.dir = 'auto';
   const bar = el('div', 'progress');
-  const fill = el('span');
+  bar.append(el('span'));
+  card.append(top, title, el('div', 'sr-only'), bar);
+  return card;
+}
+
+// setText writes text only when it changed: a write is a mutation, and the rail
+// updates every second.
+function setText(node, text) {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function setAttr(node, name, value) {
+  if (node.getAttribute(name) !== value) node.setAttribute(name, value);
+}
+
+// fillCard writes the job into its card, in place.
+function fillCard(card, job) {
+  const cls = 'card ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : '')
+    + (job.inline_issue && !job.incomplete ? ' inline-issue' : '') + (state.activeJob === job.id ? ' on' : '');
+  if (card.dataset.inlineIssue !== String(!!job.inline_issue)) card.dataset.inlineIssue = String(!!job.inline_issue);
+  if (card.className !== cls) card.className = cls;
+  if (card.dataset.state !== job.state) card.dataset.state = job.state;
+  if (card.dataset.prKey !== job.pr.key) card.dataset.prKey = job.pr.key;
+  setAttr(card, 'aria-label', `${job.pr.key} ${job.pr.title} — ${label(job)}`);
+  setText(card.querySelector('.card-ref'), `${cardRepo(job)} #${job.pr.number}`);
+  fillVerdictBadge(card.querySelector('.card-verdict'), job);
+  setText(card.querySelector(':scope > .title'), job.pr.title);
+  const ranText = ranOn(job) || '';
+  let ran = card.querySelector(':scope > .card-ran');
+  if (ranText && !ran) {
+    ran = tid(el('div', 'card-ran'), 'job-ran');
+    card.querySelector(':scope > .title').after(ran);
+  }
+  if (ran && !ranText) ran.remove();
+  if (ran && ranText) setText(ran, ranText);
+
+  // The design's card is the dot, repo #n, ✕, the title and the bar. State,
+  // agent and spend go to the tooltip and to the detail; the state stays in
+  // the card as screen-reader text, so the card still says it out loud.
+  const meta = el('div', 'sr-only');
+  meta.append(tid(fillState(el('span', 'state ' + job.state), job), 'job-state'));
+  if (job.agent) meta.append(el('span', null, ' · ' + job.agent));
+  if (job.posted) meta.append(tid(el('span', null, ' ✓ published'), 'job-published'));
+  const custo = gasto(job);
+  if (custo) meta.append(tid(el('span', 'tokens', ' · ' + custo), 'job-tokens', { partial: !!job.tokens_partial }));
+  const oldMeta = card.querySelector(':scope > .sr-only');
+  if (oldMeta.innerHTML !== meta.innerHTML) oldMeta.replaceChildren(...meta.childNodes);
+  setAttr(card, 'title', [
+    `${job.pr.key} — ${job.pr.title}`,
+    label(job) + (job.agent ? ` · ${job.agent}${job.pipeline ? ' ⛓' : ''}` : ''),
+    job.publishing ? '⇧ publishing' : job.posts ? '⇧ publishes to the PR on its own' : job.posted ? '✓ published' : '',
+    job.inline_issue ? '⚠ not in the inline format: ' + job.inline_issue : '',
+    job.since ? '↻ changes since ' + job.since.slice(0, 7) : '',
+    custo,
+  ].filter(Boolean).join('\n'));
+  fillProgress(card.querySelector(':scope > .progress'), job);
+}
+
+// fillProgress writes the card's bar, in place: the share of steps already
+// finished, a moving stripe while a lone step runs, and full once the job is over.
+function fillProgress(bar, job) {
+  const fill = bar.firstElementChild;
   const steps = job.steps || [];
   const finished = steps.filter((s) => s.state === 'done' || s.state === 'failed').length;
   let pct = 0;
   if (job.state === 'done' || job.state === 'failed' || job.state === 'canceled') pct = 100;
   else if (job.state === 'running' && steps.length > 1) pct = Math.max(6, Math.round((100 * finished) / steps.length));
-  else if (job.state === 'running') bar.classList.add('indeterminate');
-  fill.style.width = pct + '%';
-  bar.append(fill);
-  return bar;
+  bar.classList.toggle('indeterminate', job.state === 'running' && steps.length <= 1);
+  if (fill.style.width !== pct + '%') fill.style.width = pct + '%';
 }
 
 // jobSeconds counts from started_at while the job runs, so the clock doesn't
@@ -1897,8 +2105,8 @@ function labelParts(job) {
     case 'queued': return ['queued', ''];
     case 'paused': return ['paused', ''];
     case 'running': return ['running', jobSeconds(job) + 's'];
-    case 'done': return waiting(job)
-      ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
+    case 'done': return job.incomplete ? ['incomplete', '']
+      : waiting(job) ? ['waiting on you', ''] : ['done in', job.seconds + 's'];
     case 'failed': return ['failed', ''];
     case 'canceled': return ['canceled', ''];
     default: return [job.state, ''];
@@ -1916,6 +2124,7 @@ function fillState(span, job) {
   // Waiting for you to publish is only half an ending: the warning color is
   // what sets the card apart from reviews that ask for nothing more.
   if (waiting(job)) span.classList.add('awaits');
+  if (job.incomplete) span.classList.add('incomplete');
   span.append(document.createTextNode(texto));
   if (tempo) span.append(document.createTextNode(' '), el('span', 'dur', tempo));
   return span;
@@ -1933,7 +2142,13 @@ function renderSaved() {
     const list = el('div', 'saved-list');
     for (const s of state.saved) {
       const row = tid(el('div', 'saved'), 'saved-row', { name: s.name });
-      row.append(el('div', 'saved-title', s.title || s.name),
+      const title = el('div', 'saved-title', s.title || s.name);
+      if (s.inline_issue) {
+        const t = tid(el('span', 'tag stale', 'not inline'), 'saved-inline-issue');
+        t.title = 'not in the format Publish (inline) accepts: ' + s.inline_issue;
+        title.append(' ', t);
+      }
+      row.append(title,
         el('div', 'name', [s.agent, s.ran, new Date(s.mod_time).toLocaleString(), s.name].filter(Boolean).join(' · ')));
       row.addEventListener('click', () => openSaved(s.name));
       operable(row, `open saved review ${s.title || s.name}`, () => openSaved(s.name));
@@ -2025,7 +2240,7 @@ function renderViewer() {
 // pillText is the word in the detail's state pill, as the design writes it:
 // Running, Ready… The clock goes to its tooltip.
 function pillText(job) {
-  if (job.state === 'done') return waiting(job) ? 'Waiting on you' : 'Ready';
+  if (job.state === 'done') return job.incomplete ? 'Incomplete' : waiting(job) ? 'Waiting on you' : 'Ready';
   return { queued: 'Queued', running: 'Running', failed: 'Failed', canceled: 'Canceled', paused: 'Paused' }[job.state] || job.state;
 }
 
@@ -2042,7 +2257,7 @@ function jobHead(job) {
   heading.dir = 'auto';
   grow.append(kicker, heading);
   if (job.history && state.historyCustom) grow.append(historyCustomNote());
-  const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : ''), pillText(job));
+  const pill = el('span', 'state state-pill ' + job.state + (waiting(job) ? ' awaits' : '') + (job.incomplete ? ' incomplete' : ''), pillText(job));
   pill.title = label(job);
   head.append(grow, pill);
   if (job.state === 'paused') {
@@ -2184,6 +2399,13 @@ function renderPRPage(body, pr, job, redraw) {
   merge.append(el('b', null, pr.author), document.createTextNode(` wants to merge ${d ? commits.length + ' commit' + (commits.length === 1 ? '' : 's') : 'its commits'} into `),
     el('code', null, pr.base || listed.base || ''), document.createTextNode(' from '), el('code', null, pr.branch || listed.branch || ''));
   main.append(merge);
+  // Deciding by hand, on the head the list read: on a PR Bazel never reviewed,
+  // one that moved since the decision, or one already decided by hand.
+  const v = verdictOf(pr.key);
+  const reviewedHere = listed.reviewed || state.jobs.some((j) => j.pr.key === pr.key && !j.history && j.has_body);
+  if (listed.head_oid && ((v && (v.moved || v.source === 'manual')) || (!v && !reviewedHere))) {
+    main.append(prVerdictBar(pr.key, listed.head_oid));
+  }
   if (listed.changed_since_review) {
     main.append(el('div', 'stale-box', `This PR changed after the review from ${ago(listed.reviewed_at)}`
       + (listed.review_agent ? ` (${listed.review_agent})` : '') + ' — what is here is no longer what the agent read.'));
@@ -2196,6 +2418,30 @@ function renderPRPage(body, pr, job, redraw) {
     const p = tid(el('p', 'dim perr'), 'pr-error');
     p.append(document.createTextNode('Could not read the rest of the PR from GitHub: ' + err + ' '), retryButton('details', pr.key, redraw));
     main.append(p);
+  }
+
+  // What you asked on this PR that nobody resolved yet, with the last word.
+  const mine = threadsOf(pr.key);
+  if (mine.length) {
+    const label = sectionLabel('Your open threads');
+    if (staleOf(pr.key)) label.append(' ', tid(el('span', 'dim', staleNote(pr.key)), 'threads-stale'));
+    main.append(label);
+    const ul = tid(el('ul', 'open-threads'), 'pr-open-threads-list');
+    for (const t of mine) {
+      const li = tid(el('li'), 'pr-open-thread', { path: t.path || '' });
+      li.append(threadLink(t));
+      if (t.outdated) li.append(' ', el('span', 'tag stale', 'outdated'));
+      if (t.author_replied) li.append(' ', tid(el('span', 'tag approved', 'author replied'), 'thread-author-replied'));
+      if (t.more) li.append(' ', tid(el('span', 'dim', `+${t.more} more`), 'thread-more'));
+      if (t.last) {
+        const q = el('p', 'dim thread-last');
+        q.dir = 'auto';
+        q.textContent = `@${t.last.author}: ${t.last.body}`;
+        li.append(q);
+      }
+      ul.append(li);
+    }
+    main.append(ul);
   }
 
   // ACTIVITY: opened, each commit, and Bazel's reviews of it.
@@ -2477,6 +2723,10 @@ function renderReportView(v, job) {
   }
   const moved = job.publishable === false ? null : reportChanged(job.pr.key);
   if (moved) v.append(moved);
+  if (job.incomplete) v.append(incompleteNote(job.incomplete));
+  else if (job.short) v.append(shortBox());
+  if (!job.incomplete && job.doubt) v.append(doubtBox(job.doubt));
+  if (!job.incomplete && job.inline_issue && job.publishable !== false) v.append(inlineNote(job.inline_issue));
   // It ended on a `publish`: the pipeline sent nothing, and this is where you
   // choose what goes. Saying so before the review is what makes you read it
   // as the one who decides, not as someone who only checks.
@@ -2526,6 +2776,12 @@ function renderReportView(v, job) {
     // PR on the right — a plain comment, and Publish with inline comments.
     const bar = el('div', 'viewer-actions');
     bar.append(total ? pickSummary(key, total) : el('span', 'dim', 'no findings to pick'), el('div', 'spacer'));
+    if (job.incomplete) {
+      const again = tid(el('button', 'btn primary', '↻ Run again'), 'run-again');
+      again.title = `runs "${job.agent}" over ${job.pr.key} again`;
+      again.addEventListener('click', () => runAgain(job, again));
+      bar.append(again);
+    }
     if (waiting(job)) {
       const keep = tid(el('button', 'btn ghost', 'Keep it here'), 'keep-here');
       keep.title = 'nothing goes to the PR; the review stays in Bazel, and in the Saved tab';
@@ -2541,13 +2797,15 @@ function renderReportView(v, job) {
       bar.append(cm);
     }
     if (!job.posted) {
-      const pub = tid(el('button', 'btn primary', '↗ Publish'), 'publish-inline');
+      const pub = tid(el('button', job.incomplete ? 'btn ghost' : 'btn primary', '↗ Publish'), 'publish-inline');
       pub.title = 'runs the post skill and publishes to the PR with inline comments';
       pub.addEventListener('click', () => publishJob(job.id, pub));
       bar.append(pub);
     }
+    if (job.incomplete) lockPublish(bar, job.incomplete);
     actionBar = bar;
   }
+  if (!job.history) v.append(verdictBar(job.pr.key, `/api/jobs/${encodeURIComponent(job.id)}/verdict`));
   if (job.post_error) v.append(tid(el('div', 'error-box', 'failed to publish: ' + job.post_error), 'post-error'));
 
   // What the review cost, at its end — which is where you arrive after reading.
@@ -2581,7 +2839,12 @@ function renderReportView(v, job) {
 // --- bindings ---
 
 function wire() {
-  $('#refresh').addEventListener('click', () => loadPRs(true));
+  $('#refresh').addEventListener('click', () => { loadPRs(true); loadNeeds(true); });
+  $('#summary').addEventListener('click', openSummary);
+  $('#summary-copy').addEventListener('click', copySummary);
+  $('#summary-close').addEventListener('click', () => $('#summary-dialog').close());
+  $('#needs-watched').addEventListener('click', () => { state.needsAll = false; loadNeeds(false); });
+  $('#needs-all').addEventListener('click', () => { state.needsAll = true; loadNeeds(false); });
   $('#run').addEventListener('click', startReview);
   $('#agent').addEventListener('change', (e) => {
     state.agent = e.target.value;
@@ -2666,12 +2929,21 @@ function wire() {
   $('#config-download').addEventListener('click', () => { window.location.href = '/api/config/file'; });
 
   document.addEventListener('keydown', (e) => {
+    // A key typed into a field, or inside an open dialog, is that field's: "/"
+    // is part of the URL being edited in the Summary, not a jump to the search.
+    if (typing(e.target)) return;
     // Escape on the config goes back to the dashboard: it is what the modal did,
     // and the fingers of those who already used Bazel still know it.
     if (e.key === 'Escape' && pageFromHash() === 'config') location.hash = '#/';
     if (e.key === '/' && document.activeElement !== $('#filter')) { e.preventDefault(); $('#filter').focus(); }
     if (e.key === 'r' && (e.metaKey || e.ctrlKey)) return;
   });
+}
+
+// typing says the key goes to something that takes text, or to an open dialog.
+function typing(t) {
+  return t instanceof Element
+    && !!t.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"]), dialog[open]');
 }
 
 // renderAgentList is the config's agent list: what each one calls, whether the
@@ -3129,19 +3401,218 @@ async function loadSkills() {
 // Reloading the tab at #/config opens straight into the config, which is what
 // you expect from a real page.
 function pageFromHash() {
-  return location.hash.replace(/^#\/?/, '') === 'config' ? 'config' : 'dashboard';
+  const page = location.hash.replace(/^#\/?/, '');
+  return page === 'config' || page === 'needs' ? page : 'dashboard';
 }
 
 async function showPage(nome) {
   $('#page-dashboard').hidden = nome !== 'dashboard';
   $('#page-config').hidden = nome !== 'config';
+  $('#page-needs').hidden = nome !== 'needs';
   for (const a of document.querySelectorAll('#nav a')) {
     a.classList.toggle('on', a.dataset.page === nome);
   }
-  document.title = nome === 'config' ? 'Bazel · config' : 'Bazel';
+  setTitle();
   // The config is read from disk on every visit: it changes from outside —
   // another tab, an editor — and showing what was in memory would be lying.
   if (nome === 'config') await refreshConfig();
+  if (nome === 'needs') loadNeeds(false);
+}
+
+// --- needs you ---
+//
+// The PRs where you have something to do. One read of GitHub answers the page
+// for both scopes; the server keeps it a minute, and ↻ reads it again.
+const NEEDS_GROUPS = [
+  ['requested', 'Review requested from you'],
+  ['replied', 'You asked for changes — the author answered'],
+  ['waiting', 'You asked for changes — waiting for the author'],
+  ['yours', 'Your PRs'],
+];
+
+// actionable is what asks something of you: waiting on the author does not.
+// The server counts it over the watched repos, whatever scope the page shows.
+const needsActionable = () => (state.needs ? state.needs.count || 0 : 0);
+
+// setTitle is the tab's title for the page open: the queue counts on the
+// dashboard, Needs you counts its own, and neither writes over the other.
+function setTitle() {
+  const page = pageFromHash();
+  if (page === 'needs') {
+    document.title = needsTitle();
+  } else if (page === 'config') {
+    document.title = 'Bazel · config';
+  } else {
+    const active = state.jobs.filter((j) => j.state === 'queued' || j.state === 'running').length;
+    document.title = active ? `(${active}) Bazel` : 'Bazel';
+  }
+}
+
+// retryNote says when the server reads GitHub again after a failure: ↻ before
+// then shows the same list.
+const retryNote = (at) => (at ? `. Next try at ${new Date(at).toLocaleTimeString()}; ↻ before that reads nothing new.` : '');
+
+function needsTitle() {
+  const n = needsActionable();
+  return n ? `(${n}) Bazel · needs you` : 'Bazel · needs you';
+}
+
+async function loadNeeds(force) {
+  // Only the latest request draws: an answer for the scope you just left, or an
+  // error of an older read, arriving late must not show.
+  const gen = ++state.needsGen;
+  const all = !!state.needsAll;
+  try {
+    const data = await api('/api/needs?' + (force ? 'refresh=1' : '') + (all ? '&all=1' : ''));
+    if (gen !== state.needsGen || !!data.all !== all) return;
+    state.needsError = '';
+    // Drawn only when it changed: a refresh that brings the same list leaves
+    // the page as it is, without a flicker.
+    const sig = JSON.stringify(data.items) + data.truncated + data.elsewhere + data.all + data.stale + data.retry_at;
+    if (sig === state.needsSig) return;
+    state.needsSig = sig;
+    state.needs = data;
+    for (const it of data.items) state.needsPRs[it.key] = it;
+  } catch (err) {
+    if (gen !== state.needsGen) return;
+    state.needsError = err.message + retryNote(err.body && err.body.retry_at);
+    state.needsSig = '';
+  }
+  renderNeeds();
+}
+
+function renderNeeds() {
+  const count = $('#needs-count');
+  const n = needsActionable();
+  count.hidden = !n;
+  count.textContent = String(n);
+  setTitle();
+  $('#needs-watched').setAttribute('aria-pressed', String(!state.needsAll));
+  $('#needs-all').setAttribute('aria-pressed', String(!!state.needsAll));
+  const list = $('#needs-list');
+  const note = $('#needs-note');
+  if (state.needsError) {
+    list.replaceChildren(tid(el('div', 'error-box', 'Could not read GitHub: ' + state.needsError), 'needs-error'));
+    note.textContent = '';
+    return;
+  }
+  const data = state.needs;
+  if (!data) {
+    list.replaceChildren(el('p', 'dim', 'loading…'));
+    return;
+  }
+  note.textContent = [
+    data.elsewhere ? `${data.elsewhere} more in repos you don't watch` : '',
+    data.truncated ? 'GitHub has more than these: the oldest are not shown' : '',
+  ].filter(Boolean).join(' · ');
+  const nodes = [];
+  // The last read failed: the list is the last good one, and says so.
+  if (data.stale) {
+    nodes.push(tid(el('div', 'stale-box', `Could not read GitHub, so this list is from ${new Date(data.fetched_at).toLocaleTimeString()}: ${data.stale}`
+      + retryNote(data.retry_at)), 'needs-stale'));
+  }
+  for (const [cat, label] of NEEDS_GROUPS) {
+    const items = data.items.filter((i) => i.category === cat);
+    if (!items.length) continue;
+    const group = tid(el('div', 'needs-group ' + cat), 'needs-group', { category: cat });
+    // h3 under the page's h2: the levels do not skip.
+    const head = sectionLabel(label, String(items.length));
+    const h3 = el('h3', head.className);
+    h3.append(...head.childNodes);
+    group.append(h3);
+    for (const it of items) group.append(needsRow(it));
+    nodes.push(group);
+  }
+  if (!nodes.length) {
+    nodes.push(tid(el('p', 'empty', data.all ? 'Nothing needs you right now.' : 'Nothing needs you in the repos you watch.'), 'needs-empty'));
+  }
+  list.replaceChildren(...nodes);
+}
+
+// needsRow is a row of the sidebar's list: the title, then repo #n · @author,
+// and the reason with how long ago it happened.
+function needsRow(it) {
+  const row = tid(el('div', 'pr'), 'needs-row', { prKey: it.key, category: it.category });
+  const main = el('div', 'pr-main');
+  const title = operable(el('span', 'title', it.title), `open ${it.key}: ${it.title}`, () => openNeeds(it.key));
+  title.dir = 'auto';
+  const sub = el('div', 'pr-sub');
+  const meta = el('span', 'meta');
+  meta.append(el('span', 'repo', `${it.watched ? it.slug : it.repo} #${it.number}`));
+  if (it.author) {
+    const who = el('span', 'author' + (it.mine ? ' mine' : ''), '@' + it.author);
+    who.dir = 'auto';
+    meta.append(el('span', 'sep', ' · '), who);
+  }
+  sub.append(meta);
+  if (it.draft) sub.append(el('span', 'tag draft', 'draft'));
+  const why = tid(el('span', 'why', it.reason), 'needs-reason');
+  why.append(el('span', 'age', ' · ' + ago(it.since_age)));
+  main.append(title, sub, why);
+  row.title = `${it.key} — ${it.title}\n${it.reason}`;
+  row.addEventListener('click', () => openNeeds(it.key));
+  row.append(main);
+  if (it.category !== 'yours' && it.changed_since_review) row.append(sinceButton(it.key));
+  // Your own PR has nothing for an agent to review on your behalf.
+  if (it.category !== 'yours') {
+    const go = tid(el('button', 'btn small', '▶ Review'), 'needs-review', { prKey: it.key });
+    go.title = `runs ${state.agent || 'the default agent'} over ${it.key}`;
+    go.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      go.disabled = true;
+      location.hash = '#/';
+      await reviewRefs([it.key], true);
+      go.disabled = false;
+    });
+    row.append(go);
+  }
+  return row;
+}
+
+// sinceButton reviews what changed in a PR since the head of its last review,
+// with the agent picked in the sidebar. The server finds that head; when the
+// branch was rewritten since, the agent reviews the whole PR and says so.
+function sinceButton(key) {
+  const b = tid(el('button', 'btn small', '↻ Review changes since last review'), 'review-since', { prKey: key });
+  b.title = `runs ${state.agent || 'the default agent'} over what ${key} got since it was last reviewed`;
+  b.addEventListener('click', async (e) => {
+    e.stopPropagation();
+    if (!confirmPublishing(state.agent, [key])) return;
+    b.disabled = true;
+    clearAlert();
+    try {
+      const res = await api('/api/reviews', { method: 'POST', body: JSON.stringify({ refs: [key], agent: state.agent, since: true }) });
+      (res.jobs || []).forEach(upsertJob);
+      if (res.errors && res.errors.length) banner(res.errors.join('\n'));
+      if (res.jobs && res.jobs.length) {
+        location.hash = '#/';
+        state.tab = 'queue';
+        state.activeJob = res.jobs[0].id;
+        state.activePR = null;
+        renderTabs();
+        renderJobs();
+      }
+    } catch (err) {
+      alertError('Could not start the review: ' + err.message);
+    } finally {
+      b.disabled = false;
+    }
+  });
+  return b;
+}
+
+// openNeeds opens the PR's page on the dashboard, in its Overview. A PR outside
+// the watched list is read from GitHub on purpose, like any other opened one.
+function openNeeds(key) {
+  location.hash = '#/';
+  // Shown now, not when hashchange gets to it: a hidden page takes no focus.
+  showPage('dashboard');
+  openPR(key);
+  // The keyboard lands on what opened, not on <body>: the viewer stays the same
+  // element while the PR's page loads into it.
+  const viewer = $('#viewer');
+  if (!viewer.hasAttribute('tabindex')) viewer.tabIndex = -1;
+  viewer.focus({ preventScroll: true });
 }
 
 function route() {
@@ -3234,3 +3705,305 @@ async function removeRepo(repo, btn) {
 }
 
 boot();
+
+// --- decisions ---
+
+// Your decision on a PR after reading its review. It stays in Bazel: nothing
+// here calls GitHub. The summary turns the queue's decisions into the lines
+// you paste into Slack.
+const VERDICTS = [
+  { id: 'approve', label: '✅ Approve', badge: '✅' },
+  { id: 'approve_with_comments', label: '📝✅ Approve with comments', badge: '📝✅' },
+  { id: 'request_changes', label: '🔄 Request changes', badge: '🔄' },
+];
+const verdictOf = (key) => state.verdicts[(key || '').toLowerCase()] || null;
+
+// prDoor is where a decision by hand goes: the server puts it on the head its
+// list says the PR is at, whatever head this page last saw.
+function prDoor(key) {
+  const [repo, number] = key.split('#');
+  return `/api/prs/${repo.split('/').map(encodeURIComponent).join('/')}/${number}/verdict`;
+}
+
+// verdictRow is three decision buttons. mode "review" decides on the head the
+// review read, through its door; "current" decides by hand on the PR's
+// current head. prefix names their testids.
+function verdictRow(key, door, mode, prefix, label) {
+  const row = el('div', 'verdict-row');
+  Object.assign(row.dataset, { prKey: key, door, mode });
+  row.setAttribute('role', 'group');
+  row.setAttribute('aria-label', (mode === 'current' ? 'decide on the current head of ' : 'your decision on ') + key);
+  row.append(tid(el('span', 'dim', label), prefix + 'label'));
+  for (const it of VERDICTS) {
+    const b = tid(el('button', 'btn small', it.label), prefix + it.id);
+    b.dataset.verdict = it.id;
+    b.addEventListener('click', () => pickVerdict(row, it.id));
+    row.append(b);
+  }
+  return row;
+}
+
+// verdictBar is the three buttons under a report. door is where the click goes:
+// the job's, or the saved file's, which knows the head that review read. Once
+// the PR moved past the decision, a second row decides on its current head,
+// with no new review.
+function verdictBar(key, door) {
+  const bar = tid(el('div', 'verdict-bar'), 'verdict-bar', { prKey: key });
+  bar.dataset.door = door;
+  bar.append(verdictRow(key, door, 'review', 'verdict-', 'Your decision:'),
+    tid(el('span', 'verdict-moved'), 'verdict-moved'),
+    verdictRow(key, prDoor(key), 'current', 'verdict-current-', ''));
+  fillVerdictBar(bar);
+  return bar;
+}
+
+// prVerdictBar is the decision on the PR's page, on its current head: for a PR
+// Bazel never reviewed (you may have read it yourself), one that moved since
+// the decision, or one decided by hand.
+function prVerdictBar(key, head) {
+  const bar = tid(el('div', 'verdict-bar'), 'pr-verdict', { prKey: key });
+  bar.dataset.always = '1';
+  bar.dataset.head = head;
+  bar.append(verdictRow(key, prDoor(key), 'current', 'pr-verdict-', ''));
+  fillVerdictBar(bar);
+  return bar;
+}
+
+function fillVerdictBar(bar) {
+  const v = verdictOf(bar.dataset.prKey);
+  const always = !!bar.dataset.always;
+  for (const row of bar.querySelectorAll('.verdict-row')) {
+    const current = row.dataset.mode === 'current';
+    if (current) {
+      row.hidden = !always && !(v && v.moved);
+      const head = (v && v.current) || bar.dataset.head || '';
+      setText(row.firstElementChild, head ? `decide on the current head ${head.slice(0, 7)}:` : 'decide on the current head:');
+    }
+    for (const b of row.querySelectorAll('button[data-verdict]')) {
+      // By hand, the one taken is the one on the current head; under a
+      // review, the one taken whatever its head.
+      const on = !!v && v.verdict === b.dataset.verdict && (!current || (always && !v.moved));
+      setAttr(b, 'aria-pressed', String(on));
+      b.title = on ? 'click again to take it back' : 'only in Bazel: nothing goes to the PR';
+    }
+  }
+  const moved = bar.querySelector('.verdict-moved');
+  if (moved) {
+    const text = v && v.moved && v.head ? `decided on ${v.head.slice(0, 7)}, PR moved` : '';
+    setText(moved, text);
+    moved.hidden = !text;
+  }
+}
+
+async function pickVerdict(row, id) {
+  const pressed = row.querySelector(`button[data-verdict="${id}"]`).getAttribute('aria-pressed') === 'true';
+  const verdict = pressed ? '' : id; // the one on, again: takes it back
+  const buttons = row.querySelectorAll('button');
+  buttons.forEach((b) => { b.disabled = true; });
+  clearAlert();
+  try {
+    const out = await api(row.dataset.door, { method: 'POST', body: JSON.stringify({ verdict }) });
+    adoptVerdicts(out.verdicts || {});
+    if (row.onDecided) row.onDecided();
+  } catch (err) {
+    alertError('Could not record the decision: ' + err.message);
+  } finally {
+    buttons.forEach((b) => { b.disabled = false; });
+  }
+}
+
+// adoptVerdicts takes the decisions as the server has them and redraws what
+// shows them: the cards' badges and any bar on screen.
+function adoptVerdicts(all) {
+  state.verdicts = all || {};
+  document.querySelectorAll('#rail .card').forEach((card) => {
+    const job = state.jobs.find((j) => j.id === card.dataset.jobId);
+    if (job) fillVerdictBadge(card.querySelector('.card-verdict'), job);
+  });
+  document.querySelectorAll('.verdict-bar').forEach(fillVerdictBar);
+}
+
+function fillVerdictBadge(badge, job) {
+  const v = job.history ? null : verdictOf(job.pr.key);
+  const it = v && VERDICTS.find((x) => x.id === v.verdict);
+  setText(badge, it ? it.badge : '');
+  setAttr(badge, 'title', it ? 'your decision: ' + it.label.replace(/^\S+ /, '')
+    + (v.source === 'manual' ? ' (manual)' : '') + (v.moved ? ' (PR moved since)' : '') : '');
+  if (it) badge.dataset.verdict = it.id; else delete badge.dataset.verdict;
+  badge.hidden = !it;
+}
+
+// refreshVerdicts reads them again: a PR list just read may say a PR moved.
+async function refreshVerdicts() {
+  try {
+    adoptVerdicts((await api('/api/verdicts')).verdicts);
+  } catch (err) { /* the badges keep what they had */ }
+}
+
+async function openSummary() {
+  const dlg = $('#summary-dialog');
+  setText($('#summary-note'), '');
+  let data;
+  try {
+    data = await api('/api/summary');
+  } catch (err) {
+    alertError('Could not build the summary: ' + err.message);
+    return;
+  }
+  const text = $('#summary-text');
+  text.value = data.text || '';
+  text.placeholder = 'no decision on the queue\'s PRs yet';
+  const missing = $('#summary-missing');
+  const left = data.undecided || [];
+  // A number alone, unless two PRs of the summary share it: then repo#N.
+  const all = [...(data.decided || []), ...left];
+  const ref = (p) => (all.some((q) => q.number === p.number && q.key.toLowerCase() !== p.key.toLowerCase()) ? p.key : '#' + p.number);
+  missing.textContent = left.length ? 'no decision yet: ' + left.map(ref).join(', ') : '';
+  missing.title = left.map((p) => p.key).join('\n');
+  missing.hidden = !left.length;
+  // Decided before the PR moved: a line would approve commits nobody read, so
+  // they stay out of the text until you decide again: keep the decision on the
+  // current head, or change it.
+  const movedLine = $('#summary-moved');
+  const moved = data.moved || [];
+  movedLine.replaceChildren();
+  if (moved.length) movedLine.append(el('span', null, 'moved since your decision:'));
+  for (const p of moved) {
+    const item = tid(el('span', 'summary-moved-item'), 'summary-moved-item', { key: p.key });
+    item.title = p.key;
+    const keep = tid(el('button', 'btn small ghost', 'keep'), 'summary-keep');
+    keep.title = 'the same decision, on the head the PR is at now';
+    const change = tid(el('button', 'btn small ghost', 'change'), 'summary-change');
+    change.title = 'decide again, on the head the PR is at now';
+    const row = verdictRow(p.key, prDoor(p.key), 'current', 'summary-change-', '');
+    row.hidden = true;
+    row.onDecided = openSummary;
+    keep.addEventListener('click', async () => {
+      keep.disabled = true;
+      clearAlert();
+      try {
+        adoptVerdicts((await api(prDoor(p.key), { method: 'POST', body: JSON.stringify({ verdict: p.verdict }) })).verdicts);
+        await openSummary();
+      } catch (err) {
+        alertError('Could not record the decision: ' + err.message);
+        keep.disabled = false;
+      }
+    });
+    change.addEventListener('click', () => { row.hidden = !row.hidden; });
+    item.append(el('b', null, ref(p)), keep, change, row);
+    movedLine.append(item);
+  }
+  movedLine.hidden = !moved.length;
+  // The names come from GitHub; without them the lines still go, and say so.
+  const warn = $('#summary-warning');
+  setText(warn, data.reviewers_error ? 'Reviewers could not be read, so the lines go without them.' : '');
+  warn.title = data.reviewers_error || '';
+  warn.hidden = !data.reviewers_error;
+  if (!dlg.open) dlg.showModal();
+  text.focus();
+}
+
+async function copySummary() {
+  const text = $('#summary-text');
+  try {
+    await navigator.clipboard.writeText(text.value);
+    setText($('#summary-note'), 'copied');
+  } catch (err) {
+    // No clipboard API (a page served over plain http on another host): the
+    // selection is the next best thing.
+    text.select();
+    setText($('#summary-note'), document.execCommand('copy') ? 'copied' : 'select the text and copy it yourself');
+  }
+}
+
+// --- your open threads ---
+
+// The threads you opened on the listed PRs that are still open, read from
+// GitHub (only reads, a minute at a time). A reminder: nothing waits on it,
+// and a failed read shows nothing.
+const threadsOf = (key) => state.openThreads[(key || '').toLowerCase()] || [];
+const threadWhere = (t) => (t.path ? `${t.path}:${t.line || '?'}` : 'the PR');
+
+function threadLink(t) {
+  // The server only sends a link to this PR on GitHub; without one, the text.
+  if (!t.url) return el('span', null, threadWhere(t));
+  const a = el('a', null, threadWhere(t));
+  a.href = t.url;
+  a.target = '_blank';
+  a.rel = 'noreferrer';
+  return a;
+}
+
+async function loadOpenThreads(force) {
+  const open = state.jobs.find((j) => j.id === state.activeJob);
+  const key = state.activePR || (open && open.pr.key);
+  const seen = () => (key ? JSON.stringify([threadsOf(key), staleOf(key)]) : '');
+  const before = seen();
+  try {
+    // A read that failed on the server still answers what the last good one
+    // said, marked stale with its time; the page keeps those tags and says so.
+    const out = await api('/api/open-threads' + (force ? '?refresh=1' : ''));
+    state.openThreads = out.threads || {};
+    state.threadsStale = out.stale || {};
+    state.threadsPartial = out.partial || {};
+    // No read to fall back on (none yet, or past its 30 minutes): no tags, and
+    // the page says the threads could not be read.
+    state.threadsError = out.error || '';
+    // Another read is out (the one at boot, say): what came back waited on
+    // it, so ask again shortly; with nothing yet, the page says it is reading.
+    state.threadsLoading = !!out.loading;
+    if (out.reading && !loadOpenThreads.again) {
+      // A ↻ that found a read under way still wants a read of its own.
+      loadOpenThreads.again = setTimeout(() => { loadOpenThreads.again = null; loadOpenThreads(force); }, 1500);
+    }
+  } catch (err) {
+    return; // the server did not answer at all: the tags on screen stay
+  }
+  renderPRs();
+  // The page on screen follows the new read, the section going away too when
+  // you resolved the last thread.
+  if (key && seen() !== before) followPRPage(key);
+}
+
+function openThreadsTag(pr) {
+  const list = threadsOf(pr.key);
+  if (!list.length) return null;
+  const partial = !!state.threadsPartial[pr.key.toLowerCase()];
+  const t = tid(el('span', 'tag stale', `💬 ${list.length}${partial ? '+' : ''} open${partial ? ' (partial)' : ''}`), 'pr-open-threads',
+    { count: list.length, stale: !!staleOf(pr.key), partial });
+  t.title = 'your threads still open:\n' + list.map((x) => threadWhere(x) + (x.author_replied ? ' (author replied)' : '')).join('\n')
+    + (partial ? '\n(more threads than one read brings: these are the first)' : '')
+    + (staleOf(pr.key) ? '\n' + staleNote(pr.key) : '');
+  return t;
+}
+
+// staleOf is when a PR's threads on screen were read, if its last read failed;
+// staleNote says so.
+const staleOf = (key) => state.threadsStale[(key || '').toLowerCase()] || '';
+const staleNote = (key) => `as of ${new Date(staleOf(key)).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} (could not refresh)`;
+
+// fillThreadsNote reminds, under the Review button, of the open threads on the
+// PRs you ticked.
+function fillThreadsNote() {
+  const note = $('#threads-note');
+  note.replaceChildren();
+  if (state.threadsLoading && !state.threadsError) {
+    note.append(tid(el('p', 'dim', 'Reading your open threads…'), 'threads-loading'));
+  }
+  if (state.threadsError) {
+    const p = tid(el('p'), 'threads-error');
+    p.textContent = 'Your open threads could not be read from GitHub, so none are shown.';
+    p.title = state.threadsError;
+    note.append(p);
+  }
+  for (const key of new Set([...markedPRs(), ...(state.threadsReminded || [])])) {
+    const list = threadsOf(key);
+    if (!list.length) continue;
+    const p = tid(el('p'), 'threads-note-pr', { prKey: key });
+    p.append(`${key}: You still have ${list.length} open thread${list.length === 1 ? '' : 's'} on this PR`);
+    list.forEach((t, i) => p.append(i ? ', ' : ' — ', threadLink(t)));
+    if (staleOf(key)) p.append(' ', tid(el('span', 'dim', staleNote(key)), 'threads-stale'));
+    note.append(p);
+  }
+  note.hidden = !note.childElementCount;
+}

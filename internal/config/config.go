@@ -270,7 +270,10 @@ type Agent struct {
 	Checkout bool `yaml:"checkout"`
 	// Prompt is the review template. Placeholders: {{repo}}, {{number}},
 	// {{title}}, {{author}}, {{url}}, {{branch}}, {{base}}, {{body}},
-	// {{workdir}}, {{diff}}. The diff is only downloaded if the template asks.
+	// {{workdir}}, {{diff}}, {{since}}. The diff is only downloaded if the template
+	// asks. {{since}} is the head of the last review in a "review changes since
+	// last review" job, when the clone shows the PR grew from it, and empty
+	// otherwise.
 	Prompt string `yaml:"prompt"`
 	// TimeoutSeconds caps how long a review takes. 0 = no limit.
 	TimeoutSeconds int `yaml:"timeout_seconds"`
@@ -328,6 +331,104 @@ PR description:
 
 Write the final report to stdout in Markdown, and say at the end what was
 published on the PR.`
+
+// legacyPublishPrompts are publishPrompt as Bazel wrote it before, into the
+// configs it saved: with the PR's title, author and branch, which is the author's
+// text going to a model with write access.
+var legacyPublishPrompts = []string{`{{task}}
+
+The repository {{repo}} is cloned in this directory ({{workdir}}), with PR
+#{{number}} already checked out on branch ` + "`{{branch}}`" + ` over base ` + "`{{base}}`" + `.
+This is a throwaway clone: read freely, but do not edit files and do not commit.
+
+The review is already done and has been read — it is in {{review_file}}. Publish
+it on PR #{{number}} of {{repo}}: a single review, with inline comments on the
+right lines, and do not open another if you already have one on the PR.
+
+**Do not redo the review and do not invent new findings**: publish what is in
+the file. If a finding does not fit on a diff line, leave it in the review body.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Write to stdout what was published, in Markdown.`, `{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos e
+não commite nada.
+
+O review já está pronto e já foi lido — está em {{review_file}}. Publique-o no
+PR #{{number}} de {{repo}}: um review só, com os comentários inline nas linhas
+certas, e não abra outro se já houver um seu no PR.
+
+**Não refaça o review e não invente achado novo**: publique o que está no
+arquivo. Se algum achado não couber numa linha do diff, deixe-o no corpo do
+review.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Devolva no stdout o que foi publicado, em markdown.`}
+
+// legacyPrompts are the other templates as the first configs saved them, in
+// Portuguese. Besides being in another language, the review one does not say
+// noPublishLine in the words the gates look for, so an agent left with it reads as
+// one that publishes.
+var legacyPrompts = map[string]string{`{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos,
+não commite e não publique nada no GitHub.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Descrição do PR:
+{{body}}
+
+Devolva no stdout só o relatório final, em markdown.`: defaultPrompt, `{{task}}
+
+O repositório {{repo}} está clonado nesta pasta ({{workdir}}), com o PR
+#{{number}} já em checkout na branch ` + "`{{branch}}`" + ` sobre a base ` + "`{{base}}`" + `.
+É um clone temporário e descartável: leia à vontade, mas não edite arquivos e
+não commite nada.
+
+Você **tem** autorização para publicar o resultado no PR #{{number}} de
+{{repo}} — é para isso que este review foi disparado. Publique um review só,
+com os comentários inline nas linhas certas, e não abra outro se já houver um
+seu no PR.
+
+PR: {{title}} — @{{author}}
+{{url}}
+
+Descrição do PR:
+{{body}}
+
+Devolva no stdout o relatório final em markdown, dizendo no fim o que foi
+publicado no PR.`: postPrompt}
+
+// currentPrompt is the template a prompt saved as an older default stands for, or
+// the prompt itself. The match is word for word, spacing aside: one edited by hand
+// is the user's and is kept.
+func currentPrompt(prompt string) string {
+	flat := flatten(prompt)
+	if flat == "" {
+		return prompt
+	}
+	for _, old := range legacyPublishPrompts {
+		if flat == flatten(old) {
+			return publishPrompt
+		}
+	}
+	for old, now := range legacyPrompts {
+		if flat == flatten(old) {
+			return now
+		}
+	}
+	return prompt
+}
 
 // publishPrompt is the template for whoever publishes an already written
 // review. The instruction that matters is the last one: do not redo the review,
@@ -387,17 +488,17 @@ func (c *Config) seedStarter() {
 	off := false
 	c.Agents = []AgentDef{
 		{Name: "bazel-review-fleet", Description: "three review lenses over one diff, deduplicated into one verdict",
-			Task: "/bazel-review-fleet {{number}}"},
+			Task: "/bazel:bazel-review-fleet {{number}}"},
 		{Name: "bazel-senior-code-reviewer", Description: "precision lens: a few findings it can defend",
-			Task: "/bazel-senior-code-reviewer {{number}}"},
+			Task: "/bazel:bazel-senior-code-reviewer {{number}}"},
 		{Name: "bazel-exploit-digger", Description: "adversarial recall lens, class by class",
-			Task: "/bazel-exploit-digger {{number}}"},
+			Task: "/bazel:bazel-exploit-digger {{number}}"},
 		{Name: "bazel-lazy-senior-dev", Description: "subtraction lens: code that should not exist",
-			Task: "/bazel-lazy-senior-dev {{number}}"},
+			Task: "/bazel:bazel-lazy-senior-dev {{number}}"},
 		// A PR's history is not a review: publishing it would tell the team the
 		// code was reviewed.
 		{Name: "bazel-history-pr", Description: "the PR's story: commits, reviews and the review→fix loop",
-			Task: "/bazel-history-pr {{number}}", Publishable: &off},
+			Task: "/bazel:bazel-history-pr {{number}}", Publishable: &off},
 	}
 	c.Pipelines = []Pipeline{
 		// The lenses in separate processes: what keeps them independent on an
@@ -773,7 +874,7 @@ func (c *Config) AddAgentFromSkill(skill, description string, posts bool) (Agent
 	def := AgentDef{
 		Name:        skill,
 		Description: strings.TrimSpace(description),
-		Task:        "/" + skill + " {{number}}",
+		Task:        skills.QualifiedTask(skill, "{{number}}"),
 	}
 	// Added from the page or from the starter, a history is not a review.
 	if strings.EqualFold(skill, historySkill) {
@@ -1156,11 +1257,11 @@ func (c *Config) ValidateHistoryAgent() error {
 		return refuse("has a command or args that publish")
 	case strings.TrimSpace(def.Prompt) == "":
 		return nil
-	case promptAuthorizesPosting(def.Prompt):
+	case promptAuthorizesPosting(currentPrompt(def.Prompt)):
 		return refuse("has a prompt that authorizes publishing")
 	case mentionsPublishing(def.Prompt):
 		return refuse("has a prompt that tells it to publish")
-	case !promptForbidsPosting(def.Prompt):
+	case !promptForbidsPosting(currentPrompt(def.Prompt)):
 		return refuse(fmt.Sprintf("has a prompt that does not say %q", noPublishLine))
 	}
 	return nil
@@ -1678,7 +1779,7 @@ func (c *Config) agentNamed(name string) (AgentDef, bool) {
 
 // defaultHistoryTask is the skill the History tab runs unless history_agent
 // names another one.
-const defaultHistoryTask = "/" + historySkill + " {{number}}"
+var defaultHistoryTask = skills.QualifiedTask(historySkill, "{{number}}")
 
 // historySkill is the built-in that writes a PR's story.
 const historySkill = "bazel-history-pr"
@@ -1719,9 +1820,6 @@ func (c *Config) PostChoice() Choice {
 		def = defaultPostAgent()
 	}
 	ra := c.resolve(def)
-	// Here and not when the config loads: a config saved with the bare name works
-	// the same, and the file is never rewritten.
-	ra.Task = skills.PostTask(ra.Task)
 	// Unless told otherwise, publishing clones: an inline comment needs the
 	// diff to find the line. Whoever wrote `checkout: false` in post_agent
 	// knows what they are doing — an agent that only calls the GitHub API does
@@ -1742,7 +1840,7 @@ func (c *Config) baseChoice() Choice {
 		Command:        c.Agent.Command,
 		Args:           c.Agent.Args,
 		Format:         c.Agent.Format,
-		Prompt:         c.Agent.Prompt,
+		Prompt:         currentPrompt(c.Agent.Prompt),
 		Publishable:    true,
 		Checkout:       c.Agent.Checkout,
 		TimeoutSeconds: c.Agent.TimeoutSeconds,
@@ -1761,8 +1859,11 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 		Args:        def.Args,
 		Format:      def.Format,
 		Prompt:      def.Prompt,
-		Task:        def.Task,
-		Posts:       def.Posts,
+		// The plugin's copy of a built-in, whatever the file says: here and not when
+		// the config loads, so a saved bare name works the same and the file is
+		// never rewritten.
+		Task:  skills.Qualify(def.Task),
+		Posts: def.Posts,
 		// nil is publishable: every agent written before this field existed
 		// keeps going to the PR as it always has.
 		Publishable:    def.Publishable == nil || *def.Publishable,
@@ -1784,6 +1885,10 @@ func (c *Config) resolve(def AgentDef) ResolvedAgent {
 	if strings.TrimSpace(ra.Prompt) == "" {
 		ra.Prompt = c.Agent.Prompt
 	}
+	// A prompt saved as an older default runs as the current one: the publishing
+	// ones carried the PR's title and author, the author's text, to a model that
+	// can write, and the first ones were in another language.
+	ra.Prompt = currentPrompt(ra.Prompt)
 	if def.Checkout != nil {
 		ra.Checkout = *def.Checkout
 	}

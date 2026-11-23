@@ -1,5 +1,6 @@
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
-import { recordPosts, settled, ui } from '../harness/ui';
+import { openCard, recordPosts, settled, ui } from '../harness/ui';
 
 // #32: a restart keeps the queue. What was pending comes back paused, runs on a
 // click and on nothing else, and an agent that may publish asks first.
@@ -18,7 +19,7 @@ test.describe('P1 · a queue that survives a restart', () => {
     await app.reload();
     await bazel.restart({ samePort: true, downMs: 1_000 });
     const card = ui.jobCard(app, 'Add rate limiter to the public API');
-    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 30_000 });
+    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: BUDGET });
     await expect(ui.banner(app)).toContainText('paused');
 
     // A job that comes and goes shows the queue is moving: the paused one stays.
@@ -28,10 +29,10 @@ test.describe('P1 · a queue that survives a restart', () => {
     expect(bazel.agentCalls()).toHaveLength(before + 1);
     await expect(card).toHaveAttribute('data-state', 'paused');
 
-    await card.click();
+    await openCard(app, card);
     await app.getByTestId('job-resume').click();
     await expect(card).not.toHaveAttribute('data-state', 'paused');
-    await expect.poll(() => bazel.agentCalls().length).toBe(before + 2);
+    await bazel.waitAgents(before + 2);
     bazel.release('release-slow');
   });
 
@@ -44,8 +45,8 @@ test.describe('P1 · a queue that survives a restart', () => {
     await app.reload();
     await bazel.restart({ samePort: true, downMs: 1_000 });
     const card = app.locator('[data-testid=job-card][data-pr-key="acme/api-core#103"]');
-    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: 30_000 });
-    await card.click();
+    await expect(card).toHaveAttribute('data-state', 'paused', { timeout: BUDGET });
+    await openCard(app, card);
 
     const before = bazel.agentCalls().length;
     const posts = recordPosts(app);

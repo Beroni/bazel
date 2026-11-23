@@ -34,6 +34,9 @@ type Mark struct {
 	HeadOid string `json:"head_oid"`
 	File    string `json:"file,omitempty"`
 	Posted  bool   `json:"posted,omitempty"`
+	// Verdict is the person's decision on the PR, which a later review of it
+	// keeps: deciding again is theirs to do.
+	Verdict *Verdict `json:"verdict,omitempty"`
 }
 
 // Marks is the index of reviews by PR key ("owner/repo#123").
@@ -65,6 +68,11 @@ func (m Marks) Status(pr gh.PR) Status {
 		// not to alarm than to alarm wrongly.
 		Changed: mark.HeadOid != "" && pr.HeadRefOid != "" && mark.HeadOid != pr.HeadRefOid,
 	}
+}
+
+// ReviewedHead is the head commit of the PR's last review, or "".
+func (m Marks) ReviewedHead(key string) string {
+	return m[markKey(key)].HeadOid
 }
 
 // Age summarizes when the review was done ("2h", "3d").
@@ -131,7 +139,8 @@ func MarkReviewed(dir string, res agent.Result, file string) error {
 			File:    file,
 			// An agent that publishes on its own has already left the review on the
 			// PR. An older publication is of an older review: this one has not gone.
-			Posted: res.Posts,
+			Posted:  res.Posts,
+			Verdict: m.Verdict,
 		}
 	})
 }
@@ -200,7 +209,16 @@ func update(dir, key string, fn func(Mark) Mark) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// trim drops the oldest records when the index goes over the cap.
+// lastTouched is the newest of the review and the decision on it: a decision
+// just taken on an old review is not an old record.
+func (m Mark) lastTouched() time.Time {
+	if m.Verdict != nil && m.Verdict.At.After(m.At) {
+		return m.Verdict.At
+	}
+	return m.At
+}
+
+// trim drops the records touched longest ago when the index goes over the cap.
 func trim(m Marks) {
 	if len(m) <= maxMarks {
 		return
@@ -209,7 +227,7 @@ func trim(m Marks) {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	sort.Slice(keys, func(i, j int) bool { return m[keys[i]].At.Before(m[keys[j]].At) })
+	sort.Slice(keys, func(i, j int) bool { return m[keys[i]].lastTouched().Before(m[keys[j]].lastTouched()) })
 	for _, k := range keys[:len(m)-maxMarks] {
 		delete(m, k)
 	}

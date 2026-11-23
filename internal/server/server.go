@@ -105,6 +105,34 @@ type Server struct {
 	listReads    []time.Time             // gh processes of forced list refreshes, last minute
 	retried      map[string]time.Time    // when each PR last got a Retry, within the gap
 	fetchDetails func(ctx context.Context, repo string, number int) (gh.Details, error)
+
+	// needs is the last read of the "Needs you" searches; needsMu also keeps a
+	// second read from starting while one is out.
+	needsMu sync.Mutex
+	needs   needsCache
+
+	// reviewers caches who reviews each PR of the summary, briefly;
+	// fetchReviewers is gh's, or a test's.
+	revMu     sync.Mutex
+	reviewers map[string]reviewersEntry
+	revFailed needsCache // the last failed read and its backoff, as for Needs you
+
+	// convs caches what each PR discussed (threads, comments, reviews), for the
+	// open-thread tags and the review fleet's discussion.json; same rules.
+	convMu          sync.Mutex
+	convs           map[string]conversationEntry
+	convFails       map[string]needsCache // each PR's failures and backoff
+	convTried       map[string]time.Time  // when each PR was last tried, read or not
+	convReads       []time.Time           // these reads' own budget, last minute
+	convHold        time.Time             // GitHub's rate limit ran low: no tags' read before this
+	convReading     bool                  // a tags' read is out: the others answer from what there is
+	fetchThreadTags func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
+	// fetchThreadTagsPage reads one more page of a PR's threads: gh's, or a test's.
+	fetchThreadTagsPage func(ctx context.Context, key, after string) (gh.Conversation, gh.RateLimit, error)
+	// fetchConversations is the full read of a PR's discussion, for the review
+	// fleet's discussion.json: gh's, or a test's.
+	fetchConversations func(ctx context.Context, keys []string) (map[string]gh.Conversation, gh.RateLimit, error)
+	fetchReviewers     func(ctx context.Context, keys []string, me string) (map[string][]string, error)
 }
 
 // New assembles the server. ctx owns the reviews in progress: cancel it and
@@ -129,22 +157,33 @@ func New(ctx context.Context, cfg *config.Config, me string, opts Options) (*Ser
 	if opts.QueueDir != "" {
 		jobs.RestoreQueue(filepath.Join(opts.QueueDir, queueFileName))
 	}
-	return &Server{
-		instance:     instance,
-		details:      map[string]detailsEntry{},
-		reading:      map[string]*detailsRead{},
-		fetchSlot:    make(chan struct{}, 1),
-		retried:      map[string]time.Time{},
-		fetchDetails: gh.GetDetails,
-		cfg:          cfg,
-		me:           me,
-		reviewsDir:   reviewsDir,
-		configPath:   configPath,
-		opts:         opts,
-		hub:          hub,
-		jobs:         jobs,
-		done:         make(chan struct{}),
-	}, nil
+	s := &Server{
+		instance:            instance,
+		details:             map[string]detailsEntry{},
+		reading:             map[string]*detailsRead{},
+		fetchSlot:           make(chan struct{}, 1),
+		retried:             map[string]time.Time{},
+		fetchDetails:        gh.GetDetails,
+		reviewers:           map[string]reviewersEntry{},
+		fetchReviewers:      gh.FetchReviewers,
+		convs:               map[string]conversationEntry{},
+		fetchThreadTags:     gh.FetchThreadTags,
+		fetchThreadTagsPage: gh.FetchThreadTagsPage,
+		convFails:           map[string]needsCache{},
+		convTried:           map[string]time.Time{},
+		fetchConversations:  gh.ReadConversations,
+		cfg:                 cfg,
+		me:                  me,
+		reviewsDir:          reviewsDir,
+		configPath:          configPath,
+		opts:                opts,
+		hub:                 hub,
+		jobs:                jobs,
+		done:                make(chan struct{}),
+	}
+	// A review gets what its PR discussed, read in full for that job alone.
+	jobs.runner.Discussion = s.discussionFor
+	return s, nil
 }
 
 // jobLogDir gets the folder for the job logs ready and clears old ones. A folder
@@ -191,17 +230,23 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/details", s.handlePRDetails)
 	mux.HandleFunc("GET /api/prs/{owner}/{name}/{number}/history", s.handleHistory)
 	mux.HandleFunc("POST /api/prs/{owner}/{name}/{number}/history", s.handleHistoryGenerate)
+	mux.HandleFunc("POST /api/prs/{owner}/{name}/{number}/verdict", s.handlePRVerdict)
 	mux.HandleFunc("POST /api/reviews", s.handleReview)
 	mux.HandleFunc("GET /api/jobs", s.handleJobs)
 	mux.HandleFunc("GET /api/jobs/{id}", s.handleJob)
 	mux.HandleFunc("GET /api/jobs/{id}/log", s.handleJobLog)
 	mux.HandleFunc("DELETE /api/jobs/{id}", s.handleJobRemove)
+	mux.HandleFunc("GET /api/needs", s.handleNeeds)
 	mux.HandleFunc("POST /api/jobs/{id}/cancel", s.handleCancel)
 	mux.HandleFunc("POST /api/jobs/{id}/post", s.handlePost)
 	mux.HandleFunc("POST /api/jobs/{id}/publish", s.handlePublish)
 	mux.HandleFunc("POST /api/jobs/{id}/dismiss", s.handleDismiss)
 	mux.HandleFunc("POST /api/jobs/{id}/save", s.handleSaveAgain)
 	mux.HandleFunc("POST /api/jobs/{id}/resume", s.handleResume)
+	mux.HandleFunc("POST /api/jobs/{id}/verdict", s.handleJobVerdict)
+	mux.HandleFunc("GET /api/verdicts", s.handleVerdicts)
+	mux.HandleFunc("GET /api/summary", s.handleSummary)
+	mux.HandleFunc("GET /api/open-threads", s.handleOpenThreads)
 	mux.HandleFunc("GET /api/events", s.handleEvents)
 	mux.HandleFunc("GET /api/repos", s.handleReposList)
 	mux.HandleFunc("POST /api/repos", s.handleRepoAdd)
@@ -220,6 +265,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/reviews/{name}", s.handleSavedOne)
 	mux.HandleFunc("POST /api/reviews/{name}/publish", s.handleSavedPublish)
 	mux.HandleFunc("POST /api/reviews/{name}/comment", s.handleSavedComment)
+	mux.HandleFunc("POST /api/reviews/{name}/verdict", s.handleSavedVerdict)
 
 	// /mcp goes through the same guard: it is the same port for cloning and
 	// running an agent, just spoken by machine.
@@ -457,8 +503,9 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 			"checkout": s.cfg.Agent.Checkout,
 			"timeout":  s.cfg.Agent.TimeoutSeconds,
 		},
-		"agents": s.agentViews(),
-		"jobs":   s.jobViews(),
+		"agents":   s.agentViews(),
+		"jobs":     s.jobViews(),
+		"verdicts": s.verdictViews(),
 		// An `agent` template that fires off a command on its own makes every
 		// agent run two: the chosen one and the template's. The page warns,
 		// because nothing in the result gives it away — only the spend.
@@ -468,6 +515,8 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 		"history_custom": s.historyCustom(),
 		// The Claude quota comes empty until the first review of this session.
 		"limits": s.jobs.Limits(),
+		// Another server keeps the queue file: this one's queue lives in memory.
+		"queue_busy": s.jobs.queueBusy,
 	})
 }
 
@@ -664,6 +713,9 @@ type reviewRequest struct {
 	Refs []string `json:"refs"`
 	// Agent is the name of the chosen agent or pipeline. Empty = the default.
 	Agent string `json:"agent"`
+	// Since asks for a review of what changed since each PR's last review:
+	// the head it recorded goes to the agent as {{since}}.
+	Since bool `json:"since"`
 }
 
 func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
@@ -686,10 +738,14 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice)
+	queued, errs := s.enqueueRefs(r.Context(), req.Refs, choice, req.Since)
 	status := http.StatusAccepted
 	if len(queued) == 0 {
 		status = http.StatusBadRequest
+		// Every PR asked for was already reviewed at its head: nothing to do.
+		if req.Since && allUnchanged(errs) {
+			status = http.StatusConflict
+		}
 	}
 	writeJSON(w, status, map[string]any{"jobs": queued, "errors": errs})
 }
@@ -710,7 +766,11 @@ func (s *Server) resolveChoice(name string) (config.Choice, error) {
 
 // enqueueRefs queues one review per reference. What went wrong comes back
 // in errs, one per item — a bad ref does not take down the others.
-func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice) (queued []jobView, errs []string) {
+func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.Choice, since bool) (queued []jobView, errs []string) {
+	var marks store.Marks
+	if since {
+		marks = store.LoadMarks(s.reviewsDir)
+	}
 	// Cached PRs avoid a `gh pr view` per item when they came from the list.
 	s.prMu.RLock()
 	cached := map[string]gh.PR{}
@@ -734,7 +794,14 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 				continue
 			}
 		}
-		view, err := s.jobs.Enqueue(pr, strings.EqualFold(pr.Author.Login, s.me), choice)
+		head := marks.ReviewedHead(key)
+		// The head was reviewed already: a review of what changed would read an
+		// empty range, and a whole one is not what was asked.
+		if since && head != "" && pr.HeadRefOid != "" && strings.EqualFold(head, pr.HeadRefOid) {
+			errs = append(errs, fmt.Sprintf("%s: %s", key, errUnchanged))
+			continue
+		}
+		view, err := s.jobs.EnqueueSince(pr, strings.EqualFold(pr.Author.Login, s.me), choice, head)
 		if err != nil {
 			errs = append(errs, fmt.Sprintf("%s: %s", key, err))
 			continue
@@ -742,6 +809,18 @@ func (s *Server) enqueueRefs(ctx context.Context, refs []string, choice config.C
 		queued = append(queued, view)
 	}
 	return queued, errs
+}
+
+// errUnchanged refuses a review of what changed when nothing did.
+const errUnchanged = "nothing changed since the last review"
+
+func allUnchanged(errs []string) bool {
+	for _, e := range errs {
+		if !strings.HasSuffix(e, errUnchanged) {
+			return false
+		}
+	}
+	return len(errs) > 0
 }
 
 // maxRefs bounds one request from the page. "Select all" over a busy list is a
@@ -814,21 +893,17 @@ func (s *Server) handleCancel(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePost(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip)
+	view, err := s.jobs.Post(r.Context(), r.PathValue("id"), skip, again)
 	if err != nil {
 		// 502 is only for gh failing to post. A request Bazel turns down —
 		// unknown job, not finished, not publishable, busy, already posted — is
 		// the client's (BUG-QA-05).
-		status := refusalStatus(err, http.StatusBadGateway)
-		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
-			status = http.StatusConflict
-		}
-		writeErr(w, status, err)
+		writeDoorErr(w, err, http.StatusBadGateway)
 		return
 	}
 	writeJSON(w, http.StatusOK, view)
@@ -871,15 +946,15 @@ func (s *Server) handleDismiss(w http.ResponseWriter, r *http.Request) {
 // another agent running — and not in a separate job: publishing is the end of
 // the review, not a loose job in the queue.
 func (s *Server) handlePublish(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip)
+	view, err := s.jobs.PublishWithAgent(r.PathValue("id"), skip, again)
 	if err != nil {
 		// Unknown job is 404, like /post; every other refusal is 409.
-		writeErr(w, refusalStatus(err, http.StatusConflict), err)
+		writeDoorErr(w, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -1213,8 +1288,13 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]savedView, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)})
+		v := savedView{Entry: e, Publishable: s.agentPublishes(e.Agent)}
+		if p, ok := store.PostedOf(filepath.Join(s.reviewsDir, e.Name)); ok {
+			v.Posted = &p
+		}
+		out = append(out, v)
 	}
+	s.checkInline(r.Context(), out)
 	writeJSON(w, http.StatusOK, map[string]any{"dir": s.reviewsDir, "reviews": out})
 }
 
@@ -1222,7 +1302,63 @@ func (s *Server) handleSavedList(w http.ResponseWriter, r *http.Request) {
 // whether what is in there can go to the PR.
 type savedView struct {
 	store.Entry
-	Publishable bool `json:"publishable"`
+	Publishable bool   `json:"publishable"`
+	InlineIssue string `json:"inline_issue,omitempty"`
+	// InlineUnchecked is a review the list had no time to check: opening it does.
+	InlineUnchecked bool `json:"inline_unchecked,omitempty"`
+	// Posted is how and when this file went to the PR, from its own record.
+	Posted *store.Posted `json:"posted,omitempty"`
+}
+
+// savedChecked is how many of the newest saved reviews the list checks, a few
+// at a time, within savedCheckBudget for the whole request: what is left says
+// it was not checked, and is checked when opened.
+var (
+	savedChecked     = 50
+	savedCheckers    = 4
+	savedCheckBudget = 3 * time.Second
+)
+
+// checkInline fills InlineIssue for the newest publishable reviews not yet on
+// the PR, under the list's time budget.
+func (s *Server) checkInline(ctx context.Context, out []savedView) {
+	ctx, cancel := context.WithTimeout(ctx, savedCheckBudget)
+	defer cancel()
+	sem := make(chan struct{}, savedCheckers)
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	for i := range out {
+		v := &out[i]
+		if !v.Publishable || v.Posted != nil {
+			continue
+		}
+		if i >= savedChecked {
+			v.InlineUnchecked = true
+			continue
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			select {
+			case sem <- struct{}{}:
+			case <-ctx.Done():
+				mu.Lock()
+				v.InlineUnchecked = true
+				mu.Unlock()
+				return
+			}
+			defer func() { <-sem }()
+			issue := s.jobs.inlineIssueCtx(ctx, filepath.Join(s.reviewsDir, v.Name))
+			mu.Lock()
+			if ctx.Err() != nil {
+				v.InlineUnchecked = true
+			} else {
+				v.InlineIssue = issue
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
 }
 
 // agentPublishes says whether an agent's output can go to the PR. An agent no
@@ -1258,6 +1394,20 @@ func (s *Server) handleSavedOne(w http.ResponseWriter, r *http.Request) {
 	}
 	if split {
 		view["context_html"] = renderReview(stays)
+	}
+	if why := store.PendingOf(body); why != "" {
+		view["incomplete"] = why
+	}
+	if store.ShortOf(body) {
+		view["short"] = true
+	}
+	if why := store.DoubtOf(body); why != "" {
+		view["doubt"] = why
+	}
+	if s.agentPublishes(store.AgentOf(body)) {
+		if why := s.jobs.inlineIssue(filepath.Join(s.reviewsDir, r.PathValue("name"))); why != "" {
+			view["inline_issue"] = why
+		}
 	}
 	writeJSON(w, http.StatusOK, view)
 }
@@ -1295,6 +1445,9 @@ func (s *Server) savedPR(ctx context.Context, name string) (savedReview, error) 
 	agent := store.AgentOf(file)
 	if split && body == "" {
 		return savedReview{}, fmt.Errorf("no step of %q publishes to the PR", agent)
+	}
+	if why := store.PendingOf(file); why != "" {
+		return savedReview{}, refuse(http.StatusConflict, fmt.Errorf("the review came back incomplete: %s", why))
 	}
 	// A file from before the marker has no way to tell its steps apart, and the
 	// pipeline may no longer exist to ask.
@@ -1350,23 +1503,23 @@ func (s *Server) refusePublish(w http.ResponseWriter, sr savedReview) bool {
 
 // handleSavedPublish runs the publishing agent over a saved review.
 func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	sr, err := s.savedPR(r.Context(), r.PathValue("name"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
-	if s.refusePublish(w, sr) {
+	if s.refusePublish(w, sr) || s.refuseSent(w, sr, again) {
 		return
 	}
 	pr := sr.PR
-	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed)
+	view, err := s.jobs.PublishSaved(pr, strings.EqualFold(pr.Author.Login, s.me), sr.Path, sr.Body, skip, sr.Trimmed, again)
 	if err != nil {
-		writeErr(w, http.StatusConflict, err)
+		writeDoorErr(w, err, http.StatusConflict)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, view)
@@ -1374,25 +1527,21 @@ func (s *Server) handleSavedPublish(w http.ResponseWriter, r *http.Request) {
 
 // handleSavedComment pastes a saved review onto the PR, with no agent.
 func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
-	skip, err := readSkip(w, r)
+	skip, again, err := readDoor(w, r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
 	sr, err := s.savedPR(r.Context(), r.PathValue("name"))
 	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
+		writeErr(w, refusalStatus(err, http.StatusBadRequest), err)
 		return
 	}
-	if s.refusePublish(w, sr) {
+	if s.refusePublish(w, sr) || s.refuseSent(w, sr, again) {
 		return
 	}
-	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip); err != nil {
-		code := http.StatusBadGateway
-		if errors.Is(err, errPublishBusy) || errors.Is(err, errAlreadyPosted) {
-			code = http.StatusConflict
-		}
-		writeErr(w, code, err)
+	if err := s.jobs.CommentSaved(r.Context(), sr.PR, sr.Path, sr.Body, skip, again); err != nil {
+		writeDoorErr(w, err, http.StatusBadGateway)
 		return
 	}
 	s.invalidatePRs()
@@ -1406,19 +1555,63 @@ func (s *Server) handleSavedComment(w http.ResponseWriter, r *http.Request) {
 // "publish everything": the four paths to the PR accept the list and none
 // requires it.
 func readSkip(w http.ResponseWriter, r *http.Request) ([]int, error) {
+	skip, _, err := readDoor(w, r)
+	return skip, err
+}
+
+// readDoor is readSkip plus again: the user said yes to sending a review whose
+// PR already shows as published, from before Bazel kept that per file.
+func readDoor(w http.ResponseWriter, r *http.Request) ([]int, bool, error) {
 	var req struct {
-		Skip []int `json:"skip"`
+		Skip  []int `json:"skip"`
+		Again bool  `json:"again"`
 	}
 	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req)
 	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, fmt.Errorf("invalid body: %w", err)
+		return nil, false, fmt.Errorf("invalid body: %w", err)
 	}
 	for _, i := range req.Skip {
 		if i < 0 {
-			return nil, fmt.Errorf("invalid finding index %d", i)
+			return nil, false, fmt.Errorf("invalid finding index %d", i)
 		}
 	}
-	return req.Skip, nil
+	return req.Skip, req.Again, nil
+}
+
+// refuseSent answers for a saved review that went to the PR: 409, and gh is
+// never called. When the index says the PR got a review and no saved file of it
+// records having been that one — files from before the record — it asks first;
+// again is the yes.
+// writeDoorErr answers a door that did not send: a publication that may have
+// happened asks a person (409 with confirm), the refusals are 409, and def is
+// for gh failing.
+func writeDoorErr(w http.ResponseWriter, err error, def int) {
+	switch {
+	case errors.Is(err, errMaybePosted):
+		writeJSON(w, http.StatusConflict, map[string]any{"error": err.Error(), "confirm": true})
+	case errors.Is(err, errPublishBusy), errors.Is(err, errAlreadyPosted):
+		writeErr(w, http.StatusConflict, err)
+	default:
+		writeErr(w, refusalStatus(err, def), err)
+	}
+}
+
+func (s *Server) refuseSent(w http.ResponseWriter, sr savedReview, again bool) bool {
+	if p, ok := store.PostedOf(sr.Path); ok {
+		writeErr(w, http.StatusConflict, fmt.Errorf("already published: this review went to the PR as %s on %s", p.How, p.At.Format("2006-01-02 15:04")))
+		return true
+	}
+	// A file from before Bazel kept the record says nothing of its own trip:
+	// with the PR shown as published, it asks until someone says yes. What a
+	// sibling recorded says nothing about this file.
+	if !again && !store.KeepsPostRecord(sr.Path) && store.LoadMarks(s.reviewsDir).Status(sr.PR).Posted {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error":   "a review of this PR already went to it, and this file does not say whether it was this one",
+			"confirm": true,
+		})
+		return true
+	}
+	return false
 }
 
 func (s *Server) jobViews() []jobView {
@@ -1450,7 +1643,7 @@ func (s *Server) agentViews() []map[string]any {
 func (s *Server) agentView(c config.Choice, instaladas []skills.Skill, publisher bool) map[string]any {
 	usadas := make([]map[string]any, 0, len(c.Steps))
 	for _, step := range c.Steps {
-		name := skills.TaskSkill(step.Task)
+		name := skills.Bare(skills.TaskSkill(step.Task))
 		if name == "" {
 			continue
 		}

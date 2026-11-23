@@ -15,11 +15,15 @@ HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 PLUGIN=$(cd "$HERE/../../.." && pwd)
 
 # What happened goes in a file Bazel reads, as well as to the agent: Bazel reports
-# this, not what a model says about it. "published" is never overwritten: a second
-# run that finds the review already there must not turn it into a failure.
+# this, not what a model says about it. The model can run this script more than
+# once in a job, at the same time too, so no run rewrites what another left: each
+# result is one short line added at the end, in one write. Bazel weighs them all:
+# "published" beats "failed", which beats "refused" and "nothing", so a run that
+# writes nothing cannot hide one that tried to write.
 outcome() {
-  [ "$(head -1 "$PLUGIN/publish-outcome" 2>/dev/null)" = published ] && return 0
-  printf '%s\n%s\n' "$1" "$2" > "$PLUGIN/publish-outcome"
+  local msg
+  msg=$(printf '%s' "$2" | tr '\t\n' '  ')
+  printf '%s\t%s\n' "$1" "$msg" >> "$PLUGIN/publish-outcome"
 }
 
 refuse() {
@@ -100,13 +104,13 @@ prepare() {
       repository(owner:$owner, name:$repo) { pullRequest(number:$number) {
         reviewThreads(first:100, after:$endCursor) {
           pageInfo { hasNextPage endCursor }
-          nodes { isResolved resolvedBy { login } comments(first:1) { nodes { databaseId } } }
+          nodes { isResolved resolvedBy { login __typename } comments(first:1) { nodes { databaseId } } }
     } } } }' |
     jq -s '[.[] | .data.repository.pullRequest.reviewThreads.nodes[]?
-      | {root: .comments.nodes[0].databaseId, isResolved, resolvedBy: .resolvedBy.login}]' > "$work/threads.json" ||
+      | {root: .comments.nodes[0].databaseId, isResolved, resolvedBy: .resolvedBy.login, resolvedByType: .resolvedBy.__typename}]' > "$work/threads.json" ||
     fail "cannot read the review threads"
 
-  jq -n -f "$HERE/plan.jq" --slurpfile report "$work/report.json" --slurpfile diff "$work/diff.json" \
+  jq -n -L "$HERE" -f "$HERE/plan.jq" --slurpfile report "$work/report.json" --slurpfile diff "$work/diff.json" \
     --slurpfile comments "$work/comments.json" --slurpfile threads "$work/threads.json" \
     --slurpfile issue "$work/issue.json" --slurpfile reviews "$work/reviews.json" \
     --slurpfile pr "$work/pr.json" --slurpfile me "$work/me.json" > "$work/plan.json" || fail "cannot build the plan"
@@ -173,12 +177,28 @@ publish() {
         nothing "this account already posted an all-clear for this commit."
         return 0
       fi ;;
+    reactions)
+      # Every finding is on the PR already, said or settled by someone else: a 👍 on
+      # each, and no review. That reached the PR, so it is published.
+      local done=0 id
+      outcome failed "Publishing failed: the 👍 on the PR did not finish."
+      for id in $(jq -r '.reactions[]' "$work/decided.json"); do
+        gh api -X POST "repos/$REPO/pulls/comments/$id/reactions" -f content=+1 >/dev/null 2>&1 && done=$((done + 1))
+      done
+      [ "$done" -gt 0 ] || fail "GitHub refused every 👍"
+      : > "$work/published"
+      outcome published "Published: the findings were already on the PR; no review posted."
+      jq -r --argjson done "$done" '
+        "Published: 0 inline, 0 in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled (👍), no review posted.",
+        (.settled[] | "Already settled on the PR (by @\(.by)): \(.path):\(.line) (\(.level))"),
+        (if $done < (.reactions | length) then "\((.reactions | length) - $done) 👍 could not be added." else empty end)' "$work/decided.json"
+      return 0 ;;
   esac
 
   # The same review on the same commit is not published twice. The print is of the
   # report: what is on the PR changes where each finding goes, not what was reviewed.
   local print marker
-  print=$(jq -c '[.verdict, .human, .extra, .failed, (.findings | map(del(.candidates, .commentable)))]' "$work/plan.json" |
+  print=$(jq -c '[.verdict, .human, .discussed, .extra, .failed, (.findings | map(del(.candidates, .commentable)))]' "$work/plan.json" |
     git hash-object --stdin) || fail "cannot fingerprint the review"
   marker="<!-- bazel-review: $reviewed $print -->"
   if jq -e --arg m "$marker" 'any(.own_bodies[]; split("\n") | any(. == $m))' "$work/plan.json" >/dev/null; then
@@ -191,6 +211,9 @@ publish() {
     + (if ($sha | test("^[0-9a-f]{40}$")) then {commit_id: $sha} else {commit_id: $head} end)' \
     "$work/decided.json" > "$work/payload.json" || fail "cannot build the payload"
 
+  # From here a write is tried: until it says how it went, this job may have
+  # written, and no later refusal can say otherwise.
+  outcome failed "Publishing failed: the write to GitHub did not finish."
   local rejected=0
   if ! post_review "$work/payload.json" "$work/response.txt"; then
     # GitHub refuses the whole review over one line. Every finding still reaches
@@ -214,7 +237,7 @@ publish() {
   done
 
   jq -r --argjson rejected "$rejected" --argjson rf "$failed_reactions" --arg moved "$moved" '
-    "Published: \(.counts.inline - $rejected) inline, \(.counts.body + $rejected) in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled.",
+    "Published: \(.counts.inline - $rejected) inline, \(.counts.body + $rejected) in the review body, \(.counts.duplicates) already on the PR (👍), \(.counts.settled) already settled (👍).",
     (if $rejected > 0 then "GitHub refused the inline anchors, so \($rejected) finding(s) went to the body instead." else empty end),
     (if $rf > 0 then "\($rf) 👍 could not be added." else empty end),
     (if $moved == "yes" then "The PR moved after the review: nothing was anchored." else empty end),

@@ -14,6 +14,7 @@
   <div class="brand"><img class="logo" src="/static/bazelgeuse.webp" alt="" width="500" height="500"> bazel</div>
   <nav class="nav" id="nav">
     <a href="#/" data-page="dashboard" data-testid="nav-dashboard" class="on">Dashboard</a>
+    <a href="#/needs" data-page="needs" data-testid="nav-needs">Needs you <span class="nav-count" id="needs-count" data-testid="needs-count" hidden></span></a>
     <a href="#/config" data-page="config" data-testid="nav-config">Config</a>
   </nav>
   <div class="spacer"></div>
@@ -77,14 +78,19 @@
         <select id="agent" data-testid="agent-select" aria-label="agent" title="which agent runs over the ticked PRs"></select>
         <button class="btn primary" id="run" data-testid="run-review" disabled>▶ Review</button>
       </div>
+      <div class="threads-note" id="threads-note" data-testid="threads-note" role="status" hidden></div>
     </div>
   </aside>
 
   <section class="pane main">
-    <div class="tabs" role="tablist" aria-label="queue or saved reviews">
-      <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
-      <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
+    <div class="tabs">
+      <div class="tablist" role="tablist" aria-label="queue or saved reviews">
+        <button class="tab on" role="tab" aria-selected="true" data-tab="queue" data-testid="tab-queue">Queue <span class="pill" id="queue-count" data-testid="queue-count">0</span></button>
+        <button class="tab" role="tab" aria-selected="false" data-tab="saved" data-testid="tab-saved">Saved</button>
+      </div>
       <div class="spacer"></div>
+      <button class="btn small ghost" id="summary" data-testid="queue-summary" hidden
+        title="your decisions on the queue's PRs, one line each, to paste into Slack">Summary</button>
       <div class="conn" id="conn" data-testid="conn-status" data-state="closed" title="event stream">●</div>
     </div>
     <div id="rail" class="rail"></div>
@@ -99,6 +105,38 @@
     </article>
   </section>
 </main>
+
+<!-- The decisions on the queue's PRs as Slack lines. The text is yours to edit
+     before copying; the PRs still without a decision stay out of it. -->
+<dialog id="summary-dialog" class="summary-dialog" data-testid="summary-dialog" aria-labelledby="summary-title">
+  <h2 id="summary-title">Summary</h2>
+  <p class="dim">One line per PR in the queue you decided on, under its author.</p>
+  <textarea id="summary-text" data-testid="summary-text" rows="8" spellcheck="false" aria-label="summary to copy"></textarea>
+  <p class="dim" id="summary-missing" data-testid="summary-missing" hidden></p>
+  <div class="summary-moved" id="summary-moved" data-testid="summary-moved" hidden></div>
+  <p class="summary-warning" id="summary-warning" data-testid="summary-warning" role="status" hidden></p>
+  <div class="row">
+    <span class="dim" id="summary-note" data-testid="summary-note" role="status"></span>
+    <div class="spacer"></div>
+    <button class="btn ghost" id="summary-close" data-testid="summary-close">Close</button>
+    <button class="btn primary" id="summary-copy" data-testid="summary-copy">Copy</button>
+  </div>
+</dialog>
+
+<!-- The PRs where you have something to do: asked to review, the author
+     answered your changes, still waiting on the author, and your own PRs. -->
+<section id="page-needs" class="page needs" role="main" hidden data-testid="needs-page">
+  <div class="needs-head">
+    <h2>Needs you</h2>
+    <div class="spacer"></div>
+    <span class="dim needs-note" id="needs-note" data-testid="needs-note"></span>
+    <div class="needs-scope" role="group" aria-label="where to look">
+      <button class="btn small" id="needs-watched" data-testid="needs-scope-watched" aria-pressed="true">watched repos</button>
+      <button class="btn small" id="needs-all" data-testid="needs-scope-all" aria-pressed="false">all repos</button>
+    </div>
+  </div>
+  <div id="needs-list" class="needs-list" data-testid="needs-list"></div>
+</section>
 
 <section id="page-config" class="page config" role="main" hidden>
   <!-- Two columns, as the design lays it out: what Bazel watches and what this

@@ -1,0 +1,63 @@
+#!# Ticks for a while, then waits: a job that is running for sure, with a log that grows.
+#!repeat 20 tick 0-{i}
+#!sleep 80
+#!repeat 20 tick 1-{i}
+#!sleep 80
+#!repeat 20 tick 2-{i}
+#!sleep 80
+#!repeat 20 tick 3-{i}
+#!sleep 80
+#!repeat 20 tick 4-{i}
+#!sleep 80
+#!repeat 20 tick 5-{i}
+#!sleep 80
+#!repeat 20 tick 6-{i}
+#!sleep 80
+#!repeat 20 tick 7-{i}
+#!sleep 80
+#!repeat 20 tick 8-{i}
+#!sleep 80
+#!repeat 20 tick 9-{i}
+#!sleep 80
+#!repeat 20 tick 10-{i}
+#!sleep 80
+#!repeat 20 tick 11-{i}
+#!sleep 80
+#!repeat 20 tick 12-{i}
+#!sleep 80
+#!repeat 20 tick 13-{i}
+#!sleep 80
+#!repeat 20 tick 14-{i}
+#!sleep 80
+#!repeat 20 tick 15-{i}
+#!sleep 80
+#!repeat 20 tick 16-{i}
+#!sleep 80
+#!repeat 20 tick 17-{i}
+#!sleep 80
+#!repeat 20 tick 18-{i}
+#!sleep 80
+#!repeat 20 tick 19-{i}
+#!sleep 80
+#!repeat 20 tick 20-{i}
+#!sleep 80
+#!repeat 20 tick 21-{i}
+#!sleep 80
+#!repeat 20 tick 22-{i}
+#!sleep 80
+#!repeat 20 tick 23-{i}
+#!sleep 80
+#!repeat 20 tick 24-{i}
+#!sleep 80
+#!repeat 20 tick 25-{i}
+#!sleep 80
+#!repeat 20 tick 26-{i}
+#!sleep 80
+#!repeat 20 tick 27-{i}
+#!sleep 80
+#!repeat 20 tick 28-{i}
+#!sleep 80
+#!repeat 20 tick 29-{i}
+#!sleep 80
+#!wait release-ticker
+# Done E2E-TICKER

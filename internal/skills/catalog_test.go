@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 
@@ -83,6 +84,24 @@ func TestCatalogFrontmatter(t *testing.T) {
 		if strings.Contains(tools[1], "AskUserQuestion") {
 			t.Errorf("%s: a built-in skill runs headless and must not ask", s.Name)
 		}
+		// The model fixes its scratch file with Edit; a headless run denies a
+		// tool nobody allowed, and the report goes out unvalidated.
+		if have := strings.Fields(tools[1]); slices.Contains(have, "Write") && !slices.Contains(have, "Edit") {
+			t.Errorf("%s: allows Write but not Edit, so `claude -p` denies the fix of its own scratch file", s.Name)
+		}
+	}
+}
+
+// The scratch report is a new file in a folder of its own: Write refuses to
+// replace a file it has not read, and mktemp would create one.
+func TestScratchReportIsANewFile(t *testing.T) {
+	data, _ := builtinFS.ReadFile("builtin/bazel-review-fleet/references/headless.md")
+	text := string(data)
+	if !strings.Contains(text, `D=$(mktemp -d "${TMPDIR:-/tmp}/bazel-report.XXXXXX"); R="$D/report.md"`) {
+		t.Error("headless.md: the scratch report must be a new file inside a mktemp -d folder")
+	}
+	if regexp.MustCompile(`R=\$\(mktemp "`).MatchString(text) {
+		t.Error("headless.md: mktemp creates the file, and Write then refuses it")
 	}
 }
 
@@ -305,11 +324,20 @@ func TestPluginNames(t *testing.T) {
 	if !IsPost("/bazel:bazel-post-report /r.md") || !IsBuiltin("bazel:bazel-post-report") || IsPost("/other:bazel-post-report") {
 		t.Error("the plugin's name is the skill's name")
 	}
-	if got := PostTask("/bazel-post-report /r.md"); got != "/bazel:bazel-post-report /r.md" {
-		t.Errorf("PostTask = %q", got)
-	}
-	if got := PostTask("/post-report /r.md"); got != "/post-report /r.md" {
-		t.Errorf("PostTask must leave the user's own alone: %q", got)
+	for in, want := range map[string]string{
+		"/bazel-post-report /r.md":         "/bazel:bazel-post-report /r.md",
+		"/BAZEL-REVIEW-FLEET {{number}}":   "/bazel:bazel-review-fleet {{number}}",
+		"/bazel:bazel-history-pr 7":        "/bazel:bazel-history-pr 7",
+		"  /bazel-exploit-digger 7 --post": "/bazel:bazel-exploit-digger 7 --post",
+		"/bazel-lazy-senior-dev":           "/bazel:bazel-lazy-senior-dev",
+		"/post-report /r.md":               "/post-report /r.md",
+		"/review-fleet 7":                  "/review-fleet 7",
+		"Review this PR.":                  "Review this PR.",
+		"//bazel-review-fleet 7":           "//bazel-review-fleet 7",
+	} {
+		if got := Qualify(in); got != want {
+			t.Errorf("Qualify(%q) = %q, want %q", in, got, want)
+		}
 	}
 	got := Inline("/bazel:bazel-post-report /r.md", "/rt")
 	if !strings.Contains(got, "Arguments: /r.md") || !strings.Contains(got, "# Bazel Post Report") {

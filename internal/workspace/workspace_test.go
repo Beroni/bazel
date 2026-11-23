@@ -285,3 +285,42 @@ func TestRemoveLevaPastaSoLeitura(t *testing.T) {
 		t.Errorf("still there: %v", err)
 	}
 }
+
+// A review "since" a commit needs it in the clone and behind HEAD: a rewritten
+// branch, a sha never fetched or anything that is not a full sha is refused.
+func TestIsAncestor(t *testing.T) {
+	dir := t.TempDir()
+	git := func(args ...string) string {
+		t.Helper()
+		cmd := exec.Command("git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false"}, args...)...)
+		cmd.Dir = dir
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	git("init", "-q", "-b", "main")
+	git("commit", "-q", "--allow-empty", "-m", "a")
+	a := git("rev-parse", "HEAD")
+	git("checkout", "-q", "-b", "other")
+	git("commit", "-q", "--allow-empty", "-m", "side")
+	side := git("rev-parse", "HEAD")
+	git("checkout", "-q", "main")
+	git("commit", "-q", "--allow-empty", "-m", "b")
+	ctx := context.Background()
+	if !IsAncestor(ctx, dir, a) {
+		t.Error("a is behind HEAD")
+	}
+	for name, sha := range map[string]string{
+		"branch rewritten": side, "never fetched": strings.Repeat("ab", 20),
+		"short sha": a[:12], "not a sha": "HEAD~1", "empty": "",
+	} {
+		if IsAncestor(ctx, dir, sha) {
+			t.Errorf("%s: %q passed", name, sha)
+		}
+	}
+	if IsAncestor(ctx, "", a) {
+		t.Error("no clone, no since")
+	}
+}

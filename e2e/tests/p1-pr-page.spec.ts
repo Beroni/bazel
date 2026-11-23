@@ -1,6 +1,7 @@
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
-import { Bazel } from '../harness/bazel';
-import { openJob, ui } from '../harness/ui';
+import { Bazel, isNeedsRead } from '../harness/bazel';
+import { jobTab, openJob, ui } from '../harness/ui';
 
 // The PR's own page (Overview) and its History.
 const DETAILS = '/api/prs/acme/api-core/101/details';
@@ -113,7 +114,7 @@ test.describe('P1 · History', () => {
     expect(pr.reviewed ?? false).toBe(false);
     expect((await bazel.api('GET', '/api/reviews')).json.reviews).toEqual([]);
     expect(bazel.savedReviews()).toEqual([]);
-    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
     expect(writes).toEqual([]);
 
     // A new head makes the history stale until it is generated again.
@@ -133,13 +134,13 @@ test.describe('P1 · History', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     const box = app.getByTestId('history');
     await expect(box).toContainText('Written at an older head of this PR');
     await expect(app.getByTestId('history-generate')).toHaveCount(0);
     await app.getByTestId('history-regenerate').click();
-    await expect.poll(() => bazel.agentCalls().filter((c) => c.prompt.startsWith('/history-pr')).length).toBe(2);
-    await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.stale ?? false, { timeout: 20_000 }).toBe(false);
+    await bazel.waitAgents(2, (c) => c.prompt.startsWith('/history-pr'));
+    await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.stale ?? false, { timeout: BUDGET }).toBe(false);
     await expect(box).not.toContainText('Written at an older head of this PR');
     await expect(app.getByTestId('history-decision')).toHaveCount(2);
   });
@@ -149,9 +150,10 @@ test.describe('P1 · History', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     await app.getByTestId('history-generate').click();
-    await expect(app.getByTestId('history-decision')).toHaveCount(2, { timeout: 40_000 });
+    await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.found, { timeout: BUDGET }).toBe(true);
+    await expect(app.getByTestId('history-decision')).toHaveCount(2);
     await expect(app.getByTestId('history-decision').first()).toHaveAttribute('data-n', '1');
   });
 });
@@ -170,10 +172,11 @@ test.describe('P1 · History escapes what the agent wrote', () => {
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await openJob(app, 'Add rate limiter to the public API');
-    await app.getByRole('tab', { name: 'History' }).click();
+    await jobTab(app, 'History');
     await app.getByTestId('history-generate').click();
+    await expect.poll(async () => (await bazel.api('GET', HISTORY)).json.found, { timeout: BUDGET }).toBe(true);
     const decision = app.getByTestId('history-decision');
-    await expect(decision).toHaveCount(1, { timeout: 40_000 });
+    await expect(decision).toHaveCount(1);
     await expect(decision).toContainText('E2E-DECISION-HTML');
     expect(await app.getByTestId('history').locator('[onerror], img[src="x"], script').count()).toBe(0);
     expect(await app.evaluate(() => (window as any).__xss)).toBeUndefined();

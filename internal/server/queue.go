@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/beroni/bazel/internal/config"
@@ -32,6 +33,7 @@ type queuedJob struct {
 	Agent   string `json:"agent"`
 	History bool   `json:"history,omitempty"`
 	Mine    bool   `json:"mine,omitempty"`
+	Since   string `json:"since,omitempty"`
 }
 
 // pendingLocked is what the file must hold. An agent that may publish and has
@@ -44,8 +46,8 @@ func (m *Manager) pendingLocked() []queuedJob {
 		j := m.jobs[id]
 		switch {
 		case j.publish != nil:
-		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && j.Choice.PublishesBy() == "":
-			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine})
+		case j.State == StatePaused, j.State == StateQueued, j.State == StateRunning && publishesOnItsOwn(j.Choice) == "":
+			out = append(out, queuedJob{Repo: j.PR.Repo, PR: j.PR, Agent: j.Choice.Name, History: j.History, Mine: j.Mine, Since: j.Since})
 		}
 	}
 	return out
@@ -94,6 +96,24 @@ func writeQueue(path string, data []byte) error {
 // line on the terminal, and a file that cannot be read is left alone for
 // whoever wants to look at it.
 func (m *Manager) RestoreQueue(path string) {
+	// One server per queue: a second one on the same BAZEL_HOME would show as
+	// paused what the first is running, and write over its file. It keeps a
+	// queue of its own, in memory, and says so.
+	release, ok := holdQueue(path + ".lock")
+	if !ok {
+		m.queueBusy = path
+		fmt.Fprintf(os.Stderr, "bazel: another Bazel holds %s: this one keeps its queue in memory only\n", path)
+		return
+	}
+	// The lock goes with the server: once its context is done, it writes no more.
+	var once sync.Once
+	m.queueRelease = func() { once.Do(release) }
+	go func() {
+		<-m.ctx.Done()
+		m.queueMu.Lock()
+		m.queueRelease()
+		m.queueMu.Unlock()
+	}()
 	m.queueFile = path
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -116,10 +136,25 @@ func (m *Manager) RestoreQueue(path string) {
 			continue
 		}
 		job := m.newJobLocked(q.PR, q.Mine, choice, q.History)
+		job.Since = q.Since
 		job.State = StatePaused
 	}
 	m.mu.Unlock()
 	m.saveQueue()
+}
+
+// publishesOnItsOwn is PublishesBy without the `publish` step: that one waits
+// for you to choose what goes, so a pipeline that ends in it publishes nothing
+// by running. review-then-publish comes back after a restart like a plain review.
+func publishesOnItsOwn(c config.Choice) string {
+	steps := make([]config.ResolvedAgent, 0, len(c.Steps))
+	for _, st := range c.Steps {
+		if st.Reserved != config.StepPublish {
+			steps = append(steps, st)
+		}
+	}
+	c.Steps = steps
+	return c.PublishesBy()
 }
 
 func (m *Manager) choiceFor(q queuedJob) (config.Choice, error) {

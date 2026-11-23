@@ -1,10 +1,8 @@
 import { Page } from '@playwright/test';
+import { BUDGET } from '../harness/budget';
 import { test, expect } from '../harness/fixtures';
 import { Bazel } from '../harness/bazel';
-import { SYNTH } from '../harness/paths';
-import { expandFindings, jobTab, openJob, ui } from '../harness/ui';
-import fs from 'node:fs';
-import path from 'node:path';
+import { expandFindings, jobTab, openCard, openJob, ui } from '../harness/ui';
 
 // What the exploratory session on the new UI tried and found sound. Each of
 // these was a real doubt: they stay so that it stays sound.
@@ -14,7 +12,7 @@ const plain = (name: string, scenario: string, extra: Record<string, unknown> = 
 const AGENTS = [
   { name: 'review-fleet', task: '/review-fleet {{number}}', env: { FAKE_AGENT_SCENARIO: 'claude-findings' } },
   plain('order', 'order-report'), plain('hostile', 'hostile-report'), plain('history', 'history-plain', { publishable: false }),
-  plain('huge', 'x-huge'), plain('ticker', 'x-ticker'),
+  plain('huge', 'huge-report'), plain('ticker', 'ticker'),
 ];
 const MARKS = ['E2E-O-MINOR', 'E2E-O-CRIT', 'E2E-O-MAJOR', 'E2E-O-CUT', 'E2E-O-HUMAN'];
 const kept = (body: string) => MARKS.filter((m) => body.includes(m));
@@ -30,11 +28,6 @@ async function report(app: Page, bazel: Bazel, agent = 'order') {
   return { id, v };
 }
 
-test.beforeAll(() => {
-  fs.mkdirSync(SYNTH, { recursive: true });
-  fs.writeFileSync(path.join(SYNTH, 'x-huge.txt'), '# Huge E2E-HUGE\n\n## Findings\n\n#!repeat 3000 ### F{i} · minor · Finding number {i}\n');
-  fs.writeFileSync(path.join(SYNTH, 'x-ticker.txt'), `${Array.from({ length: 30 }, (_, i) => `#!repeat 20 tick ${i}-{i}\n#!sleep 80\n`).join('')}#!wait release-ticker\n# Done E2E-TICKER\n`);
-});
 
 test.describe('P1 · the tick on screen is the finding that stays out', () => {
   test.use({ bazelOptions: { config: { agents: AGENTS, pipelines: [{ name: 'with-history', steps: ['history', 'order', 'publish'] }] } } });
@@ -109,7 +102,7 @@ test.describe('P1 · what a PR or an agent writes never runs in the page', () =>
     await bazel.waitJob(id, (j) => j.state === 'done');
     await app.reload();
     await expect(ui.prCount(app)).toHaveText('5 PRs');
-    await app.getByTestId('job-card').first().click();
+    await openCard(app, app.getByTestId('job-card').first());
     for (const tab of ['Report', 'Live log', 'History', 'Overview'] as const) await jobTab(app, tab);
     await jobTab(app, 'Report');
     await expandFindings(ui.viewer(app));
@@ -126,9 +119,10 @@ test.describe('P2 · a lot of everything', () => {
   test.use({ bazelOptions: { flags: ['--jobs', '6'], config: { agents: AGENTS } } });
 
   test('3000 findings open, tick and all/none in time a person would accept', async ({ app, bazel }) => {
-    test.setTimeout(90_000);
+    // 35 whole jobs, two at a time: they took ~85s with the load average at 119.
+    test.setTimeout(3 * BUDGET);
     const { v } = await report(app, bazel, 'huge');
-    await expect(ui.findingPicks(v)).toHaveCount(3000, { timeout: 30_000 });
+    await expect(ui.findingPicks(v)).toHaveCount(3000, { timeout: BUDGET });
     await ui.findingPicks(v).nth(5).uncheck();
     await expect(app.getByTestId('pick-summary')).toContainText('2999 of 3000');
     await app.getByTestId('finding-pick-none').click();
@@ -136,13 +130,16 @@ test.describe('P2 · a lot of everything', () => {
   });
 
   test('dozens of jobs: the queue keeps its place when one more arrives', async ({ app, bazel }) => {
-    test.setTimeout(90_000);
+    // 35 whole jobs, two at a time: they took ~85s with the load average at 119.
+    test.setTimeout(3 * BUDGET);
     for (let i = 0; i < 30; i++) bazel.addPR({ repo: 'acme/api-core', number: 300 + i, title: `PR ${i}`, headRefName: `p${i}`, headRefOid: `q${i}`, author: { login: 'x' } });
     await bazel.api('GET', '/api/prs?refresh=1');
     await app.reload();
+    // The list comes after the page: ticked before it, "select all" ticks nothing.
+    await expect(ui.prCount(app)).toHaveText('35 PRs');
     await ui.selectAll(app).check();
     await ui.runButton(app).click();
-    await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.filter((j: any) => j.state === 'done').length, { timeout: 60_000 }).toBe(35);
+    await expect.poll(async () => (await bazel.api('GET', '/api/jobs')).json.jobs.filter((j: any) => j.state === 'done').length, { timeout: 2 * BUDGET }).toBe(35);
     const rail = app.locator('#rail');
     await rail.evaluate((r) => { r.scrollLeft = 1500; });
     await bazel.enqueue('acme/api-core#330', 'review-fleet').catch(() => {});
@@ -157,7 +154,8 @@ test.describe('P1 · moving around', () => {
 
   test('a reload in the middle of a job finds it running, and its log goes on', async ({ app, bazel }) => {
     const id = await bazel.enqueue('acme/api-core#101', 'ticker');
-    await bazel.waitJob(id, (j) => j.state === 'running');
+    // Running starts at the clone: wait for the agent's first line.
+    await bazel.waitJob(id, (j) => j.state === 'running' && j.log_lines > 0);
     await app.reload();
     await openJob(app, T);
     await jobTab(app, 'Live log');

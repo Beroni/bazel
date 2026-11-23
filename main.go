@@ -84,6 +84,7 @@ FLAGS
 ENVIRONMENT
   BAZEL_HOME        configuration directory (default: ~/.bazel)
   BAZEL_NO_SPLASH   turns the animation off
+  BAZEL_RAW_STREAM  folder for each step's raw agent output, for debugging
 
 Repositories, agents and reviews are all managed from the page.
 `)

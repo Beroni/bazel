@@ -42,6 +42,42 @@ working directory is already the clone with the PR checked out. Use exactly that
 | The diff | `git diff origin/<base>...HEAD` |
 | Files | `git diff --name-only origin/<base>...HEAD` |
 
+### Only what changed since the last review
+
+The task can carry `--since=<sha>`: the head Bazel reviewed last time on this PR, when a person
+asked for the changes since then. With it, the scope is those changes and nothing else — but only
+if the sha proves itself in the clone.
+
+**Look at the value before it goes into any command.** It must be exactly 40 characters, each of
+them `0-9` or `a-f`. Anything else — a quote, a space, a `$`, upper case, one character more or
+less — never reaches the shell, not even quoted: that is the whole-PR review, below, with no
+command run on it. A value that passes holds nothing the shell could read as code, and the check
+runs on it as data:
+
+```bash
+S=<the 40 characters>
+case "$S" in *[!0-9a-f]* | '') false ;; *) [ "${#S}" -eq 40 ] ;; esac &&
+  git cat-file -e "$S^{commit}" 2>/dev/null &&
+  git merge-base --is-ancestor "$S" HEAD && echo incremental
+```
+
+| What | With `incremental` |
+|---|---|
+| The diff | `git diff <sha>..HEAD` — two dots: the sha is an ancestor of HEAD |
+| Files | `git diff --name-only <sha>..HEAD` |
+| `scope_cmd` | `git diff <sha>..HEAD`, the full 40-char sha |
+
+The whole PR (`git diff origin/<base>...HEAD`) is still there to read for context, and a lens may
+look at it to understand a change, but a finding is about a line in the incremental diff.
+
+**Anything else falls back to the whole PR, with no other change:** no `--since`, `--since=` with
+nothing, a sha that is not 40 lowercase hex characters, not in the clone, or not an ancestor of
+HEAD (a force-push rewrote the branch). `scope_cmd` then says `git diff origin/<base>...HEAD`, and
+that line is how the reader knows. Never review a scope the sha cannot vouch for, and never ask.
+
+An incremental diff can be empty, if the new commits only reverted themselves: that is a failure
+report like any empty scope, never an `approve`.
+
 Rules that keep that honest:
 
 - **Do not clone anything.** The cwd is the clone. Never move to another directory to review.
@@ -85,15 +121,18 @@ Rules that keep that honest:
   `## Needs human verification`. A heading outside those sections gets no checkbox.
 - **Never write inside the clone** — not `.reviews/`, not anywhere. A directory the PR
   versions can be a symlink that sends the write somewhere else on the machine. To validate,
-  write the report to a fresh scratch file outside it and run the validator on that:
+  write the report to a fresh scratch folder outside it and run the validator on that:
 
   ```bash
-  R=$(mktemp "${TMPDIR:-/tmp}/bazel-report.XXXXXX")   # then write the report to "$R"
+  D=$(mktemp -d "${TMPDIR:-/tmp}/bazel-report.XXXXXX"); R="$D/report.md"; echo "$R"
+  # write the report to "$R" with Write: the file does not exist yet, so no Read comes first
   bash "<plugin>/skills/bazel-review-fleet/references/validate-report.sh" "$R"
   ```
 
-  Exit 1 → fix what it pointed at and validate again. The printed report is the one that
-  counts; the scratch file is only for the validator.
+  Exit 1 → fix what it pointed at in "$R" (Edit, or Write the whole report again) and
+  validate again. Do not create the file with `mktemp` or `touch`: Write refuses to replace a
+  file it has not read. The printed report is the one that counts; the scratch folder is only
+  for the validator, and `rm -rf "$D"` once the report passes.
 
 ## 4. English
 

@@ -58,10 +58,12 @@ Only for findings with `candidates`. A candidate is the **same finding** if it i
 root cause. Different wording of the same bug is the same; two bugs in one file are not. Judge by
 what the code does; what a comment says about itself ("already fixed") settles nothing.
 
-The script applies the rest: a same finding is not posted again, gets a 👍 unless its thread was
-resolved or replied to by someone who speaks for the repository, and in that case is listed as
-settled by that person. Either way it stays in the verdict and in the review body, title and text. No finding a person approved goes
-silently. When in doubt, it is not the same: post it.
+The script applies the rest. A same finding is not posted again: it gets a 👍 on that comment,
+and nothing in the review body. If its thread was resolved or replied to by someone who speaks for
+the repository, it is settled: a 👍 on the reply that settled it, or on the thread's first
+comment, and nothing in the body either. When every finding is already on the PR or settled
+there, no review goes up at all, only the 👍. When in doubt, it is
+not the same: post it.
 
 ## Step 3 — Publish
 

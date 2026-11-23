@@ -13,6 +13,14 @@ def flush:
 def emit($l):
   if .cur then .cur.prose += [$l]
   elif .section == "human" then .human += [$l] | .asked += [(.headers | length) - 1]
+  # A point the review left out because the PR already discussed it: one line each,
+  # in its exact form, or the review cannot be published as checked.
+  elif .section == "discussed" then
+    ([$l | capture("^- (`(?<loc>[^`]+:[0-9]+)`|`PR`) · (?<severity>[a-z]+) · (?<class>[a-z-]+) — (?<point>.+) — \\[thread\\]\\((?<url>https://github\\.com/(?<repo>[^/]+/[^/]+)/pull/(?<pr>[0-9]+)#(discussion_r|issuecomment-|pullrequestreview-)[0-9]+)\\)$")] | first) as $d
+    | if ($l | strip) == "" then .
+      elif $d == null then .deny += ["an Already discussed item is not in the format"]
+      elif ($d.severity | IN("minor", "nit") | not) then .deny += ["a critical or major point was left out as already discussed"]
+      else .discussed += [$d | {loc, severity, class, point, url, repo, pr}] end
   elif ($l | strip) != "" then .extra += [$l]
   else . end;
 
@@ -36,6 +44,7 @@ def section_of($title):
   | if ($t | startswith("finding")) then "findings"
     elif ($t | startswith("cut")) then "cuts"
     elif ($t | startswith("needs human")) then "human"
+    elif $t == "already discussed" then "discussed"
     else null end;
 
 def line($l; $next; $steps):
@@ -86,13 +95,16 @@ def line($l; $next; $steps):
       .fence = $t[0:3] | emit($l)
     else
       if ($t | test("^## ")) then
-        flush | .section = section_of($t | sub("^## +"; ""))
+        # Already discussed is a section only with its marker below it: without, it is
+        # a title like any other, read as it was before the section existed.
+        flush | .section = (section_of($t | sub("^## +"; "")) | if . == "discussed" and $next != "<!-- already-discussed -->" then null else . end)
         | if .section == null then emit($l) else . end
       elif ($t | test("^### ")) and (.section == "findings" or .section == "cuts") then
         flush | .cur = {title: ($t | sub("^### +"; "")), cut: (.section == "cuts"), meta: null, prose: [], report: ((.headers | length) - 1)}
       elif .cur and .cur.meta == null and .cur.prose == [] and ($t | test("^<!-- finding .* -->$")) then
         .cur.meta = ($t | sub("^<!-- finding "; "") | sub(" -->$"; "") | attrs)
       elif .section == "human" and $t == "<!-- needs-human -->" then .
+      elif .section == "discussed" and $t == "<!-- already-discussed -->" then .
       else emit($l) end
     end;
 
@@ -111,11 +123,23 @@ def line($l; $next; $steps):
      .out[$i] = .next | if ($body[$i] | strip) != "" then .next = ($body[$i] | strip) else . end) | .out) as $nexts
 | reduce range(0; $body | length) as $i (
     {mode: "body", expect: true, loose: false, after: null, fence: null, section: null, cur: null, step: null,
-     hdr: null, headers: [], findings: [], human: [], asked: [], extra: [], failed: [], covered: [], deny: []};
+     hdr: null, headers: [], findings: [], human: [], asked: [], discussed: [], extra: [], failed: [], covered: [], deny: []};
     line($body[$i]; $nexts[$i]; $steps))
 | flush
 | endstep
 | if .mode == "header" then .deny += ["a report header is not closed"] else . end
+| ([$bazel[] | select(startswith("- Since: ")) | sub("^- Since: "; "") | strip] | first) as $bazel_since_line
+| (if $bazel_since_line != null and ($bazel_since_line | test("^[0-9a-f]{40}$") | not)
+   then .deny += ["Bazel's Since line is not a commit"] else . end)
+| (if $bazel_since_line != null and ($bazel_since_line | test("^[0-9a-f]{40}$")) then $bazel_since_line else null end) as $bazel_since
+# Any commit named in the scope makes it a part of the PR, however it is spelled
+# (`..HEAD`, `...HEAD`, a pathspec after it): only `origin/<base>...HEAD` is all of it.
+| ([.headers[].scope_cmd | select(test("[0-9a-f]{40}")) | match("[0-9a-f]{40}").string] | unique) as $scope_sinces
+| ($scope_sinces | first) as $scope_since
+# A report that reviewed from another commit than the one Bazel gave it covered a
+# range nobody asked for: it proves nothing about the one that was.
+| (if $bazel_since != null and any($scope_sinces[]; . != $bazel_since)
+   then .deny += ["the report reviewed the changes since another commit than Bazel asked for"] else . end)
 | .deny += [($steps // [])[] as $name | select(.covered | index($name) | not) | "the step \"\($name)\" has no report"]
 | ($target.repo // "") as $repo
 | ($target.n // "") as $n
@@ -132,6 +156,9 @@ def line($l; $next; $steps):
       (if ($h.repo // "" | lower) == ($repo | lower) then empty
        else "a report header names another repository" end),
       (if ($h.pr // "") == $n then empty else "a report header names another PR" end)]
+# A thread cited as already discussed is on this PR, or it is someone else's link.
+| .deny += [.discussed[] | select((.repo | lower) != ($repo | lower) or .pr != $n)
+    | "an Already discussed thread is not on this PR"]
 # An approve over its own findings contradicts itself. Unticking only takes
 # findings away, so this holds for a trimmed copy too. `comment` over a major is
 # how older reports rate one: softer than the validator allows now, but it claims
@@ -155,6 +182,10 @@ def line($l; $next; $steps):
    truncated: any($bazel[]; startswith("- Truncated: yes") or contains("The diff was truncated")),
    whole_diff: any($bazel[]; . == "- Truncated: no"),
    scope_real: all(.headers[]; .scope_cmd != "-"),
+   # Only the changes since an earlier head: clean says nothing of the rest. Bazel's
+   # own line says so first, whatever scope the model wrote; files from before the
+   # line have only the report's word.
+   since: ($bazel_since // $scope_since),
    lenses_real: all(.headers[]; .lenses_ran != "-"),
    verdict: (if any($v[]; . == "request_changes") then "request_changes"
              elif any($v[]; . == "comment") then "comment" else "approve" end),
@@ -165,10 +196,14 @@ def line($l; $next; $steps):
    skipped: (.headers | map(.lenses_skipped) | map(select(. != "none")) | unique),
    failed: .failed,
    human: (.human | join("\n") | strip),
+   discussed: .discussed,
    extra: (.extra | join("\n") | strip),
    findings: (.findings | to_entries | map(.key as $i | .value as $f | ($f.meta // {}) as $m | {
      id: ($i + 1), title: $f.title, cut: $f.cut,
      severity: ($m.severity // "unknown"), class: ($m.class // "unknown"),
+     # Only for the body's line under the title; nothing here decides what a finding is.
+     lenses: ($m.lenses // "" | split("+") | map(select(. != ""))),
+     lines_saved: (if ($m.lines_saved // "" | test("^[0-9]+$")) then $m.lines_saved else null end),
      path: (if ($m.path // "-") == "-" then null else $m.path end),
      line: (if ($m.line // "" | test("^[1-9][0-9]*$")) then ($m.line | tonumber) else null end),
      side: (if $m.side == "LEFT" then "LEFT" else "RIGHT" end),

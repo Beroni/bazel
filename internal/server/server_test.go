@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -187,6 +188,7 @@ func TestPipelineJobReportsEveryStep(t *testing.T) {
 func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	dir := t.TempDir()
 	cfg := cfgFor(t, "cat")
+	cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
 	semClone := false
 	cfg.PostAgent = config.AgentDef{
 		Name: "post-report",
@@ -213,7 +215,7 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	}
 	corpo, _ := m.View(review.ID, true)
 
-	pub, err := m.PublishWithAgent(review.ID, nil)
+	pub, err := m.PublishWithAgent(review.ID, nil, false)
 	if err != nil {
 		t.Fatalf("PublishWithAgent: %v", err)
 	}
@@ -235,7 +237,7 @@ func TestPublishWithAgentRunsInTheSameJob(t *testing.T) {
 	}
 
 	// Asking again while it runs doesn't open a second card or republish.
-	again, err := m.PublishWithAgent(review.ID, nil)
+	again, err := m.PublishWithAgent(review.ID, nil, false)
 	if err != nil {
 		t.Fatalf("PublishWithAgent (2): %v", err)
 	}
@@ -341,10 +343,10 @@ func TestPublishWithAgentRefusesBadSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
-	if _, err := m.PublishWithAgent(view.ID, nil); err == nil {
+	if _, err := m.PublishWithAgent(view.ID, nil, false); err == nil {
 		t.Error("review em andamento não devia poder ser publicado")
 	}
-	if _, err := m.PublishWithAgent("j999", nil); err == nil {
+	if _, err := m.PublishWithAgent("j999", nil, false); err == nil {
 		t.Error("job inexistente devia dar erro")
 	}
 }
@@ -422,6 +424,20 @@ func newTestServer(t *testing.T) *Server {
 	srv, err := New(ctx, cfgFor(t, "cat"), "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
 	if err != nil {
 		t.Fatalf("New: %v", err)
+	}
+	// The summary reads who reviews each PR: never from the real gh. A test
+	// that wants the names sets its own, over a fake gh.
+	srv.fetchReviewers = func(context.Context, []string, string) (map[string][]string, error) {
+		return map[string][]string{}, nil
+	}
+	srv.fetchThreadTags = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	srv.fetchConversations = func(context.Context, []string) (map[string]gh.Conversation, gh.RateLimit, error) {
+		return map[string]gh.Conversation{}, gh.RateLimit{}, nil
+	}
+	srv.fetchThreadTagsPage = func(context.Context, string, string) (gh.Conversation, gh.RateLimit, error) {
+		return gh.Conversation{}, gh.RateLimit{}, nil
 	}
 	return srv
 }
@@ -1109,7 +1125,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -1119,7 +1135,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 
 	// Asking again while the first one runs doesn't open a second: publishing
 	// the same file twice is commenting twice on the PR.
-	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
+	again, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false, false)
 	if err != nil {
 		t.Fatalf("PublishSaved de novo: %v", err)
 	}
@@ -1133,7 +1149,7 @@ func TestPublishSavedRodaSemJobDeOrigem(t *testing.T) {
 	if done.SavedTo != "" {
 		t.Errorf("uma publicação não devia salvar outro review: %q", done.SavedTo)
 	}
-	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil, false); err == nil {
+	if _, err := m.PublishSaved(testPR(482), false, "", "corpo", nil, false, false); err == nil {
 		t.Error("sem arquivo não há o que publicar")
 	}
 }
@@ -1188,7 +1204,7 @@ func TestPublishWithAgentDeixaDeForaOsDesmarcados(t *testing.T) {
 		t.Fatalf("esperava dois achados embrulhados:\n%s", full.HTML)
 	}
 
-	if _, err := m.PublishWithAgent(review.ID, []int{1}); err != nil {
+	if _, err := m.PublishWithAgent(review.ID, []int{1}, false); err != nil {
 		t.Fatalf("PublishWithAgent: %v", err)
 	}
 	end := waitFor(t, ch, review.ID, StateDone)
@@ -1289,10 +1305,10 @@ func TestPublicarRecusaSaidaQueNaoEReview(t *testing.T) {
 		t.Error("não publicar não quer dizer não salvar: o relatório fica em disco")
 	}
 
-	if _, err := m.PublishWithAgent(view.ID, nil); err == nil {
+	if _, err := m.PublishWithAgent(view.ID, nil, false); err == nil {
 		t.Error("o agente de post não devia aceitar o que não é review")
 	}
-	if _, err := m.Post(context.Background(), view.ID, nil); err == nil {
+	if _, err := m.Post(context.Background(), view.ID, nil, false); err == nil {
 		t.Error("colar como comentário é o mesmo destino por outra porta")
 	}
 }
@@ -1393,7 +1409,7 @@ func TestPipelineEsperaParaPublicar(t *testing.T) {
 	nao := false
 	cfg.Agents = []config.AgentDef{
 		{Name: "historia", Command: "echo", Args: []string{"a história do PR"}, Publishable: &nao},
-		{Name: "frota", Command: "echo", Args: []string{"o review da frota"}},
+		{Name: "frota", Command: "echo", Args: []string{"# Verdict: o review da frota"}},
 	}
 	cfg.Pipelines = []config.Pipeline{{Name: "ler antes", Steps: []string{"historia", "frota", "publish"}}}
 	choice, err := cfg.ChoiceByName("ler antes")
@@ -1661,7 +1677,7 @@ func esperaPublicar(t *testing.T, dir, frota string, post config.AgentDef) (*Man
 func TestPublicarPeloAgenteEncerraAEspera(t *testing.T) {
 	m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
 		config.AgentDef{Name: "post", Command: "cat", Task: "publish {{review_file}}", Prompt: "{{task}}"})
-	if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+	if _, err := m.PublishWithAgent(fim.ID, nil, false); err != nil {
 		t.Fatalf("PublishWithAgent: %v", err)
 	}
 	end := waitFor(t, ch, fim.ID, StateDone)
@@ -1669,7 +1685,7 @@ func TestPublicarPeloAgenteEncerraAEspera(t *testing.T) {
 		t.Errorf("publicado, o card sai da espera: posted=%v awaits=%v err=%q", end.Posted, end.AwaitsPublish, end.PostErr)
 	}
 	// And published is published: another click does not send the agent again.
-	if _, err := m.PublishWithAgent(fim.ID, nil); err == nil {
+	if _, err := m.PublishWithAgent(fim.ID, nil, false); err == nil {
 		t.Error("o review já foi ao PR — publicar de novo devia ser recusado")
 	}
 }
@@ -1680,7 +1696,7 @@ func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
 	t.Run("agente de post falha", func(t *testing.T) {
 		m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
 			config.AgentDef{Name: "post", Command: "false", Task: "publish {{review_file}}", Prompt: "{{task}}"})
-		if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+		if _, err := m.PublishWithAgent(fim.ID, nil, false); err != nil {
 			t.Fatalf("PublishWithAgent: %v", err)
 		}
 		end := waitFor(t, ch, fim.ID, StateDone)
@@ -1691,7 +1707,7 @@ func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
 	t.Run("publicação cancelada", func(t *testing.T) {
 		m, ch, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota,
 			config.AgentDef{Name: "post", Command: "sleep", Args: []string{"5"}, Task: "publish {{review_file}}", Prompt: "{{task}}"})
-		if _, err := m.PublishWithAgent(fim.ID, nil); err != nil {
+		if _, err := m.PublishWithAgent(fim.ID, nil, false); err != nil {
 			t.Fatalf("PublishWithAgent: %v", err)
 		}
 		if err := m.Cancel(fim.ID); err != nil {
@@ -1703,10 +1719,11 @@ func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
 		}
 	})
 	t.Run("comentário falha", func(t *testing.T) {
-		log := ghFalso(t, "exit 1")
+		// GitHub's clear refusal: nothing went, and the next try may go.
+		log := ghFalso(t, "echo 'HTTP 422: Validation Failed' >&2; exit 1")
 		m, _, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota, config.AgentDef{Name: "post", Command: "echo"})
 		for i := range 2 {
-			_, err := m.Post(context.Background(), fim.ID, nil)
+			_, err := m.Post(context.Background(), fim.ID, nil, false)
 			if err == nil || errors.Is(err, errPublishBusy) {
 				t.Fatalf("tentativa %d: queria o erro do gh, veio %v", i, err)
 			}
@@ -1722,7 +1739,7 @@ func TestPublicacaoQueFalhaContinuaEsperando(t *testing.T) {
 	t.Run("comentário vai", func(t *testing.T) {
 		log := ghFalso(t, "cat > /dev/null")
 		m, _, fim := esperaPublicar(t, t.TempDir(), relatorioDaFrota, config.AgentDef{Name: "post", Command: "echo"})
-		v, err := m.Post(context.Background(), fim.ID, nil)
+		v, err := m.Post(context.Background(), fim.ID, nil, false)
 		if err != nil {
 			t.Fatalf("Post: %v", err)
 		}
@@ -1744,7 +1761,7 @@ func TestPularAchadoNumeradoNoQueVaiAoPR(t *testing.T) {
 	if strings.Count(cheio.PublishHTML, `class="finding"`) != 2 {
 		t.Fatalf("o que vai ao PR devia ter os dois achados da frota:\n%s", cheio.PublishHTML)
 	}
-	if _, err := m.PublishWithAgent(fim.ID, []int{1}); err != nil {
+	if _, err := m.PublishWithAgent(fim.ID, []int{1}, false); err != nil {
 		t.Fatalf("PublishWithAgent: %v", err)
 	}
 	waitFor(t, ch, fim.ID, StateDone)
@@ -1818,11 +1835,11 @@ func TestPublishSavedDeduplicaPelaOrigem(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
-	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
+	um, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
-	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
+	dois, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false, false)
 	if err != nil {
 		t.Fatalf("PublishSaved (2): %v", err)
 	}
@@ -1922,10 +1939,10 @@ func TestPipelineQueNaoSalvouNaoPublica(t *testing.T) {
 	if fim.AwaitsPublish || !strings.Contains(fim.Err, "could not save") {
 		t.Errorf("o card devia falhar dizendo por quê: awaits=%v err=%q", fim.AwaitsPublish, fim.Err)
 	}
-	if _, err := m.Post(context.Background(), view.ID, nil); err == nil {
+	if _, err := m.Post(context.Background(), view.ID, nil, false); err == nil {
 		t.Error("comentar contornaria o passo publish")
 	}
-	if _, err := m.PublishWithAgent(view.ID, nil); err == nil {
+	if _, err := m.PublishWithAgent(view.ID, nil, false); err == nil {
 		t.Error("o agente de post contornaria o passo publish")
 	}
 	if n := contaNoLog(log, "start"); n != 0 {
@@ -2112,7 +2129,7 @@ func TestCopiaDePublicacaoSomeDepoisDoAgente(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			dir := t.TempDir()
 			m, ch, fim := esperaPublicar(t, dir, relatorioDaFrota, c.post)
-			if _, err := m.PublishWithAgent(fim.ID, []int{1}); err != nil {
+			if _, err := m.PublishWithAgent(fim.ID, []int{1}, false); err != nil {
 				t.Fatalf("PublishWithAgent: %v", err)
 			}
 			if c.fim != nil {
@@ -2154,7 +2171,7 @@ func TestCopiaDePublicacaoSomeNoPublishSaved(t *testing.T) {
 	ch := hub.Subscribe()
 	defer hub.Unsubscribe(ch)
 	m := NewManager(ctx, cfg, dir, 1, false, hub)
-	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
+	v, err := m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false, false)
 	if err != nil {
 		t.Fatalf("PublishSaved: %v", err)
 	}
@@ -2241,13 +2258,13 @@ func TestRepublicarDepoisDeCancelarNaFila(t *testing.T) {
 		}
 	}
 
-	if _, err := m.PublishWithAgent(v.ID, []int{1}); err != nil {
+	if _, err := m.PublishWithAgent(v.ID, []int{1}, false); err != nil {
 		t.Fatalf("PublishWithAgent: %v", err)
 	}
 	if err := m.Cancel(v.ID); err != nil {
 		t.Fatalf("Cancel: %v", err)
 	}
-	if _, err := m.PublishWithAgent(v.ID, []int{1}); err != nil {
+	if _, err := m.PublishWithAgent(v.ID, []int{1}, false); err != nil {
 		t.Fatalf("PublishWithAgent de novo: %v", err)
 	}
 	if err := os.WriteFile(libera, nil, 0o644); err != nil {
@@ -2353,9 +2370,9 @@ func TestCopiaSomeQuandoAPublicacaoSaiDaFila(t *testing.T) {
 				if err := os.WriteFile(orig, []byte("# acme/api-core#482\n\n---\n\n"+relatorioDaFrota), 0o644); err != nil {
 					t.Fatal(err)
 				}
-				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false)
+				pub, err = m.PublishSaved(testPR(482), false, orig, relatorioDaFrota, []int{1}, false, false)
 			} else {
-				pub, err = m.PublishWithAgent(reviewID, []int{1})
+				pub, err = m.PublishWithAgent(reviewID, []int{1}, false)
 			}
 			if err != nil {
 				t.Fatalf("publicando: %v", err)
@@ -2808,9 +2825,9 @@ func TestSavedNaoPublicaOQueFica(t *testing.T) {
 		t.Fatal(err)
 	}
 	res := agent.Result{Agent: "mix", PR: testPR(482), Steps: []agent.StepResult{
-		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "PUBLIC_REVIEW"},
+		{Name: "notes", Body: "INTERNAL_ONLY"}, {Name: "lens", Body: "# Verdict\n\nPUBLIC_REVIEW"},
 	}}
-	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\nPUBLIC_REVIEW"
+	res.Body = "## notes\n\nINTERNAL_ONLY\n\n---\n\n## lens\n\n# Verdict\n\nPUBLIC_REVIEW"
 	path, err := store.Save(srv.reviewsDir, agent.Split(res, choice), nil)
 	if err != nil {
 		t.Fatal(err)
@@ -2915,7 +2932,7 @@ func TestUmaRevisaoQuatroPortas(t *testing.T) {
 
 	// A publication from the Saved tab settles, and its report cannot be pasted.
 	path := file("a.md")
-	view, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false)
+	view, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -2923,22 +2940,22 @@ func TestUmaRevisaoQuatroPortas(t *testing.T) {
 	if done.Publishing || !done.Posted {
 		t.Errorf("a finished publication: publishing=%v posted=%v", done.Publishing, done.Posted)
 	}
-	if _, err := m.Post(ctx, view.ID, nil); !errors.Is(err, errAlreadyPosted) {
+	if _, err := m.Post(ctx, view.ID, nil, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("/post after it: %v", err)
 	}
-	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("comment after it: %v", err)
 	}
-	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("publish again: %v", err)
 	}
 
 	// Comment twice, and then publish: the first one counts.
 	path = file("b.md")
-	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); err != nil {
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errAlreadyPosted) {
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("second comment: %v", err)
 	}
 	if n := contaNoLog(log, "start"); n != 1 {
@@ -2949,13 +2966,13 @@ func TestUmaRevisaoQuatroPortas(t *testing.T) {
 	path = file("c.md")
 	card := &Job{ID: "j900", State: StateDone, SavedTo: path, Posted: true}
 	poeJob(m, card)
-	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+	if _, err := m.PublishSaved(testPR(482), false, path, "Body.", nil, false, false); !errors.Is(err, errAlreadyPosted) {
 		t.Errorf("publish a posted card's file: %v", err)
 	}
 	path = file("d.md")
 	busy := &Job{ID: "j901", State: StateDone, SavedTo: path, posting: true}
 	poeJob(m, busy)
-	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil); !errors.Is(err, errPublishBusy) {
+	if err := m.CommentSaved(ctx, testPR(482), path, "Body.", nil, false); !errors.Is(err, errPublishBusy) {
 		t.Errorf("comment while the card posts: %v", err)
 	}
 }
@@ -3229,7 +3246,7 @@ func TestSaveAgainRecusaOQueFoiPublicado(t *testing.T) {
 	if err := os.WriteFile(path, []byte("# acme/api-core#482 — feat\n\n---\n\n# Verdict\n\nAll good.\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false)
+	view, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nAll good.", nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3314,7 +3331,7 @@ func TestPostSemCardNaoDevolveViewVazia(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
-	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo report")
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; echo '# Verdict: report'")
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	hub := NewHub()
@@ -3335,7 +3352,7 @@ func TestPostSemCardNaoDevolveViewVazia(t *testing.T) {
 		}
 		_ = m.Remove(view.ID)
 	}()
-	got, err := m.Post(ctx, view.ID, nil)
+	got, err := m.Post(ctx, view.ID, nil, false)
 	if refusalStatus(err, 0) != http.StatusGone || got.ID != "" {
 		t.Errorf("Post: %+v %v", got, err)
 	}
@@ -3412,4 +3429,655 @@ func TestSaveEmConflitoResponde409(t *testing.T) {
 	if data, _ := os.ReadFile(path); !bytes.Equal(data, edited) {
 		t.Errorf("file: %s", data)
 	}
+}
+
+// A short report with no findings is a review all the same: it waits on you,
+// with a warning, and every door stays open.
+func TestReviewCurtoSoAvisa(t *testing.T) {
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agents = []config.AgentDef{{Name: "frota", Command: "echo", Args: []string{"No issues found."}}}
+	cfg.Pipelines = []config.Pipeline{{Name: "review and publish", Steps: []string{"frota", "publish"}}}
+	choice, err := cfg.ChoiceByName("review and publish")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	dir := t.TempDir()
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	view, err := m.Enqueue(testPR(482), false, choice)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := waitFor(t, ch, view.ID, StateDone)
+	if !done.AwaitsPublish || !done.Short || done.Incomplete != "" {
+		t.Fatalf("job: awaits=%v short=%v incomplete=%q", done.AwaitsPublish, done.Short, done.Incomplete)
+	}
+	file, _ := os.ReadFile(done.SavedTo)
+	if !store.ShortOf(string(file)) || store.PendingOf(string(file)) != "" {
+		t.Errorf("saved header:\n%s", file)
+	}
+}
+
+// What the stream said never came is refused at every door, live and saved.
+func TestReviewPendenteNaoPublica(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	srv := newTestServer(t)
+	res := agent.Result{Agent: "lens", PR: testPR(482), Body: "The lenses are running.", Pending: "`lens` ended with 3 background agents still running"}
+	path, err := store.Save(srv.reviewsDir, res, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := srv.jobs
+	poeJob(m, &Job{ID: "p1", State: StateDone, PR: testPR(482), Choice: srv.cfg.DefaultChoice(), Result: res, SavedTo: path, Incomplete: res.Pending})
+	if _, err := m.Post(context.Background(), "p1", nil, false); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("Post: %v", err)
+	}
+	if _, err := m.PublishWithAgent("p1", nil, false); refusalStatus(err, 0) != http.StatusConflict {
+		t.Errorf("PublishWithAgent: %v", err)
+	}
+	name := filepath.Base(path)
+	h := srv.Handler()
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, httptest.NewRequest("GET", "http://127.0.0.1:7777/api/reviews/"+name, nil))
+	if !strings.Contains(w.Body.String(), `"incomplete":"`+"`lens`") {
+		t.Errorf("view: %.300s", w.Body)
+	}
+	for _, door := range []string{"comment", "publish"} {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/"+door, strings.NewReader(`{"skip":[]}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusConflict {
+			t.Errorf("%s: %d %s", door, w.Code, w.Body)
+		}
+	}
+}
+
+// A review whose stream proves it incomplete is saved to read, but it is not a
+// review of the PR: it neither marks it nor takes the mark of a complete one.
+func TestPendenteNaoMarcaRevisado(t *testing.T) {
+	dir := t.TempDir()
+	good := `{"type":"system","subtype":"init","session_id":"s1"}` + "\n" + `{"type":"result","subtype":"success","session_id":"s1","result":"# Verdict\n\nGOOD"}`
+	cut := good + "\n" + `{"type":"system","subtype":"init","session_id":"s1"}`
+	cfg := cfgFor(t, "echo")
+	cfg.Agent.Prompt = "{{task}}"
+	cfg.Agents = []config.AgentDef{
+		{Name: "good", Task: "x", Command: "sh", Format: "claude-stream", Args: []string{"-c", "cat >/dev/null; cat <<'A'\n" + good + "\nA\n"}},
+		{Name: "cut", Task: "x", Command: "sh", Format: "claude-stream", Args: []string{"-c", "cat >/dev/null; cat <<'A'\n" + cut + "\nA\n"}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	run := func(name string) jobView {
+		choice, err := cfg.ChoiceByName(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		v, err := m.Enqueue(testPR(482), false, choice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return waitFor(t, ch, v.ID, StateDone)
+	}
+	key := testPR(482).Key()
+	if v := run("cut"); v.Incomplete == "" || v.SavedTo == "" {
+		t.Fatalf("cut: %+v", v)
+	}
+	if _, ok := store.LoadMarks(dir)[key]; ok {
+		t.Fatal("an incomplete review marked the PR as reviewed")
+	}
+	run("good")
+	before := store.LoadMarks(dir)[key]
+	if before.Agent != "good" {
+		t.Fatalf("mark: %+v", before)
+	}
+	run("cut")
+	if after := store.LoadMarks(dir)[key]; after != before {
+		t.Errorf("the complete review's mark changed: %+v → %+v", before, after)
+	}
+}
+
+// A saved review that went to the PR keeps saying so after a restart: every
+// Saved door answers 409 and gh is never called. A file from before that record
+// whose PR shows as published asks first, and goes only with a yes.
+func TestSalvoPublicadoNaoVaiDeNovo(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482,\"headRefOid\":\"abc\"}'; exit 0; fi\necho \"$1 $2\" >> " + log + "\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := cfgFor(t, "cat")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	start := func() *Server {
+		srv, err := New(ctx, cfg, "beroni", Options{Addr: "127.0.0.1:0", Concurrency: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return srv
+	}
+	srv := start()
+	path, err := store.Save(srv.reviewsDir, agent.Result{Agent: cfg.DefaultChoice().Name, PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Base(path)
+	door := func(srv *Server, which, body string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews/"+name+"/"+which, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		return w
+	}
+	if w := door(srv, "comment", `{}`); w.Code != http.StatusOK {
+		t.Fatalf("first comment: %d %s", w.Code, w.Body)
+	}
+	calls := func() int { b, _ := os.ReadFile(log); return strings.Count(string(b), "pr comment") }
+	if calls() != 1 {
+		t.Fatalf("gh comments: %d", calls())
+	}
+	again := start() // a restart: a new manager, nothing in memory
+	for _, which := range []string{"comment", "publish"} {
+		if w := door(again, which, `{}`); w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "already published") {
+			t.Errorf("%s after restart: %d %s", which, w.Code, w.Body)
+		}
+	}
+	if calls() != 1 {
+		t.Errorf("gh ran again: %d comments", calls())
+	}
+
+	// A file from before the record, of the same PR: its sibling's record says
+	// nothing about it, and the index says the PR got a review. It asks.
+	data, _ := os.ReadFile(path)
+	legacy := strings.Replace(string(data), "- Publish record: kept\n", "", 1)
+	if legacy == string(data) {
+		t.Fatal("the saved file has no record line")
+	}
+	name = "acme-api-core-482-20200101-000000.md"
+	if err := os.WriteFile(filepath.Join(again.reviewsDir, name), []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	w := door(again, "comment", `{}`)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"confirm":true`) || calls() != 1 {
+		t.Fatalf("legacy without a yes: %d %s, %d comments", w.Code, w.Body, calls())
+	}
+	if w := door(again, "comment", `{"again":true}`); w.Code != http.StatusOK || calls() != 2 {
+		t.Errorf("legacy with a yes: %d %s, %d comments", w.Code, w.Body, calls())
+	}
+	// Once sent with the yes, it has its own record.
+	if w := door(again, "comment", `{"again":true}`); w.Code != http.StatusConflict || calls() != 2 {
+		t.Errorf("legacy sent twice: %d %s, %d comments", w.Code, w.Body, calls())
+	}
+}
+
+// One saved review, two Bazels on the same folder: the durable claim lets only
+// one door send it; the claim of a process that is gone asks a person.
+func TestClaimEntreInstancias(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\nif [ \"$2\" = view ]; then echo '{\"number\":482}'; exit 0; fi\necho \"$1 $2\" >> " + log + "\nsleep 0.3\ncat >/dev/null\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	cfg := cfgFor(t, "cat")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := NewManager(ctx, cfg, t.TempDir(), 1, false, NewHub())
+	dir := t.TempDir()
+	b := NewManager(ctx, cfg, dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i, m := range []*Manager{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = m.CommentSaved(ctx, testPR(482), path, "Body.", nil, false)
+		}()
+	}
+	wg.Wait()
+	sent, _ := os.ReadFile(log)
+	if n := strings.Count(string(sent), "pr comment"); n != 1 {
+		t.Fatalf("%d comments; errs %v", n, errs)
+	}
+	if _, ok := store.PostedOf(path); !ok {
+		t.Error("no record after the send")
+	}
+
+	// A claim left by a process that died: unknown, asked, sent only with a yes.
+	other, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nagain"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other+".posting", []byte("sending 2026-01-01T00:00:00Z\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.CommentSaved(ctx, testPR(482), other, "Body.", nil, false); !errors.Is(err, errMaybePosted) {
+		t.Errorf("orphan without a yes: %v", err)
+	}
+	if err := a.CommentSaved(ctx, testPR(482), other, "Body.", nil, true); err != nil {
+		t.Errorf("orphan with a yes: %v", err)
+	}
+	if b, err := os.ReadFile(other + ".posting"); err != nil || len(b) != 0 {
+		t.Errorf("the claim still says something after the send: %q %v", b, err)
+	}
+}
+
+// "Review changes since last review" sends the head the PR's last review
+// recorded; a PR never reviewed gets a whole review.
+func TestReviewSinceUsaAMarca(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	srv := newTestServer(t)
+	old := testPR(482)
+	old.HeadRefOid = strings.Repeat("c", 40)
+	path, err := store.Save(srv.reviewsDir, agent.Result{Agent: "lens", PR: old, Body: "# Verdict"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.MarkReviewed(srv.reviewsDir, agent.Result{Agent: "lens", PR: old}, path); err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.Lock()
+	srv.prs = []gh.PR{testPR(482), testPR(483)}
+	srv.prMu.Unlock()
+	post := func(ref string) jobView {
+		r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":["`+ref+`"],"since":true}`))
+		r.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(w, r)
+		var body struct {
+			Jobs []jobView `json:"jobs"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		if w.Code != http.StatusAccepted || len(body.Jobs) != 1 {
+			t.Fatalf("%s: %d %s", ref, w.Code, w.Body)
+		}
+		return body.Jobs[0]
+	}
+	got := post(testPR(482).Key())
+	if got.Since != old.HeadRefOid {
+		t.Errorf("since %q", got.Since)
+	}
+	// The clone could not vouch for it (no clone here): the review was a whole
+	// one, and the job says so instead of the head it was asked from.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		v, _ := srv.jobs.View(got.ID, false)
+		if v.State == StateDone || v.State == StateFailed {
+			if v.Since != "" {
+				t.Errorf("after the run, since %q", v.Since)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job never ended: %+v", v)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := post(testPR(483).Key()); got.Since != "" {
+		t.Errorf("never reviewed: since %q", got.Since)
+	}
+
+	// Reviewed at the head it is at now: nothing to review, and nothing queued.
+	now := testPR(484)
+	now.HeadRefOid = strings.Repeat("d", 40)
+	if err := store.MarkReviewed(srv.reviewsDir, agent.Result{Agent: "lens", PR: now}, path); err != nil {
+		t.Fatal(err)
+	}
+	srv.prMu.Lock()
+	srv.prs = append(srv.prs, now)
+	srv.prMu.Unlock()
+	r := httptest.NewRequest("POST", "http://127.0.0.1:7777/api/reviews", strings.NewReader(`{"refs":["`+now.Key()+`"],"since":true}`))
+	r.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(w, r)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "nothing changed since the last review") {
+		t.Errorf("unchanged: %d %s", w.Code, w.Body)
+	}
+}
+
+// Closing the tab while gh posts does not stop gh: the comment goes, and its
+// record is written, so the next click does not post it again.
+func TestPostSobreviveAoFimDaRequisicao(t *testing.T) {
+	t.Setenv("BAZEL_HOME", t.TempDir())
+	log := filepath.Join(t.TempDir(), "gh.log")
+	bin := t.TempDir()
+	script := "#!/bin/sh\ncat >/dev/null\nsleep 0.5\necho \"$1 $2\" >> " + log + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	dir := t.TempDir()
+	m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel) // the tab closes mid-post
+	if err := m.CommentSaved(req, testPR(482), path, "Body.", nil, false); err != nil {
+		t.Fatalf("comment: %v", err)
+	}
+	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "pr comment") {
+		t.Error("gh was cut short")
+	}
+	if _, ok := store.PostedOf(path); !ok {
+		t.Error("no record")
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errAlreadyPosted) {
+		t.Errorf("second click: %v", err)
+	}
+}
+
+// ND-3: gh failing after GitHub may have taken the comment (no clear refusal) is
+// an unknown outcome: the next try does not send on its own, it asks.
+func TestFalhaIncertaDoGhPergunta(t *testing.T) {
+	log := ghFalso(t, "cat >/dev/null; echo accepted >> "+filepath.Join(t.TempDir(), "x")+"; echo 'connection reset' >&2; exit 1")
+	dir := t.TempDir()
+	m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); err == nil {
+		t.Fatal("gh failed, the door said nothing")
+	}
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errMaybePosted) {
+		t.Errorf("second try: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 1 {
+		t.Errorf("gh ran %d times", n)
+	}
+	// A person's yes sends it.
+	if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, true); err == nil || errors.Is(err, errMaybePosted) {
+		t.Errorf("with a yes, gh runs: %v", err)
+	}
+	if n := contaNoLog(log, "start"); n != 2 {
+		t.Errorf("gh ran %d times", n)
+	}
+}
+
+// C2: a publication still in the queue claims nothing: canceled there, or left
+// by a shutdown, it asks nobody anything next time.
+func TestPublicacaoNaFilaNaoTomaClaim(t *testing.T) {
+	dir := t.TempDir()
+	cfg := cfgFor(t, "sh", "-c", "cat >/dev/null; sleep 30")
+	semClone := false
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: "cat", Checkout: &semClone, Prompt: "{{task}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	hub := NewHub()
+	ch := hub.Subscribe()
+	defer hub.Unsubscribe(ch)
+	m := NewManager(ctx, cfg, dir, 1, false, hub)
+	busy, err := m.Enqueue(testPR(1), false, cfg.DefaultChoice())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, ch, busy.ID, StateRunning)
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pub.State != StateQueued {
+		t.Fatalf("not queued: %s", pub.State)
+	}
+	if err := m.Cancel(pub.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CheckPosting(path, false); err != nil {
+		t.Errorf("a canceled publication left: %v", err)
+	}
+}
+
+// CL-3: only gh's own status line says GitHub refused; a 4xx quoted inside a
+// 5xx, or anywhere else, leaves the outcome unknown.
+func TestSoORecusaDoGhLiberaOClaim(t *testing.T) {
+	for msg, free := range map[string]bool{
+		"HTTP 422: Validation Failed (https://api.github.com/repos/o/r/issues/1/comments)": true,
+		"failed to create comment: GraphQL: Could not resolve to a node (HTTP 404)":        true,
+		"HTTP 500: upstream referred to HTTP 404 on the way":                               false,
+		"HTTP 502: Bad Gateway (HTTP 404)":                                                 false,
+		"the body said HTTP 404 somewhere":                                                 false,
+		"context deadline exceeded":                                                        false,
+	} {
+		file := filepath.Join(t.TempDir(), "r.md")
+		c, err := store.ClaimPosting(file, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = c.Sending()
+		unsent(c, &gh.CommandError{Op: "gh pr comment", Err: errors.New("exit status 1"), Stderr: msg})
+		err = store.CheckPosting(file, false)
+		if free && err != nil || !free && !errors.Is(err, store.ErrClaimOrphan) {
+			t.Errorf("%q: %v", msg, err)
+		}
+	}
+}
+
+// L1: a publication that fails before its post agent runs (the clone, the
+// network) sent nothing: the next one goes without a question.
+func TestFalhaAntesDoAgenteNaoPergunta(t *testing.T) {
+	ghFalso(t, "exit 1") // the clone fails
+	dir := t.TempDir()
+	cfg := cfgFor(t, "cat")
+	cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: "cat", Prompt: "{{task}}"}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m := NewManager(ctx, cfg, dir, 1, false, NewHub())
+	path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		end, _ := m.View(v.ID, false)
+		if end.State == StateDone || end.State == StateFailed {
+			if end.Posted {
+				t.Fatalf("posted: %+v", end)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the publication never ended")
+		}
+	}
+	if err := store.CheckPosting(path, false); err != nil {
+		t.Errorf("nothing was sent, yet: %v", err)
+	}
+}
+
+// B1: a send whose "sending" mark cannot reach the disk (EFBIG, a full disk)
+// does not happen, through any of the four doors: neither gh nor the post agent
+// runs, the claim is let go, and the door says why. With the disk back, the
+// next try goes without a question.
+func TestSemRegistroNadaSai(t *testing.T) {
+	broken := func(*store.Claim) error { return fmt.Errorf("write: %w", syscall.EFBIG) }
+	saved := func(t *testing.T, dir string) string {
+		path, err := store.Save(dir, agent.Result{Agent: "lens", PR: testPR(482), Body: "# Verdict\n\nok"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	released := func(t *testing.T, path string) {
+		t.Helper()
+		if err := store.CheckPosting(path, false); err != nil {
+			t.Errorf("the claim was kept: %v", err)
+		}
+	}
+	// postAgent leaves a mark each time it runs.
+	postAgent := func(t *testing.T, cfg *config.Config) string {
+		bin := t.TempDir()
+		ran := filepath.Join(bin, "ran")
+		script := filepath.Join(bin, "post")
+		if err := os.WriteFile(script, []byte("#!/bin/sh\ncat >/dev/null\necho x >> "+ran+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		semClone := false
+		cfg.PostAgent = config.AgentDef{Name: "post", Task: "publish {{review_file}}", Command: script, Checkout: &semClone, Prompt: "{{task}}"}
+		return ran
+	}
+	runs := func(path string) int {
+		data, _ := os.ReadFile(path)
+		return strings.Count(string(data), "x")
+	}
+	// ended waits for the publication on id to stop; one on the review's
+	// card goes back to the review when it does.
+	ended := func(t *testing.T, m *Manager, id string, inPlace bool) jobView {
+		t.Helper()
+		var v jobView
+		for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if v, _ = m.View(id, false); (v.State == StateDone || v.State == StateFailed) && !(inPlace && v.Publishing) {
+				return v
+			}
+		}
+		t.Fatalf("the publication never ended: %+v", v)
+		return jobView{}
+	}
+
+	t.Run("CommentSaved", func(t *testing.T) {
+		log := ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		m := NewManager(context.Background(), cfgFor(t, "cat"), dir, 1, false, NewHub())
+		path := saved(t, dir)
+		m.sending = broken
+		if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); !errors.Is(err, errNotRecorded) || !errors.Is(err, syscall.EFBIG) {
+			t.Fatalf("err = %v", err)
+		}
+		if n := contaNoLog(log, "start"); n != 0 {
+			t.Errorf("gh ran %d times", n)
+		}
+		released(t, path)
+		m.sending = (*store.Claim).Sending
+		if err := m.CommentSaved(context.Background(), testPR(482), path, "Body.", nil, false); err != nil {
+			t.Errorf("with the disk back: %v", err)
+		}
+	})
+
+	t.Run("Post", func(t *testing.T) {
+		log := ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hub := NewHub()
+		ch := hub.Subscribe()
+		defer hub.Unsubscribe(ch)
+		cfg := cfgFor(t, "cat")
+		cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
+		m := NewManager(ctx, cfg, dir, 1, false, hub)
+		review, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitFor(t, ch, review.ID, StateDone)
+		before := contaNoLog(log, "start")
+		m.sending = broken
+		if _, err := m.Post(context.Background(), review.ID, nil, false); !errors.Is(err, errNotRecorded) {
+			t.Fatalf("err = %v", err)
+		}
+		if n := contaNoLog(log, "start"); n != before {
+			t.Errorf("gh ran %d times", n-before)
+		}
+		released(t, done.SavedTo)
+		m.sending = (*store.Claim).Sending
+		if _, err := m.Post(context.Background(), review.ID, nil, false); err != nil {
+			t.Errorf("with the disk back: %v", err)
+		}
+	})
+
+	t.Run("PublishSaved", func(t *testing.T) {
+		ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		cfg := cfgFor(t, "cat")
+		ran := postAgent(t, cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		m := NewManager(ctx, cfg, dir, 1, false, NewHub())
+		path := saved(t, dir)
+		m.sending = broken
+		v, err := m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		end := ended(t, m, v.ID, false)
+		if !strings.Contains(end.Err+end.PostErr, errNotRecorded.Error()) {
+			t.Errorf("the job does not say why: %+v", end)
+		}
+		if n := runs(ran); n != 0 {
+			t.Errorf("the post agent ran %d times", n)
+		}
+		released(t, path)
+		m.sending = (*store.Claim).Sending
+		v, err = m.PublishSaved(testPR(482), false, path, "# Verdict\n\nok", nil, false, false)
+		if err != nil {
+			t.Fatalf("with the disk back: %v", err)
+		}
+		ended(t, m, v.ID, false)
+		if n := runs(ran); n != 1 {
+			t.Errorf("with the disk back, the post agent ran %d times", n)
+		}
+	})
+
+	t.Run("PublishWithAgent", func(t *testing.T) {
+		ghFalso(t, "cat >/dev/null")
+		dir := t.TempDir()
+		cfg := cfgFor(t, "cat")
+		cfg.Agent.Prompt = "# Verdict\n\nrevise o PR {{number}} de {{repo}}"
+		ran := postAgent(t, cfg)
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		hub := NewHub()
+		ch := hub.Subscribe()
+		defer hub.Unsubscribe(ch)
+		m := NewManager(ctx, cfg, dir, 1, false, hub)
+		review, err := m.Enqueue(testPR(482), false, cfg.DefaultChoice())
+		if err != nil {
+			t.Fatal(err)
+		}
+		done := waitFor(t, ch, review.ID, StateDone)
+		m.sending = broken
+		if _, err := m.PublishWithAgent(review.ID, nil, false); err != nil {
+			t.Fatal(err)
+		}
+		end := ended(t, m, review.ID, true)
+		if !strings.Contains(end.Err+end.PostErr, errNotRecorded.Error()) {
+			t.Errorf("the card does not say why: %+v", end)
+		}
+		if n := runs(ran); n != 0 {
+			t.Errorf("the post agent ran %d times", n)
+		}
+		released(t, done.SavedTo)
+		m.sending = (*store.Claim).Sending
+		if _, err := m.PublishWithAgent(review.ID, nil, false); err != nil {
+			t.Fatalf("with the disk back: %v", err)
+		}
+		ended(t, m, review.ID, true)
+		if n := runs(ran); n != 1 {
+			t.Errorf("with the disk back, the post agent ran %d times", n)
+		}
+	})
 }

@@ -367,7 +367,7 @@ test.describe("P0 · the PR's Claude Code config never runs", () => {
     expect(fs.existsSync(failed.plugin_dir)).toBe(false);
 
     const id = await bazel.enqueue('acme/web-app#7', 'slow-lens');
-    await expect.poll(() => bazel.agentCalls().length, { timeout: 25_000 }).toBe(2);
+    await bazel.waitAgents(2);
     const running = bazel.agentCalls()[1];
     expect(fs.existsSync(running.plugin_dir)).toBe(true);
     await bazel.api('POST', `/api/jobs/${id}/cancel`);

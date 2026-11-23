@@ -18,7 +18,7 @@ import (
 const hostileAgent = `#!/bin/sh
 cat > "$BAZEL_TEST_DIR/prompt"
 # As the publishing script does: without it, Bazel takes nothing as published.
-for a in "$@"; do [ "$prev" = --plugin-dir ] && printf 'published\nPublished.\n' > "$a/publish-outcome"; prev=$a; done
+for a in "$@"; do [ "$prev" = --plugin-dir ] && printf 'published\tPublished.\n' > "$a/publish-outcome"; prev=$a; done
 touch "$BAZEL_TEST_DIR/ran"
 for f in .claude/settings.json .claude/settings.local.json .claude/hooks .mcp.json .codex/config.toml; do
   [ -e "$f" ] && touch "$BAZEL_TEST_DIR/hook-ran"
@@ -229,6 +229,11 @@ func TestEmbeddedRepoConfigDoesNotRun(t *testing.T) {
 			script := "#!/bin/sh\n" + embeddedRepo + command + " >/dev/null 2>&1\ntouch \"$BAZEL_TEST_DIR/ran\"\necho report\n"
 			bin := filepath.SplitList(os.Getenv("PATH"))[0]
 			if err := os.WriteFile(filepath.Join(bin, "gitter"), []byte(script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// With the PR's core.sshCommand out of the way, git falls back to ssh:
+			// an ssh that fails at once keeps the case from waiting on the network.
+			if err := os.WriteFile(filepath.Join(bin, "ssh"), []byte("#!/bin/sh\nexit 255\n"), 0o755); err != nil {
 				t.Fatal(err)
 			}
 

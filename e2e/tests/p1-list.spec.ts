@@ -108,7 +108,9 @@ test.describe('P2 · select all during load', () => {
     await page.route('**/api/prs*', async (r) => { await new Promise((x) => setTimeout(x, 1500)); await r.continue(); });
     await page.goto(bazel.url + '/');
     await ui.filter(page).fill('rate limiter');
-    await ui.selectAll(page).check();
+    // A click, not check(): with no list yet the page may leave the box unticked,
+    // which is a right answer too. What must hold is that box and button agree.
+    await ui.selectAll(page).click();
     await expect(ui.prRow(page, 'Add rate limiter to the public API')).toBeVisible();
     const checked = await ui.selectAll(page).isChecked();
     expect(await ui.runButton(page).isEnabled(), `select all is ${checked ? '' : 'un'}checked`).toBe(checked);

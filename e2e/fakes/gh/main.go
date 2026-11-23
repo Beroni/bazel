@@ -44,8 +44,11 @@ type fixturePR struct {
 	HeadRefName  string `json:"headRefName"`
 	// HeadRefOid is empty in a fixture: gh then answers the tip of the branch the
 	// clone gets. Moved adds that many commits to the branch (bazel.movePR).
-	HeadRefOid  string `json:"headRefOid,omitempty"`
-	Moved       int    `json:"moved,omitempty"`
+	HeadRefOid string `json:"headRefOid,omitempty"`
+	Moved      int    `json:"moved,omitempty"`
+	// Rewritten is how many times the branch was force-pushed: each one is a new
+	// first commit, so no head from before is in the branch any more.
+	Rewritten   int    `json:"rewritten,omitempty"`
 	State       string `json:"state,omitempty"` // OPEN unless a fixture says otherwise
 	BaseRefName string `json:"baseRefName"`
 	// What bazel-post-report surveys. The script reads them as GitHub answers.
@@ -53,7 +56,11 @@ type fixturePR struct {
 	IssueComments  []json.RawMessage `json:"issue_comments,omitempty"`
 	Submitted      []json.RawMessage `json:"submitted_reviews,omitempty"`
 	Threads        []json.RawMessage `json:"review_threads,omitempty"`
-	Author         struct {
+	// Conversation is what the conversation read gets for this PR, in
+	// GraphQL's shape: reviewThreads, comments and reviews, each {nodes: […]}.
+	// Left out, the PR discussed nothing.
+	Conversation map[string]any `json:"conversation,omitempty"`
+	Author       struct {
 		Login string `json:"login"`
 	} `json:"author"`
 	ReviewDecision string            `json:"reviewDecision"`
@@ -81,6 +88,20 @@ type settings struct {
 	// Forks maps a fork to its parent. In a clone of the fork, gh pr checkout N
 	// without --repo or GH_REPO resolves N in the parent, as gh does.
 	Forks map[string]string `json:"forks"`
+	// SlowClone makes gh repo clone take this many milliseconds more: what a
+	// loaded machine does, on purpose, so a test that confuses a running job with
+	// a running agent fails every time instead of now and then.
+	SlowClone int `json:"slow_clone_ms"`
+	// RateRemaining is the GraphQL points left that the thread reads report;
+	// unset, plenty.
+	RateRemaining *int `json:"rate_remaining"`
+	// RateResetSeconds is when GitHub's hour starts again, from now; unset, an hour.
+	RateResetSeconds *int `json:"rate_reset_seconds"`
+	// Hold maps a call key ("comment", "api") to a gate: the call announces
+	// itself in <state>/<gate>.entered and waits for <state>/<gate>, whose text
+	// "fail" makes it fail and anything else lets it through. A write held open,
+	// for a test that kills Bazel in the middle of it.
+	Hold map[string]string `json:"hold"`
 }
 
 var (
@@ -91,6 +112,8 @@ var (
 	// unknown marks a call the fake does not implement; the harness fails
 	// the test when one shows up in the log.
 	unknown bool
+	// started is when gh was called; `at` in the log is when it ended.
+	started = time.Now()
 )
 
 func main() {
@@ -156,6 +179,8 @@ func dispatch(args []string) int {
 		return comment(args)
 	case is(args, "repo", "clone"):
 		return cloneRepo(args)
+	case is(args, "repo", "view"):
+		return repoView(args)
 	case is(args, "pr", "checkout"):
 		return checkoutPR(args)
 	}
@@ -184,6 +209,20 @@ func flag(args []string, name string) string {
 }
 
 func failed(key string) bool {
+	if gate, ok := cfg.Hold[key]; ok {
+		_ = os.WriteFile(filepath.Join(state, gate+".entered"), nil, 0o644)
+		deadline := time.Now().Add(120 * time.Second)
+		for time.Now().Before(deadline) {
+			if b, err := os.ReadFile(filepath.Join(state, gate)); err == nil {
+				if strings.TrimSpace(string(b)) == "fail" {
+					fmt.Fprintln(os.Stderr, "fake gh: held call failed on purpose")
+					return true
+				}
+				break
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	if msg, ok := cfg.Fail[key]; ok {
 		fmt.Fprintln(os.Stderr, msg)
 		return true
@@ -214,6 +253,7 @@ func record(args []string, code int) {
 		"bazel_home":  os.Getenv("BAZEL_HOME"),
 		"unsupported": unknown,
 		"cwd":         cwd,
+		"started_at":  started.UTC().Format(time.RFC3339Nano),
 		"at":          time.Now().UTC().Format(time.RFC3339Nano),
 	})
 	_ = os.MkdirAll(state, 0o755)
@@ -316,6 +356,15 @@ func apiCall(args []string) int {
 	switch {
 	case len(args) == 3 && args[2] == "--paginate":
 		return apiList(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelNeedsYou") }):
+		return apiNeeds(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool { return strings.HasPrefix(a, "query=query bazelReviewers(") }):
+		return apiReviewers(args)
+	case len(args) > 2 && args[1] == "graphql" && slices.ContainsFunc(args, func(a string) bool {
+		return strings.HasPrefix(a, "query=query bazelConversation(") || strings.HasPrefix(a, "query=query bazelThreadTags(") ||
+			strings.HasPrefix(a, "query=query bazelThreadTagsPage(")
+	}):
+		return apiConversation(args)
 	case len(args) > 2 && args[1] == "graphql":
 		return apiThreads(args)
 	case len(args) == 6 && reactionsRe.MatchString(args[3]):
@@ -384,6 +433,191 @@ func apiList(args []string) int {
 }
 
 // apiThreads answers the review-threads query, one page, from the PR's fixture.
+// apiNeeds answers the "Needs you" searches from needs.json in the fixtures, in
+// the GraphQL answer's own shape; without it, every search is empty. The three
+// queries must be there and name the logged-in user.
+func apiNeeds(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	for _, k := range []string{"requested", "reviewed", "authored"} {
+		if !strings.Contains(vars[k], ":"+cfg.User) {
+			return unsupported(args)
+		}
+	}
+	if failed("needs") {
+		return 1
+	}
+	b, err := os.ReadFile(filepath.Join(fixtures, "needs.json"))
+	if err != nil {
+		empty := `{"issueCount":0,"nodes":[]}`
+		b = []byte(`{"data":{"requested":` + empty + `,"reviewed":` + empty + `,"authored":` + empty + `}}`)
+	}
+	os.Stdout.Write(b)
+	return 0
+}
+
+// apiReviewers answers the summary's read of who reviews each PR: aliases
+// p0…pN, each by its variables o<i>, n<i> and p<i>, from the PRs' fixtures.
+// A PR not in them is null, as GitHub answers one it cannot resolve.
+func apiReviewers(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	if failed("reviewers") {
+		return 1
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		number, err := strconv.Atoi(vars[fmt.Sprintf("p%d", i)])
+		if err != nil {
+			return unsupported(args)
+		}
+		alias := fmt.Sprintf("p%d", i)
+		pr, found := find(owner+"/"+vars[fmt.Sprintf("n%d", i)], number)
+		if !found {
+			data[alias] = map[string]any{"pullRequest": nil}
+			continue
+		}
+		data[alias] = map[string]any{"pullRequest": map[string]any{
+			"author":         map[string]string{"login": pr.Author.Login},
+			"reviewRequests": map[string]any{"nodes": requestNodes(pr.ReviewRequests)},
+			"latestReviews":  map[string]any{"nodes": reviewNodes(pr.LatestReviews)},
+		}}
+	}
+	out, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Println(string(out))
+	return 0
+}
+
+// apiConversation answers the read of what each PR discussed, by the same
+// aliases and variables as apiReviewers, from the fixtures' conversation.
+func apiConversation(args []string) int {
+	vars := map[string]string{}
+	for i := 2; i < len(args); i++ {
+		if args[i] == "-f" || args[i] == "-F" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i], "=")
+		if !ok {
+			return unsupported(args)
+		}
+		vars[k] = v
+	}
+	if failed("conversation") {
+		return 1
+	}
+	// One PR of the batch can fail or hang the whole call, as one bad node does
+	// on GitHub: "conversation:owner/name#n" in fail or hold.
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		if failed(fmt.Sprintf("conversation:%s/%s#%s", owner, vars[fmt.Sprintf("n%d", i)], vars[fmt.Sprintf("p%d", i)])) {
+			return 1
+		}
+	}
+	data := map[string]any{}
+	for i := 0; ; i++ {
+		owner, ok := vars[fmt.Sprintf("o%d", i)]
+		if !ok {
+			break
+		}
+		number, err := strconv.Atoi(vars[fmt.Sprintf("p%d", i)])
+		if err != nil {
+			return unsupported(args)
+		}
+		alias := fmt.Sprintf("p%d", i)
+		pr, found := find(owner+"/"+vars[fmt.Sprintf("n%d", i)], number)
+		if !found {
+			data[alias] = map[string]any{"pullRequest": nil}
+			continue
+		}
+		node := map[string]any{"author": map[string]string{"login": pr.Author.Login, "__typename": "User"}}
+		for _, list := range []string{"reviewThreads", "comments", "reviews"} {
+			v, ok := pr.Conversation[list]
+			if !ok {
+				v = map[string]any{"nodes": []any{}}
+			}
+			if m, ok := v.(map[string]any); ok {
+				if _, ok := m["pageInfo"]; !ok {
+					m["pageInfo"] = map[string]any{"hasNextPage": false}
+				}
+			}
+			node[list] = v
+		}
+		data[alias] = map[string]any{"pullRequest": node}
+	}
+	// GitHub's word on its rate limit, as both reads ask for it; gh.json
+	// rate_remaining sets what is left.
+	remaining := 4999
+	if cfg.RateRemaining != nil {
+		remaining = *cfg.RateRemaining
+	}
+	reset := time.Hour
+	if cfg.RateResetSeconds != nil {
+		reset = time.Duration(*cfg.RateResetSeconds) * time.Second
+	}
+	data["rateLimit"] = map[string]any{"cost": 1, "remaining": remaining, "resetAt": time.Now().Add(reset).UTC().Format(time.RFC3339)}
+	out, _ := json.Marshal(map[string]any{"data": data})
+	fmt.Println(string(out))
+	return 0
+}
+
+// requestNodes turns the fixture's reviewRequests (gh pr view's shape: a
+// login, or a team's slug with its organization) into GraphQL's nodes.
+func requestNodes(list []any) []any {
+	nodes := []any{}
+	for _, it := range list {
+		r, _ := it.(map[string]any)
+		who := map[string]any{"__typename": "User", "login": r["login"]}
+		if t, ok := r["__typename"].(string); ok {
+			who["__typename"] = t
+		}
+		if slug, ok := r["slug"]; ok {
+			who = map[string]any{"__typename": "Team", "slug": slug, "organization": r["organization"]}
+		}
+		nodes = append(nodes, map[string]any{"requestedReviewer": who})
+	}
+	return nodes
+}
+
+// reviewNodes does the same for latestReviews: a login with no type is a User.
+func reviewNodes(list []any) []any {
+	nodes := []any{}
+	for _, it := range list {
+		r, _ := it.(map[string]any)
+		author, _ := r["author"].(map[string]any)
+		who := map[string]any{"__typename": "User", "login": author["login"]}
+		if t, ok := author["__typename"].(string); ok {
+			who["__typename"] = t
+		}
+		nodes = append(nodes, map[string]any{"state": r["state"], "author": who})
+	}
+	return nodes
+}
+
 func apiThreads(args []string) int {
 	owner, repo, number := "", "", 0
 	query := false
@@ -640,7 +874,11 @@ func importStream(repo string) string {
 		if !strings.EqualFold(p.Repo, repo) || p.HeadRefName == "" {
 			continue
 		}
-		commit(p.HeadRefName, "", p.Title, "from :1\n", func() {
+		message := p.Title
+		if p.Rewritten > 0 {
+			message = fmt.Sprintf("%s (rewritten %d)", p.Title, p.Rewritten)
+		}
+		commit(p.HeadRefName, "", message, "from :1\n", func() {
 			files := p.Files
 			if len(files) == 0 {
 				files = map[string]string{fmt.Sprintf("pr-%d.txt", p.Number): p.Title}
@@ -684,6 +922,7 @@ func cloneRepo(args []string) int {
 		return unsupported(args)
 	}
 	repo, dir := args[2], args[3]
+	time.Sleep(time.Duration(cfg.SlowClone) * time.Millisecond)
 	if failed("clone:" + repo) {
 		return 1
 	}
@@ -782,4 +1021,51 @@ func sortedKeys(m map[string]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// repoView answers `gh repo view [R] --json nameWithOwner [--jq .nameWithOwner]`,
+// which the built-in skills run to confirm where they are. With no R, gh asks
+// GH_REPO, then the clone's origin. Any other field or flag is not modelled.
+func repoView(args []string) int {
+	rest := args[2:]
+	repo := ""
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		repo, rest = rest[0], rest[1:]
+	}
+	jq := ""
+	switch {
+	case slices.Equal(rest, []string{"--json", "nameWithOwner"}):
+	case slices.Equal(rest, []string{"--json", "nameWithOwner", "--jq", ".nameWithOwner"}):
+		jq = ".nameWithOwner"
+	default:
+		return unsupported(args)
+	}
+	if failed("repo-view") {
+		return 1
+	}
+	if repo == "" {
+		repo = os.Getenv("GH_REPO")
+	}
+	if repo == "" {
+		url, err := exec.Command("git", "config", "remote.origin.url").Output()
+		m := originRe.FindStringSubmatch(strings.TrimSpace(string(url)))
+		if err != nil || m == nil {
+			fmt.Fprintln(os.Stderr, "failed to run git: not a git repository (or any of the parent directories): .git")
+			return 1
+		}
+		repo = m[1] + "/" + m[2]
+	}
+	i := slices.IndexFunc(loadPRs(), func(p fixturePR) bool { return strings.EqualFold(p.Repo, repo) })
+	if i < 0 {
+		fmt.Fprintf(os.Stderr, "GraphQL: Could not resolve to a Repository with the name '%s'. (repository)\n", repo)
+		return 1
+	}
+	name := loadPRs()[i].Repo
+	if jq != "" {
+		fmt.Println(name)
+		return 0
+	}
+	b, _ := json.Marshal(map[string]string{"nameWithOwner": name})
+	fmt.Println(string(b))
+	return 0
 }

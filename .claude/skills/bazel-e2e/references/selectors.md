@@ -94,6 +94,10 @@ What the helpers take care of:
 | `pr-select-all` | select all | | ✓ |
 | `agent-select` | agent selector | | ✓ |
 | `run-review` | run button | | ✓ |
+| `threads-note`, `threads-note-pr` | "You still have N open threads on this PR", under Review | `data-pr-key` | |
+| `threads-error` | "Your open threads could not be read…": a failed read with nothing to fall back on | | |
+| `threads-loading` | "Reading your open threads…": a read is under way and there is nothing yet | | |
+| `threads-stale` | "as of HH:MM (could not refresh)", in the reminder and the PR's page | | |
 | `toggle-prs` | ☰ | | |
 
 ### Queue and cards
@@ -108,6 +112,10 @@ What the helpers take care of:
 | `job-cancel` | cancel | | ✓ |
 | `job-remove` | ✕ | | |
 | `job-published` | ✓ published | | |
+| `job-verdict` | your decision's badge (✅, 📝✅, 🔄), hidden with none | `data-verdict` | |
+| `queue-summary` | Summary button (queue tab) | | |
+| `summary-moved-item` (`data-key`), `summary-keep`, `summary-change`, `summary-change-<id>` | a moved PR in the Summary and its quick decisions | | |
+| `summary-dialog`, `summary-text`, `summary-missing`, `summary-moved`, `summary-warning`, `summary-copy`, `summary-close`, `summary-note` | the Summary dialog | | |
 
 ### Review pane
 
@@ -123,6 +131,11 @@ What the helpers take care of:
 | `keep-here` | keep it here | | |
 | `already-published` | ✓ already on the PR | | ✓ |
 | `post-error` | failed to publish | | |
+| `verdict-bar` | your decision, under the report (Report and Saved) | `data-pr-key`, `data-door` | |
+| `verdict-approve`, `verdict-approve_with_comments`, `verdict-request_changes` | the three buttons | `aria-pressed` | |
+| `verdict-moved` | decided on <sha7>, PR moved | | |
+| `verdict-current-label`, `verdict-current-<id>` | the row that decides on the current head, shown once the PR moved | `aria-pressed` | |
+| `pr-verdict`, `pr-verdict-label`, `pr-verdict-<id>` | on the PR's page: deciding by hand on the current head (no review in Bazel, moved, or manual) | `data-pr-key` | |
 | `review-footer` | saved to … · clone kept at … | | |
 | `live-log` | log panel | | |
 | `log-pane` | one terminal | `data-agent` | |
@@ -148,3 +161,13 @@ What the helpers take care of:
 | `pipeline-name`, `pipeline-create`, `pipeline-row`, `pipeline-remove` | | `data-pipeline` |
 | `config-download`, `config-yaml` | file | |
 | `stray-warning` | stray command warning | |
+
+### Open threads
+
+| testid | element | extra attrs |
+| --- | --- | --- |
+| `pr-open-threads` | "💬 N open" ("N+ open (partial)" past the page cap) in a PR row; its title lists path:line | `data-count`, `data-stale` (its last read failed; these are from the one before), `data-partial` |
+| `pr-open-threads-list`, `pr-open-thread` | "Your open threads" on the PR's page | `data-path` |
+| `thread-author-replied` | the PR author has the last word in the thread | |
+| `thread-more` | "+N more": replies one read did not bring | |
+

@@ -1,4 +1,5 @@
 import { ChildProcess, spawn } from 'node:child_process';
+import { BUDGET } from './budget';
 import fs from 'node:fs';
 import http from 'node:http';
 import net from 'node:net';
@@ -6,7 +7,24 @@ import path from 'node:path';
 import { BIN, FIXTURES, OUT, SCENARIOS, safeEnv } from './paths';
 
 /** One recorded call to the fake gh. */
+/**
+ * A GraphQL read Bazel makes on its own (see BAZEL_READS), on load and on
+ * refresh. It writes nothing, so the "nothing reached GitHub" checks leave it
+ * out. The name is from when Needs you was the only one.
+ */
+export const isNeedsRead = (c: GhCall): boolean =>
+  c.argv[0] === 'api' && c.argv[1] === 'graphql' && c.argv.some((a) => BAZEL_READS.some((q) => a.startsWith(q)));
+
+/**
+ * Bazel's own GraphQL reads, which write nothing: the Needs you searches, who
+ * reviews the Summary's PRs, and what the listed PRs discussed (the open-thread
+ * tags and the fleet's discussion.json).
+ */
+const BAZEL_READS = ['query=query bazelNeedsYou', 'query=query bazelReviewers(', 'query=query bazelConversation(', 'query=query bazelThreadTags(', 'query=query bazelThreadTagsPage('];
+
 export interface GhCall {
+  /** When gh was called; `at` is when it returned. */
+  started_at: string;
   /** HOME and BAZEL_HOME gh got: the isolation canary. */
   home: string;
   bazel_home: string;
@@ -22,6 +40,8 @@ export interface GhCall {
 /** One recorded run of the fake agent. */
 export interface AgentCall {
   scenario: string;
+  /** When Bazel spawned the agent; `at` is when it got past its record. */
+  started_at: string;
   /** The agent's process: see agentAlive. */
   pid: number;
   /** The branch the clone was on when the agent started. */
@@ -45,6 +65,9 @@ export interface AgentCall {
   /** --plugin-dir and the name in its .claude-plugin/plugin.json. */
   plugin_dir: string;
   plugin_name: string;
+  /** <plugin>/discussion.json as the agent found it, and its mode ("" when absent). */
+  discussion: string;
+  discussion_mode: string;
   /** Confinement of the PR's own Claude Code config. */
   setting_sources_user: boolean;
   strict_mcp_config: boolean;
@@ -71,6 +94,14 @@ export interface GhSettings {
   fail?: Record<string, string>;
   /** fork → parent: see `Forks` in the fake gh. */
   forks?: Record<string, string>;
+  /** Extra milliseconds for every gh repo clone: a loaded machine, on purpose. */
+  slow_clone_ms?: number;
+  /** GraphQL points left that the open-thread reads report (default plenty). */
+  rate_remaining?: number;
+  /** Seconds until that rate limit resets (default an hour). */
+  rate_reset_seconds?: number;
+  /** Call key ("comment", "api") → gate: see holdingGh / releaseGh. */
+  hold?: Record<string, string>;
 }
 
 export interface BazelOptions {
@@ -84,6 +115,11 @@ export interface BazelOptions {
   skills?: Record<string, string>;
   /** Written as gh.json in this test's copy of the fixtures. */
   gh?: GhSettings;
+  /**
+   * A second server over the same BAZEL_HOME, HOME, gh fixtures and logs as
+   * this one: two Bazels on one machine. It has its own port, process and log.
+   */
+  share?: Bazel;
 }
 
 /** The skills every default Bazel has installed in its fake skills_dir. */
@@ -168,14 +204,16 @@ export class Bazel {
   constructor(private readonly opts: BazelOptions = {}) {
     fs.mkdirSync(path.join(OUT, 'runs'), { recursive: true });
     this.root = fs.mkdtempSync(path.join(OUT, 'runs', 'bz-'));
-    this.home = path.join(this.root, 'home');
-    this.bazelHome = path.join(this.root, 'bazel-home');
+    const owner = opts.share ?? this;
+    const of = (name: string) => path.join(opts.share ? opts.share.root : this.root, name);
+    this.home = of('home');
+    this.bazelHome = of('bazel-home');
     this.tmp = path.join(this.root, 'tmp');
-    this.ghState = path.join(this.root, 'gh');
-    this.agentState = path.join(this.root, 'agent');
+    this.ghState = of('gh');
+    this.agentState = of('agent');
     this.logFile = path.join(this.root, 'server.log');
-    this.fixturesDir = path.join(this.root, 'fixtures');
-    fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
+    this.fixturesDir = of('fixtures');
+    if (owner === this) fs.cpSync(path.join(FIXTURES, opts.fixtures ?? 'default'), this.fixturesDir, { recursive: true });
     if (opts.gh) this.setGh(opts.gh);
     for (const d of [this.home, this.bazelHome, this.tmp, this.ghState, this.agentState]) fs.mkdirSync(d, { recursive: true });
   }
@@ -270,6 +308,23 @@ export class Bazel {
     if ((await Promise.race([this.exited, timeout])) === 'timeout') this.proc.kill('SIGKILL');
   }
 
+  /** Kills the server at once, as a crash would: nothing of it runs after. */
+  async kill(): Promise<void> {
+    if (!this.proc || this.proc.exitCode !== null) return;
+    this.proc.kill('SIGKILL');
+    await this.exited;
+  }
+
+  /** Whether a gh call held on gate has started (gh: { hold }). */
+  holdingGh(gate: string): boolean {
+    return fs.existsSync(path.join(this.ghState, `${gate}.entered`));
+  }
+
+  /** Lets a held gh call go through, or fail with how = 'fail'. */
+  releaseGh(gate: string, how: 'go' | 'fail' = 'go'): void {
+    fs.writeFileSync(path.join(this.ghState, gate), how);
+  }
+
   /** Removes the temp root. Called only when the test passed. */
   cleanup(): void {
     // Jobs still in flight at stop time (a clone being written) can race the
@@ -282,6 +337,24 @@ export class Bazel {
   /** Rewrites gh.json in this test's fixtures (the fake gh rereads it on every call). */
   setGh(settings: GhSettings): void {
     fs.writeFileSync(path.join(this.fixturesDir, 'gh.json'), JSON.stringify({ user: 'e2e-user', ...settings }, null, 2));
+  }
+
+  /**
+   * Writes needs.json: what the fake gh answers to the "Needs you" searches, in
+   * the GraphQL answer's shape ({ requested, reviewed, authored } → nodes).
+   */
+  setNeeds(
+    searches: { requested?: unknown[]; reviewed?: unknown[]; authored?: unknown[] },
+    /** What GitHub says each search found, when it found more than it returned. */
+    totals: { requested?: number; reviewed?: number; authored?: number } = {},
+  ): void {
+    const one = (nodes: unknown[] = [], total?: number) => ({ issueCount: total ?? nodes.length, nodes });
+    const data = {
+      requested: one(searches.requested, totals.requested),
+      reviewed: one(searches.reviewed, totals.reviewed),
+      authored: one(searches.authored, totals.authored),
+    };
+    fs.writeFileSync(path.join(this.fixturesDir, 'needs.json'), JSON.stringify({ data }, null, 2));
   }
 
   /** Patches one PR of prs.json ("owner/repo#n"). */
@@ -335,6 +408,32 @@ export class Bazel {
   /** The fake gh builds the repo from the fixtures once: this has it build anew. */
   private dropOrigin(repo: string): void {
     fs.rmSync(path.join(this.ghState, 'repos', `${repo}.git`), { recursive: true, force: true });
+  }
+
+  /**
+   * Waits until n agent calls match pred, and returns them. `running` is not
+   * enough: a job is running from its clone on, and the agent starts after it.
+   */
+  async waitAgents(n: number, pred: (c: AgentCall) => boolean = () => true, timeoutMs = BUDGET): Promise<AgentCall[]> {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      const calls = this.agentCalls().filter(pred);
+      if (calls.length >= n) return calls;
+      if (Date.now() > deadline) throw new Error(`${calls.length} of ${n} agent calls after ${timeoutMs}ms: ${calls.map((c) => c.scenario).join(', ')}`);
+      await new Promise((r) => setTimeout(r, 100));
+    }
+  }
+
+  /**
+   * A force push on the PR's branch: a new history, so no head from before is
+   * in it any more. gh lists the new head; Bazel notices on its next refresh.
+   */
+  rewritePR(key: string): void {
+    const file = path.join(this.fixturesDir, 'prs.json');
+    const pr = JSON.parse(fs.readFileSync(file, 'utf8')).find((p: any) => `${p.repo}#${p.number}` === key);
+    if (!pr) throw new Error(`no fixture PR ${key}`);
+    this.updatePR(key, { rewritten: (pr.rewritten ?? 0) + 1, moved: 0 });
+    this.dropOrigin(pr.repo);
   }
 
   /** Whether that agent process is still there: what "killed" means. */
@@ -397,12 +496,8 @@ export class Bazel {
     return (await this.api('GET', `/api/jobs/${id}`)).json;
   }
 
-  /**
-   * Polls a job until pred holds; returns the last view. The budget is what a
-   * plain job took with the load average above 70 (over 40s), and a passing test
-   * never waits for it.
-   */
-  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = 60_000): Promise<any> {
+  /** Polls a job until pred holds; returns the last view. */
+  async waitJob(id: string, pred: (j: any) => boolean, timeoutMs = BUDGET): Promise<any> {
     const deadline = Date.now() + timeoutMs;
     let last: any;
     while (Date.now() < deadline) {

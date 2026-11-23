@@ -1,3 +1,4 @@
+import { isNeedsRead } from '../harness/bazel';
 import { test, expect } from '../harness/fixtures';
 
 // MCP may read and enqueue, never publish — unless mcp_allow_publish is on.
@@ -69,7 +70,7 @@ test.describe('P0 · MCP refuses anything that could publish', () => {
     const sneaky = await bazel.tool('read_review', { name: '../config.yaml' });
     expect(sneaky.isError).toBe(true);
 
-    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user'));
+    const writes = bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)));
     expect(writes).toEqual([]);
   });
 });

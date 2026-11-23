@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test as base, expect, Page } from '@playwright/test';
 import { Bazel, BazelOptions } from './bazel';
+import os from 'node:os';
 import { COVERAGE } from './paths';
 import { ui } from './ui';
 
@@ -52,6 +53,12 @@ export const test = base.extend<Fixtures>({
 
   bazel: async ({ bazelOptions }, use, testInfo) => {
     const bz = new Bazel(bazelOptions);
+    // The machine is shared: a failure under load reads differently from one
+    // on an idle box, so the load average goes with the timeline.
+    const load: string[] = [];
+    const sample = () => load.push(`${new Date().toISOString().slice(11, 23)} ${os.loadavg().map((x) => x.toFixed(1)).join(' ')}`);
+    sample();
+    const sampler = setInterval(sample, 2_000);
     try {
       await bz.start();
       await use(bz);
@@ -66,9 +73,11 @@ export const test = base.extend<Fixtures>({
       const unknown = bz.ghCalls().filter((c) => c.unsupported);
       expect(unknown.map((c) => 'gh ' + c.argv.join(' ')), 'gh calls the fake does not implement').toEqual([]);
     } finally {
+      clearInterval(sampler);
       await bz.stop();
       const failed = testInfo.status !== testInfo.expectedStatus;
       if (failed) {
+        await testInfo.attach('timeline.txt', { body: timeline(bz, load), contentType: 'text/plain' });
         await testInfo.attach('server.log', { body: bz.serverLog(), contentType: 'text/plain' });
         await testInfo.attach('gh-calls.json', { body: JSON.stringify(bz.ghCalls(), null, 2), contentType: 'application/json' });
         await testInfo.attach('agent-calls.json', { body: JSON.stringify(bz.agentCalls(), null, 2), contentType: 'application/json' });
@@ -111,3 +120,18 @@ export const test = base.extend<Fixtures>({
     await use(page);
   },
 });
+
+/**
+ * Every gh and agent call of the test, in order, with how long it took, and the
+ * load average every 2s: what a failure needs to tell a slow machine from a
+ * step that never happened.
+ */
+function timeline(bz: Bazel, load: string[]): string {
+  const ms = (a: string, b: string) => `${Math.round(Date.parse(b) - Date.parse(a))}ms`;
+  const rows = [
+    ...bz.ghCalls().map((c) => [c.started_at ?? c.at, `gh ${c.argv.slice(0, 4).join(' ')} → ${c.exit} (${c.started_at ? ms(c.started_at, c.at) : '?'})`]),
+    ...bz.agentCalls().map((c) => [c.started_at ?? c.at, `agent ${c.scenario} pid ${c.pid} (start→record ${c.started_at ? ms(c.started_at, c.at) : '?'})`]),
+  ].sort((a, b) => a[0].localeCompare(b[0]));
+  return [...rows.map(([t, e]) => `${t.slice(11, 23)} ${e}`), '', 'load average (1m 5m 15m):', ...load].join('\n') + '\n';
+}
+

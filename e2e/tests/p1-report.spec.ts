@@ -1,3 +1,4 @@
+import { isNeedsRead } from '../harness/bazel';
 import { test, expect } from '../harness/fixtures';
 import { expandFindings, openJob, showMeters, ui } from '../harness/ui';
 
@@ -63,7 +64,7 @@ test.describe('P1 · report and findings', () => {
     expect((await bazel.api('POST', `/api/jobs/${id}/publish`, {})).status).toBe(409);
     const post = await bazel.api('POST', `/api/jobs/${id}/post`, {});
     expect(post.status).toBeGreaterThanOrEqual(400);
-    expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user'))).toEqual([]);
+    expect(bazel.ghCalls().filter((c) => c.argv[1] === 'comment' || (c.argv[0] === 'api' && c.argv[1] !== 'user' && !isNeedsRead(c)))).toEqual([]);
   });
 
   // BUG-QA-05, fixed in #27: a refusal that is the client's fault used to answer

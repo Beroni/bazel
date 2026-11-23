@@ -1,4 +1,5 @@
 import { expect, Locator, Page } from '@playwright/test';
+import { BUDGET } from './budget';
 
 /**
  * Every UI selector the tests use lives here, so a redesign changes one file.
@@ -38,6 +39,23 @@ export const ui = {
   cancelControl: (p: Page) => p.getByTestId('job-cancel'),
   removeButton: (card: Locator) => card.getByTestId('job-remove'),
   jobPublished: (card: Locator) => card.getByTestId('job-published'),
+  /** The card's badge with your decision (✅, 📝✅, 🔄): `data-verdict`. */
+  jobVerdict: (card: Locator) => card.getByTestId('job-verdict'),
+  /** A decision button under a report; `aria-pressed` says it is the one taken. */
+  verdict: (scope: Locator, id: 'approve' | 'approve_with_comments' | 'request_changes') => scope.getByTestId(`verdict-${id}`),
+  /** "decided on <sha7>, PR moved". */
+  verdictMoved: (scope: Locator) => scope.getByTestId('verdict-moved'),
+  /** The queue's Summary button, and its dialog. */
+  summaryButton: (p: Page) => p.getByTestId('queue-summary'),
+  summaryDialog: (p: Page) => p.getByTestId('summary-dialog'),
+  summaryText: (p: Page) => p.getByTestId('summary-text'),
+  summaryMissing: (p: Page) => p.getByTestId('summary-missing'),
+  /** "moved since your decision: #N": decided PRs kept out of the text. */
+  summaryMoved: (p: Page) => p.getByTestId('summary-moved'),
+  /** "Reviewers could not be read…", when the read of the names failed. */
+  summaryWarning: (p: Page) => p.getByTestId('summary-warning'),
+  summaryCopy: (p: Page) => p.getByTestId('summary-copy'),
+  summaryNote: (p: Page) => p.getByTestId('summary-note'),
 
   /** The page-wide message bar (errors, warnings). */
   banner: (p: Page) => p.getByTestId('banner'),
@@ -108,7 +126,22 @@ export async function settled(page: Page): Promise<void> {
 
 /** Opens one of the tabs of a job's detail. */
 export async function jobTab(page: Page, name: 'Overview' | 'History' | 'Live log' | 'Report'): Promise<void> {
-  await page.getByRole('tab', { name }).click();
+  // BUG-QA-36: a click whose press and release straddle a redraw of the job's
+  // detail (the Overview's details arriving) is lost. The bug has its own test
+  // (p2-exploratory-bugs); here a lost click is clicked again until the tab is
+  // the selected one. Drop the retry with the fix.
+  const tab = page.getByRole('tab', { name, exact: true });
+  await expect(async () => {
+    if ((await tab.getAttribute('aria-selected')) !== 'true') await tab.click();
+    await expect(tab).toHaveAttribute('aria-selected', 'true', { timeout: 2_000 });
+  }).toPass({ timeout: BUDGET });
+}
+
+/** Clicks Run and returns the jobs it queued, from the server's own answer. */
+export async function runReview(page: Page): Promise<any[]> {
+  const posted = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/reviews', { timeout: BUDGET });
+  await ui.runButton(page).click();
+  return (await (await posted).json()).jobs;
 }
 
 /** Ticks the PRs matching `text` through the filter + "select all". */
@@ -121,13 +154,23 @@ export async function tickByFilter(page: Page, text: string): Promise<void> {
 
 /** Opens the newest job of a PR in the review pane: the queue lists newest first. */
 export async function openJob(page: Page, title: string): Promise<Locator> {
-  await ui.jobCard(page, title).first().click();
+  await openCard(page, ui.jobCard(page, title).first());
   return ui.viewer(page);
+}
+
+/**
+ * Clicks a job card and waits for its detail. The rail updates its cards in
+ * place (BUG-QA-28 fixed), so one click is enough.
+ */
+export async function openCard(page: Page, card: Locator): Promise<void> {
+  const id = await card.getAttribute('data-job-id');
+  await card.click();
+  await expect(ui.viewer(page)).toHaveAttribute('data-job-id', id!);
 }
 
 /** Cancels a job: the button is in the header of its detail. */
 export async function cancelJob(page: Page, title: string): Promise<void> {
-  await ui.jobCard(page, title).first().click();
+  await openCard(page, ui.jobCard(page, title).first());
   await ui.cancelControl(page).click();
 }
 

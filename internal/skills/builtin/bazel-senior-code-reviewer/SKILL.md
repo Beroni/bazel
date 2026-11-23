@@ -6,7 +6,7 @@ description: Runs the PRECISION lens over one PR inside Bazel — 11 dimensions 
   few defensible findings. Ships inside Bazel and runs headless in the PR's clone. Use it as
   /bazel-senior-code-reviewer <PR number>. For all three lenses with dedup use
   bazel-review-fleet.
-allowed-tools: Read Write Grep Glob Bash Agent
+allowed-tools: Read Write Edit Grep Glob Bash Agent
 model: inherit
 effort: high
 ---
