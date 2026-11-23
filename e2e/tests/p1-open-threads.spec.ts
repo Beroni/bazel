@@ -71,9 +71,9 @@ test.describe('P1 · your open threads', () => {
     await bazel.restart({ samePort: true });
     await app.reload();
     await expect(ui.prRow(app, RATE)).toBeVisible();
-    const r = await bazel.api('GET', '/api/open-threads?refresh=1');
-    expect(r.status).toBe(200);
-    expect(r.json.error).toContain('open threads could not be read');
+    // The page's own read may still be out: then it is loading; once it ends,
+    // with nothing to fall back on, the page could not be read.
+    await expect.poll(async () => (await bazel.api('GET', '/api/open-threads?refresh=1')).json.error ?? '').toContain('open threads could not be read');
     await expect(app.getByTestId('pr-open-threads')).toHaveCount(0);
     // With nothing to fall back on, the page says the threads could not be read.
     await expect(app.getByTestId('threads-error')).toHaveText('Your open threads could not be read from GitHub, so none are shown.');
@@ -152,6 +152,24 @@ test.describe('P1 · your open threads', () => {
     const tag = ui.prRow(app, RATE).getByTestId('pr-open-threads');
     await expect(tag).toHaveText('💬 4+ open (partial)');
     await expect(tag).toHaveAttribute('data-partial', 'true');
+  });
+
+  // N5-2: at boot, with a read under way and nothing yet, the page says it is
+  // reading, not that the threads could not be read; then shows them.
+  test('a read under way at boot says reading, then the tags come', async ({ app, bazel }) => {
+    bazel.updatePR('acme/api-core#101', { conversation: { reviewThreads: { nodes: [CONVERSATION.reviewThreads.nodes[0]] } } });
+    bazel.setGh({ hold: { conversation: 'threads' } });
+    await bazel.restart({ samePort: true });
+    await app.reload();
+    await expect.poll(() => bazel.holdingGh('threads')).toBe(true);
+    // The page's first request is the one reading; the next one, the list's
+    // ↻, finds the read under way and nothing yet.
+    await app.getByTestId('refresh').click();
+    await expect(app.getByTestId('threads-loading')).toHaveText('Reading your open threads…');
+    await expect(app.getByTestId('threads-error')).toHaveCount(0);
+    bazel.releaseGh('threads');
+    await expect(ui.prRow(app, RATE).getByTestId('pr-open-threads')).toHaveText('💬 1 open');
+    await expect(app.getByTestId('threads-loading')).toHaveCount(0);
   });
 });
 

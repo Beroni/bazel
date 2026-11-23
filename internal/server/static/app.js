@@ -54,6 +54,7 @@ const state = {
   threadsReminded: [], // PRs just sent to review with open threads: the note stays for them
   threadsStale: {},    // lower-case PR key -> when its threads on screen were read, if its last read failed
   threadsPartial: {},  // lower-case PR key -> true: past its page cap, it has more threads than shown
+  threadsLoading: false, // a read is out and the page has nothing yet
   threadsError: '',    // why there are no threads on screen: the read failed with nothing to fall back on
 };
 
@@ -3948,6 +3949,13 @@ async function loadOpenThreads(force) {
     // No read to fall back on (none yet, or past its 30 minutes): no tags, and
     // the page says the threads could not be read.
     state.threadsError = out.error || '';
+    // Another read is out (the one at boot, say): what came back waited on
+    // it, so ask again shortly; with nothing yet, the page says it is reading.
+    state.threadsLoading = !!out.loading;
+    if (out.reading && !loadOpenThreads.again) {
+      // A ↻ that found a read under way still wants a read of its own.
+      loadOpenThreads.again = setTimeout(() => { loadOpenThreads.again = null; loadOpenThreads(force); }, 1500);
+    }
   } catch (err) {
     return; // the server did not answer at all: the tags on screen stay
   }
@@ -3979,6 +3987,9 @@ const staleNote = (key) => `as of ${new Date(staleOf(key)).toLocaleTimeString([]
 function fillThreadsNote() {
   const note = $('#threads-note');
   note.replaceChildren();
+  if (state.threadsLoading && !state.threadsError) {
+    note.append(tid(el('p', 'dim', 'Reading your open threads…'), 'threads-loading'));
+  }
   if (state.threadsError) {
     const p = tid(el('p'), 'threads-error');
     p.textContent = 'Your open threads could not be read from GitHub, so none are shown.';
